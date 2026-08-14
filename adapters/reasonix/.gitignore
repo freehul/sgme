@@ -1,0 +1,4 @@
+# 适配器本地运行时状态（不入 git；根 .gitignore 的 *.env 已覆盖 .env，此处显式声明）
+.env
+.export_cursor.json
+.export_cursor.json.tmp

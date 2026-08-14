@@ -1,0 +1,52 @@
+# SGME LLM 配置 v0.4（降级链，D15）
+# 编排层（v0.7 §13）：只保留链结构与链级参数；
+#   供应商连接字段（base_url/api_key_env/context_window/...）见 config/providers.yaml，
+#   由 sgme/config.py 加载时按 provider 名注入链节点（节点内联字段优先，兼容旧格式）。
+# 提供商无关（ST-22①）：默认链每个节点均可替换为任何 OpenAI 兼容提供商——
+#   供应商连接字段见 config/providers.yaml（品牌由用户选，本文件不绑定品牌）。
+#   当前节点仅作示例占位；换供应商时改 providers.yaml 连接字段，
+#   并按所选模型调整 model/max_tokens/sampling/extra_body。
+# 密钥不落盘：引用环境变量名（铁律）
+# 链结构语义：
+#   第一级：云端 OpenAI 兼容主模型（长上下文，剪枝后任何会话整段放得下）
+#   第二级：rule drop_batch（全链失败兜底，抛 LLMUnavailable）
+# 注：lm-studio 本地模型已从供应商与降级链移除（2026-08-14 用户决策：
+#   本地模型能力与向量维度不足，提炼统一走云端 DeepSeek）
+# ⚠️ 写回注意：WebUI 降级链编辑（write_llm_config）只覆盖 chains 段并自动剥离
+#   连接字段（CHAIN_ORCH_FIELDS 白名单），本文件注释会在写回时丢失（pyyaml 限制），
+#   需人工维护时以此版为基线。
+chains:
+  refinement:
+    - provider: deepseek        # 示例：云端 OpenAI 兼容提供商（可替换为任意 OpenAI 兼容提供商）
+      model: deepseek-v4-flash
+      max_tokens: 16384
+      extra_body:               # 提供商特有参数（如关闭思考模式），按需传
+        thinking:
+          type: disabled
+    - provider: rule
+      rule: drop_batch
+
+rules:
+  timeout_s: 240
+  max_retries: 2
+  fallback_on: [timeout, 5xx, connection_error, auth_error, context_overflow, rate_limit]
+  # 指数退避（ST-23⑥）：fallback_on 错误的重试间隔 =
+  #   min(base_s × 2^(attempt-1), max_s) + [0, jitter_s)
+  #   429 响应带 Retry-After 头时取 max(退避值, Retry-After)
+  backoff:
+    base_s: 1.0     # 首次重试等待 1s（序列 1s/2s/4s）
+    max_s: 8.0      # 退避封顶
+    jitter_s: 0.2   # 抖动防惊群（批量连环撞限流场景）
+  # 调用层节流器（ST-23⑥）：批量提炼时平滑请求速率（令牌桶），防连环撞限流
+  #   rps：每秒请求数；burst：桶容量（1 = 无突发，严格平滑）
+  #   默认 0.5 rps ≈ 30 req/min（取常用云端限流 60 req/min 的一半作安全余量）
+  throttle:
+    enabled: true
+    rps: 0.5
+    burst: 1
+  context:
+    reserved_output: 4096
+    prompt_overhead: 0.08   # 提示词开销比例（8%），64K → 5K，预算 ≈ 55K
+  allowed_models:
+    deny_prefixes: [pro, reasoner, thinking]
+    deny_exact: [gemma-4-12b-qat]

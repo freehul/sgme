@@ -1,0 +1,153 @@
+# SGME 关系类型注册表 v0.1（2026-08-10，T-14）
+# 依据：SGME-数据模型设计-v0.1.md §wiki_links（T-14 类型清单）
+# 字段说明：
+#   id            存储键，英文 snake_case，wiki_links.rel_type 一律引用 id
+#   display_name  中文展示名（UI / 展示）
+#   category      语义 | 结构 | 时序 | 论证 | 项目 | 记忆域（六类）
+#   description   边界定义（含 vs 对照）
+#   semantics     语义说明（有向关系的方向含义：source → target）
+# 权威性：wiki_links.rel_type 枚举由此文件定义，DB 不做 CHECK 约束（注册表权威，热扩展）。
+# 扩展：新增关系类型 = 注册表加行即可，无需 schema 迁移。
+
+relations:
+  # ── 语义（原 4 种保留，v0.7 既有行为不变）──
+  - id: similar
+    display_name: 相似
+    category: 语义
+    description: 两页内容/主题相似，可互为参考。
+    semantics: "source 与 target 语义相近（双向，不区分方向）"
+  - id: extends
+    display_name: 扩展
+    category: 语义
+    description: source 是对 target 的扩展/补充（如教程的进阶篇）。
+    semantics: "source 扩展了 target 的内容"
+  - id: references
+    display_name: 引用
+    category: 语义
+    description: source 引用/提及 target（如文章引用来源文档）。
+    semantics: "source 引用了 target"
+  - id: contradicts
+    display_name: 矛盾
+    category: 语义
+    description: 两页内容相互矛盾（保留双方案件原文，供冲突提炼裁决）。
+    semantics: "source 与 target 观点/事实矛盾（双向）"
+
+  # ── 结构（层级与组成关系）──
+  - id: parent_of
+    display_name: 父级
+    category: 结构
+    description: source 是 target 的父级（上下位概念/目录层级）。
+    semantics: "source 是 target 的父级（target = child_of source）"
+  - id: child_of
+    display_name: 子级
+    category: 结构
+    description: source 是 target 的子级（parent_of 的反向）。
+    semantics: "source 是 target 的子级（target = parent_of source）"
+  - id: part_of
+    display_name: 组成部分
+    category: 结构
+    description: source 是 target 的组成部分（整体-部分，如模块之于系统）。
+    semantics: "source 是 target 的一部分"
+  - id: instance_of
+    display_name: 实例
+    category: 结构
+    description: source 是 target 的一个实例/具体案例（如某次部署之于部署方案）。
+    semantics: "source 是 target 的实例"
+  - id: related
+    display_name: 相关
+    category: 结构
+    description: 通用相关（无法归入更具体结构类型时的兜底）。
+    semantics: "source 与 target 相关（弱关系，双向）"
+
+  # ── 时序（时间先后与因果演进）──
+  - id: before
+    display_name: 先于
+    category: 时序
+    description: source 在时间上先于 target（事件/阶段顺序）。
+    semantics: "source 发生/存在于 target 之前"
+  - id: after
+    display_name: 后于
+    category: 时序
+    description: source 在时间上晚于 target（before 的反向）。
+    semantics: "source 发生/存在于 target 之后"
+  - id: causes
+    display_name: 导致
+    category: 时序
+    description: source 是 target 的原因（因果链正向）。
+    semantics: "source 导致了 target"
+  - id: caused_by
+    display_name: 由…导致
+    category: 时序
+    description: source 由 target 引起（causes 的反向）。
+    semantics: "source 由 target 导致"
+  - id: evolves_to
+    display_name: 演进为
+    category: 时序
+    description: source 演进/发展为 target（方案迭代、项目阶段推进）。
+    semantics: "source 演进为 target"
+
+  # ── 论证（观点支持与交锋）──
+  - id: supports
+    display_name: 支持
+    category: 论证
+    description: source 支持/佐证 target 的观点或结论。
+    semantics: "source 为 target 提供支持证据"
+  - id: opposes
+    display_name: 反对
+    category: 论证
+    description: source 反对/反驳 target 的观点或结论。
+    semantics: "source 反对 target 的观点"
+  - id: questions
+    display_name: 质疑
+    category: 论证
+    description: source 对 target 提出疑问/质疑（未到反对程度）。
+    semantics: "source 质疑 target 的论点或依据"
+  - id: answers
+    display_name: 回答
+    category: 论证
+    description: source 回答/回应了 target 提出的问题（questions 的反向）。
+    semantics: "source 回答了 target 的问题"
+
+  # ── 项目（任务与工单联动）──
+  - id: implements
+    display_name: 实现
+    category: 项目
+    description: source 实现了 target（代码/方案之于需求/设计）。
+    semantics: "source 实现了 target（如代码实现需求）"
+  - id: fixes
+    display_name: 修复
+    category: 项目
+    description: source 修复了 target（修复记录之于缺陷/问题）。
+    semantics: "source 修复了 target（缺陷）"
+  - id: tracked_by
+    display_name: 被跟踪
+    category: 项目
+    description: source 被 target 跟踪（任务之于 backlog/看板条目）。
+    semantics: "source 由 target 跟踪（target = 跟踪条目）"
+  - id: blocks
+    display_name: 阻塞
+    category: 项目
+    description: source 阻塞 target 的进行（依赖前置）。
+    semantics: "source 阻塞了 target（blocked_by 的反向）"
+  - id: blocked_by
+    display_name: 被阻塞
+    category: 项目
+    description: source 被 target 阻塞（blocks 的反向）。
+    semantics: "source 被 target 阻塞"
+
+  # ── 记忆域（记忆归并与替代）──
+  - id: merges_with
+    display_name: 合并
+    category: 记忆域
+    description: source 与 target 应合并为同一记忆（提炼去重线索）。
+    semantics: "source 与 target 可合并（双向）"
+  - id: supersedes
+    display_name: 替代
+    category: 记忆域
+    description: source 取代 target（新方案替代旧方案，旧值保留可溯源）。
+    semantics: "source 替代了 target（旧值归档不删除）"
+  - id: same_as
+    display_name: 同一
+    category: 记忆域
+    description: source 与 target 是同一实体的不同表述（实体对齐）。
+    semantics: "source 与 target 指同一实体（双向）"

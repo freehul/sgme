@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(56, 89, 255, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% -20%, rgba(0, 212, 255, 0.15) 0%, transparent 50%),
+      linear-gradient(135deg, #0b0f2a 0%, #12173a 45%, #1b1440 100%);
+    position: relative;
+    color: #e8ecff;
+  }
+  /* 噪点暗角 */
+  body::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 6, 18, 0.55) 100%);
+  }
+  .grid {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(120, 160, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(120, 160, 255, 0.05) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  }
+  .title {
+    position: absolute; top: 52px; left: 0; right: 0; text-align: center;
+  }
+  .title .en {
+    font-size: 22px; letter-spacing: 8px; color: rgba(0, 212, 255, 0.85);
+    text-shadow: 0 0 18px rgba(0, 212, 255, 0.6);
+  }
+  .title .cn {
+    margin-top: 10px; font-size: 44px; font-weight: 700;
+    background: linear-gradient(90deg, #7ee8ff, #c9b8ff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 40px rgba(90, 160, 255, 0.35);
+  }
+  .title .sub {
+    margin-top: 8px; font-size: 19px; color: rgba(220, 230, 255, 0.55);
+    letter-spacing: 3px;
+  }
+
+  /* 中央大脑 */
+  .core {
+    position: absolute; left: 50%; top: 52%; transform: translate(-50%, -50%);
+    width: 300px; height: 300px;
+  }
+  .core .halo {
+    position: absolute; inset: -40px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(0, 200, 255, 0.28) 0%, rgba(0, 120, 255, 0.08) 45%, transparent 70%);
+    animation: pulse 3.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 0.85; }
+    50% { transform: scale(1.08); opacity: 1; }
+  }
+  .core .disc {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, rgba(120, 220, 255, 0.95), rgba(30, 90, 220, 0.85) 60%, rgba(20, 40, 120, 0.9));
+    border: 2px solid rgba(0, 212, 255, 0.7);
+    box-shadow: 0 0 60px rgba(0, 180, 255, 0.5), inset 0 0 40px rgba(120, 220, 255, 0.25);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .core .disc .brain {
+    font-size: 96px; line-height: 1; filter: drop-shadow(0 0 18px rgba(0, 212, 255, 0.8));
+  }
+  .core .disc .name { margin-top: 6px; font-size: 26px; font-weight: 700; letter-spacing: 2px; }
+  .core .disc .tag { margin-top: 4px; font-size: 14px; color: rgba(230, 245, 255, 0.75); letter-spacing: 4px; }
+
+  /* 外围 Agent 节点 */
+  .node {
+    position: absolute;
+    width: 200px; height: 128px;
+    background: rgba(18, 26, 60, 0.55);
+    border: 1.5px solid rgba(0, 212, 255, 0.35);
+    border-radius: 18px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 30px rgba(0, 180, 255, 0.12), inset 0 0 22px rgba(60, 120, 255, 0.08);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .node .ico { font-size: 40px; filter: drop-shadow(0 0 10px rgba(0, 212, 255, 0.5)); }
+  .node .nm { margin-top: 8px; font-size: 20px; font-weight: 600; }
+  .node .role { margin-top: 3px; font-size: 12px; color: rgba(200, 220, 255, 0.55); letter-spacing: 1px; }
+  .node.n1 { left: 120px; top: 250px; }
+  .node.n2 { left: 120px; bottom: 150px; }
+  .node.n3 { right: 120px; top: 250px; }
+  .node.n4 { right: 120px; bottom: 150px; }
+
+  /* 连接线（SVG） */
+  svg.links { position: absolute; inset: 0; width: 100%; height: 100%; }
+  svg.links line {
+    stroke: rgba(0, 212, 255, 0.45); stroke-width: 2;
+    stroke-dasharray: 10 8; animation: flow 2.4s linear infinite;
+  }
+  @keyframes flow { to { stroke-dashoffset: -36; } }
+  svg.links circle.dot { fill: #7ee8ff; filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.9)); }
+
+  .footer {
+    position: absolute; bottom: 40px; left: 0; right: 0; text-align: center;
+    font-size: 15px; letter-spacing: 5px; color: rgba(180, 200, 255, 0.45);
+  }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+
+  <!-- 连接线 -->
+  <svg class="links" viewBox="0 0 1600 900">
+    <!-- 四条线：从中央 (800, 468) 到四节点 -->
+    <line x1="800" y1="468" x2="320" y2="310" />
+    <line x1="800" y1="468" x2="320" y2="622" />
+    <line x1="800" y1="468" x2="1280" y2="310" />
+    <line x1="800" y1="468" x2="1280" y2="622" />
+    <circle class="dot" r="5"><animateMotion dur="2.4s" repeatCount="indefinite" path="M 320,310 L 800,468" /></circle>
+    <circle class="dot" r="5"><animateMotion dur="2.4s" repeatCount="indefinite" path="M 320,622 L 800,468" /></circle>
+    <circle class="dot" r="5"><animateMotion dur="2.4s" repeatCount="indefinite" path="M 1280,310 L 800,468" /></circle>
+    <circle class="dot" r="5"><animateMotion dur="2.4s" repeatCount="indefinite" path="M 1280,622 L 800,468" /></circle>
+  </svg>
+
+  <div class="title">
+    <div class="en">SHARED MEMORY</div>
+    <div class="cn">多智能体共享记忆</div>
+    <div class="sub">一个大脑 · 多个身体</div>
+  </div>
+
+  <div class="core">
+    <div class="halo"></div>
+    <div class="disc">
+      <div class="brain">🧠</div>
+      <div class="name">SGME 记忆大脑</div>
+      <div class="tag">MEMORY ENGINE</div>
+    </div>
+  </div>
+
+  <div class="node n1"><div class="ico">🤖</div><div class="nm">Hermes</div><div class="role">桌面管家</div></div>
+  <div class="node n2"><div class="ico">💻</div><div class="nm">Trae</div><div class="role">编码助手</div></div>
+  <div class="node n3"><div class="ico">🧩</div><div class="nm">Reasonix</div><div class="role">编程通道</div></div>
+  <div class="node n4"><div class="ico">🌐</div><div class="nm">Claude / 其他</div><div class="role">MCP 通用接入</div></div>
+
+  <div class="footer">MEMORY FOLLOWS YOU · 记忆随行</div>
+</body>
+</html>

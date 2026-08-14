@@ -1,0 +1,63 @@
+l1:
+  chunk_size: 5000
+  overlap: 1000
+l15:
+  prescreen:
+    enabled: true
+    vector_top_k: 50
+    dimension_top_n: 50
+refine:
+  refine_on_append: false
+  batch_scan:
+    enabled: true
+    interval_min: 10
+l2:
+  max_scenes: 200
+  warn_thresholds:
+    yellow: 150
+    orange: 180
+    red: 200
+search:
+  vector:
+    enabled: true
+    provider: volc-plan   # 向量提供商（内置：volc-plan/siliconflow/nvidia，见 providers.yaml embedding 段）
+    model: doubao-embedding-vision
+    base_url: https://ark.cn-beijing.volces.com/api/plan/v3
+    api_key_env: VOLC_API_KEY
+  rrf:
+    k: 60
+backup:
+  enabled: true
+  schedule: 04:00
+  level: incremental
+  dir: data/backups
+  keep_full: 7
+  remote_dir: ''  # 异地目录（本机另一盘/NAS 挂载）；空 = 跳过。部署时用 SGME_BACKUP_REMOTE env 注入
+  raw_cold_days: 90
+wiki:
+  enabled: true
+skills_hub:
+  enabled: true
+  path: ''
+  mode: copy
+  sync_policy: manual
+  remote:
+    source: ${SGME_SKILLS_HUB_REMOTE}
+    cache: ./cache/skills/
+    branch: main
+    conflict_policy: local_wins
+    timeout_s: 60
+    backup_refs: true
+logging:
+  level: INFO
+  format: console
+dream:
+  enabled: true
+  schedule: 03:00
+  max_files: 200
+  ttl_mark: true
+  archive_days: 90
+  report_dir: data/reports/
+care:
+  enabled: true
+  persona_max_chars: 2000

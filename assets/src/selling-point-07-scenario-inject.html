@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(56, 89, 255, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% -20%, rgba(0, 212, 255, 0.15) 0%, transparent 50%),
+      linear-gradient(135deg, #0b0f2a 0%, #12173a 45%, #1b1440 100%);
+    position: relative;
+    color: #e8ecff;
+  }
+  body::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 6, 18, 0.55) 100%);
+  }
+  .grid {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(120, 160, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(120, 160, 255, 0.05) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  }
+  .title { position: absolute; top: 48px; left: 0; right: 0; text-align: center; }
+  .title .en {
+    font-size: 22px; letter-spacing: 8px; color: rgba(0, 212, 255, 0.85);
+    text-shadow: 0 0 18px rgba(0, 212, 255, 0.6);
+  }
+  .title .cn {
+    margin-top: 10px; font-size: 44px; font-weight: 700;
+    background: linear-gradient(90deg, #7ee8ff, #c9b8ff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 40px rgba(90, 160, 255, 0.35);
+  }
+  .title .sub { margin-top: 8px; font-size: 19px; color: rgba(220, 230, 255, 0.55); letter-spacing: 3px; }
+
+  .card {
+    background: rgba(18, 26, 60, 0.55);
+    border: 1.5px solid rgba(0, 212, 255, 0.35);
+    border-radius: 18px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 30px rgba(0, 180, 255, 0.12), inset 0 0 22px rgba(60, 120, 255, 0.08);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .card .ico { font-size: 52px; filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.5)); }
+  .card .nm { margin-top: 10px; font-size: 21px; font-weight: 600; }
+  .card .role { margin-top: 4px; font-size: 13px; color: rgba(200, 220, 255, 0.55); }
+
+  .footer {
+    position: absolute; bottom: 40px; left: 0; right: 0; text-align: center;
+    font-size: 15px; letter-spacing: 5px; color: rgba(180, 200, 255, 0.45);
+  }
+
+  /* 按场景注入：左记忆池，右三场景 */
+  .pool {
+    position: absolute; top: 230px; left: 110px; width: 360px; height: 420px;
+    background: rgba(18, 26, 60, 0.6);
+    border: 2px solid rgba(0, 212, 255, 0.45);
+    border-radius: 24px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 40px rgba(0, 180, 255, 0.2);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .pool .ico { font-size: 64px; filter: drop-shadow(0 0 16px rgba(0, 212, 255, 0.7)); }
+  .pool .nm { margin-top: 10px; font-size: 24px; font-weight: 700; }
+  .pool .tags { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; padding: 0 20px; }
+  .pool .tags .t {
+    font-size: 14px; padding: 7px 14px; border-radius: 18px;
+    background: rgba(0, 212, 255, 0.12); border: 1px solid rgba(0, 212, 255, 0.35);
+    color: rgba(220, 240, 255, 0.85);
+  }
+
+  .scenes { position: absolute; top: 210px; right: 100px; width: 560px; }
+  .scenes .card { position: relative; width: 520px; height: 118px; margin-bottom: 26px; flex-direction: row; gap: 24px; padding: 0 26px; justify-content: flex-start; }
+  .scenes .card .ico { font-size: 42px; }
+  .scenes .card .txt { display: flex; flex-direction: column; }
+  .scenes .card .nm { font-size: 20px; font-weight: 700; margin: 0 0 6px 0; }
+  .scenes .card .role { font-size: 14px; color: rgba(200, 220, 255, 0.6); }
+  .scenes .card .badge {
+    margin-left: auto; font-size: 13px; padding: 6px 14px; border-radius: 16px;
+    background: rgba(126, 232, 255, 0.14); border: 1px solid rgba(126, 232, 255, 0.4);
+    color: #7ee8ff; white-space: nowrap;
+  }
+
+  svg.filter-lines { position: absolute; inset: 0; width: 100%; height: 100%; }
+  svg.filter-lines path { stroke: rgba(0, 212, 255, 0.5); stroke-width: 2; fill: none; stroke-dasharray: 8 8; animation: flow 2.2s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -32; } }
+
+  .note {
+    position: absolute; top: 700px; left: 0; right: 0; text-align: center;
+    font-size: 18px; color: rgba(220, 235, 255, 0.75); letter-spacing: 2px;
+  }
+  .note .hl { color: #7ee8ff; }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+
+  <div class="title">
+    <div class="en">SCENARIO INJECTION</div>
+    <div class="cn">按场景注入</div>
+    <div class="sub">需要什么 · 记什么</div>
+  </div>
+
+  <svg class="filter-lines">
+    <path d="M 470,340 Q 620,300 820,320" />
+    <path d="M 470,430 Q 620,430 820,430" />
+    <path d="M 470,520 Q 620,560 820,540" />
+  </svg>
+
+  <div class="pool">
+    <div class="ico">🗄️</div>
+    <div class="nm">记忆池</div>
+    <div class="tags">
+      <span class="t">身份</span><span class="t">项目</span><span class="t">技术栈</span>
+      <span class="t">偏好</span><span class="t">状态</span><span class="t">目标</span>
+      <span class="t">习惯</span><span class="t">决策</span>
+    </div>
+  </div>
+
+  <div class="scenes">
+    <div class="card">
+      <div class="ico">💬</div>
+      <div class="txt"><div class="nm">日常闲聊</div><div class="role">身份 · 近况 · 家庭 · 习惯</div></div>
+      <div class="badge">daily 模式</div>
+    </div>
+    <div class="card">
+      <div class="ico">💻</div>
+      <div class="txt"><div class="nm">编程</div><div class="role">技术栈 · 踩过的坑 · 开发习惯</div></div>
+      <div class="badge">coding 模式</div>
+    </div>
+    <div class="card">
+      <div class="ico">📋</div>
+      <div class="txt"><div class="nm">工作</div><div class="role">目标 · 待办 · 项目进展</div></div>
+      <div class="badge">work 模式</div>
+    </div>
+  </div>
+
+  <div class="note">无关记忆不打扰 · 过时记忆自动退出 · <span class="hl">不把整个记忆库塞进一次对话</span></div>
+
+  <div class="footer">INJECT WHAT THE SCENARIO NEEDS · 场景需要什么才注入什么</div>
+</body>
+</html>

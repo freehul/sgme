@@ -1,0 +1,1395 @@
+# SGME 评测基线 v001（首版 50 条标注用例）
+# 格式约定：字段英文，注释中文
+# 依据：docs/design/SGME-评测基线-PRD-v0.1.md §3.1-3.5
+#
+# 规模分布：easy 15 / medium 23 / hard 12 = 50
+# 来源分布：real 20 / synthetic 20 / edge 10 = 50
+# 维度覆盖：15 维 × ≥3 = 45 条覆盖
+# 模式覆盖：daily≥20 / coding≥20 / work≥15 / full≥10
+
+meta:
+  version: v001
+  created_at: "2026-08-06T00:00:00Z"
+  total_cases: 50
+  description: "SGME L1/L2 提炼质量评测基线首版（50 条，覆盖全维度/全模板）"
+
+cases:
+  # ════════════════════════════════════════════════
+  # Section A: easy 用例（15 条）
+  # ════════════════════════════════════════════════
+
+  # A1-A5: 基础身份/技能单标签
+  - case_id: eval-001
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-01-01T10:00:00Z user:
+        我叫张明，在深圳做后端开发，用 Python 和 Go
+    expected_l1:
+      memories:
+        - content: "张明，深圳，后端开发"
+          dimensions: [identity, skills, tech_stack]
+          memory_type: persona
+          priority: 85
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["个人信息"]
+      template_section:
+        daily:
+          "0": "👤 基本信息"
+    notes: "基础单维度标注 + 多维度拆分"
+
+  - case_id: eval-002
+    source: real
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-02-10T09:00:00Z user:
+        我在腾讯做产品经理三年了，base 在北京
+    expected_l1:
+      memories:
+        - content: "腾讯产品经理三年，base 北京"
+          dimensions: [identity]
+          memory_type: persona
+          priority: 85
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["职业信息"]
+      template_section:
+        daily:
+          "0": "👤 基本信息"
+        work:
+          "0": "💼 职业背景"
+    notes: "单维度 identity 基础标注"
+
+  - case_id: eval-003
+    source: real
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-03-05T14:00:00Z user:
+        我老婆叫李婷，女儿小名叫豆豆今年四岁
+    expected_l1:
+      memories:
+        - content: "妻子李婷，女儿豆豆四岁"
+          dimensions: [family]
+          memory_type: persona
+          priority: 85
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["家庭成员"]
+      template_section:
+        daily:
+          "0": "🏠 家庭与社交"
+    notes: "单维度 family 基础标注"
+
+  - case_id: eval-004
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-03-10T10:00:00Z user:
+        我们团队用 Rust 写后端，部署在 AWS 上，数据库用的 PostgreSQL
+    expected_l1:
+      memories:
+        - content: "团队技术栈：Rust + AWS + PostgreSQL"
+          dimensions: [tech_stack]
+          memory_type: persona
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["团队技术栈"]
+      template_section:
+        coding:
+          "0": "🔧 技术决策"
+        work:
+          "0": "🔧 技术决策"
+    notes: "单维度 tech_stack 基础标注"
+
+  - case_id: eval-005
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-03-15T16:00:00Z user:
+        我每天早上七点起床跑步半小时，然后喝一杯黑咖啡
+    expected_l1:
+      memories:
+        - content: "每天早上七点跑步半小时，喝黑咖啡"
+          dimensions: [habits]
+          memory_type: persona
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["日常习惯"]
+      template_section:
+        daily:
+          "0": "📅 日常生活"
+    notes: "单维度 habits 基础标注"
+
+  # A6-A10: 二维度简单组合
+  - case_id: eval-006
+    source: real
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-04-01T11:00:00Z user:
+        我正在学 Kubernetes 和 Docker，准备考 CKA 认证
+    expected_l1:
+      memories:
+        - content: "学习 Kubernetes 和 Docker，准备 CKA 认证"
+          dimensions: [skills, goals]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["技能学习"]
+      template_section:
+        coding:
+          "0": "📚 技能学习"
+    notes: "skills + goals 双维度"
+
+  - case_id: eval-007
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-04-05T09:00:00Z user:
+        下周要上线新版支付模块，压力有点大
+    expected_l1:
+      memories:
+        - content: "下周上线新版支付模块"
+          dimensions: [tasks, projects]
+          memory_type: episodic
+          priority: 80
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "上线前压力有点大"
+          dimensions: [status]
+          memory_type: episodic
+          priority: 60
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["项目交付"]
+      template_section:
+        work:
+          "0": "📋 当前任务"
+          "1": "📊 当前状态"
+    notes: "tasks + projects + status 三标签（简单场景）"
+
+  - case_id: eval-008
+    source: real
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-04-10T13:00:00Z user:
+        最近经朋友介绍认识一位做 AI infra 的同行
+    expected_l1:
+      memories:
+        - content: "经朋友介绍认识做 AI infra 的同行"
+          dimensions: [social, tech_stack]
+          memory_type: persona
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["社交关系"]
+      template_section:
+        daily:
+          "0": "🏠 家庭与社交"
+    notes: "social + tech_stack 双维度（人物+领域）"
+
+  - case_id: eval-009
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-04-15T10:00:00Z user:
+        这个季度 OKR 是要把推荐系统 latency 降到 50ms 以下
+    expected_l1:
+      memories:
+        - content: "季度 OKR：推荐系统 latency 降到 50ms 以下"
+          dimensions: [goals, projects]
+          memory_type: instruction
+          priority: 85
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["季度目标"]
+      template_section:
+        work:
+          "0": "🎯 目标与 OKR"
+    notes: "goals + projects 双维度"
+
+  - case_id: eval-010
+    source: real
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-04-20T08:00:00Z user:
+        我比较喜欢安静的工作环境，不太喜欢 open office 的嘈杂
+    expected_l1:
+      memories:
+        - content: "喜欢安静的工作环境，不喜欢 open office"
+          dimensions: [preferences, style]
+          memory_type: persona
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["工作偏好"]
+      template_section:
+        daily:
+          "0": "💡 偏好与风格"
+    notes: "preferences + style 双维度"
+
+  # A11-A15: 多维度（3+维度）
+  - case_id: eval-011
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-05-01T15:00:00Z user:
+        这个周末要写完 SGME 的 L1.5 冲突提炼模块，用 Python + SQLite
+    expected_l1:
+      memories:
+        - content: "周末写完 SGME L1.5 冲突提炼模块"
+          dimensions: [tasks, projects, tech_stack]
+          memory_type: episodic
+          priority: 80
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["SGME 开发"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+    notes: "tasks + projects + tech_stack 三维度"
+
+  - case_id: eval-012
+    source: real
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-05-05T12:00:00Z user:
+        中午跟经理吃饭聊了晋升的事，他说今年的名额比较紧
+    expected_l1:
+      memories:
+        - content: "跟经理（领导）吃饭聊晋升，今年名额比较紧"
+          dimensions: [social, goals, status]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["职场沟通"]
+      template_section:
+        work:
+          "0": "💼 职业背景"
+    notes: "social + goals + status 三维度"
+
+  - case_id: eval-013
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-05-10T09:00:00Z user:
+        最近开始学吉他，每周二晚上上课，目标是年底能弹唱三首歌
+    expected_l1:
+      memories:
+        - content: "每周二晚上学吉他，目标年底弹唱三首歌"
+          dimensions: [habits, skills, goals]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["个人爱好"]
+      template_section:
+        daily:
+          "0": "📅 日常生活"
+    notes: "habits + skills + goals 三维度（非工作场景）"
+
+  - case_id: eval-014
+    source: real
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-05-15T14:00:00Z user:
+        我还是觉得代码可读性比性能更重要，除非性能真的成为瓶颈
+    expected_l1:
+      memories:
+        - content: "代码可读性优先于性能，除非性能成瓶颈"
+          dimensions: [values, preferences, style]
+          memory_type: persona
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["编程价值观"]
+      template_section:
+        coding:
+          "0": "📋 编码规范"
+    notes: "values + preferences + style 三维度（价值观类）"
+
+  - case_id: eval-015
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-05-20T10:00:00Z user:
+        最近睡眠不太好，每天只睡五六个小时，但白天精力还行
+    expected_l1:
+      memories:
+        - content: "最近睡眠不太好，每天只睡五六小时"
+          dimensions: [health, status, habits]
+          memory_type: episodic
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "白天精力还行"
+          dimensions: [status]
+          memory_type: episodic
+          priority: 55
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["健康状态"]
+      template_section:
+        daily:
+          "0": "📊 当前状态"
+          "1": "📊 当前状态"
+    notes: "health + status + habits 三维度（首次出现 health 维度）"
+
+  # ════════════════════════════════════════════════
+  # Section B: medium 用例（23 条）
+  # ════════════════════════════════════════════════
+
+  # B1-B5: 维度边界模糊
+  - case_id: eval-016
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-01T11:00:00Z user:
+        SGME 这个项目架构从 Fork 改自研了，用 Python 重写，参考了 TencentDB-Agent-Memory 的设计
+    expected_l1:
+      memories:
+        - content: "SGME 项目从 Fork 改为 Python 自研"
+          dimensions: [projects, tech_stack]
+          memory_type: episodic
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "参考了 TencentDB-Agent-Memory 的设计思想"
+          dimensions: [tech_stack, values]
+          memory_type: episodic
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["SGME 架构演进"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "🔧 技术决策"
+    notes: "维度边界：项目 vs 技术栈 vs 价值观 三标签"
+
+  - case_id: eval-017
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-03T10:00:00Z user:
+        我习惯用 VSCode + Vim 插件写代码，不喜欢 IDE 太重
+    expected_l1:
+      memories:
+        - content: "习惯用 VSCode + Vim 插件，不喜欢重型 IDE"
+          dimensions: [preferences, style, tech_stack]
+          memory_type: persona
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["开发环境偏好"]
+      template_section:
+        coding:
+          "0": "📋 编码规范"
+    notes: "边界测试：preferences vs style vs tech_stack"
+
+  - case_id: eval-018
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-05T15:00:00Z user:
+        下周要去上海出差三天参加云栖大会，顺便约了在字节的老同学吃饭
+    expected_l1:
+      memories:
+        - content: "下周上海出差三天参加云栖大会"
+          dimensions: [tasks, focus]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "约了字节的老同学在上海吃饭"
+          dimensions: [social]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["出差安排"]
+      template_section:
+        work:
+          "0": "📋 当前任务"
+        daily:
+          "1": "🏠 家庭与社交"
+    notes: "边界测试：tasks（工作出差） vs social（老同学聚餐）"
+
+  - case_id: eval-019
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-08T09:00:00Z user:
+        我觉得一个好的系统设计应该能撑三年不重写，过度设计跟欠设计一样有害
+    expected_l1:
+      memories:
+        - content: "好设计应撑三年不重写，过度设计和欠设计一样有害"
+          dimensions: [values, preferences, style]
+          memory_type: persona
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["工程价值观"]
+      template_section:
+        coding:
+          "0": "🔧 技术决策"
+    notes: "边界测试：values vs preferences vs style（三个易混淆维度）"
+
+  - case_id: eval-020
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-10T14:00:00Z user:
+        把那个 gRPC 的 health check 端点加上，之前 HTTP 的也要保留做兼容
+    expected_l1:
+      memories:
+        - content: "给 gRPC 加 health check 端点"
+          dimensions: [tasks, tech_stack]
+          memory_type: instruction
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "保留 HTTP health check 做向后兼容"
+          dimensions: [preferences]
+          memory_type: instruction
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["服务维护"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "📋 编码规范"
+    notes: "边界测试：tasks vs preferences（操作类 vs 偏好类）"
+
+  # B6-B12: 多维度重叠 + 情境切分
+  - case_id: eval-021
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-12T09:00:00Z user:
+        最近在重构用户服务的认证模块，把 JWT 换成了 session token，感觉安全性好了不少。
+        对了，下午三点有个代码评审，记得提醒我
+    expected_l1:
+      memories:
+        - content: "重构用户服务认证模块，JWT 换 session token"
+          dimensions: [projects, tech_stack, tasks]
+          memory_type: episodic
+          priority: 80
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "下午三点代码评审需要提醒"
+          dimensions: [tasks]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["用户服务重构"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "📋 当前任务"
+    notes: "情境切分：技术重构 + 日程提醒（两类记忆）"
+
+  - case_id: eval-022
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-15T11:00:00Z user:
+        我最近在思考要不要转管理，技术做了五年感觉天花板了。
+        但管理要处理很多人际关系，我其实不太擅长这个
+    expected_l1:
+      memories:
+        - content: "技术做了五年，考虑转管理"
+          dimensions: [status, goals]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "不太擅长处理人际关系"
+          dimensions: [status]
+          memory_type: persona
+          priority: 65
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["职业发展"]
+      template_section:
+        work:
+          "0": "💼 职业背景"
+          "1": "💼 职业背景"
+    notes: "情境切分：职业规划（goal）+ 自我认知（status）"
+
+  - case_id: eval-023
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-18T16:00:00Z user:
+        最近在折腾 home lab，搞了一台二手服务器跑 Proxmox，上面部署了 Plex、Home Assistant 和 Pi-hole。
+        目标是打造一个完全自托管的家庭数据中心
+    expected_l1:
+      memories:
+        - content: "搭建 home lab：二手服务器 + Proxmox + Plex/Home Assistant/Pi-hole"
+          dimensions: [projects, tech_stack, focus]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "目标：完全自托管的家庭数据中心"
+          dimensions: [goals]
+          memory_type: episodic
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["Home Lab 项目"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "🎯 目标与 OKR"
+    notes: "多记忆 + 多维度：projects + tech_stack + focus + goals"
+
+  - case_id: eval-024
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-20T08:30:00Z user:
+        今天状态不错，昨晚睡了八个小时。早上的站会我分享了上周的 CR 统计数据，
+        大家觉得代码质量在稳步提升。下午要把那个内存泄漏的 bug 修了
+    expected_l1:
+      memories:
+        - content: "今天状态不错，昨晚睡了八小时"
+          dimensions: [status, health]
+          memory_type: episodic
+          priority: 55
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "站会分享 CR 统计数据，代码质量稳步提升"
+          dimensions: [tasks, projects]
+          memory_type: episodic
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "下午修内存泄漏 bug"
+          dimensions: [tasks]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["日常工作"]
+      template_section:
+        work:
+          "0": "📊 当前状态"
+          "1": "📋 当前任务"
+          "2": "📋 当前任务"
+    notes: "多记忆情境切分：健康+状态 / 工作进展 / 待办任务"
+
+  - case_id: eval-025
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-22T13:00:00Z user:
+        团队新来的实习生小王挺有潜力的，对 Rust 感兴趣，我让他先从写测试开始练手。
+        对了，我们 CI 的测试覆盖率门槛要提到 80%
+    expected_l1:
+      memories:
+        - content: "实习生小王有潜力，对 Rust 感兴趣，让他从写测试开始"
+          dimensions: [social, skills]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "CI 测试覆盖率门槛提到 80%"
+          dimensions: [preferences, projects]
+          memory_type: instruction
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["团队管理", "工程标准"]
+      template_section:
+        work:
+          "0": "🏠 家庭与社交"
+        coding:
+          "1": "📋 编码规范"
+    notes: "社交关系 + 工程标准 两条独立记忆"
+
+  - case_id: eval-026
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-25T10:00:00Z user:
+        我一般上午效率最高，所以把重要的 coding 任务都排在 9-12 点。
+        下午开会比较多，基本写不了什么代码
+    expected_l1:
+      memories:
+        - content: "上午 9-12 点效率最高，安排重要 coding 任务"
+          dimensions: [habits, preferences]
+          memory_type: persona
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "下午开会多，基本写不了代码"
+          dimensions: [habits, status]
+          memory_type: persona
+          priority: 65
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["工作节奏"]
+      template_section:
+        work:
+          "0": "📅 日常生活"
+          "1": "📊 当前状态"
+    notes: "habits + preferences + status 三维度"
+
+  - case_id: eval-027
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-06-28T16:00:00Z user:
+        完成了 dbt 数据建模的 POC，Redshift 到 Snowflake 迁移看起来可行。
+        下周要跟 CTO 汇报迁移方案和成本估算
+    expected_l1:
+      memories:
+        - content: "完成 dbt 数据建模 POC，Redshift→Snowflake 迁移可行"
+          dimensions: [projects, tech_stack]
+          memory_type: episodic
+          priority: 80
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "下周跟 CTO 汇报迁移方案和成本"
+          dimensions: [tasks, social]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["数据平台迁移"]
+      template_section:
+        work:
+          "0": "📦 项目进展"
+          "1": "📋 当前任务"
+    notes: "技术项目 + 向上汇报（social 维度）"
+
+  # B13-B18: time_velocity 判断 + 多模式覆盖
+  - case_id: eval-028
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-01T22:00:00Z user:
+        最近有点累，但 ComfyUI 那个工作流终于跑通了，用 qwythos-9b 模型效果不错
+    expected_l1:
+      memories:
+        - content: "最近状态有点累"
+          dimensions: [status]
+          memory_type: episodic
+          priority: 60
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "ComfyUI 工作流跑通了"
+          dimensions: [focus, tech_stack]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "qwythos-9b 模型效果不错"
+          dimensions: [tech_stack]
+          memory_type: episodic
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["工作状态", "AI 工具探索"]
+      template_section:
+        daily:
+          "0": "📊 当前状态"
+        coding:
+          "1": "🔧 技术决策"
+          "2": "🔧 技术决策"
+    notes: "time_velocity 判断：status=dynamic、focus=dynamic、tech_stack=static"
+
+  - case_id: eval-029
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-03T11:00:00Z user:
+        刚买了一个 HHKB 键盘，手感太好了，码代码的幸福感提升不少
+    expected_l1:
+      memories:
+        - content: "买了 HHKB 键盘，手感好，码代码幸福感提升"
+          dimensions: [preferences, habits]
+          memory_type: episodic
+          priority: 60
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["开发装备"]
+      template_section:
+        coding:
+          "0": "📋 编码规范"
+    notes: "preferences + habits（偏好类记忆 time_velocity=static）"
+
+  - case_id: eval-030
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-05T14:00:00Z user:
+        这周要把 API 文档全部补齐，用 OpenAPI 3.0 规范。之前 Swagger 2.0 的老文档也要迁移过来
+    expected_l1:
+      memories:
+        - content: "本周补齐 API 文档，用 OpenAPI 3.0"
+          dimensions: [tasks, tech_stack]
+          memory_type: instruction
+          priority: 80
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "Swagger 2.0 老文档迁移到 OpenAPI 3.0"
+          dimensions: [tasks]
+          memory_type: instruction
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["文档工程"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "📦 项目进展"
+    notes: "tasks + tech_stack（任务类记忆 time_velocity=dynamic）"
+
+  - case_id: eval-031
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-08T09:00:00Z user:
+        我坚信好的代码是写给人看的，顺便能在机器上跑。所以命名和注释很重要
+    expected_l1:
+      memories:
+        - content: "好的代码是写给人看的，命名和注释很重要"
+          dimensions: [values, style]
+          memory_type: persona
+          priority: 85
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["编程哲学"]
+      template_section:
+        coding:
+          "0": "📋 编码规范"
+        full:
+          "0": "💡 偏好与风格"
+    notes: "values + style（跨模式：coding + full）"
+
+  - case_id: eval-032
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-10T10:00:00Z user:
+        这个季度的目标是：1) 把支付系统 SLA 从 99.9 提到 99.99、
+        2) 完成团队 OKR 对齐、3) 自己考过 AWS Solutions Architect
+    expected_l1:
+      memories:
+        - content: "支付系统 SLA 99.9→99.99"
+          dimensions: [goals, projects]
+          memory_type: instruction
+          priority: 85
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "完成团队 OKR 对齐"
+          dimensions: [goals]
+          memory_type: instruction
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "考过 AWS Solutions Architect"
+          dimensions: [goals, skills]
+          memory_type: instruction
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["季度规划"]
+      template_section:
+        work:
+          "0": "🎯 目标与 OKR"
+          "1": "🎯 目标与 OKR"
+          "2": "📚 技能学习"
+    notes: "复合目标拆分：三个独立记忆各有不同维度组合"
+
+  - case_id: eval-033
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-12T15:00:00Z user:
+        刚发现团队用的 CI 框架从 Jenkins 迁移到 GitHub Actions 后，构建时间从 20 分钟降到了 8 分钟
+    expected_l1:
+      memories:
+        - content: "CI 从 Jenkins 迁移到 GitHub Actions，构建时间 20→8 分钟"
+          dimensions: [projects, tech_stack]
+          memory_type: episodic
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["CI/CD 优化"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+    notes: "项目里程碑类记忆（time_velocity=static 因为是已完成的成果）"
+
+  # B19-B23: 跨模式 + 全维度覆盖
+  - case_id: eval-034
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-15T09:00:00Z user:
+        我习惯在开始一个新功能前先写设计文档，哪怕只有一页纸也行。
+        这个做法在团队里推广后 bug 率降了 30%
+    expected_l1:
+      memories:
+        - content: "新功能前先写设计文档（一页纸也行）"
+          dimensions: [style, habits]
+          memory_type: persona
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "先写设计文档的做法推广后 bug 率降了 30%"
+          dimensions: [projects, values]
+          memory_type: episodic
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["工程实践"]
+      template_section:
+        coding:
+          "0": "📋 编码规范"
+          "1": "📦 项目进展"
+    notes: "跨维度：个人习惯 + 工程实践效果"
+
+  - case_id: eval-035
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-18T13:00:00Z user:
+        最近在读《Designing Data-Intensive Applications》，写得真好。
+        特别是关于事务隔离级别那章，对我理解分布式系统很有帮助
+    expected_l1:
+      memories:
+        - content: "在读《Designing Data-Intensive Applications》，事务隔离级别章节对理解分布式系统有帮助"
+          dimensions: [skills, focus, tech_stack]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["技术学习"]
+      template_section:
+        coding:
+          "0": "📚 技能学习"
+        full:
+          "0": "📚 技能学习"
+    notes: "skills + focus + tech_stack（学习场景）"
+
+  - case_id: eval-036
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-20T10:00:00Z user:
+        周末准备带豆豆去动物园，她最近对长颈鹿特别着迷。
+        老婆说顺便去旁边新开的商场逛逛，她想去优衣库买衣服
+    expected_l1:
+      memories:
+        - content: "周末带豆豆去动物园，她喜欢长颈鹿"
+          dimensions: [family, habits]
+          memory_type: episodic
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "老婆想去旁边新商场优衣库买衣服"
+          dimensions: [family]
+          memory_type: episodic
+          priority: 60
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["家庭周末"]
+      template_section:
+        daily:
+          "0": "🏠 家庭与社交"
+          "1": "🏠 家庭与社交"
+    notes: "纯生活场景（daily 模式），family + habits"
+
+  - case_id: eval-037
+    source: real
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-22T11:00:00Z user:
+        我们组在推 Trunk-Based Development，短期分支最多活一天。
+        争议挺大的，有些人觉得 code review 来不及
+    expected_l1:
+      memories:
+        - content: "推行 Trunk-Based Development，短期分支最多一天"
+          dimensions: [projects, style]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "团队对 TBD 有争议，Code Review 时间不够"
+          dimensions: [status]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["开发流程变革"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "📊 当前状态"
+    notes: "工程实践变革 + 团队状态"
+
+  - case_id: eval-038
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-07-25T13:00:00Z user:
+        把日志系统从 ELK 换成 Loki + Grafana 了，存储成本降了 80%。
+        下一步计划把告警规则也迁移过来，用 Prometheus + AlertManager
+    expected_l1:
+      memories:
+        - content: "日志系统 ELK→Loki+Grafana，存储成本降 80%"
+          dimensions: [projects, tech_stack]
+          memory_type: episodic
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "下一步迁移告警规则到 Prometheus + AlertManager"
+          dimensions: [tasks, tech_stack]
+          memory_type: instruction
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["可观测性优化"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "📋 当前任务"
+    notes: "已完成 vs 计划中：time_velocity 不同（static vs dynamic）"
+
+  # ════════════════════════════════════════════════
+  # Section C: hard 用例（12 条）
+  # ════════════════════════════════════════════════
+
+  # C1-C4: 情境切分 + 维度边界困难
+  - case_id: eval-039
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-01T06:30:00Z user:
+        每周三早上有固定安排，我得六点起。对了那个 sgme_ 工具前缀要不要改成别的？
+    expected_l1:
+      memories:
+        - content: "每周三早上的固定安排，六点起"
+          dimensions: [family, habits]
+          memory_type: episodic
+          priority: 90
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "SGME 工具前缀 sgme_ 是否要改名"
+          dimensions: [projects]
+          memory_type: instruction
+          priority: 65
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["家庭照护", "SGME 开发讨论"]
+      template_section:
+        daily:
+          "0": "🏠 家庭与社交"
+        coding:
+          "1": "📦 项目进展"
+    notes: "情境切分 + 家庭/习惯双标签（护理行为可双标签 家庭+习惯）"
+
+  - case_id: eval-040
+    source: real
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-02T10:00:00Z user:
+        经理说要给我报个管理培训课，但我其实不确定自己想不想走管理路线。
+        相比之下我更喜欢钻研技术细节，比如最近在看的 eBPF 就很有意思
+    expected_l1:
+      memories:
+        - content: "经理要给我报管理培训课"
+          dimensions: [social, tasks]
+          memory_type: episodic
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "不确定是否想走管理路线，更喜欢钻研技术"
+          dimensions: [values, status]
+          memory_type: persona
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "最近在看 eBPF，觉得很有意思"
+          dimensions: [focus, skills, tech_stack]
+          memory_type: episodic
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["职业发展", "技术兴趣"]
+      template_section:
+        work:
+          "0": "💼 职业背景"
+          "1": "💼 职业背景"
+        coding:
+          "2": "📚 技能学习"
+    notes: "困难：价值观 vs 状态（自我认知类易混淆）+ 社交关系与任务交叉"
+
+  - case_id: eval-041
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-03T14:00:00Z user:
+        把那个 Redis 集群的 maxmemory-policy 从 allkeys-lru 改成 allkeys-lfu 了，
+        命中率提升了 15%。不过我担心 LFU 的计数器衰减对热点突变的场景不友好，
+        下周压测一下看看效果
+    expected_l1:
+      memories:
+        - content: "Redis maxmemory-policy allkeys-lru→allkeys-lfu，命中率+15%"
+          dimensions: [projects, tech_stack]
+          memory_type: episodic
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "担心 LFU 计数器衰减对热点突变场景不友好"
+          dimensions: [status]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "下周压测 LFU 策略效果"
+          dimensions: [tasks]
+          memory_type: instruction
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["Redis 优化"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "📊 当前状态"
+          "2": "📋 当前任务"
+    notes: "困难：技术优化成果(static) + 担忧(dynamic) + 计划(dynamic) 三种 time_velocity"
+
+  - case_id: eval-042
+    source: real
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-04T11:00:00Z user:
+        我最近每天早上要提醒家人按时吃药，工作上的事就先放一放，
+        那个微服务拆分的方案等家人稳定了再说
+    expected_l1:
+      memories:
+        - content: "家人健康需每日提醒吃药"
+          dimensions: [family, habits, health]
+          memory_type: episodic
+          priority: 90
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "微服务拆分方案等妈妈稳定后再推进"
+          dimensions: [projects, tasks]
+          memory_type: episodic
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["家庭健康", "工作延期"]
+      template_section:
+        daily:
+          "0": "🏠 家庭与社交"
+        work:
+          "1": "📋 当前任务"
+    notes: "困难：family+habits+health 三维度（护理行为）+ 工作延期 context"
+
+  # C5-C8: 维度归一化边界 + 多标/漏标困难
+  - case_id: eval-043
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-05T15:00:00Z user:
+        以后代码注释全部用中文，变量名用英文。这个跟之前说的文档中文一致
+    expected_l1:
+      memories:
+        - content: "代码注释使用中文，变量名使用英文"
+          dimensions: [preferences, style]
+          memory_type: instruction
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "代码注释中文与文档中文策略一致"
+          dimensions: [preferences]
+          memory_type: instruction
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["编码规范"]
+      template_section:
+        coding:
+          "0": "📋 编码规范"
+          "1": "📋 编码规范"
+    notes: "preference 更新 vs 新增：已有文档中文偏好，本条是关联还是独立"
+
+  - case_id: eval-044
+    source: real
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-06T09:00:00Z user:
+        我想把项目里所有的 any 类型都改成明确的类型，但有些地方确实很难推断。
+        这种情况我倾向于保留 any 但加个注释说明原因
+    expected_l1:
+      memories:
+        - content: "想清除所有 any 类型，但有些难推断"
+          dimensions: [style, preferences]
+          memory_type: instruction
+          priority: 70
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "无法推断时保留 any 但注释说明原因"
+          dimensions: [style, preferences]
+          memory_type: instruction
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["代码规范"]
+      template_section:
+        coding:
+          "0": "📋 编码规范"
+          "1": "📋 编码规范"
+    notes: "困难：两条相似记忆的维度边界（style vs preferences vs both）"
+
+  - case_id: eval-045
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-07T10:00:00Z user:
+        这个系统的核心设计理念是 "convention over configuration"，很多决策不需要配置文件。
+        但团队有人觉得显式配置更可读，争论了好几轮了
+    expected_l1:
+      memories:
+        - content: "系统核心设计理念：convention over configuration"
+          dimensions: [values, style]
+          memory_type: persona
+          priority: 85
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "团队对 convention vs 显式配置有争议"
+          dimensions: [status]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["设计哲学"]
+      template_section:
+        coding:
+          "0": "🔧 技术决策"
+          "1": "📊 当前状态"
+    notes: "困难：设计哲学(values) vs 编码风格(style) vs 团队争议(status)"
+
+  - case_id: eval-046
+    source: real
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-08T16:00:00Z user:
+        最近在考虑要不要把核心服务从 Python 迁移到 Go，性能会好很多但是团队 Go 的经验不足。
+        另外这个决定如果做错了代价很大，毕竟核心服务跑了好几年了
+    expected_l1:
+      memories:
+        - content: "考虑核心服务 Python→Go，性能好但团队 Go 经验不足"
+          dimensions: [projects, tech_stack, skills]
+          memory_type: episodic
+          priority: 85
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "迁移决策做错代价很大，核心服务跑了好几年"
+          dimensions: [status, values]
+          memory_type: episodic
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["技术决策"]
+      template_section:
+        coding:
+          "0": "🔧 技术决策"
+          "1": "🔧 技术决策"
+    notes: "困难：跨维度（projects+tech_stack+skills） + 风险评估(status+values)"
+
+  # C9-C12: 非中文 + 特殊场景
+  - case_id: eval-047
+    source: edge
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-09T10:00:00Z user:
+        I think we should adopt the C4 model for architecture diagrams. It's much better than UML
+        for communicating with non-technical stakeholders. Also, PlantUML is a pain to maintain.
+    expected_l1:
+      memories:
+        - content: "Adopt C4 model for architecture diagrams, better than UML for non-technical stakeholders"
+          dimensions: [preferences, tech_stack]
+          memory_type: persona
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "PlantUML is a pain to maintain"
+          dimensions: [preferences, style]
+          memory_type: persona
+          priority: 60
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["Architecture Practice"]
+      template_section:
+        coding:
+          "0": "🔧 技术决策"
+          "1": "📋 编码规范"
+    notes: "英文内容：英文技术讨论（测试非中文输入的提炼质量）"
+
+  - case_id: eval-048
+    source: edge
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-10T09:00:00Z user:
+        关于 API 版本管理我们纠结了很久：URL versioning (v1/v2) vs Header versioning (Accept: application/vnd.api+json;version=2)。
+        我倾向 URL 因为更直观，但 Header 更 RESTful。最后选了 URL，因为团队理解成本低
+    expected_l1:
+      memories:
+        - content: "API 版本管理：URL vs Header versioning，选了 URL（团队理解成本低）"
+          dimensions: [preferences, tech_stack, values]
+          memory_type: instruction
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "URL versioning 更直观，Header 更 RESTful"
+          dimensions: [preferences, style]
+          memory_type: persona
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["API 设计"]
+      template_section:
+        coding:
+          "0": "🔧 技术决策"
+          "1": "📋 编码规范"
+    notes: "困难：技术决策含多维原因（preferences+tech_stack+values+style）"
+
+  - case_id: eval-049
+    source: edge
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-11T08:00:00Z user:
+        今天要做三件事：1) 修那个 P0 的支付 bug、
+        2) 面试一个新候选人（听说是从字节跳过来的）、
+        3) 晚上跟老婆去她爸妈家吃饭（她爸生日）
+    expected_l1:
+      memories:
+        - content: "修 P0 支付 bug"
+          dimensions: [tasks, projects]
+          memory_type: episodic
+          priority: 95
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "面试字节跳过来的新候选人"
+          dimensions: [tasks, social]
+          memory_type: episodic
+          priority: 80
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "晚上去老婆爸妈家吃饭（岳父生日）"
+          dimensions: [family, habits]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["今日任务"]
+      template_section:
+        work:
+          "0": "📋 当前任务"
+          "1": "📋 当前任务"
+        daily:
+          "2": "🏠 家庭与社交"
+    notes: "困难：三条记忆跨 daily+work 两个模式，social+family 区分"
+
+  - case_id: eval-050
+    source: edge
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-08-12T23:00:00Z user:
+        深夜复盘：今天跟产品吵了一架关于需求优先级。我觉得他们完全不理解技术债务的严重性。
+        但冷静下来想，也许我应该用数据说话而不是情绪。下次把技术债务的量化影响做成 PPT 给他们看。
+        另外我觉得最近太焦虑了，可能是咖啡喝太多，明天开始减到一天一杯
+    expected_l1:
+      memories:
+        - content: "跟产品因需求优先级吵架，他们不理解技术债务严重性"
+          dimensions: [status, social]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "应该用数据说话而不是情绪，做技术债务量化 PPT"
+          dimensions: [values, tasks]
+          memory_type: instruction
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "最近太焦虑，咖啡喝太多，明天减到一天一杯"
+          dimensions: [status, health, habits]
+          memory_type: episodic
+          priority: 65
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["工作反思"]
+      template_section:
+        work:
+          "0": "📊 当前状态"
+          "1": "💡 偏好与风格"
+        daily:
+          "2": "📊 当前状态"
+    notes: "困难：深夜复盘含情绪(status)+社交冲突(social)+价值观(values)+健康(health)+习惯(habits)"

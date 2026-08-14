@@ -1,0 +1,157 @@
+# SGME 评测基线 v001 样本（5 条，开发调试用）
+# 格式约定：字段英文，注释中文
+# 依据：docs/design/SGME-评测基线-PRD-v0.1.md §3.4
+
+meta:
+  version: v001_sample
+  created_at: "2026-08-06T00:00:00Z"
+  total_cases: 5
+  description: "SGME L1/L2 提炼质量评测样本集（开发调试用 5 条）"
+
+cases:
+  # ── eval-001: easy, 基础单维度标注 + 多维度拆分 ──
+  - case_id: eval-001
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      [msg#1] 2026-01-01T10:00:00Z user:
+        我叫张明，在深圳做后端开发，用 Python 和 Go
+    expected_l1:
+      memories:
+        - content: "张明，深圳，后端开发"
+          dimensions: [identity, skills, tech_stack]
+          memory_type: persona
+          priority: 85
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["个人信息"]
+      template_section:
+        daily:
+          "0": "👤 基本信息"
+    notes: "基础单维度标注 + 多维度拆分"
+
+  # ── eval-002: medium, 维度边界：项目 vs 技术栈 vs 价值观 ──
+  - case_id: eval-002
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-01-01T11:00:00Z user:
+        SGME 这个项目架构从 Fork 改自研了，用 Python 重写，参考了 TencentDB-Agent-Memory 的设计
+    expected_l1:
+      memories:
+        - content: "SGME 项目从 Fork 改为 Python 自研"
+          dimensions: [projects, tech_stack]
+          memory_type: episodic
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "参考了 TencentDB-Agent-Memory 的设计思想"
+          dimensions: [tech_stack, values]
+          memory_type: episodic
+          priority: 75
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["SGME 架构演进"]
+      template_section:
+        coding:
+          "0": "📦 项目进展"
+          "1": "🔧 技术决策"
+    notes: "维度边界：项目 vs 技术栈 vs 价值观 三标签"
+
+  # ── eval-003: hard, 情境切分 + 家庭/习惯双标签 ──
+  - case_id: eval-003
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-01-02T06:30:00Z user:
+        每周三早上有固定安排，我得六点起。对了那个 sgme_ 工具前缀要不要改成别的？
+    expected_l1:
+      memories:
+        - content: "每周三早上的固定安排，六点起"
+          dimensions: [family, habits]
+          memory_type: episodic
+          priority: 90
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "SGME 工具前缀 sgme_ 是否要改名"
+          dimensions: [projects]
+          memory_type: instruction
+          priority: 65
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["家庭照护", "SGME 开发讨论"]
+      template_section:
+        daily:
+          "0": "🏠 家庭与社交"
+        coding:
+          "1": "📦 项目进展"
+    notes: "情境切分 + 家庭/习惯双标签（护理行为可双标签 家庭+习惯）"
+
+  # ── eval-004: medium, time_velocity 判断：status=dynamic ──
+  - case_id: eval-004
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      [msg#1] 2026-01-03T22:00:00Z user:
+        最近有点累，但 ComfyUI 那个工作流终于跑通了，用 qwythos-9b 模型效果不错
+    expected_l1:
+      memories:
+        - content: "最近状态有点累"
+          dimensions: [status]
+          memory_type: episodic
+          priority: 60
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "ComfyUI 工作流跑通了"
+          dimensions: [focus, tech_stack]
+          memory_type: episodic
+          priority: 75
+          time_velocity: dynamic
+          source_message_ids: ["msg_1"]
+        - content: "qwythos-9b 模型效果不错"
+          dimensions: [tech_stack]
+          memory_type: episodic
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["工作状态", "AI 工具探索"]
+      template_section:
+        daily:
+          "0": "📊 当前状态"
+        coding:
+          "1": "🔧 技术决策"
+          "2": "🔧 技术决策"
+    notes: "time_velocity 判断：status=dynamic、focus=dynamic、tech_stack=static"
+
+  # ── eval-005: hard, preference 更新 vs 新增：已有文档中文偏好 ──
+  - case_id: eval-005
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      [msg#1] 2026-01-04T14:00:00Z user:
+        以后代码注释全部用中文，变量名用英文。这个跟之前说的文档中文一致
+    expected_l1:
+      memories:
+        - content: "代码注释使用中文，变量名使用英文"
+          dimensions: [preferences, style]
+          memory_type: instruction
+          priority: 80
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+        - content: "代码注释中文与文档中文策略一致"
+          dimensions: [preferences]
+          memory_type: instruction
+          priority: 70
+          time_velocity: static
+          source_message_ids: ["msg_1"]
+    expected_l2:
+      scene_labels: ["编码规范"]
+      template_section:
+        coding:
+          "0": "📋 编码规范"
+          "1": "📋 编码规范"
+    notes: "preference 更新 vs 新增：已有文档中文偏好，本条是关联还是独立"

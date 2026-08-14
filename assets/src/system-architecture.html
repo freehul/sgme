@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(56, 89, 255, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% -20%, rgba(0, 212, 255, 0.15) 0%, transparent 50%),
+      linear-gradient(135deg, #0b0f2a 0%, #12173a 45%, #1b1440 100%);
+    position: relative;
+    color: #e8ecff;
+  }
+  body::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 6, 18, 0.55) 100%);
+  }
+  .grid {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(120, 160, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(120, 160, 255, 0.05) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  }
+  .title { position: absolute; top: 30px; left: 0; right: 0; text-align: center; }
+  .title .en {
+    font-size: 20px; letter-spacing: 8px; color: rgba(0, 212, 255, 0.85);
+    text-shadow: 0 0 18px rgba(0, 212, 255, 0.6);
+  }
+  .title .cn {
+    margin-top: 8px; font-size: 40px; font-weight: 700;
+    background: linear-gradient(90deg, #7ee8ff, #c9b8ff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 40px rgba(90, 160, 255, 0.35);
+  }
+  .title .sub { margin-top: 6px; font-size: 17px; color: rgba(220, 230, 255, 0.55); letter-spacing: 3px; }
+
+  .layer {
+    position: absolute; left: 60px; right: 60px;
+    background: rgba(18, 26, 60, 0.4);
+    border: 1.5px solid rgba(0, 212, 255, 0.22);
+    border-radius: 20px;
+    backdrop-filter: blur(10px);
+    padding: 14px 22px 18px;
+  }
+  .layer .lbl {
+    font-size: 14px; letter-spacing: 4px; color: rgba(126, 232, 255, 0.8);
+    margin-bottom: 10px; text-shadow: 0 0 10px rgba(126,232,255,0.4);
+  }
+  .layer .row { display: flex; gap: 14px; }
+
+  .mod {
+    flex: 1;
+    background: rgba(18, 26, 60, 0.6);
+    border: 1.5px solid rgba(0, 212, 255, 0.35);
+    border-radius: 14px;
+    padding: 10px 14px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    box-shadow: 0 0 20px rgba(0, 180, 255, 0.1);
+  }
+  .mod .t { font-size: 16px; font-weight: 600; }
+  .mod .s { margin-top: 3px; font-size: 11px; color: rgba(200, 220, 255, 0.6); letter-spacing: 1px; }
+  .mod .ico { font-size: 20px; margin-bottom: 2px; }
+
+  .arrow {
+    position: absolute; left: 0; right: 0; text-align: center; font-size: 20px;
+    color: rgba(126, 232, 255, 0.7); text-shadow: 0 0 12px rgba(126,232,255,0.6);
+  }
+
+  .L1 { top: 150px; height: 150px; }
+  .L2 { top: 350px; height: 230px; }
+  .L3 { top: 630px; height: 180px; }
+  .a1 { top: 303px; }
+  .a2 { top: 583px; }
+
+  /* 引擎层内部管线 */
+  .pipeline { flex: 2.2; display: flex; gap: 8px; align-items: center; }
+  .pipeline .step {
+    flex: 1; background: rgba(0, 70, 130, 0.35);
+    border: 1.5px solid rgba(0, 212, 255, 0.4);
+    border-radius: 12px; padding: 8px 6px;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .pipeline .step .n { font-size: 12px; color: rgba(126, 232, 255, 0.9); letter-spacing: 1px; }
+  .pipeline .step .t { font-size: 15px; font-weight: 600; margin-top: 2px; }
+  .pipeline .sep { color: rgba(126,232,255,0.7); font-size: 18px; }
+
+  .side { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+  .side .mod { flex: 1; flex-direction: row; gap: 8px; justify-content: flex-start; padding: 6px 12px; }
+  .side .mod .ico { margin: 0; }
+  .side .mod .txt { display: flex; flex-direction: column; }
+  .side .mod .t { font-size: 14px; }
+  .side .mod .s { font-size: 10px; }
+
+  .footer {
+    position: absolute; bottom: 26px; left: 0; right: 0; text-align: center;
+    font-size: 14px; letter-spacing: 5px; color: rgba(180, 200, 255, 0.45);
+  }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+
+  <div class="title">
+    <div class="en">SYSTEM ARCHITECTURE</div>
+    <div class="cn">系统架构</div>
+    <div class="sub">接入层 → 引擎层 → 数据层 · 单向数据流</div>
+  </div>
+
+  <!-- 接入层 -->
+  <div class="layer L1">
+    <div class="lbl">▍接入层 · 协议翻译</div>
+    <div class="row">
+      <div class="mod"><div class="ico">🌐</div><div class="t">HTTP API</div><div class="s">:9910 · 鉴权+响应</div></div>
+      <div class="mod"><div class="ico">🔌</div><div class="t">MCP 入口</div><div class="s">:9913 · 通用 Agent</div></div>
+      <div class="mod"><div class="ico">🤖</div><div class="t">Agent 适配器</div><div class="s">Hermes · Trae · Reasonix</div></div>
+      <div class="mod"><div class="ico">⚙️</div><div class="t">统一操作层</div><div class="s">operations · 双端共用</div></div>
+    </div>
+  </div>
+  <div class="arrow a1">▼</div>
+
+  <!-- 引擎层 -->
+  <div class="layer L2">
+    <div class="lbl">▍引擎层 · 记忆管线</div>
+    <div class="row">
+      <div class="pipeline">
+        <div class="step"><div class="n">L0</div><div class="t">捕获</div></div>
+        <div class="sep">→</div>
+        <div class="step"><div class="n">L1</div><div class="t">提取</div></div>
+        <div class="sep">→</div>
+        <div class="step"><div class="n">L1.5</div><div class="t">冲突裁决</div></div>
+        <div class="sep">→</div>
+        <div class="step"><div class="n">L2</div><div class="t">场景聚合</div></div>
+        <div class="sep">→</div>
+        <div class="step"><div class="n">⛳</div><div class="t">注入画像</div></div>
+      </div>
+      <div class="side">
+        <div class="mod"><div class="ico">🧠</div><div class="txt"><div class="t">LLM 降级链</div><div class="s">云端 → 本地 → 规则</div></div></div>
+        <div class="mod"><div class="ico">🕐</div><div class="txt"><div class="t">Dream 整理</div><div class="s">每日 TTL/归档/日报</div></div></div>
+        <div class="mod"><div class="ico">⚡</div><div class="txt"><div class="t">Batch 兜底</div><div class="s">10 分钟自动提炼</div></div></div>
+        <div class="mod"><div class="ico">📡</div><div class="txt"><div class="t">信号引擎</div><div class="s">更新/异常事件</div></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow a2">▼</div>
+
+  <!-- 数据层 -->
+  <div class="layer L3">
+    <div class="lbl">▍数据层 · 双库 + 文件（零 LLM 注入）</div>
+    <div class="row">
+      <div class="mod"><div class="ico">📄</div><div class="t">L0 原始文件</div><div class="s">raw/ · 永久保留</div></div>
+      <div class="mod"><div class="ico">🗄️</div><div class="t">记忆池</div><div class="s">memory.db · L1/L1.5</div></div>
+      <div class="mod"><div class="ico">🗂️</div><div class="t">场景库</div><div class="s">wiki.db · L2 场景</div></div>
+      <div class="mod"><div class="ico">📚</div><div class="t">知识库</div><div class="s">wiki.db · 页面/图谱</div></div>
+      <div class="mod"><div class="ico">💾</div><div class="t">自动备份</div><div class="s">每日快照 · 异地副本</div></div>
+    </div>
+  </div>
+
+  <div class="footer">L0 → L1 → L1.5 → L2 · ONE-WAY DATA FLOW</div>
+</body>
+</html>

@@ -1,0 +1,24 @@
+name: daily
+display_name: 日常模式
+memory_types: [identity, family, social, habits, status, focus]
+token_budget: 700
+sections:
+  - title: "👤 基本信息"
+    query:
+      dimensions: [identity, family]
+      priority_min: 70
+      limit: 5
+  - title: "📅 近期节奏"
+    query:
+      dimensions: [habits]
+      time_window: "updated_at > 30d"
+      priority_min: 60
+      sort: updated_at DESC
+      limit: 3
+  - title: "🔥 当前状态"
+    query:
+      dimensions: [status, focus]
+      match: any
+      ttl_filter: true
+      sort: updated_at DESC
+      limit: 5

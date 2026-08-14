@@ -1,0 +1,51 @@
+# prompts/manifest.yaml — 提示词版本清单（#33 提示词版本管理）
+# 约定：
+#   active: "@working"          → 当前生效 = prompts/<stage>.txt 工作副本（编辑即热更新）
+#           "versions/<stage>/vNNN.txt" → 钉版（A/B 或固定版本时使用）
+#   ab: A/B 分流；enabled=false 时忽略其余字段
+#   bucket_by: file_id | memory_id | random（分流键；默认 file_id，确定性分流）
+#   versions: 发布元数据（publish 自动维护，勿手改 sha256/created_at）
+# 注：publish/activate/ab 会整文件重写本清单（yaml.safe_dump），注释不保留，属预期。
+# 字段英文；注释中文。
+stages:
+  tier0_summary:
+    active: '@working'
+    ab:
+      enabled: false
+  l1_extraction:
+    active: '@working'
+    ab:
+      enabled: false
+  l1_conflict:
+    active: '@working'
+    ab:
+      enabled: false
+  l2_scene:
+    active: '@working'
+    ab:
+      enabled: false
+versions:
+  tier0_summary:
+  - version: v001
+    file: versions/tier0_summary/v001.txt
+    sha256: 5912307ab7d2c18982eb56bbed223a9da1c731991d90fdfb1b73a357573fedca
+    created_at: '2026-08-05T00:00:00Z'
+    note: 初始快照（与 v0.1 工作副本一致）
+  l1_extraction:
+  - version: v001
+    file: versions/l1_extraction/v001.txt
+    sha256: bf089086b2e2c350af4908f25d384719b7e3eb3a93bb9116e762dadd565ddf54
+    created_at: '2026-08-05T00:00:00Z'
+    note: 初始快照（与 v0.1 工作副本一致）
+  l1_conflict:
+  - version: v001
+    file: versions/l1_conflict/v001.txt
+    sha256: 6bea4f49a90f383519a9fda8f70c9909288241183b5adfe7b30d8af4d0129108
+    created_at: '2026-08-05T00:00:00Z'
+    note: 初始快照（与 v0.1 工作副本一致）
+  l2_scene:
+  - version: v001
+    file: versions/l2_scene/v001.txt
+    sha256: d351637248c379d811db5e9be054f6699a2a4415bf87253694dbb4b486ed0291
+    created_at: '2026-08-05T00:00:00Z'
+    note: 初始快照（与 v0.1 工作副本一致）

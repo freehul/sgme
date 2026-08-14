@@ -1,0 +1,19 @@
+# Mount the SGME bridge into a DSH profile.
+# SGME Gateway 地址/key 由 cordis.yml 的 config 注入（install.py 写入 .env 后由 dsh 加载）。
+# dev key 仅限本机回环测试；生产环境请用 install.py 注册 agent 后覆盖。
+- insert:
+    - id: sgme
+      name: "@sgme/sgme"
+      config:
+        baseUrl: http://127.0.0.1:9910
+        # key 通过环境变量注入（符合 SGME 密钥不落盘铁律 #10）：
+        # SGME_AGENT_KEY / SGME_ADMIN_KEY 由 install.py 注册 agent 后写入
+        # <cwd>/.env 或 $DSH_HOME/.env，dsh 启动时物化进 process.env。
+        agentKey: !!js process.env.SGME_AGENT_KEY ?? ''
+        adminKey: !!js process.env.SGME_ADMIN_KEY ?? ''
+        agentId: dsh
+        injectMode: daily
+        injectMaxTokens: 800
+        searchLimit: 5
+        syncOnTurnEnd: true
+        turnBatchSize: 1

@@ -1,0 +1,27 @@
+name: full
+display_name: 全量模式
+memory_types: [identity, family, social, values, skills, tech_stack, preferences, habits, environment, style, focus, projects, goals, tasks, status]
+token_budget: 1200
+sections:
+  - title: "👤 用户画像"
+    query:
+      dimensions: [identity, family, social, values]
+      priority_min: 70
+      limit: 10
+  - title: "🧩 能力与技术栈"
+    query:
+      dimensions: [skills, tech_stack]
+      priority_min: 60
+      limit: 8
+  - title: "⚙️ 偏好与风格"
+    query:
+      dimensions: [preferences, habits, environment, style]
+      priority_min: 60
+      limit: 8
+  - title: "🔥 当前状态"
+    query:
+      dimensions: [focus, projects, goals, tasks, status]
+      match: any
+      ttl_filter: true
+      sort: updated_at DESC
+      limit: 8
