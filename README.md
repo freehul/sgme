@@ -2,7 +2,7 @@
 
 # SGME — ShiGuang Memory Engine
 
-Give your AI a long-term memory — it remembers what you've talked about, across devices, across agents.
+Your AI, from now on, remembers you — it remembers everything you've shared, and reaches out to you.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -14,6 +14,7 @@ Does your AI assistant:
 - Forget what you told it yesterday, so you have to repeat everything again today?
 - Ask you to reintroduce yourself in every new session — who you are, what you're working on, what you like?
 - Lose all context the moment you switch devices or switch to a different AI?
+- Chatting with a beloved AI character, then a new session or a different app makes it forget you entirely?
 
 Because AI has no memory by default — every conversation is a first meeting.
 
@@ -43,17 +44,17 @@ Hermes, Trae, Reasonix... all your AIs share the same memory brain. What you dis
 
 <img src="assets/selling-point-02-shared-memory.png" alt="Shared memory across agents" width="800"/>
 
+### Proactive care — it doesn't just remember you, it reaches out
+
+SGME doesn't just wait for you to ask. Your memory updates, mood shifts, upcoming todos, late nights... it emits signals that prompt your AI to check in on you — not cold notifications, but the kind of "I remembered you had something today" attention. Signal consumption = proactive care: who consumes, who marks (atomic claim + receipt), so you're never double-pestered and never missed.
+
+<img src="assets/selling-point-10-care.png" alt="Proactive care" width="800"/>
+
 ### Unified search — one query, all memories
 
 A single search endpoint recalls from the memory pool and the knowledge base at once: keyword + semantic + label triple fusion, every result traceable to its source. SGME memories, scenes, and knowledge base in one stop; agent-owned memory files are on the roadmap.
 
 <img src="assets/selling-point-03-unified-search.png" alt="Unified search" width="800"/>
-
-### Built-in wiki — a knowledge base your AI can read
-
-Drop in files, URLs, and images; they get auto-categorized, tagged, and cross-linked, and your AI can search and cite them. Knowledge stops being scattered files and becomes a structured knowledge base your AI actually uses.
-
-<img src="assets/selling-point-04-wiki.png" alt="Built-in wiki" width="800"/>
 
 ### Skill hub — your skills, managed in one place
 
@@ -94,7 +95,7 @@ Runs on a single machine with Python + SQLite. No GPU, no external database serv
 - **Hybrid retrieval**: BM25 keyword + vector semantic + label filtering, fused — works even without a vector database
 - **Built-in evaluation framework**: extraction quality proven with data (L1 F1, retrieval ranking tuning), not trust
 - **Automated backup & restore**: daily snapshots, rotation, off-site copies — data never lost
-- **Signal engine** (advanced): memory updates and anomalies emit events for schedulers or local agents to subscribe
+- **Built-in wiki** (nice-to-have): drop in files, URLs, and images; auto-categorized, tagged, cross-linked, searchable and citable by your AI
 - **Multi-protocol access**: HTTP + MCP dual entry; built-in adapters for mainstream agents, one-click integration; other agents use the MCP protocol, or write their own adapter
 
 ## Quick Start
