@@ -61,7 +61,7 @@ dsh --profile web
 ```bash
 # 确认插件挂载
 dsh --profile web --dump-config
-# 期望：@sgme/sgme 插件出现在已加载列表
+# 期望：dsh-sgme 插件出现在已加载列表
 
 # 会话内验证检索
 /sgme 测试

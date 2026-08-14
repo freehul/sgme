@@ -1,6 +1,6 @@
 import type { UserConfig } from 'tsdown'
 
-const PLUGIN_ID = '@sgme/sgme'
+const PLUGIN_ID = 'dsh-sgme'
 
 const config: UserConfig = {
   name: PLUGIN_ID,

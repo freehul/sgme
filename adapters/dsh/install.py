@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  dsh --profile web")
     print()
     print("验证：")
-    print(f"  dsh --profile web --dump-config    # 确认 @sgme/sgme 插件已挂载")
+    print(f"  dsh --profile web --dump-config    # 确认 dsh-sgme 插件已挂载")
     print(f"  /sgme 测试                          # 会话内验证检索")
     print(f"  GET /v1/admin/sessions              # 查 SGME 确认 L0 入库")
     return 0
