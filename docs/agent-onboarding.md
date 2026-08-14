@@ -105,7 +105,9 @@ asyncio.run(main())
 1. **每轮对话结束 `append` 当前轮次**——纯落盘、零 LLM 成本，崩溃不丢。同一会话用同一 `session_key` 延续。
 2. **会话结束 `refine_trigger(async_mode=true)`**——带着完整上下文提炼，产出标签化记忆。
 3. **对话开始时 `inject` 按场景取画像 / `search` 检索相关记忆**。
-4. **对话开始时 `signal_pull` 拉未消费关怀信号**——信号消费 = 主动关怀，谁消费谁标记：`signal_claim` 原子认领 → 关怀用户 → `signal_ack` 回执（认领失败 = 已被其他 agent 消费，跳过）。
+4. **主动关怀靠消费信号**——信号消费 = 主动关怀，谁消费谁标记：拿到 `care_*` 信号后 `signal_claim` 原子认领 → 关怀用户 → `signal_ack` 回执（认领失败 = 已被其他 agent 消费，跳过）。获取信号两条路：
+   - 短连接（无常驻进程）：每次对话开始 `signal_pull` 拉未消费信号；
+   - 长连接（有常驻能力，**主动关怀首选**）：挂 SSE 事件流 `GET /v1/events/stream?subscriber_id=<你的agent_id>`（带 X-API-Key），`care_*`/`memory_updated`/`anomaly_warn` 一产生即实时推送 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件。
 5. **对话开始时（或用户指定角色时）`role_list` 看可用角色 → `role_assemble(role_id)` 拿人设并按其说话**——换皮不换芯，角色只是沟通外皮，记忆池不动。
 
 content 格式（首行必须）：
@@ -118,6 +120,24 @@ content 格式（首行必须）：
 ```
 
 格式错误 → 422 `ERR_INVALID_ARGS`，先自查首行。
+
+### 4.1 事件对接（主动关怀的触发源，常驻 agent 必读）
+
+主动关怀能不能「主动」，取决于你**不在场时**能否被事件唤醒。SGME 事件三类：
+
+| 事件 | 含义 | 触发时机 |
+|---|---|---|
+| `care_*` | 关怀信号（情绪低落/待办到期/过劳/每日问候） | Dream 每日扫描产生 |
+| `memory_updated` | 记忆更新 | 提炼落库时 |
+| `anomaly_warn` | 异常告警 | 提炼停摆/错误 |
+
+**三种接法任选**（按你的驻留能力）：
+
+1. **SSE 长连接**（常驻 agent 首选）：`GET /v1/events/stream?subscriber_id=<你的agent_id>`，带 `X-API-Key` 头。事件实时推送，帧格式 `id:`/`event:`/`data:`；断线重连时带 `Last-Event-ID` 头即可从断点续传，不丢事件。适合 Hermes 等有常驻进程/后台循环的 agent。
+2. **游标拉取**（定时任务）：`GET /v1/events/pull?subscriber_id=<agent_id>`，持久游标自动推进，适合 cron 定期轮询。
+3. **MCP `signal_pull`**（会话内短连接）：无驻留能力时，每次对话开始拉一次。
+
+> SSE/pull 走 HTTP :9910；`signal_pull` 走 MCP :9913。三条路最终都回到 `signal_claim` → 关怀 → `signal_ack` 同一闭环。
 
 ## 5. 提炼与限流策略（2026-08-11 Trae 全量提炼实测）
 

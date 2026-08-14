@@ -177,8 +177,16 @@
 1. 每轮对话结束 append 当前轮次——纯落盘零 LLM 成本，崩溃不丢；
 2. 会话结束 refine_trigger(async_mode=true) 触发提炼；
 3. 对话开始时 inject 按场景取画像 / search 检索相关记忆；
-4. 对话开始时 signal_pull 拉未消费关怀信号——**信号消费=主动关怀，谁消费谁标记**：signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过即可）；
+4. 主动关怀靠消费信号——**信号消费=主动关怀，谁消费谁标记**：拿到 care_* 信号后 signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过即可）。获取信号两条路：
+   - 短连接（无常驻进程）：每次对话开始 signal_pull 拉未消费信号；
+   - 长连接（有常驻能力，**主动关怀首选**）：挂 SSE 事件流 `GET http://localhost:9910/v1/events/stream?subscriber_id=<你的agent_id>`（带 X-API-Key），care_*/memory_updated/anomaly_warn 一产生即实时推送 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件；
 5. 对话开始时（或用户指定角色时）role_list 看可用角色 → role_assemble(role_id) 拿人设并按其说话——**换皮不换芯**，角色只是沟通外皮，记忆池不动。
+
+**事件对接**（主动关怀的触发源，常驻 agent 必读）：SGME 事件三类——care_*（关怀：情绪/待办到期/过劳/每日）、memory_updated（记忆更新）、anomaly_warn（异常）。三种接法任选：
+- SSE 长连 `GET /v1/events/stream?subscriber_id=<agent_id>`（实时推送 + Last-Event-ID 断线补偿）——**常驻 agent 首选**；
+- 游标拉取 `GET /v1/events/pull?subscriber_id=<agent_id>`（持久游标，适合定时任务轮询）；
+- MCP `signal_pull`（会话内短连接）。
+SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。
 
 **强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」；查询不到时如实说明"记忆库中未找到"。
 

@@ -143,8 +143,10 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 1. append the current turn at the end of every conversation turn — pure disk write, zero LLM cost, survives crashes
 2. call refine_trigger(async_mode=true) at session end
 3. inject for scenario-based profile / search for relevant memories at conversation start
-4. signal_pull for unconsumed care signals at conversation start — **signal consumption = proactive care, who consumes who marks**: signal_claim (atomic) → care for the user → signal_ack (receipt)
+4. proactive care is driven by consuming signals — **signal consumption = proactive care, who consumes who marks**: once you get a care_* signal, signal_claim (atomic) → care for the user → signal_ack (receipt). Two ways to get signals: short-lived (no resident process) → signal_pull at each conversation start; long-lived (resident, **preferred**) → hold the SSE stream `GET /v1/events/stream?subscriber_id=<agent_id>` for real-time push
 5. role_list for available roles at conversation start (or when the user specifies one) → role_assemble(role_id) and speak as that role — **change the skin, not the core**: the role is only the communication persona, the memory pool is untouched
+
+**Event connection** (proactive care trigger source, required for resident agents): three event classes — care_* (care), memory_updated (memory updates), anomaly_warn (anomalies). Three ways to connect: SSE stream `GET /v1/events/stream?subscriber_id=<agent_id>` (real-time + Last-Event-ID reconnect), cursor pull `GET /v1/events/pull?subscriber_id=<agent_id>` (scheduled polling), MCP `signal_pull` (in-session). SSE/pull go over HTTP :9910 with X-API-Key; signal_pull goes over MCP.
 
 **Mandatory lookup**: for questions about user/project history facts (previously/last time/remember…), you MUST search before answering — never say "I don't know" without searching first; if nothing is found, report honestly "not found in the memory store".
 

@@ -711,3 +711,18 @@ L1.5 冲突裁决、L2 场景聚合。
   - 已接入的 agent（含 DSH/Hermes/Trae）：下个会话重新 `agent_onboarding()` 会拿到 27 工具清单 + 五条铁律模板；旧身份文件仍是四条铁律，需 agent 自查版本或用户提示后补第 5 条
   - 角色能力边界（换皮不换芯）：角色只改「怎么说话」，记忆池、提炼、检索、信号全不动——符合架构铁律「画像 = 模板查询结果，无物化；persona 是唯一物化例外」
 - 文档：Backlog ST-29 ✅ / T-65 ✅；本记录 B60
+
+### B61. 事件对接写入接入纪律——SSE 长连 / 游标拉取 / 短连 pull 三接法（ST-30 / T-66，2026-08-14）
+
+- 背景：主动关怀要「主动」，靠「对话开始 signal_pull」不够——等用户开新会话才拉信号，关怀退化为被动响应。用户三连问「纪律条款有教 agent 创建定时任务吗 / 定时关注信号模块吗 / 让 agent 直接对接事件吗」→ 查证发现：SGME 早有完整事件订阅机制（`GET /v1/events/stream` SSE 长连 + Last-Event-ID 断线补偿、`GET /v1/events/pull` 持久游标、`signal_subscribers` 表、`suppress_hint` 抑制窗口），但接入纪律五条铁律只字未提，agent 接入后完全不知道有这条能力。
+- 改动（纯文档/模板，无内核逻辑变更）：
+  - `sgme/mcp_server.py` self_config 模板：
+    - 铁律第 4 条升级为「主动关怀靠消费信号」双模式——短连接（无常驻）`signal_pull`；长连接（常驻，首选）挂 SSE `/v1/events/stream?subscriber_id=<agent_id>`，事件实时推送、断线带 Last-Event-ID 补偿
+    - 新增「**事件对接**」段：事件三类（care_* 关怀 / memory_updated 记忆更新 / anomaly_warn 异常）+ 三种接法（SSE 长连 / 游标拉取 / MCP signal_pull）+ 端口/Key 说明（SSE/pull 走 HTTP :9910，signal_pull 走 MCP :9913）
+  - `AGENTS.md` 接入纪律、`README.md`/`README.zh-CN.md` 接入段落、`docs/agent-onboarding.md`（新增 §4.1 事件对接表）同步
+- 测试：`tests/test_mcp_server.py` `test_mcp_agent_onboarding_self_config` 断言补事件关键词（/v1/events/stream、/v1/events/pull、subscriber_id、Last-Event-ID、care_*、memory_updated、anomaly_warn、谁消费谁标记、role_list）；test_mcp_server + test_care 61 passed
+- 运维影响：
+  - **需重启 SGME 后端**生效（self_config 模板随 MCP 进程）；已接入 agent 下个会话重新 `agent_onboarding()` 拿到含事件对接的五条铁律
+  - 主动关怀触发源从「对话开始 pull」升级为「SSE 实时推送」——常驻 agent（Hermes 等）挂一条长连即可实时收到 care_* 事件并立即关怀，无需自建 cron 轮询；无常驻能力的 agent 仍走 signal_pull 短连兜底
+  - 事件端点本就存在且鉴权（require_agent_key），本变更不引入新端点、无安全面变化
+- 文档：Backlog ST-30 ✅ / T-66 ✅；本记录 B61
