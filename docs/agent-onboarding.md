@@ -98,14 +98,15 @@ asyncio.run(main())
 | `config_get` | 读取运行时配置（l1/l2/refine/search/backup） | `config_get(section='refine')` |
 | `config_update` | 更新配置段（热生效 + 落盘） | 跨机部署远程设配置 |
 
-## 4. 记忆写入与消费节奏（四条铁律）
+## 4. 记忆写入与消费节奏（五条铁律）
 
-记忆是你自己的责任。四条铁律：
+记忆是你自己的责任。五条铁律：
 
 1. **每轮对话结束 `append` 当前轮次**——纯落盘、零 LLM 成本，崩溃不丢。同一会话用同一 `session_key` 延续。
 2. **会话结束 `refine_trigger(async_mode=true)`**——带着完整上下文提炼，产出标签化记忆。
 3. **对话开始时 `inject` 按场景取画像 / `search` 检索相关记忆**。
 4. **对话开始时 `signal_pull` 拉未消费关怀信号**——信号消费 = 主动关怀，谁消费谁标记：`signal_claim` 原子认领 → 关怀用户 → `signal_ack` 回执（认领失败 = 已被其他 agent 消费，跳过）。
+5. **对话开始时（或用户指定角色时）`role_list` 看可用角色 → `role_assemble(role_id)` 拿人设并按其说话**——换皮不换芯，角色只是沟通外皮，记忆池不动。
 
 content 格式（首行必须）：
 

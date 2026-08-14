@@ -137,12 +137,13 @@ pytest tests/ -q
 
 **接口**：HTTP API http://localhost:9910 ｜ MCP http://localhost:9913/mcp，请求头 `X-API-Key`（key 由主人配置：config/.env 的 `SGME_ADMIN_KEY`/`SGME_AGENT_KEY`，或管理员签发的 `agt_*` key；默认 key 仅限首次本机体验，配置后即失效 403）
 
-**使用纪律**（四条铁律）
+**使用纪律**（五条铁律）
 
 1. 每轮对话结束 append 当前轮次——纯落盘零 LLM 成本，崩溃不丢
 2. 会话结束 refine_trigger(async_mode=true) 触发提炼
 3. 对话开始时 inject 按场景取画像 / search 检索相关记忆
 4. 对话开始时 signal_pull 拉未消费关怀信号——**信号消费=主动关怀，谁消费谁标记**：signal_claim 原子认领 → 关怀用户 → signal_ack 回执
+5. 对话开始时（或用户指定角色时）role_list 看可用角色 → role_assemble(role_id) 拿人设并按其说话——**换皮不换芯**，角色只是沟通外皮，记忆池不动
 
 **强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」；查询不到时如实说明"记忆库中未找到"。
 
