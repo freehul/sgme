@@ -63,13 +63,15 @@ def mcp(tmp_path, monkeypatch, raw_dir):
 
 
 def test_mcp_tools_available(mcp):
-    """工具集完整性：16 个工具（2026-08-13：+idea_add/demand_create/project_register）。"""
+    """工具集完整性（2026-08-14：+signal 三工具 + role 四工具）。"""
     tools = asyncio.run(mcp.list_tools())
     names = [t.name for t in tools]
     expected = {"append", "inject", "search", "memory_get", "memory_reject",
                 "refine_trigger", "refine_batch", "refine_status",
                 "stats", "health", "config_get", "config_update", "agent_onboarding",
-                "idea_add", "demand_create", "project_register"}
+                "idea_add", "demand_create", "project_register",
+                "signal_pull", "signal_claim", "signal_ack",
+                "role_list", "role_assemble", "role_active_get", "role_active_set"}
     assert expected <= set(names), f"缺工具: {expected - set(names)}"
 
 
@@ -319,6 +321,64 @@ def test_mcp_agent_onboarding_self_config(mcp):
         "X-API-Key",
     ):
         assert keyword in tmpl, f"template 缺关键内容: {keyword}"
+
+
+def test_mcp_role_tools(mcp, tmp_path, monkeypatch):
+    """ST-29：role_list/role_assemble/role_active_get/role_active_set 四工具闭环。
+
+    换皮不换芯：角色只是沟通外皮，记忆池不动。隔离 roles/ 目录避免碰真实角色卡。
+    """
+    from sgme.care import roles as roles_mod
+
+    rd = tmp_path / "roles"
+    rd.mkdir(exist_ok=True)
+    monkeypatch.setattr(sgme_config, "ROLES_DIR", rd)
+    monkeypatch.setattr(sgme_config, "PERSONA_DIR", tmp_path / "personas")
+    monkeypatch.setattr(sgme_config, "DATA_DIR", tmp_path / "data")
+
+    # 造一张角色卡（butler）
+    roles_mod.save_role(rd, "butler", {
+        "data": {
+            "name": "管家",
+            "description": "专业可靠的个人管家",
+            "system_prompt": "你是{{char}}，{{user}}的个人管家。{{original}}",
+            "extensions": {"sgme_care": {"greeting_templates": ["早上好"]}},
+        },
+    })
+
+    # role_list 列出角色 + 当前角色（未设置 → None）
+    text, _ = _call(mcp, "role_list", {})
+    data = json.loads(text)
+    assert "error" not in data, data
+    assert data["active_role"] is None
+    assert any(r["role_id"] == "butler" for r in data["roles"])
+
+    # role_assemble 装配：system_prompt + care_policy
+    text, _ = _call(mcp, "role_assemble", {"role_id": "butler"})
+    data = json.loads(text)
+    assert "error" not in data, data
+    assert "管家" in data["system_prompt"]
+    assert data["care_policy"]["greeting_templates"] == ["早上好"]
+
+    # role_assemble 角色不存在 → error
+    text, _ = _call(mcp, "role_assemble", {"role_id": "nobody"})
+    data = json.loads(text)
+    assert "error" in data
+
+    # role_active_set → role_active_get 闭环
+    text, _ = _call(mcp, "role_active_set", {"role_id": "butler"})
+    data = json.loads(text)
+    assert "error" not in data, data
+    assert data["role_id"] == "butler"
+
+    text, _ = _call(mcp, "role_active_get", {})
+    data = json.loads(text)
+    assert data["role_id"] == "butler"
+
+    # role_list 现在反映当前角色
+    text, _ = _call(mcp, "role_list", {})
+    data = json.loads(text)
+    assert data["active_role"] == "butler"
 
 
 def test_trae_notification_patch():

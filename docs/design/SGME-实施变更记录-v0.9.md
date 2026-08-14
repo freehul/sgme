@@ -692,3 +692,22 @@ L1.5 冲突裁决、L2 场景聚合。
   - `care_daily` 每日问候信号自 Dream 首次运行即产生（幂等，同日不重复）
   - 需重启 SGME 后端生效（dream.py 改动）；`/v1/admin/care/scan` 手动端点与 `care_consumer.py --consume` 兜底路径保留（不冲突）
 - 文档：Backlog ST-28 ✅ / T-64 ✅；本记录 B59
+
+### B60. 角色模板对 agent 可见可调——MCP 角色工具 + 五条铁律（ST-29 / T-65，2026-08-14）
+
+- 背景：角色模板（`roles/butler|companion|friend|mentor.json` + `operations.care.assemble` 装配）早已就绪，但只暴露在 HTTP API 层（`GET /v1/admin/roles/*/assemble`）。用户实测「怎么让接入的 agent 知道并调用角色模板」→ 查证发现三个入口全缺角色：MCP 工具集 23 个无角色工具、`agent_onboarding` 的 self_config 模板不提角色、README/AGENTS 接入纪律不提角色。后果：接入的 agent 连接后「不知道角色存在、想调也调不了」，四角色关怀全靠人工查文件 + 手动调 HTTP 端点，机制无法保证 agent 自律调用。
+- 改动：
+  - `sgme/mcp_server.py` 加四个角色工具（全部复用 `operations.care`，入口层只做协议翻译）：
+    - `role_list()`：列出可用角色（轻量字段 role_id/name/description/updated_at）+ 附加 `active_role`（当前角色，未设置 None）
+    - `role_assemble(role_id, inject_mode=None)`：装配角色沟通提示词（system_prompt + care_policy + persona + profile_blocks 精简返回，`{{char}}/{{user}}` 宏保留）；角色不存在 → `{"error"}`
+    - `role_active_get()` / `role_active_set(role_id)`：读/设当前角色（换皮不换芯，写 `data/care/active_role.json`，不入 git）
+  - `ONBOARDING_TOOLS` 23→27（清单与 `@mcp.tool` 一一对应，测试断言防漂移）
+  - **接入纪律四条→五条铁律**：第 5 条「对话开始时（或用户指定角色时）role_list 看可用角色 → role_assemble(role_id) 拿人设并按其说话——换皮不换芯」。同步 `mcp_server.py` self_config 模板、`AGENTS.md`、`README.md`（中英）、`docs/agent-onboarding.md`
+- 测试：
+  - `tests/test_mcp_server.py` `test_mcp_tools_available` 工具集断言补 4 角色工具 + 3 信号工具；新增 `test_mcp_role_tools`（role_list 列表+active_role / role_assemble 装配+不存在报错 / role_active_set→get 闭环 / role_list 反映当前角色，隔离 roles/persona/data 目录）
+  - test_mcp_server + test_care 61 passed；test_mcp_wiki + test_signal_consumption + test_care_consumer 22 passed
+- 运维影响：
+  - **需重启 SGME 后端**生效（MCP 工具集 + ONBOARDING_TOOLS + self_config 模板）
+  - 已接入的 agent（含 DSH/Hermes/Trae）：下个会话重新 `agent_onboarding()` 会拿到 27 工具清单 + 五条铁律模板；旧身份文件仍是四条铁律，需 agent 自查版本或用户提示后补第 5 条
+  - 角色能力边界（换皮不换芯）：角色只改「怎么说话」，记忆池、提炼、检索、信号全不动——符合架构铁律「画像 = 模板查询结果，无物化；persona 是唯一物化例外」
+- 文档：Backlog ST-29 ✅ / T-65 ✅；本记录 B60

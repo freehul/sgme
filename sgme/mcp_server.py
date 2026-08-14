@@ -181,6 +181,10 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "signal_pull", "description": "拉取未消费关怀信号（type=care_*；会话开始主动消费，ST-27）"},
     {"name": "signal_claim", "description": "原子认领信号（谁消费谁标记；已被他人消费返回 claimed=false，ST-27）"},
     {"name": "signal_ack", "description": "写消费回执（claimed/acked/failed；认领后报告处理结果，ST-27）"},
+    {"name": "role_list", "description": "列出可用角色模板（管家/伴侣/朋友/导师，含人设摘要；换皮不换芯，ST-29）"},
+    {"name": "role_assemble", "description": "装配角色沟通提示词（角色卡 system_prompt + care_policy + 画像，可选 inject_mode；ST-29）"},
+    {"name": "role_active_get", "description": "读取当前沟通角色（未设置返回 role_id=null；ST-29）"},
+    {"name": "role_active_set", "description": "设置当前沟通角色（换皮不换芯，只换角色不换记忆池；ST-29）"},
 )
 
 
@@ -767,6 +771,81 @@ def build_mcp_server():
             {"event_id": event_id, "agent_id": agent_id, "status": status}, ensure_ascii=False,
         )
 
+    # ---------- 角色模板（ST-29：agent 发现并调用角色，换皮不换芯） ----------
+
+    @mcp.tool()
+    def role_list() -> str:
+        """列出可用角色模板（ST-29）：管家/伴侣/朋友/导师，含人设摘要。
+
+        换皮不换芯——角色只是沟通外皮，记忆池（芯）不动。agent 会话开始或
+        用户指定角色时调用，按用户当前需求选择；选后调 role_assemble 拿人设。
+        """
+        import json
+
+        from sgme.operations.care import list_roles as list_roles_operation
+
+        data = _op_json(list_roles_operation)
+        if "error" in data:
+            return json.dumps(data, ensure_ascii=False)
+        # 附加当前角色 id（未设置 → None），供 agent 判断是否需要重选
+        from sgme.operations.care import get_active_role as get_active_operation
+        active = _op_json(get_active_operation)
+        data["active_role"] = active.get("role_id") if isinstance(active, dict) else None
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def role_assemble(role_id: str, inject_mode: str | None = None) -> str:
+        """装配角色沟通提示词（ST-29）：角色卡 system_prompt + care_policy + 画像。
+
+        - 角色不存在 → {"error": "..."}（先 role_list 确认 role_id）
+        - inject_mode 可选（daily/full 等模板名）：带上则附加用户画像块（零物化）
+        - 产物供 agent 直接注入 system prompt 使用（{{char}}/{{user}} 宏保留）
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.care import assemble as assemble_operation
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        cfg = _app_state["cfg"]
+        data = _op_json(
+            assemble_operation, role_id, mem_conn, cfg, inject_mode=inject_mode,
+        )
+        if "error" in data:
+            return json.dumps(data, ensure_ascii=False)
+        # 精简返回：system_prompt / care_policy / persona / 画像块（role_id/role_name 冗余保留）
+        return json.dumps({
+            "role_id": data.get("role_id"),
+            "role_name": data.get("role_name"),
+            "system_prompt": data.get("system_prompt"),
+            "care_policy": data.get("care_policy"),
+            "persona": data.get("persona"),
+            "profile_blocks": data.get("profile_blocks", []),
+        }, ensure_ascii=False)
+
+    @mcp.tool()
+    def role_active_get() -> str:
+        """读取当前沟通角色（ST-29）；未设置返回 role_id=null。"""
+        import json
+
+        from sgme.operations.care import get_active_role as get_active_operation
+
+        data = _op_json(get_active_operation)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def role_active_set(role_id: str) -> str:
+        """设置当前沟通角色（ST-29，换皮不换芯：只换角色，记忆池不动）。
+
+        角色必须存在（role_list 可见）；非法/不存在 id → {"error": "..."}。
+        """
+        import json
+
+        from sgme.operations.care import set_active_role as set_active_operation
+
+        data = _op_json(set_active_operation, role_id)
+        return json.dumps(data, ensure_ascii=False)
+
     # ---------- 连接即发现（ST-23①） ----------
 
     @mcp.tool()
@@ -811,11 +890,12 @@ def build_mcp_server():
                     "它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。\n"
                     "**服务发现**（找不到时按序）：1) 探测 http://localhost:9910/v1/health；"
                     "2) 失败读 ~/.sgme/install.json（地址/端口/Key 引用）；3) 仍失败 → 向主人报告「SGME 未发现」。\n"
-                    "**使用纪律**（四条铁律）：\n"
+                    "**使用纪律**（五条铁律）：\n"
                     "1. 每轮对话结束 append 当前轮次——纯落盘零 LLM 成本，崩溃不丢；\n"
                     "2. 会话结束 refine_trigger(async_mode=true) 触发提炼；\n"
                     "3. 对话开始时 inject 按场景取画像 / search 检索相关记忆；\n"
                     "4. 对话开始时 signal_pull 拉未消费关怀信号——信号消费=主动关怀，谁消费谁标记：signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过）。\n"
+                    "5. 对话开始时（或用户指定角色时）role_list 看可用角色，role_assemble(role_id) 拿人设并按其说话——换皮不换芯，角色只是沟通外皮，记忆池不动。\n"
                     "**强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」。\n"
                     "**写入格式**：append 的 content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422。\n"
                     "**批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 不立即重试（交服务端 batch_scan 兜底）；永远 async 模式。\n"
