@@ -308,7 +308,7 @@ def test_mcp_agent_onboarding_self_config(mcp):
     steps = "\n".join(sc["steps"])
     for keyword in ("自查", "跳过", "读回验证", "报告主人"):
         assert keyword in steps, f"steps 缺关键动作: {keyword}"
-    # 模板含版本标记与三条核心纪律
+    # 模板含版本标记与核心纪律（含事件对接双模式，ST-30）
     tmpl = sc["template"]
     for keyword in (
         "SGME-ONBOARDING-v1",
@@ -319,6 +319,16 @@ def test_mcp_agent_onboarding_self_config(mcp):
         "强制查询",
         "422",
         "X-API-Key",
+        # ST-30 事件对接：SSE 长连 + 游标拉取 + MCP pull 三接法 + 事件三类
+        "/v1/events/stream",
+        "/v1/events/pull",
+        "subscriber_id",
+        "Last-Event-ID",
+        "care_*",
+        "memory_updated",
+        "anomaly_warn",
+        "谁消费谁标记",
+        "role_list",
     ):
         assert keyword in tmpl, f"template 缺关键内容: {keyword}"
 
