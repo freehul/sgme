@@ -241,6 +241,7 @@ def _render_report_md(
     lines.append(f"- TTL 过期标记：{stats['expired_count']}")
     lines.append(f"- 冷归档：{stats['archived_count']}")
     lines.append(f"- 信号 TTL 归档：{stats['signal_purged_count']}")
+    lines.append(f"- 关怀信号：{stats['care_signal_count']}")
     lines.append("")
     lines.append("## 异常")
     if errors:
@@ -443,6 +444,19 @@ def _run_dream_locked(
         logger.exception("Dream 信号 TTL 归档失败（该阶段中止）: %s", e)
         stage_errors.append(f"信号 TTL 归档失败: {e}")
 
+    # 关怀信号扫描（ST-28：主动关怀闭环——信号自动产生，零 LLM 幂等去重）。
+    # 受 care.enabled 控制（与 routes_care 挂载同开关）；消费仍由 agent 会话开始
+    # signal_pull 拉取——SGME 只发信号不做决策（架构铁律）。
+    care_signal_count = 0
+    if (cfg.get("care") or {}).get("enabled", True):
+        try:
+            from sgme.care import signals as care_signals_mod
+            care_stats = care_signals_mod.scan_care_signals(mem_conn, cfg)
+            care_signal_count = sum(care_stats.values())
+        except Exception as e:
+            logger.exception("Dream 关怀信号扫描失败（该阶段中止）: %s", e)
+            stage_errors.append(f"关怀信号扫描失败: {e}")
+
     # ④ 日报：汇总 → MD 落盘 → dream_reports → signal_events
     tokens = _tokens_since(mem_conn, start_ts)
     pool = _pool_totals(mem_conn)
@@ -454,12 +468,13 @@ def _run_dream_locked(
         "expired_count": expired_count,
         "archived_count": archived_count,
         "signal_purged_count": signal_purged_count,
+        "care_signal_count": care_signal_count,
         "tokens": tokens,
     }
     summary = (
         f"提炼 {refined_count} 文件 / 新增记忆 {memory_count} / 新增场景 {scene_count}"
         f" / TTL 过期 {expired_count} / 冷归档 {archived_count}"
-        f" / 信号归档 {signal_purged_count} / 失败 {error_count}"
+        f" / 信号归档 {signal_purged_count} / 关怀信号 {care_signal_count} / 失败 {error_count}"
     )
     rel_path = _write_report_md(cfg, date_label, _render_report_md(
         date_label, stats, errors, stage_errors, pool,
@@ -474,9 +489,9 @@ def _run_dream_locked(
 
     logger.info(
         "Dream 运行完成 date=%s refined=%d failed=%d memories=%d scenes=%d "
-        "expired=%d archived=%d signal_purged=%d report=%s",
+        "expired=%d archived=%d signal_purged=%d care_signal=%d report=%s",
         date_label, refined_count, error_count, memory_count, scene_count,
-        expired_count, archived_count, signal_purged_count, rel_path,
+        expired_count, archived_count, signal_purged_count, care_signal_count, rel_path,
     )
     return {
         "date": date_label,
@@ -488,6 +503,7 @@ def _run_dream_locked(
         "expired_count": expired_count,
         "archived_count": archived_count,
         "signal_purged_count": signal_purged_count,
+        "care_signal_count": care_signal_count,
         "report_path": rel_path,
         "errors": errors,
         "stage_errors": stage_errors,

@@ -673,3 +673,22 @@ L1.5 冲突裁决、L2 场景聚合。
   - 升级路径：`docker compose build` → `docker compose up -d`（数据卷不变不丢数据）；NAS 侧 `docker save`/`load` 更新镜像
   - 密钥：`docker.env` 含真实 key，**不入 git**（`.gitignore` 的 `*.env` 已覆盖）；与项目根 dsh 适配器 `.env`（SGME_AGENT_KEY=agt_*）严格隔离，勿混用
 - 文档：Backlog ST-24 ✅；本记录 B58；docs/deployment-docker.md
+
+### B59. 主动关怀闭环——关怀信号自动产生（扫描挂入 Dream 定时器，ST-28 / T-64，2026-08-14）
+
+- 背景：ST-27 已闭环「消费端」（pull/claim/ack 三层 + TTL 归档 + TTL 清理），但用户问「以目前功能主动关怀能实现吗」→ 查证发现「信号产生端」有断点：`care/signals.py` 注释声称「与 Dream 协同定时扫描（首次手动触发拉起定时器）」，实际 `sgme/care/` 无 scheduler，`scan_care_signals` 仅有两个调用点——HTTP `POST /v1/admin/care/scan`（手动）与 `care_consumer.py`（需配 cron）。Dream 定时器（`dream.py::_scheduler_loop`）只接了 `purge_expired_signals`（清理旧信号），未接 `scan_care_signals`（产生新信号）。后果：无人手动 scan/配 cron 时 `care_*` 信号永不产生，agent `signal_pull` 永远拉空，主动关怀不发声。
+- 改动（`sgme/engine/dream.py`）：
+  - 生命周期 ③（每阶段独立容错区）在「信号 TTL 归档」之后新增「关怀信号扫描」阶段：`from sgme.care import signals; scan_care_signals(mem_conn, cfg)`，零 LLM、幂等去重（uuid5 确定性 id）
+  - 受 `care.enabled` 控制（与 routes_care 挂载同开关；`care.enabled=false` 时跳过，避免扩展禁用仍扫描）
+  - 独立容错：扫描抛异常 → `logger.exception` + `stage_errors.append("关怀信号扫描失败: ...")`，不阻塞 Dream 其余阶段
+  - 统计穿透：`care_signal_count` 进 stats dict + summary 文案 + `run_dream` 返回值 + `logger.info` + 日报 MD（`## 生命周期` 加 `- 关怀信号：N` 行）
+- 测试（`tests/test_dream.py` +3 用例）：
+  - `test_run_dream_scans_care_signals`：run_dream 后 `care_signal_count >= 1`，`signal_events` 有 `care_daily`（source='care'、consumed_at IS NULL 待消费），日报 MD 含「关怀信号」
+  - `test_run_dream_care_disabled_skips_scan`：care.enabled=false → care_signal_count=0、无 care_* 事件
+  - `test_run_dream_care_scan_failure_continues`：monkeypatch scan_care_signals 抛异常 → status=done、care_signal_count=0、stage_errors 标注、① 抽取不受影响
+  - 相关模块全绿：test_dream + test_care 57 passed；test_signal_consumption + test_care_consumer 11 passed
+- 运维影响：
+  - **主动关怀完整闭环**：Dream 到点（默认 03:00）自动扫描产生 `care_daily`/`care_todo_due`/`care_mood`/`care_overwork` 信号 → agent 会话开始 `signal_pull` 拉取 → `signal_claim` 原子认领 → 关怀 → `signal_ack` 回执，无需额外 cron
+  - `care_daily` 每日问候信号自 Dream 首次运行即产生（幂等，同日不重复）
+  - 需重启 SGME 后端生效（dream.py 改动）；`/v1/admin/care/scan` 手动端点与 `care_consumer.py --consume` 兜底路径保留（不冲突）
+- 文档：Backlog ST-28 ✅ / T-64 ✅；本记录 B59
