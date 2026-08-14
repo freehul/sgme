@@ -334,6 +334,59 @@ def test_run_dream_ttl_mark_disabled(conns, cfg):
     assert _memory_row(mem_conn, "m-old")["status"] == "active"
 
 
+def test_run_dream_scans_care_signals(conns, cfg):
+    """ST-28：Dream 生命周期扫描产生关怀信号（care_daily 每次必产生，同日去重）。"""
+    mem_conn, session_conn, _ = conns
+    _seed_raw_file(session_conn, file_id="f-care")
+
+    summary = dream_mod.run_dream(mem_conn, session_conn, cfg)
+
+    assert summary["status"] == "done"
+    assert summary["care_signal_count"] >= 1
+    ev = mem_conn.execute(
+        "SELECT * FROM signal_events WHERE type='care_daily' AND source='care'"
+    ).fetchone()
+    assert ev is not None
+    assert ev["consumed_at"] is None  # 未消费，待 agent signal_pull 拉取
+    # 日报含关怀信号行
+    md = Path(summary["report_path"]).read_text(encoding="utf-8")
+    assert "关怀信号" in md
+
+
+def test_run_dream_care_disabled_skips_scan(conns, cfg):
+    """care.enabled=false → Dream 跳过关怀信号扫描（与 routes_care 挂载同开关）。"""
+    mem_conn, session_conn, _ = conns
+    _seed_raw_file(session_conn, file_id="f-care-disabled")
+    cfg2 = {**cfg, "care": {**cfg.get("care", {}), "enabled": False}}
+
+    summary = dream_mod.run_dream(mem_conn, session_conn, cfg2)
+
+    assert summary["care_signal_count"] == 0
+    ev = mem_conn.execute(
+        "SELECT * FROM signal_events WHERE type LIKE 'care_%'"
+    ).fetchone()
+    assert ev is None
+
+
+def test_run_dream_care_scan_failure_continues(conns, cfg, monkeypatch):
+    """关怀信号扫描阶段失败 → 该阶段中止，其余继续并标注 stage_errors。"""
+    from sgme.care import signals as care_signals_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("care scan 模拟失败")
+
+    monkeypatch.setattr(care_signals_mod, "scan_care_signals", boom)
+    mem_conn, session_conn, _ = conns
+    _seed_raw_file(session_conn, file_id="f-good")
+
+    summary = dream_mod.run_dream(mem_conn, session_conn, cfg)
+
+    assert summary["status"] == "done"
+    assert summary["care_signal_count"] == 0
+    assert any("关怀信号扫描失败" in s for s in summary["stage_errors"])
+    assert _raw_status(session_conn, "f-good") == "refined"  # ① 抽取不受影响
+
+
 def test_run_dream_cold_archive(conns, cfg):
     """验收 4b：>90 天 refined 文件 → archived；未超期 / new 不动。"""
     mem_conn, session_conn, _ = conns
