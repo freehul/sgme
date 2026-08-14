@@ -87,6 +87,67 @@ var SgmeClient = class {
 		}
 		return data;
 	}
+	/** GET 请求（信号拉取用，与 POST 并列；同样防代理 + 故障隔离）。 */
+	async get(path, keyType) {
+		const key = keyType === "agent" ? this.agentKey : this.adminKey;
+		const url = `${this.baseUrl}${path}`;
+		try {
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+			const resp = await fetch(url, {
+				method: "GET",
+				headers: { "X-API-Key": key },
+				signal: ctrl.signal
+			});
+			clearTimeout(timer);
+			if (!resp.ok) {
+				const text = await resp.text().catch(() => "");
+				return [null, `HTTP ${resp.status}: ${text.slice(0, 200)}`];
+			}
+			return [await resp.json(), null];
+		} catch (e) {
+			return [null, `fetch error: ${e instanceof Error ? e.message : String(e)}`];
+		}
+	}
+	/** 拉取未消费关怀信号（GET /v1/admin/care/signals?unconsumed_only=true）。失败返回 null。 */
+	async pullCareSignals(signalType, limit = 20) {
+		const params = new URLSearchParams({
+			unconsumed_only: "true",
+			limit: String(limit)
+		});
+		if (signalType) params.set("signal_type", signalType);
+		const [data, err] = await this.get(`/v1/admin/care/signals?${params.toString()}`, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] pullCareSignals failed: ${err}`);
+			return null;
+		}
+		return data?.signals ?? null;
+	}
+	/**
+	* 原子认领信号（POST /v1/admin/care/signals/{id}/consume）。
+	* 返回 true=本次认领成功 / false=已被他人消费（409）或失败 / null=网关不可达。
+	*/
+	async claimSignal(eventId) {
+		const [data, err] = await this.post(`/v1/admin/care/signals/${eventId}/consume`, {}, "agent");
+		if (err) {
+			if (err.startsWith("HTTP 409")) return false;
+			console.warn(`[sgme-bridge] claimSignal failed: ${err}`);
+			return null;
+		}
+		return data?.status === "consumed";
+	}
+	/** 写消费回执（POST /v1/admin/care/signals/{id}/ack）。返回是否写入成功。 */
+	async ackSignal(eventId, status, result) {
+		const [data, err] = await this.post(`/v1/admin/care/signals/${eventId}/ack`, {
+			status,
+			result
+		}, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] ackSignal failed: ${err}`);
+			return false;
+		}
+		return data?.status === status;
+	}
 };
 /**
 * 消息列表 → SGME L0 消息块文本。
@@ -239,13 +300,125 @@ function formatSearchResults(results) {
 	return lines.join("\n\n");
 }
 /**
-* 向 dsh ctx 注册两个工具。
+* 向 dsh ctx 注册全部工具（检索 + 信号消费）。
 *
 * 调用方：index.ts apply() 内调用，传入 ctx 和 client。
 */
 function registerTools(ctx, client, defaultLimit) {
 	ctx.tools.register(createMemorySearchTool(client, defaultLimit));
 	ctx.tools.register(createWikiSearchTool(client, defaultLimit));
+	ctx.tools.register(createSignalPullTool(client));
+	ctx.tools.register(createSignalClaimTool(client));
+	ctx.tools.register(createSignalAckTool(client));
+}
+/** 创建 signal_pull 工具（拉取未消费关怀信号）。 */
+function createSignalPullTool(client) {
+	return defineTool({
+		name: "signal_pull",
+		description: [
+			"拉取 SGME 未消费的关怀信号（care_todo_due 待办到期 / care_mood 情绪低落 / care_overwork 过劳 / care_daily 每日问候）。",
+			"会话开始主动消费：拉取后决定是否主动关怀用户。",
+			"信号消费=主动关怀，谁消费谁标记：先 signal_claim 原子认领，处理完 signal_ack 写回执。"
+		].join(" "),
+		parameters: {
+			signal_type: {
+				type: "string",
+				description: "可选过滤：care_todo_due/care_mood/care_overwork/care_daily；不传拉全部"
+			},
+			limit: {
+				type: "number",
+				description: "返回条数上限（默认 20）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const signals = await client.pullCareSignals(a.signal_type ?? null, a.limit ?? 20);
+			if (signals === null) return "[signal_pull 失败：SGME Gateway 不可达，稍后重试]";
+			if (signals.length === 0) return "[signal_pull 无未消费关怀信号]";
+			return signals.map((s) => {
+				let payload = s.payload;
+				try {
+					payload = JSON.parse(s.payload);
+				} catch {}
+				return `## ${s.type}（${s.ts}）\nevent_id=${s.event_id}\n${JSON.stringify(payload)}`;
+			}).join("\n\n");
+		}
+	});
+}
+/** 创建 signal_claim 工具（原子认领信号）。 */
+function createSignalClaimTool(client) {
+	return defineTool({
+		name: "signal_claim",
+		description: [
+			"原子认领一条关怀信号（谁消费谁标记，防多 agent 重复关怀）。",
+			"认领成功后应主动关怀用户，然后调 signal_ack 写回执。",
+			"返回 claimed=false 说明已被其他 agent 消费，跳过即可。"
+		].join(" "),
+		parameters: { event_id: {
+			type: "string",
+			required: true,
+			description: "信号 event_id（signal_pull 返回）"
+		} },
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const claimed = await client.claimSignal(a.event_id);
+			if (claimed === null) return "[signal_claim 失败：SGME Gateway 不可达，稍后重试]";
+			return claimed ? `[signal_claim 认领成功：event_id=${a.event_id}，请主动关怀用户后调 signal_ack 回执]` : `[signal_claim 已被消费：event_id=${a.event_id}，跳过]`;
+		}
+	});
+}
+/** 创建 signal_ack 工具（写消费回执）。 */
+function createSignalAckTool(client) {
+	return defineTool({
+		name: "signal_ack",
+		description: ["写信号消费回执（claimed/acked/failed）。", "认领（signal_claim）并处理完信号后调用，报告处理结果（如「已转告用户」「检查正常」）。"].join(" "),
+		parameters: {
+			event_id: {
+				type: "string",
+				required: true,
+				description: "信号 event_id"
+			},
+			status: {
+				type: "string",
+				required: true,
+				enum: [
+					"claimed",
+					"acked",
+					"failed"
+				],
+				description: "回执状态"
+			},
+			result: {
+				type: "string",
+				description: "处理结果摘要"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			return await client.ackSignal(a.event_id, a.status, a.result) ? `[signal_ack 已回执：event_id=${a.event_id} status=${a.status}]` : "[signal_ack 失败]";
+		}
+	});
 }
 //#endregion
 //#region src/context.ts
@@ -591,7 +764,7 @@ function normalizeRole(role) {
 //#endregion
 //#region src/index.ts
 /**
-* @sgme/sgme — SGME 记忆引擎 × DeepSeek Harness 桥接插件
+* dsh-sgme — SGME 记忆引擎 × DeepSeek Harness 桥接插件
 *
 * 把 SGME 的多 Agent 共享长期记忆能力接入 dsh：
 * - 画像 + 相关记忆首步注入（agent/pre-step 拦截）
@@ -603,7 +776,7 @@ function normalizeRole(role) {
 *
 * 契约来源：sgme/server/routes_memory.py / routes_admin.py（2026-08-14 调研确认）
 */
-const name = "@sgme/sgme";
+const name = "dsh-sgme";
 const inject = ["tools", "commands"];
 const Config = Schema.object({
 	baseUrl: Schema.string().default("http://127.0.0.1:9910").description("SGME Gateway 地址"),

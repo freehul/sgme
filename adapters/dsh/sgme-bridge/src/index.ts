@@ -1,5 +1,5 @@
 /**
- * @sgme/sgme — SGME 记忆引擎 × DeepSeek Harness 桥接插件
+ * dsh-sgme — SGME 记忆引擎 × DeepSeek Harness 桥接插件
  *
  * 把 SGME 的多 Agent 共享长期记忆能力接入 dsh：
  * - 画像 + 相关记忆首步注入（agent/pre-step 拦截）
@@ -21,7 +21,7 @@ import { registerSgmeCommand } from './commands.js'
 import type { CommandResult, CommandInvocation } from './commands.js'
 import { registerSessionSync } from './session-sync.js'
 
-export const name = '@sgme/sgme'
+export const name = 'dsh-sgme'
 
 // 依赖声明：dsh 的工具/命令/事件能力
 export const inject = ['tools', 'commands']

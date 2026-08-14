@@ -6,7 +6,7 @@ import { name, inject, Config, apply } from '../src/index.js'
 
 describe('plugin skeleton', () => {
   it('exports correct name', () => {
-    expect(name).toBe('@sgme/sgme')
+    expect(name).toBe('dsh-sgme')
   })
 
   it('declares dependencies', () => {

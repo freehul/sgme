@@ -3,7 +3,7 @@
 # dev key 仅限本机回环测试；生产环境请用 install.py 注册 agent 后覆盖。
 - insert:
     - id: sgme
-      name: "@sgme/sgme"
+      name: "dsh-sgme"
       config:
         baseUrl: http://127.0.0.1:9910
         # key 通过环境变量注入（符合 SGME 密钥不落盘铁律 #10）：
