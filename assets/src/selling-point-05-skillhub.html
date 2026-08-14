@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(56, 89, 255, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% -20%, rgba(0, 212, 255, 0.15) 0%, transparent 50%),
+      linear-gradient(135deg, #0b0f2a 0%, #12173a 45%, #1b1440 100%);
+    position: relative;
+    color: #e8ecff;
+  }
+  body::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 6, 18, 0.55) 100%);
+  }
+  .grid {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(120, 160, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(120, 160, 255, 0.05) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  }
+  .title { position: absolute; top: 48px; left: 0; right: 0; text-align: center; }
+  .title .en {
+    font-size: 22px; letter-spacing: 8px; color: rgba(0, 212, 255, 0.85);
+    text-shadow: 0 0 18px rgba(0, 212, 255, 0.6);
+  }
+  .title .cn {
+    margin-top: 10px; font-size: 44px; font-weight: 700;
+    background: linear-gradient(90deg, #7ee8ff, #c9b8ff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 40px rgba(90, 160, 255, 0.35);
+  }
+  .title .sub { margin-top: 8px; font-size: 19px; color: rgba(220, 230, 255, 0.55); letter-spacing: 3px; }
+
+  .card {
+    background: rgba(18, 26, 60, 0.55);
+    border: 1.5px solid rgba(0, 212, 255, 0.35);
+    border-radius: 18px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 30px rgba(0, 180, 255, 0.12), inset 0 0 22px rgba(60, 120, 255, 0.08);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .card .ico { font-size: 52px; filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.5)); }
+  .card .nm { margin-top: 10px; font-size: 21px; font-weight: 600; }
+  .card .role { margin-top: 4px; font-size: 13px; color: rgba(200, 220, 255, 0.55); }
+
+  .footer {
+    position: absolute; bottom: 40px; left: 0; right: 0; text-align: center;
+    font-size: 15px; letter-spacing: 5px; color: rgba(180, 200, 255, 0.45);
+  }
+
+  /* skill hub：中央仓库 + 左本地右 NAS */
+  .hub {
+    position: absolute; top: 250px; left: 50%; transform: translateX(-50%);
+    width: 380px; height: 360px;
+    background: rgba(18, 26, 60, 0.6);
+    border: 2px solid rgba(0, 212, 255, 0.5);
+    border-radius: 26px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 50px rgba(0, 180, 255, 0.25);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 2;
+  }
+  .hub .ico { font-size: 72px; filter: drop-shadow(0 0 18px rgba(0, 212, 255, 0.8)); }
+  .hub .nm { margin-top: 12px; font-size: 26px; font-weight: 700; letter-spacing: 2px; }
+  .hub .tag { margin-top: 6px; font-size: 14px; color: rgba(230, 245, 255, 0.7); letter-spacing: 4px; }
+
+  .side { position: absolute; top: 280px; width: 400px; height: 300px; }
+  .side .card { position: absolute; width: 180px; height: 128px; }
+  .side.l { left: 90px; }
+  .side.r { right: 90px; }
+  .side .c1 { left: 0; top: 0; }
+  .side .c2 { right: 0; top: 0; }
+  .side .c3 { left: 110px; top: 150px; }
+  .side .lbl { position: absolute; top: -46px; left: 0; right: 0; text-align: center; font-size: 17px; color: rgba(180, 205, 255, 0.65); letter-spacing: 3px; }
+
+  svg.sync { position: absolute; inset: 0; width: 100%; height: 100%; }
+  svg.sync path { stroke: rgba(126, 232, 255, 0.6); stroke-width: 2; fill: none; stroke-dasharray: 10 8; animation: flow 2s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -36; } }
+
+  .note {
+    position: absolute; top: 690px; left: 0; right: 0; text-align: center;
+    font-size: 18px; color: rgba(220, 235, 255, 0.75); letter-spacing: 2px;
+  }
+  .note .hl { color: #7ee8ff; }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+
+  <div class="title">
+    <div class="en">SKILL HUB</div>
+    <div class="cn">本地技能仓库</div>
+    <div class="sub">你的技能 · 统一管理</div>
+  </div>
+
+  <svg class="sync">
+    <!-- 左设备 → 仓库 -->
+    <path d="M 330,340 Q 560,180 800,380" />
+    <path d="M 330,480 Q 560,640 800,520" />
+    <!-- 仓库 → 右 NAS -->
+    <path d="M 800,380 Q 1040,180 1270,340" />
+    <path d="M 800,520 Q 1040,640 1270,480" />
+  </svg>
+
+  <div class="side l">
+    <div class="lbl">▍本机 · 零拷贝直读</div>
+    <div class="card c1"><div class="ico">💻</div><div class="nm">台式机</div><div class="role">map 模式</div></div>
+    <div class="card c2"><div class="ico">🖥️</div><div class="nm">笔记本</div><div class="role">map 模式</div></div>
+    <div class="card c3"><div class="ico">🧰</div><div class="nm">技能包</div><div class="role">提示词 · 工作流 · 模板</div></div>
+  </div>
+
+  <div class="hub">
+    <div class="ico">🗃️</div>
+    <div class="nm">SKILL HUB</div>
+    <div class="tag">统一仓库 · GIT 同步</div>
+  </div>
+
+  <div class="side r">
+    <div class="lbl">▍NAS · 自动同步</div>
+    <div class="card c1"><div class="ico">📦</div><div class="nm">NAS 存储</div><div class="role">copy 模式</div></div>
+    <div class="card c2"><div class="ico">☁️</div><div class="nm">远程仓库</div><div class="role">git 桥接</div></div>
+    <div class="card c3"><div class="ico">🔄</div><div class="nm">自动同步</div><div class="role">变更即推送</div></div>
+  </div>
+
+  <div class="note">换设备 · <span class="hl">技能不丢</span></div>
+
+  <div class="footer">YOUR SKILLS · ONE PLACE · 技能一处存放 · 处处可用</div>
+</body>
+</html>

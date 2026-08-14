@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(56, 89, 255, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% -20%, rgba(0, 212, 255, 0.15) 0%, transparent 50%),
+      linear-gradient(135deg, #0b0f2a 0%, #12173a 45%, #1b1440 100%);
+    position: relative;
+    color: #e8ecff;
+  }
+  body::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 6, 18, 0.55) 100%);
+  }
+  .grid {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(120, 160, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(120, 160, 255, 0.05) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  }
+  .title { position: absolute; top: 48px; left: 0; right: 0; text-align: center; }
+  .title .en {
+    font-size: 22px; letter-spacing: 8px; color: rgba(0, 212, 255, 0.85);
+    text-shadow: 0 0 18px rgba(0, 212, 255, 0.6);
+  }
+  .title .cn {
+    margin-top: 10px; font-size: 44px; font-weight: 700;
+    background: linear-gradient(90deg, #7ee8ff, #c9b8ff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 40px rgba(90, 160, 255, 0.35);
+  }
+  .title .sub { margin-top: 8px; font-size: 19px; color: rgba(220, 230, 255, 0.55); letter-spacing: 3px; }
+
+  .footer {
+    position: absolute; bottom: 40px; left: 0; right: 0; text-align: center;
+    font-size: 15px; letter-spacing: 5px; color: rgba(180, 200, 255, 0.45);
+  }
+
+  /* 中央大汉字 */
+  .bigchar {
+    position: absolute; left: 50%; top: 52%; transform: translate(-50%, -50%);
+    font-size: 320px; font-weight: 900;
+    background: linear-gradient(160deg, #aef0ff 20%, #7ee8ff 45%, #5ab8ff 70%, #c9b8ff 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 80px rgba(90, 190, 255, 0.5);
+    filter: drop-shadow(0 0 40px rgba(0, 180, 255, 0.4));
+    animation: glow 3s ease-in-out infinite;
+  }
+  @keyframes glow {
+    0%, 100% { filter: drop-shadow(0 0 30px rgba(0, 180, 255, 0.35)); }
+    50% { filter: drop-shadow(0 0 60px rgba(0, 200, 255, 0.6)); }
+  }
+
+  /* 偏旁元素环绕 */
+  .radical {
+    position: absolute; font-size: 64px; font-weight: 700; color: rgba(126, 232, 255, 0.75);
+    text-shadow: 0 0 22px rgba(126, 232, 255, 0.6);
+    animation: float 3.5s ease-in-out infinite;
+  }
+  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+  .radical.r1 { left: 210px; top: 250px; animation-delay: 0s; }
+  .radical.r2 { right: 210px; top: 300px; animation-delay: 0.6s; }
+  .radical.r3 { left: 300px; bottom: 170px; animation-delay: 1.2s; }
+  .radical.r4 { right: 290px; bottom: 200px; animation-delay: 1.8s; }
+
+  /* 对话气泡 */
+  .bubble {
+    position: absolute; font-size: 20px; letter-spacing: 2px;
+    color: rgba(220, 240, 255, 0.9);
+    background: rgba(18, 26, 60, 0.55);
+    border: 1.5px solid rgba(0, 212, 255, 0.35);
+    border-radius: 20px;
+    padding: 14px 24px;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 0 24px rgba(0, 180, 255, 0.15);
+  }
+  .bubble.b1 { left: 120px; top: 470px; }
+  .bubble.b2 { right: 120px; top: 500px; }
+  .bubble.b3 { left: 180px; bottom: 110px; }
+  .bubble.b4 { right: 160px; bottom: 120px; }
+
+  .note {
+    position: absolute; top: 680px; left: 0; right: 0; text-align: center;
+    font-size: 19px; color: rgba(220, 235, 255, 0.8); letter-spacing: 2px;
+  }
+  .note .hl { color: #7ee8ff; }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+
+  <div class="title">
+    <div class="en">CHINESE-FIRST</div>
+    <div class="cn">中文原生</div>
+    <div class="sub">为中文而生的记忆引擎</div>
+  </div>
+
+  <div class="radical r1">讠</div>
+  <div class="radical r2">纟</div>
+  <div class="radical r3">氵</div>
+  <div class="radical r4">心</div>
+
+  <div class="bigchar">记</div>
+
+  <div class="bubble b1">中文分词调优</div>
+  <div class="bubble b2">别名自动归一</div>
+  <div class="bubble b3">中文对话提炼</div>
+  <div class="bubble b4">中文检索召回</div>
+
+  <div class="note">英文记忆引擎很多 · <span class="hl">懂中文的很少</span></div>
+
+  <div class="footer">BUILT FOR CHINESE · 为中国 AI 打造</div>
+</body>
+</html>

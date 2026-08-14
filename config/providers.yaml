@@ -1,0 +1,54 @@
+providers:
+  deepseek:
+    name: deepseek
+    display_name: DeepSeek 云端
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    provider_type: openai_compat
+    default_model: deepseek-v4-flash
+    context_window: 1048576
+    timeout_s: 120
+    max_retries: 3
+    health_endpoint: /models
+    health_interval_s: 60
+    vector_capable: false
+  volc-plan:
+    name: volc-plan
+    display_name: 火山方舟（Agent Plan 套餐额度）
+    base_url: https://ark.cn-beijing.volces.com/api/plan/v3
+    api_key_env: VOLC_API_KEY
+    provider_type: openai_compat
+    default_model: doubao-embedding-vision
+    models:
+    - doubao-embedding-vision
+    - doubao-embedding-large
+    timeout_s: 60
+    max_retries: 3
+    vector_capable: true
+  siliconflow:
+    name: siliconflow
+    display_name: 硅基流动（向量，免费模型）
+    base_url: https://api.siliconflow.cn/v1
+    api_key_env: SILICONFLOW_API_KEY
+    provider_type: openai_compat
+    default_model: BAAI/bge-m3
+    models:
+    - BAAI/bge-m3
+    - BAAI/bge-large-zh-v1.5
+    - Qwen/Qwen3-Embedding-0.6B
+    timeout_s: 60
+    max_retries: 3
+    vector_capable: true
+  nvidia:
+    name: nvidia
+    display_name: NVIDIA（向量，免费端点）
+    base_url: https://integrate.api.nvidia.com/v1
+    api_key_env: NVIDIA_API_KEY
+    provider_type: openai_compat
+    default_model: nv-embed-v1
+    models:
+    - nv-embed-v1
+    - nv-embedqa-e5-v5
+    timeout_s: 60
+    max_retries: 3
+    vector_capable: true

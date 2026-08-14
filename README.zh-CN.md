@@ -1,0 +1,233 @@
+英文版：[English](README.md)
+
+# SGME — 拾光记忆引擎
+
+给 AI 装上长期记忆——聊过的事，它都记得，换设备、换 AI 都记得。
+
+[![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+## 你的 AI 为什么总是忘记你
+
+你的 AI 助手是不是也这样：
+
+- 昨天刚说过的事，今天又要重新交代一遍
+- 每次新会话都要自我介绍：「我是谁、我在做什么项目、我喜欢什么」
+- 换台电脑、换个人工智能，过去的对话全归零
+
+因为 AI 默认没有记忆——每次对话都是「第一次见面」。
+
+**SGME 解决这个问题**：它像一个记忆中枢，接住你和 AI 的每一段对话，提炼成结构化的记忆，在下次对话时自动送到 AI 面前。你不需要重复，它都记得。
+
+## 它是怎么工作的
+
+三步，全部自动：
+
+1. **捕获**：你和 AI 的对话自动保存为原始记录（L0 原始层，磁盘上的 Markdown 文件，永久保留）
+2. **提炼**：原始对话被提炼成一条条标签化记忆（事实、偏好、项目状态、决策……），自动去重、合并、发现矛盾
+3. **注入**：每次对话开始时，AI 自动收到与你相关的记忆——按当前场景挑选，不是全量加载。日常闲聊只带身份与近况，编程时只带项目相关的记忆（技术栈、踩过的坑、开发习惯），场景需要什么就注入什么
+
+<img src="assets/system-architecture.png" alt="SGME 系统架构" width="800"/>
+
+## 核心卖点
+
+### 记忆可溯源——每条记忆都有来处
+
+AI 说出的每一句话，背后都有据可查：从画像一路追回当时的原始对话。记忆不是黑盒——「它为什么知道这件事」「它什么时候知道的」，点开就能看到源头。
+
+<img src="assets/selling-point-01-trace.png" alt="记忆可溯源" width="800"/>
+
+### 多智能体共享记忆——一个大脑，多个身体
+
+Hermes、Trae、Reasonix……你的所有 AI 共享同一个记忆大脑。在这边聊的事，那边自动知道；台式机、笔记本、NAS 部署的 AI，记忆互通。AI 之间不再各说各话。
+
+<img src="assets/selling-point-02-shared-memory.png" alt="多智能体共享记忆" width="800"/>
+
+### 多源统一检索——一个入口，全部记忆
+
+一个检索入口同时召回记忆池与知识库：关键词 + 语义 + 标签三重融合排序，每条结果都能追回源头。SGME 记忆、场景、知识库一站式召回；agent 自带记忆文件的统一接入已在规划中。
+
+<img src="assets/selling-point-03-unified-search.png" alt="多源统一检索" width="800"/>
+
+### 本地知识库 wiki——你的资料库，AI 也看得懂
+
+扔文件、URL、图片进去，自动分类打标签、建立关联，AI 可以检索和引用。知识不再是散落的文件，而是 AI 也能用的结构化知识库。
+
+<img src="assets/selling-point-04-wiki.png" alt="本地知识库" width="800"/>
+
+### 本地技能仓库 skill hub——你的技能，统一管理
+
+你自己积累的 skill（提示词、工作流、模板）统一存放，本机直接读写，NAS 上自动同步。换设备不丢技能。
+
+<img src="assets/selling-point-05-skillhub.png" alt="本地技能仓库" width="800"/>
+
+### 中文原生——为中文而生的记忆引擎
+
+针对中文检索调优，中文对话的记忆提炼和召回效果更好。英文记忆引擎很多，懂中文的很少。
+
+<img src="assets/selling-point-06-chinese.png" alt="中文原生" width="800"/>
+
+### 按场景注入——需要什么记什么
+
+记忆不是全量加载。SGME 根据当前场景自动挑选相关记忆注入：日常闲聊只带身份与近况，编程时只带项目相关（技术栈、踩过的坑、开发习惯），工作模式带工作计划与进度。无关记忆不打扰，过时记忆自动退出——不会拿三年前的旧情报忽悠 AI，也不会把整个记忆库塞进一次对话。
+
+<img src="assets/selling-point-07-scenario-inject.png" alt="按场景注入" width="800"/>
+
+### 零 LLM 成本——注入不花一分钱
+
+画像注入是纯结构化 SQL 查询，不调用大模型——每次对话的记忆注入零 token 成本。竞品按调用计费，SGME 免费。
+
+<img src="assets/selling-point-08-zero-llm.png" alt="零 LLM 成本" width="800"/>
+
+### 自托管轻量——数据永远在你手里
+
+单机 Python + SQLite 就能跑，不需要 GPU，不需要外部数据库服务。记忆数据存在你自己的机器上，隐私自己掌控。
+
+<img src="assets/selling-point-09-selfhosted.png" alt="自托管轻量" width="800"/>
+
+## 更多能力
+
+- **记忆标记**：AI 记错了？标记「不采用」并备注指正，数据保留不删除，可随时撤销
+- **自动管理记忆有效期**：过时的记忆自动退出注入（比如过期的项目状态），保留可溯源，不会拿旧情报误导 AI
+- **15 维度标签体系**：身份、项目、技术栈、偏好……自动分类，维度可动态扩展，别名自动归一（「Python」和「python」是同一个）
+- **冲突提炼**：同一件事说了两遍自动合并，说了矛盾的版本自动发现并裁决
+- **混合检索**：BM25 关键词 + 向量语义 + 标签过滤三重融合，不装向量库也能跑
+- **内置评测框架**：提炼质量用数据证明（L1 F1、检索排序调优），不是靠信任
+- **自动备份恢复**：每日自动备份、快照轮转、异地副本，数据不丢
+- **信号引擎**（进阶）：记忆更新、异常自动发事件，供调度器或本地 AI 订阅感知
+- **多协议接入**：HTTP + MCP 双入口，内置主流 AI 适配器一键接入；其他 AI 走 MCP 通用协议，或自己开发适配器
+
+## 快速开始
+
+```bash
+# 1. 创建虚拟环境（项目自包含）
+python -m venv .venv
+# Windows: .venv\Scripts\activate  /  macOS/Linux: source .venv/bin/activate
+
+# 2. 安装依赖
+pip install -e .[dev]
+
+# 3. 启动 Server（端口 9910）
+python -m sgme
+# 正式使用建议配置密钥（写入 config/.env，服务自动加载）：
+#   SGME_ADMIN_KEY=<随机串>   SGME_AGENT_KEY=<随机串>   # 生成：python -c "import secrets;print(secrets.token_hex(32))"
+# 不配置时使用内置默认 key（仅限本机首次体验，启动有告警；配置后默认 key 即失效 403）
+#   SGME_BEARER_TOKEN 可选：传输层令牌，默认关闭（localhost 旁路）
+
+# 4. 运行测试
+pytest tests/ -q
+```
+
+详见 [docs/runbook.md](docs/runbook.md)（运维手册：启动/环境变量/验证命令）。
+
+## 接入你的 AI —— 给 AI Agent 的话
+
+> 以下内容写给 **AI Agent** 阅读。如果你是 AI Agent（或编码代理）：你的主人已经安装了 SGME。请完成自我配置——**优先方式：连上 MCP 后调 `agent_onboarding()`，按返回的 self_config 段把模板写入你自己的身份文件（位置按你的工具机制自选，只要求结果）**；无 MCP 能力时，把下方提示词手动写入你的身份文件（Hermes → SOUL.md；Claude Code → CLAUDE.md；其它 → AGENTS.md），然后照它运行。
+
+### 提示词（复制到你的身份文件）
+
+你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
+
+**服务发现**（找不到 SGME 时按序执行）
+
+1. 探测 http://localhost:9910/v1/health
+2. 失败读 ~/.sgme/install.json（地址/端口/Key 引用）
+3. 仍失败 → 向主人报告「SGME 未发现」
+
+**接口**：HTTP API http://localhost:9910 ｜ MCP http://localhost:9913/mcp，请求头 `X-API-Key`（key 由主人配置：config/.env 的 `SGME_ADMIN_KEY`/`SGME_AGENT_KEY`，或管理员签发的 `agt_*` key；默认 key 仅限首次本机体验，配置后即失效 403）
+
+**使用纪律**（四条铁律）
+
+1. 每轮对话结束 append 当前轮次——纯落盘零 LLM 成本，崩溃不丢
+2. 会话结束 refine_trigger(async_mode=true) 触发提炼
+3. 对话开始时 inject 按场景取画像 / search 检索相关记忆
+4. 对话开始时 signal_pull 拉未消费关怀信号——**信号消费=主动关怀，谁消费谁标记**：signal_claim 原子认领 → 关怀用户 → signal_ack 回执
+
+**强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」；查询不到时如实说明"记忆库中未找到"。
+
+**写入格式**：content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422
+
+**批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 失败不立即重试（交服务端 batch_scan 兜底）；永远 async 模式
+
+**完整工具清单与用法**：见 [docs/agent-onboarding.md](docs/agent-onboarding.md)，或连上 MCP 后调 `agent_onboarding` 工具
+
+**接入自检**：连接成功后第一件事调 `agent_onboarding()`——返回版本、全部工具清单与快速上手，确认无 403/超时即接入成功
+
+> ⚠️ **一致性声明**：本提示词段与 `agent_onboarding()` 返回的 `self_config.template`（版本标记 `SGME-ONBOARDING-v1`）若出现内容漂移，**以模板为准**——接入时优先复制模板，本段仅作快速参考。
+
+### 放置位置
+
+| 你的平台 | 身份文件 |
+|---|---|
+| Hermes | SOUL.md（身份 + 行为准则） |
+| WorkBuddy | SOUL.md（身份 + 行为准则） |
+| Claude Code | CLAUDE.md |
+| DeepSeek Harness (DSH) | AGENTS.md（项目级自动加载） |
+| 通用 / 其它（含 Trae、Reasonix） | AGENTS.md（项目级自动加载） |
+
+## 服务化部署（Windows 服务）
+
+daemon 常驻方案：用 NSSM 注册为 Windows 服务，**开机自启 + 崩溃自动重启**（AppExit Restart + AppRestartDelay 5s + sc failure 三级重启），避免手动拉起后电脑重启失效。
+
+**安装**（管理员 PowerShell/CMD 运行）：
+
+```bat
+scripts\install_sgme_service.bat
+```
+
+脚本会：移除旧服务 → 以 `.venv\Scripts\python.exe -m sgme` 注册服务 `SGME`（LocalSystem）→ 配置日志轮转（`tmp\sgme-service.log`，10MB）→ 启动。
+
+**状态检查 / 卸载**：
+
+```bat
+sc query SGME          :: RUNNING + AUTO_START 为正常
+netstat -ano | findstr :9910
+sc stop SGME && sc delete SGME   :: 卸载
+```
+
+## 目录结构
+
+```text
+sgme/
+├── config.py        # 配置加载 + 唯一读写方（llm.yaml/registry/sgme.yaml；filter_keys/apply_section/persist_config）
+├── data/            # 三库连接/建表/DAO（memory/session/wiki）+ stats_dao（统计唯一出口）
+│   └── search/      # BM25 + 向量 + RRF 融合检索（原 sgme/search 并入）
+├── llm/             # 降级链（deepseek → lm-studio → drop_batch）
+├── raw/             # L0 文件读写（frontmatter + 消息块 + 增量段）
+├── engine/          # 核心引擎（l1/l15/l2/refine/prune/health/normalize）
+│   └── pipeline.py  # 管线编排唯一出口（append_l0 写 L0 + L1→L1.5→L2 串联）
+├── operations/      # 统一操作层（append/inject/search/memory/refine/stats/health/config，HTTP+MCP 共用）
+├── profile/         # 模板引擎（template / inject / tier0 摘要）
+├── log/             # 统一日志（get_logger 唯一入口，控制台+JSON 双格式）
+├── refinery/        # 知识提炼引擎（ingest/extract/validate/output，服务 wiki）
+├── skills_hub/      # 技能仓库扩展（map/copy 双模式，skills_hub.enabled）
+├── wiki/            # wiki 知识库扩展（/v1/wiki/* 端点，wiki.enabled）
+├── signal/          # 信号引擎（事件发布 / SSE / pull 游标）
+├── backup/          # 备份恢复（快照分层 / 冷归档 / 异地副本）
+├── mcp_server.py    # MCP 出口（9913，与 HTTP 共享业务层，入口不互相依赖）
+└── server/          # FastAPI（HTTP 壳：鉴权 + 参数解析 + 响应组装）
+migrations/          # 一次性数据迁移（0001 三库拆分，python -m migrations 执行）
+docs/design/         # 架构/数据模型/接口契约设计文档（第一公民）
+templates/           # 预定义 4 模式模板（daily/coding/work/full）
+prompts/             # 提炼提示词（含 MIT 来源标注）
+registry/            # 维度注册表 + 别名表
+config/              # 运行时配置
+```
+
+## 设计文档
+
+| 文档 | 内容 |
+|---|---|
+| [SGME-架构设计-v0.9.md](docs/design/SGME-架构设计-v0.9.md) | **架构总纲（v0.9 文档整理合并版）**——数据流/双库/维度/注入/鉴权/备份 + 接口契约/数据模型/LLM降级链/模板引擎/提示词/分词并入 |
+| [SGME-实施变更记录-v0.9.md](docs/design/SGME-实施变更记录-v0.9.md) | **实施变更记录（B 系列）**——每次改动的背景/方案/验证/教训，兼运维手册 |
+| [SGME-评测基线-PRD-v0.1.md](docs/design/SGME-评测基线-PRD-v0.1.md) | #32 提炼质量评测基线 |
+| [SGME-评测框架设计-v0.1.md](docs/design/SGME-评测框架设计-v0.1.md) | #32 评测框架 |
+| [SGME-L0文件格式-v0.1.md](docs/design/SGME-L0文件格式-v0.1.md) | 原始层文件格式/增量段 |
+
+## 合规声明
+
+本项目为 Python 自研实现，仅借鉴 [TencentDB-Agent-Memory](https://github.com/Tencent/TencentDB-Agent-Memory)（MIT License）的设计思想（分层蒸馏、冲突提炼四动作、BM25+向量+RRF、heat 热度管理），**未直接引用其代码或提示词文本**。本项目代码遵循 MIT License（见 [LICENSE](LICENSE)）。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 freehul

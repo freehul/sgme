@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(56, 89, 255, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% -20%, rgba(0, 212, 255, 0.15) 0%, transparent 50%),
+      linear-gradient(135deg, #0b0f2a 0%, #12173a 45%, #1b1440 100%);
+    position: relative;
+    color: #e8ecff;
+  }
+  body::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 6, 18, 0.55) 100%);
+  }
+  .grid {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(120, 160, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(120, 160, 255, 0.05) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  }
+  .title { position: absolute; top: 48px; left: 0; right: 0; text-align: center; }
+  .title .en {
+    font-size: 22px; letter-spacing: 8px; color: rgba(0, 212, 255, 0.85);
+    text-shadow: 0 0 18px rgba(0, 212, 255, 0.6);
+  }
+  .title .cn {
+    margin-top: 10px; font-size: 44px; font-weight: 700;
+    background: linear-gradient(90deg, #7ee8ff, #c9b8ff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 40px rgba(90, 160, 255, 0.35);
+  }
+  .title .sub { margin-top: 8px; font-size: 19px; color: rgba(220, 230, 255, 0.55); letter-spacing: 3px; }
+
+  .card {
+    background: rgba(18, 26, 60, 0.55);
+    border: 1.5px solid rgba(0, 212, 255, 0.35);
+    border-radius: 18px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 30px rgba(0, 180, 255, 0.12), inset 0 0 22px rgba(60, 120, 255, 0.08);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .card .ico { font-size: 52px; filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.5)); }
+  .card .nm { margin-top: 10px; font-size: 21px; font-weight: 600; }
+  .card .role { margin-top: 4px; font-size: 13px; color: rgba(200, 220, 255, 0.55); }
+
+  .footer {
+    position: absolute; bottom: 40px; left: 0; right: 0; text-align: center;
+    font-size: 15px; letter-spacing: 5px; color: rgba(180, 200, 255, 0.45);
+  }
+
+  /* 自托管：中央单机盒 + 数据锁在内部 */
+  .machine {
+    position: absolute; top: 230px; left: 50%; transform: translateX(-50%);
+    width: 420px; height: 380px;
+    background: linear-gradient(160deg, rgba(30, 42, 90, 0.7), rgba(16, 22, 52, 0.8));
+    border: 2px solid rgba(0, 212, 255, 0.5);
+    border-radius: 30px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 60px rgba(0, 180, 255, 0.3);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .machine .ico { font-size: 76px; filter: drop-shadow(0 0 18px rgba(0, 212, 255, 0.8)); }
+  .machine .nm { margin-top: 14px; font-size: 26px; font-weight: 700; letter-spacing: 2px; }
+  .machine .tag { margin-top: 6px; font-size: 14px; color: rgba(230, 245, 255, 0.7); letter-spacing: 3px; }
+  .machine .spec {
+    margin-top: 22px; display: flex; gap: 18px;
+  }
+  .machine .spec .s {
+    font-size: 14px; padding: 8px 16px; border-radius: 14px;
+    background: rgba(0, 212, 255, 0.1); border: 1px solid rgba(0, 212, 255, 0.3);
+    color: rgba(220, 240, 255, 0.85);
+  }
+  .machine .led {
+    position: absolute; top: 18px; right: 24px; width: 12px; height: 12px; border-radius: 50%;
+    background: #7ee8ff; box-shadow: 0 0 12px rgba(126, 232, 255, 0.9);
+    animation: blink 2s ease-in-out infinite;
+  }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .shield {
+    position: absolute; top: 180px; right: 150px;
+    font-size: 110px; filter: drop-shadow(0 0 24px rgba(126, 232, 255, 0.7));
+    animation: float 3s ease-in-out infinite;
+  }
+  @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+
+  .rows { position: absolute; left: 120px; top: 240px; display: flex; flex-direction: column; gap: 22px; }
+  .rows .row { display: flex; align-items: center; gap: 14px; font-size: 19px; color: rgba(220, 235, 255, 0.85); }
+  .rows .row .ic { font-size: 30px; }
+
+  .note {
+    position: absolute; top: 660px; left: 0; right: 0; text-align: center;
+    font-size: 19px; color: rgba(220, 235, 255, 0.8); letter-spacing: 2px;
+  }
+  .note .hl { color: #7ee8ff; }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+
+  <div class="title">
+    <div class="en">SELF-HOSTED</div>
+    <div class="cn">自托管 · 轻量</div>
+    <div class="sub">数据永远在你手里</div>
+  </div>
+
+  <div class="rows">
+    <div class="row"><span class="ic">🐍</span>Python 单进程</div>
+    <div class="row"><span class="ic">🗄️</span>SQLite 单文件</div>
+    <div class="row"><span class="ic">🚫</span>无 GPU 需求</div>
+    <div class="row"><span class="ic">🔌</span>零外部服务依赖</div>
+  </div>
+
+  <div class="machine">
+    <div class="led"></div>
+    <div class="ico">🖥️</div>
+    <div class="nm">SGME</div>
+    <div class="tag">MEMORY ENGINE · LOCAL</div>
+    <div class="spec">
+      <span class="s">记忆池</span><span class="s">知识库</span><span class="s">技能仓库</span>
+    </div>
+  </div>
+
+  <div class="shield">🛡️</div>
+
+  <div class="note">自己的机器 · <span class="hl">自己的数据 · 隐私自己掌控</span></div>
+
+  <div class="footer">YOUR DATA · YOUR RULES · 你的数据 · 你做主</div>
+</body>
+</html>

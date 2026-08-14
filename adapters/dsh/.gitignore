@@ -1,0 +1,8 @@
+# 运行时本地状态（install.py 写入，不进仓库）
+.env
+.export_cursor.json
+
+# TS 插件构建产物与依赖（sgme-bridge/ 内单独管理）
+sgme-bridge/node_modules/
+sgme-bridge/.tsbuildinfo
+# 注：lib/ 构建产物提交（dsh-mnemon 模式，运行时不要求宿主装 pnpm）

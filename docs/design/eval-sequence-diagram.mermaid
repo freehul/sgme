@@ -1,0 +1,94 @@
+sequenceDiagram
+    autonumber
+    actor User
+    participant CLI as eval/run.py
+    participant EL as EvalLoader
+    participant ER as EvalRunner
+    participant L1 as sgme/engine/l1.py
+    participant L15 as sgme/engine/l15.py
+    participant L2 as sgme/engine/l2.py
+    participant PS as sgme/prompts/manager.py
+    participant NORM as sgme/engine/normalize.py
+    participant MC as MetricsCalculator
+    participant RG as ReportGenerator
+    participant MD as sgme/storage/memory_dao.py
+    participant DB as eval/tmp/ (eval DB)
+
+    Note over User,DB: 一次完整 baseline run（python -m eval.run --cases v001.yaml --stages all）
+
+    User->>CLI: python -m eval.run --cases eval/cases/v001.yaml --stages all --prompt-version v001
+    CLI->>EL: load_yaml("eval/cases/v001.yaml")
+    EL->>EL: yaml.safe_load + validate_case() 逐条校验
+    EL-->>CLI: list[EvalCase] (80 cases)
+
+    CLI->>ER: EvalRunner(cfg, prompt_version="v001")
+    ER->>ER: _setup_eval_db()
+    Note over ER: 创建 eval/tmp/eval_memory.db + eval_wiki.db<br/>（独立于生产 DB，init_databases(eval_tmp_dir)）
+
+    loop 每个 eval case
+        ER->>ER: run_one(case, stages=["l1","l2"])
+
+        Note over ER,L1: ── L1 提取 ──
+        ER->>PS: get("l1_extraction", BucketCtx(overrides={"l1_extraction":"versions/l1_extraction/v001.txt"}))
+        PS->>PS: 读 manifest + versions/v001.txt（实时读盘）
+        PS-->>ER: PromptVersion(text=提示词全文, version="v001", variant=None)
+        ER->>L1: extract_l1(case.conversation, cfg["dimensions"], cfg["llm"], bucket_ctx=...)
+        L1->>L1: render_l1(template, conversation, dimensions)
+        L1->>L1: llm_chain.call_with_fallback() → parse_l1_output()
+        L1-->>ER: (raw_memories, provider, prompt_meta)
+
+        Note over ER,NORM: ── 维度归一化 ──
+        ER->>MD: build_alias_map(mem_conn)
+        MD-->>ER: alias_map: dict[str, str]
+        ER->>NORM: normalize_batch(raw_memories[].dimensions, alias_map, registry_names)
+        NORM->>NORM: 别名表命中 → fuzzy 兜底 → 未命中丢弃+告警
+        NORM-->>ER: (dimension_ids, stats)
+
+        Note over ER,L15: ── L1.5 冲突提炼（L2 评测需要完整链路） ──
+        ER->>MD: insert_memory() × N 条（落库到 eval_memory.db）
+        ER->>PS: get("l1_conflict", BucketCtx(overrides={"l1_conflict":"versions/l1_conflict/v001.txt"}))
+        PS-->>ER: PromptVersion
+        ER->>L15: resolve_conflicts(normalized_memories, eval_mem_conn, cfg, bucket_ctx=...)
+        L15->>L15: build_candidate_pool() → batch_candidates() → LLM 裁决 → 四动作落库
+        L15-->>ER: L15Result (stored/updated/merged memory_ids)
+
+        Note over ER,L2: ── L2 场景聚合 ──
+        ER->>PS: get("l2_scene", BucketCtx(overrides={"l2_scene":"versions/l2_scene/v001.txt"}))
+        PS-->>ER: PromptVersion
+        ER->>L2: aggregate(memories_with_ids, eval_mem_conn, eval_wiki_conn, cfg, bucket_ctx=...)
+        L2->>L2: _ensure_persisted() → _batch_memories() → LLM → update/merge/create
+        L2-->>ER: L2Result (created/updated/merged scene_ids)
+
+        Note over ER,DB: ── 模板查询验证 ──
+        ER->>DB: 按 case.expected_l2.template_section 指定的 mode 执行模板查询
+        DB-->>ER: 各 section 返回的 memory_id 列表
+        ER->>ER: 比对每条 GT 记忆落入的 section.title 与预期是否一致
+
+        Note over ER,MC: ── 度量计算 ──
+        ER->>MC: compute_l1(raw_memories_normalized, case.expected_l1)
+        MC->>MC: _match_memories()：内容相似度 + 贪心最大匹配
+        MC->>MC: _compute_dimension_tp_fp_fn()：逐维度 TP/FP/FN
+        MC->>MC: 计算 F1 / Strict Match / memory_type Acc / time_velocity Acc / priority MAE
+        MC-->>ER: L1Metrics (per-case)
+
+        ER->>MC: compute_l2(template_results, case.expected_l2, l1_f1)
+        MC->>MC: Section 命中率 + 误入率 + 漏出率 + 画像质量
+        MC-->>ER: L2Metrics (per-case)
+
+        ER-->>ER: 累积 CaseResult（per_case 列表）
+    end
+
+    Note over ER,MC: ── 汇总度量 ──
+    ER->>MC: 汇总全部 per-case metrics → 微平均 F1 / Strict Match Rate / 画像质量
+    MC-->>ER: L1Metrics + L2Metrics (aggregated)
+
+    ER->>ER: _teardown_eval_db() （除非 --keep-db 保留临时 DB）
+
+    Note over ER,RG: ── 报告生成 ──
+    ER->>RG: generate(result, output_dir="eval/results/20260806T120000Z/")
+    RG->>RG: _generate_json() → report.json（结构化指标）
+    RG->>RG: _generate_markdown() → report.md（总览面板 + 维度热力图 + 混淆矩阵 + 误差分析）
+    RG->>RG: _generate_csv() → per_case.csv（逐用例明细）
+
+    CLI-->>User: 退出码 0（全部 P0 达标：F1≥0.75, Strict≥0.50, memory_type≥0.85, time_vel≥0.80, Section≥0.70, 画像≥0.50）
+    Note over CLI,User: 任一 P0 不达标 → exit(1)，CI 可据此阻断合并

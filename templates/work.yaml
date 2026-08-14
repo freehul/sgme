@@ -1,0 +1,23 @@
+name: work
+display_name: 工作模式
+memory_types: [projects, goals, tasks, social, focus]
+token_budget: 600
+sections:
+  - title: "🎯 目标与待办"
+    query:
+      dimensions: [goals, tasks]
+      match: any
+      ttl_filter: true
+      sort: updated_at DESC
+      limit: 5
+  - title: "📁 项目进展"
+    query:
+      dimensions: [projects]
+      ttl_filter: true
+      sort: updated_at DESC
+      limit: 3
+  - title: "👥 关键关系"
+    query:
+      dimensions: [social]
+      priority_min: 70
+      limit: 3

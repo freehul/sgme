@@ -1,0 +1,171 @@
+classDiagram
+    direction TB
+
+    %% ── 评测用例数据结构 ──
+    class EvalCase {
+        +case_id: str
+        +source: str
+        +difficulty: str
+        +conversation: str
+        +expected_l1: L1GroundTruth
+        +expected_l15: L15GroundTruth | None
+        +expected_l2: L2GroundTruth | None
+        +notes: str
+    }
+    class L1GroundTruth {
+        +memories: list[GtMemory]
+    }
+    class GtMemory {
+        +content: str
+        +dimensions: list[str]
+        +memory_type: str
+        +priority: int
+        +time_velocity: str
+        +source_message_ids: list[str]
+    }
+    class L15GroundTruth {
+        +actions: list[GtConflictAction]
+    }
+    class GtConflictAction {
+        +new_memory_index: int
+        +candidate_ids: list[str]
+        +action: str
+        +merged_content: str | None
+        +reason: str
+    }
+    class L2GroundTruth {
+        +scene_labels: list[str]
+        +template_section: dict[str, str]
+    }
+
+    %% ── 评测结果数据结构 ──
+    class EvalResult {
+        +run_id: str
+        +timestamp: str
+        +prompt_versions: dict
+        +l1: L1Metrics
+        +l2: L2Metrics
+        +l15: L15Metrics | None
+        +rrf: RRFMetrics | None
+        +per_case: list[CaseResult]
+        +summary: EvalSummary
+    }
+    class L1Metrics {
+        +dimension_micro_f1: float
+        +dimension_micro_precision: float
+        +dimension_micro_recall: float
+        +per_dimension_f1: dict[str, float]
+        +strict_match_rate: float
+        +memory_type_accuracy: float
+        +time_velocity_accuracy: float
+        +priority_mae: float
+        +total_tp: int
+        +total_fp: int
+        +total_fn: int
+    }
+    class L2Metrics {
+        +section_hit_rate: float
+        +section_misentry_rate: float
+        +section_miss_rate: float
+        +profile_quality: float
+        +total_evaluated: int
+    }
+    class L15Metrics {
+        +action_accuracy: float
+        +per_action_counts: dict[str, int]
+    }
+    class RRFMetrics {
+        +best_ndcg10: float
+        +best_params: dict
+        +all_results: list[dict]
+        +param_sensitivity: dict
+    }
+    class CaseResult {
+        +case_id: str
+        +difficulty: str
+        +l1_f1: float
+        +strict_match: bool
+        +matched_memories: int
+        +unmatched_pred: int
+        +unmatched_gt: int
+        +dimension_details: list[dict]
+        +error: str | None
+    }
+    class EvalSummary {
+        +total_cases: int
+        +passed_p0: bool
+        +p0_status: dict[str, str]
+        +duration_seconds: float
+    }
+
+    %% ── 评测引擎组件 ──
+    class EvalLoader {
+        +PROJECT_ROOT: Path
+        +load_yaml(path: str | Path) list[EvalCase]
+        +validate_case(case: EvalCase) list[str]
+        +get_dimension_names() list[str]
+    }
+    class EvalRunner {
+        +cfg: dict
+        +mem_conn: sqlite3.Connection
+        +wiki_conn: sqlite3.Connection
+        +run_all(cases: list[EvalCase], stages: list[str], prompt_version: str | None) EvalResult
+        +run_one(case: EvalCase, stages: list[str], prompt_version: str | None) CaseResult
+        -_run_l1(case: EvalCase) tuple[list[dict], dict]
+        -_run_l15(memories: list[dict], case: EvalCase) L15Result
+        -_run_l2(memories: list[dict]) L2Result
+        -_run_template_query(mode: str, expected: dict) dict
+        -_setup_eval_db() None
+        -_teardown_eval_db() None
+    }
+    class MetricsCalculator {
+        +compute_l1(predictions: list[dict], ground_truth: L1GroundTruth) L1Metrics
+        +compute_l2(template_results: dict, ground_truth: L2GroundTruth, l1_f1: float) L2Metrics
+        +compute_l15(predictions: L15Result, ground_truth: L15GroundTruth) L15Metrics
+        -_match_memories(pred: list[dict], gt: list[GtMemory]) list[tuple[int, int]]
+        -_content_similarity(a: str, b: str) float
+        -_compute_dimension_tp_fp_fn(matched: list, unmatched_pred: list, unmatched_gt: list) tuple
+    }
+    class ReportGenerator {
+        +generate(result: EvalResult, output_dir: Path) None
+        -_generate_json(result: EvalResult) dict
+        -_generate_markdown(result: EvalResult) str
+        -_generate_csv(result: EvalResult) str
+        -_generate_heatmap_text(l1: L1Metrics) str
+    }
+    class RRFGridSearch {
+        +param_space: dict[str, list]
+        +search(query_fn: Callable, ground_truth: dict) RRFMetrics
+        -_compute_ndcg(predicted: list[str], relevant: list[str], k: int) float
+        +best_params() dict
+        +status() str
+    }
+    class ABComparer {
+        +compare(report_a: dict, report_b: dict) dict
+        -_diff_l1(a: L1Metrics, b: L1Metrics) dict
+        -_diff_l2(a: L2Metrics, b: L2Metrics) dict
+        -_format_diff_markdown(diff: dict) str
+    }
+
+    %% ── 关系 ──
+    EvalCase *-- L1GroundTruth
+    EvalCase *-- L15GroundTruth
+    EvalCase *-- L2GroundTruth
+    L1GroundTruth *-- GtMemory
+    L15GroundTruth *-- GtConflictAction
+    L2GroundTruth -- GtMemory : references by index
+    EvalResult *-- L1Metrics
+    EvalResult *-- L2Metrics
+    EvalResult *-- L15Metrics
+    EvalResult *-- RRFMetrics
+    EvalResult *-- CaseResult
+    EvalResult *-- EvalSummary
+    EvalLoader ..> EvalCase : produces
+    EvalRunner ..> EvalLoader : uses
+    EvalRunner ..> MetricsCalculator : uses
+    EvalRunner ..> EvalResult : produces
+    MetricsCalculator ..> L1Metrics : produces
+    MetricsCalculator ..> L2Metrics : produces
+    ReportGenerator ..> EvalResult : consumes
+    RRFGridSearch ..> RRFMetrics : produces
+    ABComparer ..> EvalResult : consumes

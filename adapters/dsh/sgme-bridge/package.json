@@ -1,0 +1,65 @@
+{
+  "name": "@sgme/sgme",
+  "version": "0.1.0",
+  "description": "SGME memory engine bridge for DeepSeek Harness — multi-agent shared long-term memory via HTTP.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "sgme",
+    "agent-memory",
+    "persistent-memory",
+    "multi-agent",
+    "llm-memory",
+    "cordis",
+    "plugin"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsdown",
+    "bundle": "tsdown",
+    "prepublishOnly": "pnpm run verify",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "verify": "pnpm run typecheck && pnpm run test && pnpm run build"
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-commands": "^0.1.0-rc.6"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-commands": "^0.1.0-rc.6",
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.22.0",
+    "typescript": "^5.9.0",
+    "unrun": "^0.3.1",
+    "vitest": "^3.2.0"
+  },
+  "packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1"
+}

@@ -1,0 +1,68 @@
+# SGME .gitignore（2026-08-03，D8 第五节策略）
+# 配置类入 git；数据与运行时产物不入
+
+# 知识库数据（不入 git；只忽略项目根 raw/，不影响 sgme/raw/ 源码包）
+/raw/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 临时文件（只忽略项目根 tmp/）
+/tmp/
+
+# 应用日志（sgme/log/ 模块输出，不入 git）
+/logs/
+
+# skills-hub copy 模式本地工作区（0.8 ST-11，含 .git，不入 git）
+/cache/
+
+# WorkBuddy 工具本地状态（会话记忆日志/团队文件，非项目源码）
+/.workbuddy/
+
+# pytest 临时目录（排查测试环境时产生，非源码）
+.pytest_tmp/
+.pytest_tmproot/
+
+# 运行时数据（双库/备份快照/Tier0 摘要，不入 git）
+/data/
+
+# 评测运行产物（report.json/md 等；夹具在 eval/fixtures/ 单独跟踪，不受影响）
+/eval/results/
+
+# 旧 .git 备份目录（2026-08-08 备份目录误入跟踪，2026-08-11 发布前移除）
+.git.bak-*/
+
+# SQLite 二进制缓存（eval embed cache 等，不入 git）
+*.sqlite
+
+# Trae 编辑器内部开发产物（specs 任务书等，非项目源码）
+/.trae/
+
+# 前端构建产物与依赖（ui/ 源码入 git，dist/node_modules 不入；构建命令：cd ui && npm run build）
+/ui/node_modules/
+/ui/dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# 环境与密钥
+.env
+*.env
+credentials/
+secrets/
+
+# 日志
+*.log
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+# git worktree 隔离环境（并行 PR 开发，不入 git）
+/.worktrees/
+# Reasonix 部署产物（install.py 生成，本机绝对路径，不入库）
+.reasonix/

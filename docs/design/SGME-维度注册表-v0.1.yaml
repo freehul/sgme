@@ -1,0 +1,134 @@
+# SGME 维度注册表 v0.1（2026-08-03）
+# 依据：SGME-架构设计-0.4.md §8.1（15 维度分类）/ §8.2（TTL 与排序语义）
+# 字段说明：
+#   id            存储键，英文 snake_case，模板/查询/L1 归一化一律引用 id
+#   display_name  中文展示名（UI / 注入展示）
+#   category      静态 | 偏好 | 动态（对应 §8.1 三类）
+#   time_velocity 默认变更频率（static | dynamic），记忆级可覆盖
+#   ttl_days      动态维度默认 TTL，基于 updated_at 起算（update/merge 续期）；null = 不过期
+#   description   边界定义（含 vs 对照）
+# 扩展：新增维度 = 注册表加行 + 别名表加行 + 打标即可，无需 schema 迁移
+
+dimensions:
+  # ── 静态/慢变（月~年，time_velocity=static，无 TTL）──
+  - id: identity
+    display_name: 身份
+    category: 静态
+    time_velocity: static
+    ttl_days: null
+    description: 基本身份信息：姓名、年龄、职业、所在地。
+    boundaries: "vs 家庭：家庭=成员与关系；vs 社交：社交=外部人际关系（领导/同事/介绍人）"
+
+  - id: family
+    display_name: 家庭
+    category: 静态
+    time_velocity: static
+    ttl_days: null
+    description: 家庭成员与关系、家人健康与照护安排。
+    boundaries: "vs 习惯：家庭=关系与事实；周期性护理行为可双标签 家庭+习惯"
+
+  - id: social
+    display_name: 社交
+    category: 静态
+    time_velocity: static
+    ttl_days: null
+    description: 重要人际关系与角色。
+    boundaries: "vs 身份：职业头衔归身份，职场关系归社交"
+
+  - id: values
+    display_name: 价值观
+    category: 静态
+    time_velocity: static
+    ttl_days: null
+    description: 核心信念与原则，不可妥协的底线（原件不删除、性价比优先）。
+    boundaries: "vs 风格：价值观=信念底线（触发拒绝/情绪），风格=做事流程；vs 偏好：价值观不可妥协，偏好可调整"
+
+  - id: skills
+    display_name: 能力
+    category: 静态
+    time_velocity: static
+    ttl_days: null
+    description: 技能栈与知识领域（Python 熟练、懂架构设计）。
+    boundaries: "vs 技术栈：能力=人会什么；技术栈=系统/项目用了什么、选型与踩坑"
+
+  - id: tech_stack
+    display_name: 技术栈
+    category: 静态
+    time_velocity: static
+    ttl_days: null
+    description: 技术选型、方案决策、踩坑记录（LM Studio 64K、read_file 误判 binary）。
+    boundaries: "vs 能力：见能力；vs 项目：方案决策归技术栈，项目进展归项目"
+
+  # ── 偏好/模式（周~月，按慢变处理 time_velocity=static，无 TTL）──
+  - id: preferences
+    display_name: 偏好
+    category: 偏好
+    time_velocity: static
+    ttl_days: null
+    description: 沟通/做事/审美的稳定偏好（全程中文、14px 紧凑、不用表格）。
+    boundaries: "vs 价值观：偏好可调整，价值观不可妥协；vs 风格：偏好=喜好，风格=方式"
+
+  - id: habits
+    display_name: 习惯
+    category: 偏好
+    time_velocity: static
+    ttl_days: null
+    description: 行为模式与生活节奏（上午编码效率高）。
+    boundaries: "vs 环境：习惯=行为节奏，环境=设备设施；vs 家庭：护理事实双标签"
+
+  - id: environment
+    display_name: 环境
+    category: 偏好
+    time_velocity: static
+    ttl_days: null
+    description: 设备/工具/物理环境（PC/NAS/笔记本、3 块显示器）。
+    boundaries: "vs 技术栈：环境=硬件与部署位置，技术栈=软件选型与方案"
+
+  - id: style
+    display_name: 风格
+    category: 偏好
+    time_velocity: static
+    ttl_days: null
+    description: 决策风格与工作方式（先计划后行动、独立解决问题、主动执行）。
+    boundaries: "vs 偏好：见偏好；vs 价值观：流程性 vs 信念性"
+
+  # ── 动态/快变（天~周，time_velocity=dynamic，默认 TTL）──
+  - id: focus
+    display_name: 关注
+    category: 动态
+    time_velocity: dynamic
+    ttl_days: 30
+    description: 当前关注的话题（SGME 记忆系统、ComfyUI）。
+    boundaries: "vs 状态：关注=话题内容，状态=身心/处境瞬时量；vs 项目：话题可无项目载体"
+
+  - id: projects
+    display_name: 项目
+    category: 动态
+    time_velocity: dynamic
+    ttl_days: 90
+    description: 进行中的项目及状态（SGME 架构设计阶段）。
+    boundaries: "vs 目标：项目=长期工作容器（持续数周~数月），目标=可打勾的完成判定；vs 待办：待办=天~周级具体行动项"
+
+  - id: goals
+    display_name: 目标
+    category: 动态
+    time_velocity: dynamic
+    ttl_days: 90
+    description: 短期目标与愿望（SGME 本月跑通最小闭环）。
+    boundaries: "vs 项目：见项目；同一事实可双标签（如『跑通最小闭环』=项目+目标）"
+
+  - id: tasks
+    display_name: 待办
+    category: 动态
+    time_velocity: dynamic
+    ttl_days: 30
+    description: 近期待办与截止日（D7 提炼管线讨论）。
+    boundaries: "vs 项目：见项目；vs 目标：待办=行动项，目标=成果"
+
+  - id: status
+    display_name: 状态
+    category: 动态
+    time_velocity: dynamic
+    ttl_days: 7
+    description: 当前情绪/精力/处境（忙 SGME 架构、有点累）。
+    boundaries: "vs 关注：见关注；瞬时量，模板查询默认 updated_at DESC（§8.2）"

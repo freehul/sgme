@@ -1,0 +1,864 @@
+"""sgme/mcp_server.py：SGME MCP Server（Model Context Protocol）。
+
+与 HTTP API 同一套业务逻辑（复用 engine/storage 业务层，模块化重构 B30 后
+不再依赖 server/routes_*），提供 MCP 协议出口（streamable HTTP transport），
+SCSM / 其他 Agent 可经 MCP 调用。
+
+统一服务原则（2026-08-04 用户决策）：
+- HTTP API 与 MCP 两套接口都提供服务，功能等价
+- MCP 工具：append / inject / search / memory_get / memory_reject / refine_trigger /
+  refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding
+- 鉴权：MCP 工具内自行校验 X-API-Key（读环境变量 SGME_AGENT_KEY / SGME_ADMIN_KEY）
+
+Trae 通知兼容（ST-23⑤，2026-08-11）：
+- 官方 SDK 把 ClientNotification 定义为 method 字面量严格枚举的判别联合，
+  Trae 等客户端发送的非标准通知（如 notifications/trae/session_stop）校验失败，
+  每来一条刷一条 WARNING 日志、事件语义丢失。
+- 本模块在 build_mcp_server 时对 mcp.types.ClientNotification 打一次宽容补丁
+  （联合末尾追加 method 任意字符串的兜底成员）：已知通知仍走原类型，
+  未知通知静默接受——协议层宽容，符合 MCP「通知可扩展」的精神。
+
+模块化重构 B30（2026-08-07）：MCP 曾反向 import server/routes_* 复用处理函数
+（append_session/_persist_memories/CONFIG_SECTIONS），形成 server ↔ mcp_server 包级环。
+现全部归位业务层：append → engine.pipeline.append_l0；refine → engine.pipeline；
+stats → storage.stats_dao；config → sgme.config。依赖方向：mcp_server → 业务层，
+与 HTTP 路由平级（入口不依赖入口）。
+"""
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, Callable, Dict
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from mcp.server.fastmcp import Context
+
+logger = logging.getLogger("sgme.mcp")
+
+# 允许外部注入 app 状态（create_app 时设置）
+_app_state: Dict[str, Any] = {}
+
+# Trae 通知宽容补丁的幂等开关（ST-23⑤，进程级只打一次）
+_NOTIFICATION_PATCHED: bool = False
+
+
+def bind_app_state(state: Dict[str, Any]) -> None:
+    """绑定 FastAPI app.state（cfg/mem_conn/session_conn/wiki_conn），供 MCP 工具复用。"""
+    _app_state.clear()
+    _app_state.update(state)
+
+
+def _require_admin() -> str:
+    """校验管理员 Key（环境变量 SGME_ADMIN_KEY，与 HTTP 鉴权对齐）。"""
+    return os.environ.get("SGME_ADMIN_KEY", "dev-admin-key-change-me")
+
+
+class ApiKeyMiddleware(BaseHTTPMiddleware):
+    """MCP streamable-http 传输层鉴权中间件（PR#1，2026-08-11）。
+
+    与 HTTP 通道 require_agent_key 同规则、同设施（AgentKeyStore.is_agent）：
+    - X-API-Key 缺失或无效 → 403 ERR_FORBIDDEN
+    - env agent key / admin key / 注册 agt_* key → 放行
+    - 校验通过后把 key 存入 request.state.api_key（工具内反查溯源用，PR#2）
+
+    动机：FastMCP 1.28 的 AuthSettings 是 OAuth 模型（需外部授权服务器），
+    不适用 API key 场景；mcp.run() 自托管会忽略 streamable_http_app 上
+    附加的中间件（LibreChat 踩坑实录），故 mount_mcp 改为手动 uvicorn
+    跑 streamable_http_app() + 本中间件。
+    """
+    def __init__(self, app, key_store):
+        super().__init__(app)
+        self._key_store = key_store
+
+    async def dispatch(self, request, call_next):
+        key = request.headers.get("X-API-Key")
+        if not self._key_store.is_agent(key):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=403,
+                content={"error": {
+                    "code": "ERR_FORBIDDEN",
+                    "message": "缺失或无效的 X-API-Key：请携带 Agent Key"
+                               "（环境变量 SGME_AGENT_KEY 或经 /v1/admin/agents 注册）",
+                }},
+            )
+        # 供工具内 resolve_agent_id 反查（PR#2）
+        request.state.api_key = key
+        return await call_next(request)
+
+
+def run_mcp_server(mcp, key_store, host: str = "127.0.0.1", port: int = 9913) -> None:
+    """手动启动 MCP streamable-http server（带鉴权中间件，PR#1）。
+
+    替代 mcp.run(transport="streamable-http")——自托管会忽略中间件，
+    无法挂 ApiKeyMiddleware。此处显式构建 Starlette app → 加中间件 →
+    uvicorn 独立线程跑（与 mount_mcp 原行为一致：daemon 线程、同进程）。
+    """
+    import threading
+    import uvicorn
+
+    starlette_app = mcp.streamable_http_app()
+    starlette_app.add_middleware(ApiKeyMiddleware, key_store=key_store)
+
+    config = uvicorn.Config(
+        starlette_app,
+        host=host,
+        port=port,
+        log_level="warning",
+    )
+    server = uvicorn.Server(config)
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    logger.info("MCP Server 已启动（鉴权启用）: http://%s:%s/mcp（streamable HTTP，独立线程）", host, port)
+
+
+def _patch_lenient_notifications() -> None:
+    """宽容处理未知通知类型（ST-23⑤：Trae notifications/trae/session_stop 等）。
+
+    官方 SDK 的 ``ClientNotification`` 是 method 字面量严格枚举的判别联合
+    （``mcp.types.ClientNotificationType``），未知通知（如 Trae 会话结束事件）
+    校验失败 → 共享会话层每来一条刷一条 ``Failed to validate notification``
+    WARNING，且事件语义丢失。
+
+    方案：把联合末尾追加一个宽松兜底成员（``method: str`` 任意字符串），
+    已知通知仍命中原字面量类型（行为不变），未知通知静默接受——
+    MCP 协议本身允许客户端发送任意通知（服务端自行决定处理与否）。
+
+    注意：
+    - **进程级全局补丁**（替换 ``mcp.types.ClientNotification``），幂等只打一次；
+      SGME 进程内只有本 MCP Server，无副作用面。
+    - 必须早于 ``mcp.run()`` 生效——``ServerSession.__init__`` 在每次连接时
+      取 ``types.ClientNotification`` 属性，故 build_mcp_server 时打好即可。
+    - 只放宽**通知**（无响应消息）；未知**请求**仍按 JSON-RPC 错误响应，
+      那是协议正确行为，不在本次兼容范围内。
+    """
+    global _NOTIFICATION_PATCHED
+    if _NOTIFICATION_PATCHED:
+        return
+    from mcp import types as mcp_types
+    from pydantic import RootModel
+    from typing import Any
+
+    class _LenientNotification(mcp_types.Notification[Any, str]):
+        """兜底通知：method 任意字符串（未知通知的落点）。"""
+
+        method: str
+        params: Any = None
+
+    class _LenientClientNotification(
+        RootModel[mcp_types.ClientNotificationType | _LenientNotification]
+    ):
+        pass
+
+    mcp_types.ClientNotification = _LenientClientNotification
+    _NOTIFICATION_PATCHED = True
+    logger.info("MCP 通知宽容补丁已生效（未知通知类型静默接受）")
+
+
+# agent_onboarding（ST-23①）的能力清单：与下方 @mcp.tool 一一对应。
+# 测试会断言本清单与 list_tools() 实际工具集一致，防止清单与实现漂移。
+ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
+    {"name": "agent_onboarding", "description": "连接即发现：SGME 版本/能力清单/快速上手指引（本工具）"},
+    {"name": "append", "description": "L0 捕获：写入原始会话（幂等），content 需 # {ISO时间戳} {role} 格式；可选 agent_id 标注来源（溯源）"},
+    {"name": "inject", "description": "记忆注入：按模式模板查询记忆池，返回注入块（画像视图）"},
+    {"name": "search", "description": "混合检索：BM25 + 向量 + RRF，带溯源（记忆池）"},
+    {"name": "wiki_search", "description": "检索 wiki 知识库（wiki_pages 知识文档，FTS5 BM25 + 兜底）"},
+    {"name": "wiki_pages", "description": "wiki 页面列表（updated_at 降序；category 可选过滤；不含正文）"},
+    {"name": "wiki_page", "description": "wiki 页面详情（标题/正文/分类/来源/更新时间）"},
+    {"name": "wiki_page_add", "description": "wiki 页面直接写入（原样入库，不走 LLM 提炼；幂等 upsert，返回 page_id+status）"},
+    {"name": "memory_get", "description": "单条记忆详情（内容/维度/TTL + 溯源 + 归档链）"},
+    {"name": "memory_reject", "description": "标记记忆「不采用」（不删除、可恢复），带纠错理由"},
+    {"name": "refine_trigger", "description": "触发提炼：单文件或扫 status=new 批量（async_mode 分流同步/异步）"},
+    {"name": "refine_batch", "description": "批量提炼：显式文件列表或扫全部未提炼，异步排队即返"},
+    {"name": "refine_status", "description": "提炼进度：待提炼/已完成/失败计数 + 水位 + 最近失败"},
+    {"name": "stats", "description": "统计：记忆数/维度分布/原始文件状态/水位"},
+    {"name": "health", "description": "健康检查：LLM 可用性/提炼水位/心跳"},
+    {"name": "config_get", "description": "读取 SGME 运行时配置（section 可选：l1/l2/refine/search/backup）"},
+    {"name": "config_update", "description": "更新 SGME 配置段（热生效 + 落盘 sgme.yaml）"},
+    {"name": "idea_add", "description": "人工添加创意（用户主动提出才记录；自动打 ideas 标签 + 长期保存 ttl=NULL）"},
+    {"name": "demand_create", "description": "新建待办/需求（跨项目统一待办池；可指定 project_id 标记过滤）"},
+    {"name": "project_register", "description": "登记/创建项目（用户主动立项；project_meta upsert，二次登记=更新）"},
+    {"name": "signal_pull", "description": "拉取未消费关怀信号（type=care_*；会话开始主动消费，ST-27）"},
+    {"name": "signal_claim", "description": "原子认领信号（谁消费谁标记；已被他人消费返回 claimed=false，ST-27）"},
+    {"name": "signal_ack", "description": "写消费回执（claimed/acked/failed；认领后报告处理结果，ST-27）"},
+)
+
+
+# ---------- operations 层 → MCP 协议翻译（v0.7 §7） ----------
+
+def _op_json(op: Callable[..., Any], *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    """调 operations 层操作并翻译为 MCP 语义（所有工具共用，避免每个工具重写一遍）。
+
+    - 成功 → 返回 ``result.data`` 字典（调用方按需投影后 json.dumps）
+    - ``ok=False`` / ``InvalidArgs`` / ``OperationError`` → 返回 ``{"error": "..."}``
+      （沿用既有 MCP 错误约定：扁平 error 字符串，非 HTTP 的嵌套 error 对象）
+    - **其余异常不拦截**：保持既有行为，交由 FastMCP 处理
+
+    ⚠️ 约定：operations 层的 data **不得**使用顶层 ``error`` 键，
+    否则会与失败态混淆（调用方按 ``"error" in d`` 判定）。后续 8 个模块同此约定。
+
+    Returns:
+        成功为 data 字典；失败为 ``{"error": message}``。调用方用 ``"error" in d`` 判定。
+    """
+    from sgme.operations.errors import InvalidArgs, OperationError
+
+    try:
+        result = op(*args, **kwargs)
+    except InvalidArgs as e:
+        return {"error": e.message}
+    except OperationError as e:
+        return {"error": e.message}
+
+    if not result.ok:
+        return {"error": result.message or result.error_code or "操作失败"}
+    return result.data or {}
+
+
+def build_mcp_server():
+    """构建 FastMCP 实例（工具集与 HTTP API 等价）。
+
+    streamable_http_path 默认 '/mcp'（自托管时客户端访问 http://host:9913/mcp）。
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    # ST-23⑤：宽容处理 Trae 等客户端的非标准通知（幂等，进程级只打一次）
+    _patch_lenient_notifications()
+
+    mcp = FastMCP(
+        "SGME",
+        instructions=(
+            "SGME 记忆引擎 MCP 接口。记忆写入（append）、注入（inject）、"
+            "检索（search，记忆池）、wiki 知识库（wiki_search/wiki_pages/wiki_page）、"
+            "记忆查看/纠错（memory_get/memory_reject）、"
+            "提炼（refine_trigger/refine_batch/refine_status）、"
+            "统计（stats）、健康检查（health）、配置读写（config_get/config_update）、"
+            "创意/待办/项目管理（idea_add/demand_create/project_register，2026-08-13："
+            "创意由用户主动提出、需求池改为跨项目待办池、项目由用户主动立项）、"
+            "连接即发现（agent_onboarding）。"
+        ),
+    )
+
+    # ---------- 记忆核心 ----------
+
+    @mcp.tool()
+    def append(session_key: str, started_at: str, content: str, source_type: str = "session", agent_id: str | None = None, ctx: Context | None = None) -> str:
+        """L0 捕获：写入原始会话（幂等）。content 需 # {ISO时间戳} {role} 格式。
+
+        B35/PR#2（2026-08-11）：agent_id 解析优先级 = 显式参数 > 鉴权 key 反查
+        （ApiKeyMiddleware 存入 request.state.api_key → resolve_agent_id）> None。
+        与 HTTP 通道同语义：注册 key 落绑定 agent_id，env 主 key 落 default。
+        直调（无 HTTP 上下文）时 ctx 为 None → 仅显式参数生效。
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.append import append_l0 as append_l0_operation
+
+        # 鉴权 key 反查兜底（PR#2）：ctx.request_context.request.state.api_key
+        # 由 ApiKeyMiddleware 写入（HTTP 传输层）；直调时 request 不可用 → 跳过
+        if agent_id is None and ctx is not None:
+            try:
+                req = ctx.request_context.request
+                if req is not None:
+                    key = getattr(req.state, "api_key", None)
+                    key_store = _app_state.get("key_store")
+                    if key_store is not None:
+                        agent_id = key_store.resolve_agent_id(key)
+            except Exception:
+                agent_id = None  # 反查失败不阻断写入（溯源退化为 None）
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        session_conn: sqlite3.Connection = _app_state["session_conn"]
+        cfg = _app_state["cfg"]
+        data = _op_json(
+            append_l0_operation,
+            session_key=session_key,
+            started_at=started_at,
+            content=content,
+            source_type=source_type,
+            agent_id=agent_id,
+            cfg=cfg,
+            mem_conn=mem_conn,
+            session_conn=session_conn,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def inject(mode: str = "daily", max_tokens: int = 800) -> str:
+        """记忆注入：按模式模板查询记忆池，返回注入块（画像视图）。"""
+        from sgme.operations.inject import inject as inject_operation
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        cfg = _app_state["cfg"]
+        data = _op_json(inject_operation, mem_conn, cfg, mode=mode)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def search(query: str, limit: int = 5) -> str:
+        """混合检索：BM25 + 向量 + RRF，带溯源。"""
+        from sgme.operations.search import mcp_payload as search_mcp_payload
+        from sgme.operations.search import search as search_operation
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        session_conn: sqlite3.Connection = _app_state["session_conn"]
+        cfg = _app_state["cfg"]
+        data = _op_json(
+            search_operation,
+            mem_conn,
+            session_conn,
+            cfg,
+            query=query,
+            limit=min(limit, 20),
+            scopes=["memory"],
+        )
+        return json.dumps(search_mcp_payload(data), ensure_ascii=False)
+
+    @mcp.tool()
+    def memory_get(memory_id: str) -> str:
+        """单条记忆详情（内容/维度/TTL + 溯源 + 归档链）。
+
+        v0.7：业务逻辑已下沉 sgme.operations.memory，本工具只做协议翻译。
+        输出与 v0.6 逐字段等价——成功态是**裸记忆对象**（非 HTTP 的三键包裹体），
+        失败态是固定文案 ``记忆不存在``（不带 id），两者均由投影函数还原。
+        """
+        import json
+        import sqlite3
+
+        # 规范：operations 一律走完整子模块路径导入（详见 operations/__init__.py）
+        from sgme.operations.memory import get_mcp_error_payload
+        from sgme.operations.memory import get_mcp_payload
+        from sgme.operations.memory import get_memory as get_memory_operation
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+
+        data = _op_json(get_memory_operation, mem_conn, memory_id)
+        if "error" in data:
+            return json.dumps(get_mcp_error_payload(data), ensure_ascii=False)
+        return json.dumps(get_mcp_payload(data), ensure_ascii=False)
+
+    @mcp.tool()
+    def memory_reject(memory_id: str, reason: str | None = None) -> str:
+        """标记记忆「不采用」：用户纠错，不删除、可恢复（memory_id + 纠错理由）。
+
+        ST-22⑥：接线 operations.memory.reject_memory（HTTP ``POST /v1/memory/{id}/reject``
+        同一实现），输出与 HTTP 语义一致——成功态 ``{memory_id, status: "rejected",
+        reject_reason}``；reason 空值回落缺省「用户纠错」；记忆不存在返回
+        ``{"error": ...}``（MCP 扁平错误约定）。
+        """
+        import json
+        import sqlite3
+
+        # 规范：operations 一律走完整子模块路径导入（详见 operations/__init__.py）
+        from sgme.operations.memory import reject_memory as reject_memory_operation
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+
+        data = _op_json(reject_memory_operation, mem_conn, memory_id, reason=reason)
+        return json.dumps(data, ensure_ascii=False)
+
+    # ---------- 管理 ----------
+
+    @mcp.tool()
+    def refine_trigger(file_id: str | None = None, limit: int = 50, async_mode: bool = True) -> str:
+        """触发提炼。async_mode=true 用后台线程立即返回（推荐）；false 同步等待完成。
+
+        编排统一走 engine.pipeline（B30：同步 refine_one/refine_many，
+        异步 async_refine_worker 逐文件容错——修复版，比旧批量收集更稳）。
+        """
+        from sgme.operations.refine import mcp_payload as refine_mcp_payload
+        from sgme.operations.refine import refine_trigger as refine_trigger_operation
+        from sgme.operations.refine import refine_trigger_async as refine_trigger_async_operation
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        session_conn: sqlite3.Connection = _app_state["session_conn"]
+        cfg = _app_state["cfg"]
+        op = refine_trigger_async_operation if async_mode else refine_trigger_operation
+        data = _op_json(op, mem_conn, session_conn, cfg, file_id=file_id, limit=limit)
+        if "error" in data:
+            return json.dumps(data, ensure_ascii=False)
+        return json.dumps(refine_mcp_payload(data), ensure_ascii=False)
+
+    @mcp.tool()
+    def refine_batch(file_ids: list[str] | None = None, limit: int = 50, async_mode: bool = True) -> str:
+        """批量文件提炼：显式文件列表，或不传 file_ids 扫全部未提炼（status=new）。
+
+        ST-22⑥：接线 operations.refine.refine_batch（新操作，无历史契约，
+        data 即响应）。async_mode=true 后台线程逐文件容错执行、立即返回排队任务
+        （triggered/status/scope/file_ids/limit/note）；false 同步执行返回
+        triggered/requested/processed/total_memories/results。
+        """
+        from sgme.operations.refine import refine_batch as refine_batch_operation
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        session_conn: sqlite3.Connection = _app_state["session_conn"]
+        cfg = _app_state["cfg"]
+        data = _op_json(
+            refine_batch_operation,
+            mem_conn,
+            session_conn,
+            cfg,
+            file_ids=file_ids,
+            limit=limit,
+            async_mode=async_mode,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def refine_status() -> str:
+        """提炼进度：待提炼/已完成/失败计数 + 提炼水位 + 最近失败。
+
+        ST-22⑥：接线 operations.refine.refine_status。数据来源：
+        raw_files 状态计数与 last_refined_at（stats_dao.raw_files_summary）、
+        水位年龄（health 共用口径）、最近失败（refine_runs status='error'
+        按 started_at DESC 取最新一条）。
+        """
+        from sgme.operations.refine import refine_status as refine_status_operation
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        session_conn: sqlite3.Connection = _app_state["session_conn"]
+        data = _op_json(refine_status_operation, mem_conn, session_conn)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def stats() -> str:
+        """统计：记忆数/维度分布/原始文件状态/水位。
+
+        v0.7：业务逻辑已下沉 sgme.operations.stats，本工具只做协议翻译。
+        输出与 v0.6 逐字段等价——顶层第 2/3 键（dimension_distribution /
+        raw_files）与 HTTP 互换、refinement 是单键版、无 agents，
+        这些历史差异全部由 mcp_payload 投影还原。
+        """
+        import json
+        import sqlite3
+
+        # 规范：operations 一律走完整子模块路径导入（详见 operations/__init__.py）
+        from sgme.operations.stats import mcp_payload
+        from sgme.operations.stats import stats as stats_operation
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        session_conn: sqlite3.Connection = _app_state["session_conn"]
+
+        data = _op_json(stats_operation, mem_conn, session_conn)
+        if "error" in data:
+            return json.dumps(data, ensure_ascii=False)
+        return json.dumps(mcp_payload(data), ensure_ascii=False)
+
+    @mcp.tool()
+    def health() -> str:
+        """健康检查：LLM 可用性/提炼水位/心跳。
+
+        v0.7：业务逻辑已下沉 sgme.operations.health，本工具只做协议翻译。
+        输出与 v0.6 逐字段等价——refinement 仍是 engine 原始透传版
+        （与 HTTP 的重组超集版存在历史差异，v0.8 待统一，故用 mcp_payload 投影）。
+        """
+        import json
+        import sqlite3
+
+        # 规范：operations 一律走完整子模块路径导入（详见 operations/__init__.py）
+        from sgme.operations.health import health as health_operation
+        from sgme.operations.health import mcp_payload
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        session_conn: sqlite3.Connection = _app_state["session_conn"]
+        cfg = _app_state["cfg"]
+
+        data = _op_json(health_operation, mem_conn, session_conn, cfg)
+        if "error" in data:
+            return json.dumps(data, ensure_ascii=False)
+        return json.dumps(mcp_payload(data), ensure_ascii=False)
+
+    @mcp.tool()
+    def wiki_search(query: str, limit: int = 5) -> str:
+        """检索 wiki 知识库（wiki_pages 知识页面，FTS5 BM25 + LIKE 兜底）。
+
+        T-22：检索经 ingest 提炼入库的知识文档（对称 HTTP /v1/wiki/search）；
+        返回 [{page_id, title, snippet}]。注意：记忆引擎的 L2 场景检索用 search 工具。
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.wiki import search as wiki_search_operation
+
+        conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        if conn is None:
+            return json.dumps({"error": "wiki 扩展未启用"}, ensure_ascii=False)
+        data = _op_json(
+            wiki_search_operation, conn,
+            query=query, limit=min(limit, 20),
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def wiki_pages(category: str | None = None, limit: int = 20, offset: int = 0) -> str:
+        """wiki 页面列表（updated_at 降序；category 可选过滤；不含正文）。
+
+        T-22：浏览入口——先列表定位，再 wiki_page 取正文。
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.wiki import list_pages as list_pages_operation
+
+        conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        if conn is None:
+            return json.dumps({"error": "wiki 扩展未启用"}, ensure_ascii=False)
+        data = _op_json(
+            list_pages_operation, conn,
+            category=category, limit=limit, offset=offset,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def wiki_page(page_id: str) -> str:
+        """wiki 页面详情（标题/正文全文/分类/标签/来源/更新时间）。"""
+        import json
+        import sqlite3
+
+        from sgme.operations.wiki import get_page as get_page_operation
+
+        conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        if conn is None:
+            return json.dumps({"error": "wiki 扩展未启用"}, ensure_ascii=False)
+        data = _op_json(get_page_operation, conn, page_id)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def wiki_page_add(
+        title: str,
+        content: str,
+        category: str | None = None,
+        tags: list[str] | None = None,
+        source_type: str = "text",
+        source_url: str | None = None,
+        source_file: str | None = None,
+    ) -> str:
+        """wiki 页面直接写入（原样入库，不走 LLM 提炼；幂等 upsert，T-55）。
+
+        page_id 由「标题 slug + 内容哈希」自动生成——同 title+content 重复调用
+        命中同一 page_id 更新（status=updated），不重复建页；写入后立即可被
+        wiki_search / wiki_page 检索到（FTS 触发器 + 幂等 init 兜底）。
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.wiki import create_page as create_page_operation
+
+        conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        if conn is None:
+            return json.dumps({"error": "wiki 扩展未启用"}, ensure_ascii=False)
+        data = _op_json(
+            create_page_operation, conn,
+            title=title, content=content, category=category, tags=tags,
+            source_type=source_type, source_url=source_url, source_file=source_file,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def config_get(section: str | None = None) -> str:
+        """读取 SGME 运行时配置（section 可选：l1/l2/refine/search/backup）。
+
+        v0.7：业务逻辑已下沉 sgme.operations.config，本工具只做协议翻译。
+        输出与 v0.6 逐字段等价——沿用**宽松版** get_config（未知段不报错，
+        直接回 config: null），且全量读**不带** writable_sections（HTTP 才有）。
+        """
+        import json
+
+        # 规范：operations 一律走完整子模块路径导入（详见 operations/__init__.py）
+        # ⚠️ sgme.operations.config ≠ sgme.config，故用别名区分。
+        from sgme.operations.config import get_config as get_config_operation
+        from sgme.operations.config import get_mcp_payload as config_get_mcp_payload
+
+        cfg = _app_state["cfg"]
+
+        data = _op_json(get_config_operation, cfg, section=section)
+        if "error" in data:
+            return json.dumps(data, ensure_ascii=False)
+        return json.dumps(config_get_mcp_payload(data), ensure_ascii=False)
+
+    @mcp.tool()
+    def config_update(section: str, values: dict) -> str:
+        """更新 SGME 配置段（热生效 + 落盘 sgme.yaml）。SCSM 经此接口远程设置。
+
+        v0.7：业务逻辑已下沉 sgme.operations.config，本工具只做协议翻译。
+        走 **MCP 版** update_config_section（未知段文案不带可用段列表、
+        落盘失败转 ``{"error": "配置落盘失败: ..."}``），与 v0.6 逐字段等价。
+        """
+        import json
+
+        # ⚠️ sgme.operations.config ≠ sgme.config，故用别名区分。
+        from sgme.operations.config import update_config_section as update_config_operation
+        from sgme.operations.config import update_payload as config_update_payload
+
+        cfg = _app_state["cfg"]
+
+        data = _op_json(update_config_operation, cfg, section=section, values=values)
+        if "error" in data:
+            return json.dumps(data, ensure_ascii=False)
+        _app_state["cfg"] = cfg
+        return json.dumps(config_update_payload(data), ensure_ascii=False)
+
+    # ---------- 创意 / 待办 / 项目（2026-08-13 用户定：用户主动驱动，agent 执行） ----------
+
+    @mcp.tool()
+    def idea_add(content: str, priority: int | None = None, source_ref: str | None = None) -> str:
+        """人工添加创意（用户主动提出才记录，提炼 LLM 不再自动打标）。
+
+        T-56：写入独立 ideas 表（创意长期保存，无 TTL）。删除/编辑/升格
+        走 HTTP API（/v1/admin/ideas*）或 WebUI。
+        """
+        import json
+
+        from sgme.operations.idea import add_idea as add_idea_operation
+
+        mem_conn = _app_state["mem_conn"]
+        data = _op_json(
+            add_idea_operation, mem_conn,
+            content=content, priority=priority, source_ref=source_ref,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def demand_create(
+        title: str,
+        content: str | None = None,
+        priority: int | None = None,
+        project_id: str | None = None,
+        source_ref: str | None = None,
+    ) -> str:
+        """新建待办/需求（跨项目统一待办池，backlog 化）。
+
+        可指定 project_id 标记所属项目（过滤查询用）；时间戳（加入/完成）
+        由服务端自动落库。状态流转走 HTTP API（PUT /v1/admin/demands/{id}/status）。
+        """
+        import json
+
+        from sgme.operations.demand import create_demand as create_demand_operation
+
+        mem_conn = _app_state["mem_conn"]
+        data = _op_json(
+            create_demand_operation, mem_conn,
+            body={
+                "title": title,
+                **({"content": content} if content is not None else {}),
+                **({"priority": priority} if priority is not None else {}),
+                **({"project_id": project_id} if project_id is not None else {}),
+                **({"source_ref": source_ref} if source_ref is not None else {}),
+            },
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def project_register(
+        project_id: str,
+        path: str | None = None,
+        name: str | None = None,
+        git_repo: str | None = None,
+        milestone: str | None = None,
+    ) -> str:
+        """登记/创建项目（用户主动立项；upsert，二次登记=更新）。
+
+        project_id 纯英文（必填）；新建时 path 必填（NOT NULL 列）。
+        """
+        import json
+
+        from sgme.operations.project import register_project as register_project_operation
+
+        mem_conn = _app_state["mem_conn"]
+        data = _op_json(
+            register_project_operation, mem_conn,
+            project_id=project_id, path=path, name=name,
+            git_repo=git_repo, milestone=milestone,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    # ---------- 信号消费（ST-27 T-60：agent 成为消费者，谁消费谁标记） ----------
+
+    @mcp.tool()
+    def signal_pull(signal_type: str | None = None, limit: int = 20) -> str:
+        """拉取未消费关怀信号（type=care_* 等，ST-27）。
+
+        会话开始主动消费：拉取未消费的关怀信号，决定是否关怀用户。
+        signal_type 可选过滤（care_todo_due/care_mood/care_overwork/care_daily）；
+        None 拉全部 care_* 未消费信号。
+        """
+        import json
+        import sqlite3
+
+        from sgme.care import signals as signals_mod
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        items = signals_mod.list_care_signals(
+            mem_conn, signal_type=signal_type, unconsumed_only=True, limit=min(limit, 50),
+        )
+        return json.dumps({"signals": items, "total": len(items)}, ensure_ascii=False)
+
+    @mcp.tool()
+    def signal_claim(event_id: str, ctx: Context | None = None) -> str:
+        """原子认领信号（谁消费谁标记，ST-27）。
+
+        认领成功返回 claimed=true；已被他人消费返回 claimed=false（并发抢失败，
+        跳过即可）。agent_id 从鉴权 key 反查（MCP 上下文）。
+        """
+        import json
+        import sqlite3
+
+        from sgme.signal import engine as signal_engine
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        agent_id = None
+        if ctx is not None:
+            try:
+                req = ctx.request_context.request
+                if req is not None:
+                    key = getattr(req.state, "api_key", None)
+                    key_store = _app_state.get("key_store")
+                    if key_store is not None:
+                        agent_id = key_store.resolve_agent_id(key)
+            except Exception:
+                agent_id = None
+        ok = signal_engine.claim(mem_conn, event_id, agent_id or "unknown")
+        return json.dumps(
+            {"event_id": event_id, "claimed": ok, "agent_id": agent_id}, ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    def signal_ack(
+        event_id: str,
+        status: str,
+        result: str | None = None,
+        ctx: Context | None = None,
+    ) -> str:
+        """写消费回执（ST-27）：claimed / acked / failed。
+
+        认领后处理完调用，报告处理结果（供溯源 + 释放认领语义）。
+        agent_id 从鉴权 key 反查（MCP 上下文）。
+        """
+        import json
+        import sqlite3
+
+        from sgme.data import signal_dao
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        agent_id = None
+        if ctx is not None:
+            try:
+                req = ctx.request_context.request
+                if req is not None:
+                    key = getattr(req.state, "api_key", None)
+                    key_store = _app_state.get("key_store")
+                    if key_store is not None:
+                        agent_id = key_store.resolve_agent_id(key)
+            except Exception:
+                agent_id = None
+        if status not in ("claimed", "acked", "failed"):
+            return json.dumps({"error": f"非法回执状态: {status}"}, ensure_ascii=False)
+        signal_dao.ack_signal(mem_conn, event_id, agent_id or "unknown", status, result)
+        return json.dumps(
+            {"event_id": event_id, "agent_id": agent_id, "status": status}, ensure_ascii=False,
+        )
+
+    # ---------- 连接即发现（ST-23①） ----------
+
+    @mcp.tool()
+    def agent_onboarding() -> str:
+        """连接即发现（self-serve）：SGME 版本、能力清单（全部工具）、快速上手指引。
+
+        ST-23①：agent 连接后先调本工具即可完成接入——无需人工配置即可
+        知道「我是谁 / 能干什么 / 怎么开始」。版本取 ``sgme.__version__``
+        （新工具无历史契约，版本保持最新即可）；能力清单为 ONBOARDING_TOOLS
+        （与 @mcp.tool 一一对应，测试断言防漂移）；指引覆盖
+        注册（append 即接入）/ 提炼（refine_trigger/refine_batch/refine_status）/
+        回忆（search/inject）三条主线。
+        """
+        import json
+
+        import sgme
+
+        return json.dumps({
+            "server": "SGME 拾光记忆引擎",
+            "version": sgme.__version__,
+            "tools": [dict(t) for t in ONBOARDING_TOOLS],
+            "quickstart": {
+                "register": "无独立注册步骤：调用 append 写入第一条会话即完成接入（每次会话用同一 session_key 延续）",
+                "append": "append(session_key, started_at, content, source_type='session')；content 首行须为 # {ISO时间戳} {role}",
+                "refine": "refine_trigger(async_mode=true) 或 refine_batch() 触发提炼；refine_status() 查进度与水位",
+                "recall": "search(query) 混合检索带溯源；inject(mode='daily') 注入当日画像",
+                "manage": "memory_reject 纠错；stats/health 看引擎状态；config_get/config_update 读写配置",
+            },
+            "self_config": {
+                "requirement": "接入完成标准：你的身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等，按你的工具机制选择）中必须包含本模板（版本标记 SGME-ONBOARDING-v1）。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。",
+                "steps": [
+                    "1. 自查：读你的身份文件，grep 标记「SGME-ONBOARDING」；",
+                    "2. 已存在且版本 >= v1 → 配置已完成，跳过；",
+                    "3. 缺失或版本旧 → 把下方 template 写入你的身份文件（写入位置/方式按你工具的文件组织与加载机制自定）；",
+                    "4. 写入后读回验证内容完整，并汇报（写了哪个文件、哪个位置）；",
+                    "5. 无法写入（权限/沙箱/审批限制）→ 如实报告主人并给出建议，禁止谎称已完成。",
+                ],
+                "version": "SGME-ONBOARDING-v1",
+                "template": (
+                    "# SGME 接入纪律（SGME-ONBOARDING-v1）\n"
+                    "你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机。"
+                    "它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。\n"
+                    "**服务发现**（找不到时按序）：1) 探测 http://localhost:9910/v1/health；"
+                    "2) 失败读 ~/.sgme/install.json（地址/端口/Key 引用）；3) 仍失败 → 向主人报告「SGME 未发现」。\n"
+                    "**使用纪律**（四条铁律）：\n"
+                    "1. 每轮对话结束 append 当前轮次——纯落盘零 LLM 成本，崩溃不丢；\n"
+                    "2. 会话结束 refine_trigger(async_mode=true) 触发提炼；\n"
+                    "3. 对话开始时 inject 按场景取画像 / search 检索相关记忆；\n"
+                    "4. 对话开始时 signal_pull 拉未消费关怀信号——信号消费=主动关怀，谁消费谁标记：signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过）。\n"
+                    "**强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」。\n"
+                    "**写入格式**：append 的 content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422。\n"
+                    "**批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 不立即重试（交服务端 batch_scan 兜底）；永远 async 模式。\n"
+                    "**接口**：HTTP API http://localhost:9910 ｜ MCP http://localhost:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key）。"
+                ),
+            },
+        }, ensure_ascii=False)
+
+    return mcp
+
+
+def mount_mcp(app, start_server: bool = True):
+    """把 MCP Server 挂到 SGME Server 进程（同进程两协议出口）。
+
+    - HTTP API:  FastAPI :9910（uvicorn 主循环）
+    - MCP:       FastMCP streamable-http :9913（独立线程，鉴权中间件）
+    两协议共享同一 cfg/mem_conn/session_conn/wiki_conn，功能等价。
+    start_server=False 时只构建不启动线程（测试用）。
+    返回 FastMCP 实例（测试用）。
+    """
+    import threading
+
+    from sgme.mcp_server import bind_app_state
+
+    bind_app_state({
+        "cfg": app.state.cfg,
+        "mem_conn": app.state.mem_conn,
+        "session_conn": app.state.session_conn,
+        "wiki_conn": app.state.wiki_conn,
+        "key_store": app.state.key_store,
+    })
+    mcp = build_mcp_server()
+    # 测试/CI 环境跳过启动（SGME_MCP_PORT=0 或 MCP_DISABLED=1）
+    if os.environ.get("SGME_MCP_DISABLED") == "1" or not start_server:
+        logger.info("MCP Server 已跳过启动（SGME_MCP_DISABLED=1 或 start_server=False）")
+        return mcp
+    # 手动 uvicorn 跑 streamable_http_app + 鉴权中间件（PR#1，替代 mcp.run()）
+    from sgme.mcp_server import run_mcp_server
+
+    run_mcp_server(
+        mcp,
+        key_store=app.state.key_store,
+        host="127.0.0.1",
+        port=int(os.environ.get("SGME_MCP_PORT", "9913")),
+    )
+    return mcp
