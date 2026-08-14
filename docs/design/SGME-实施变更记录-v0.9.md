@@ -655,3 +655,21 @@ L1.5 冲突裁决、L2 场景聚合。
   - 历史信号：2246 条堆积经游标快进（不删可溯源）+ TTL 归档清理 849 条超期 memory_updated；后续由 `purge_expired_signals` 按 TTL 持续清理（建议接入 Dream 定时器或 cron）
   - 真实链路验证（consume/ack 端点 + MCP 三工具）需服务重启后执行
 - 文档：Backlog ST-27 / T-57~T-62；本记录 B57；架构 §18 三层消费模型
+
+### B58. Docker 化 + NAS 真实部署验收（ST-24，2026-08-14）
+
+- 背景：ST-24 为 1.0 转公开/tag 的发布验收项——部署形态验证（NAS 最终使用形态）需真实部署，且项目此前无任何 Docker 资产（已核实）。用户定：笔记本 Docker 构建 → NAS（群晖 DSM + Docker 29.1.2）加载部署并端到端验收。
+- 改动（新增 4 个 Docker 资产 + 1 篇部署文档）：
+  - `Dockerfile`：`python:3.11-slim`（Debian bookworm，兼容 manylinux wheel）；依赖层先复制 pyproject.toml 用层缓存；程序资源（sgme/config/registry/templates/prompts/roles）内置 `/app`（不 pip install 项目，保留 PROJECT_ROOT=/app）；`SGME_HOME=/data` 重定向用户数据、`VOLUME /data`、`EXPOSE 9910 9913`、`CMD python -m sgme`
+  - `docker-compose.yml`：build + `image: sgme:1.0.0b1` + healthcheck（urllib 探测 /v1/health）+ `restart: unless-stopped` + `env_file: docker.env`（密钥注入）+ 数据卷 `sgme-data:/data`
+  - `.dockerignore`：密钥（.env/*.env）、数据（data/raw/tmp/logs/*.db）、开发产物（.venv/__pycache__/tests/docs/ui）、备份（.git.bak-*）全排除
+  - `.env.example`：密钥模板（SGME_ADMIN_KEY/SGME_AGENT_KEY/DEEPSEEK_API_KEY/VOLC_API_KEY/TZ）
+  - `docs/deployment-docker.md`：交付物清单/布局约定/单机快速开始/NAS 部署流程（镜像加速→save→scp→load→bind mount compose→验收清单）/注意事项（端口冲突、时区、备份、升级）/安全（密钥不入 git、0.0.0.0 必设自定义 key）
+- 测试（真实环境验收，非 mock）：
+  - 笔记本 Docker Desktop（镜像加速已配 daocloud/1ms/dockerproxy）：`docker compose build` 成功 → 镜像 463MB（`docker save` tar 109MB）；容器 health 200、`llm.available=true`；append→refine→search 端到端通过（检索命中「用户喜欢用 DeepSeek 写 Python 后端」）
+  - NAS（群晖 192.168.10.10，LEO 免 sudo docker）：`docker load` 成功；路径修正（NAS 卷为 `/vol1` 非 `/volume1`）；bind mount `/vol1/1000/Docker/sgme/data:/data`；`docker compose up -d` 后容器 `Up (healthy)`；health ok、llm.available=true；端到端 append（status=new）→ refine → search 命中「用户的家目录部署在群晖 NAS 上」；`/data` 下 data/raw/logs/install.json 均生成（持久化正常）
+- 运维影响：
+  - NAS 常驻：`restart: unless-stopped` + healthcheck 自愈；数据卷 `/vol1/1000/Docker/sgme/data` 可用群晖「文件站」/Hyper Backup 直接备份
+  - 升级路径：`docker compose build` → `docker compose up -d`（数据卷不变不丢数据）；NAS 侧 `docker save`/`load` 更新镜像
+  - 密钥：`docker.env` 含真实 key，**不入 git**（`.gitignore` 的 `*.env` 已覆盖）；与项目根 dsh 适配器 `.env`（SGME_AGENT_KEY=agt_*）严格隔离，勿混用
+- 文档：Backlog ST-24 ✅；本记录 B58；docs/deployment-docker.md
