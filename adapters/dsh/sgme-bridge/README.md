@@ -15,8 +15,16 @@
 
 ## 前置条件
 
-1. **SGME Server 常驻运行**（HTTP 9910 / MCP 9913），见 [SGME 仓库](https://github.com/freehul/sgme)；
-2. 配置密钥：`SGME_AGENT_KEY` / `SGME_ADMIN_KEY`（由 SGME 的 `install.py` 注册 agent 后写入 `.env`）。
+> ⚠️ **本插件依赖 SGME 本体，没有它插件是空壳**——装插件前先装好 SGME：
+
+1. **安装 SGME 拾光记忆引擎**（GitHub 仓库 [freehul/sgme](https://github.com/freehul/sgme)）：
+   ```bash
+   git clone https://github.com/freehul/sgme.git
+   cd sgme
+   # 按 SGME 仓库 README 完成安装并启动（HTTP 9910 常驻运行）
+   ```
+2. **注册 agent 拿密钥**：运行 SGME 的 `adapters/dsh/install.py`，注册 DSH agent，生成 `SGME_AGENT_KEY` / `SGME_ADMIN_KEY` 并写入 `.env`；
+3. **确认 SGME 在线**：`curl http://127.0.0.1:9910/v1/health` 返回 200 后再继续。
 
 ## 安装
 
