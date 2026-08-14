@@ -1,0 +1,53 @@
+# SGME .dockerignore — 构建镜像时排除的非运行时文件
+# 原则：镜像只含「程序 + 程序资源」，用户数据/开发产物/密钥一律不进镜像
+
+# VCS / 备份
+.git
+.git.bak-*
+.gitignore
+.dockerignore
+
+# 密钥 / 环境（绝不进镜像）
+.env
+*.env
+.env.example
+
+# Python 环境 / 缓存
+.venv
+venv
+__pycache__
+*.pyc
+*.egg-info
+
+# 运行时数据（挂载卷，不进镜像）
+data/
+raw/
+tmp/
+logs/
+cache/
+
+# 数据库 / 日志
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.log
+
+# 开发 / 测试 / 文档（镜像运行时不需要）
+docs/
+tests/
+eval/
+assets/
+scripts/oneoff/
+.pytest_tmp/
+.pytest_tmproot/
+
+# 前端（WebUI 构建产物单独处理，暂不进核心镜像）
+ui/node_modules/
+ui/dist/
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

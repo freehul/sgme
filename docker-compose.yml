@@ -1,0 +1,39 @@
+# SGME Docker Compose — 单机 / NAS 一键部署
+# 用法：
+#   1. 复制 .env.example 为 docker.env，填入真实密钥
+#   2. docker compose up -d --build
+#   3. 验证：curl http://localhost:9910/v1/health
+#
+# 密钥经 env_file（docker.env）注入，与项目根 dsh 适配器的 .env 隔离；
+# 数据卷 sgme-data 持久化 SGME_HOME（data/raw/logs/roles/config），升级不丢数据。
+
+services:
+  sgme:
+    build: .
+    image: sgme:1.0.0b1
+    container_name: sgme
+    restart: unless-stopped
+    ports:
+      - "9910:9910"   # HTTP API + WebUI
+      - "9913:9913"   # MCP streamable HTTP
+    environment:
+      # 用户数据根（挂载卷）
+      SGME_HOME: /data
+      # 监听 0.0.0.0（容器内访问必须，否则外部无法连接）
+      SGME_HOST: 0.0.0.0
+      SGME_PORT: "9910"
+      # 时区（日志/日报/备份定时用本地时区）
+      TZ: Asia/Shanghai
+    env_file:
+      - docker.env   # 密钥（不入 git）：DEEPSEEK_API_KEY / VOLC_API_KEY / SGME_ADMIN_KEY / SGME_AGENT_KEY
+    volumes:
+      - sgme-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9910/v1/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  sgme-data:
