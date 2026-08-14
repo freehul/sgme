@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background:
+      radial-gradient(ellipse at 50% 120%, rgba(56, 89, 255, 0.25) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% -20%, rgba(255, 105, 180, 0.12) 0%, transparent 50%),
+      radial-gradient(ellipse at 15% 0%, rgba(0, 212, 255, 0.15) 0%, transparent 45%),
+      linear-gradient(135deg, #0b0f2a 0%, #12173a 45%, #1b1440 100%);
+    position: relative;
+    color: #e8ecff;
+  }
+  body::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 6, 18, 0.55) 100%);
+  }
+  .grid {
+    position: absolute; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(120, 160, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(120, 160, 255, 0.05) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+  }
+  .title { position: absolute; top: 48px; left: 0; right: 0; text-align: center; }
+  .title .en {
+    font-size: 22px; letter-spacing: 8px; color: rgba(0, 212, 255, 0.85);
+    text-shadow: 0 0 18px rgba(0, 212, 255, 0.6);
+  }
+  .title .cn {
+    margin-top: 10px; font-size: 44px; font-weight: 700;
+    background: linear-gradient(90deg, #7ee8ff, #c9b8ff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 40px rgba(90, 160, 255, 0.35);
+  }
+  .title .sub { margin-top: 8px; font-size: 19px; color: rgba(220, 230, 255, 0.55); letter-spacing: 3px; }
+
+  /* 左侧：信号源 */
+  .signal-pool {
+    position: absolute; top: 230px; left: 100px; width: 340px; height: 380px;
+    background: rgba(18, 26, 60, 0.6);
+    border: 2px solid rgba(0, 212, 255, 0.45);
+    border-radius: 24px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 40px rgba(0, 180, 255, 0.2);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .signal-pool .ico { font-size: 58px; filter: drop-shadow(0 0 16px rgba(0, 212, 255, 0.7)); }
+  .signal-pool .nm { margin-top: 10px; font-size: 24px; font-weight: 700; }
+  .signal-pool .sigs { margin-top: 18px; display: flex; flex-direction: column; gap: 12px; width: 260px; }
+  .signal-pool .sig {
+    display: flex; align-items: center; gap: 12px;
+    font-size: 15px; padding: 10px 16px; border-radius: 14px;
+    background: rgba(0, 212, 255, 0.10); border: 1px solid rgba(0, 212, 255, 0.30);
+    color: rgba(220, 240, 255, 0.85);
+  }
+  .signal-pool .sig .dot { width: 9px; height: 9px; border-radius: 50%; background: #7ee8ff; box-shadow: 0 0 10px #7ee8ff; flex-shrink: 0; }
+
+  /* 右侧：关怀动作（AI 主动触达） */
+  .cares { position: absolute; top: 195px; right: 100px; width: 600px; }
+  .cares .card {
+    position: relative; width: 560px; height: 112px; margin-bottom: 22px;
+    background: rgba(18, 26, 60, 0.55);
+    border: 1.5px solid rgba(255, 150, 200, 0.35);
+    border-radius: 18px;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 0 30px rgba(255, 130, 180, 0.12), inset 0 0 22px rgba(255, 100, 160, 0.06);
+    display: flex; flex-direction: row; align-items: center; gap: 24px; padding: 0 26px;
+  }
+  .cares .card .ico { font-size: 44px; filter: drop-shadow(0 0 12px rgba(255, 150, 200, 0.55)); }
+  .cares .card .txt { display: flex; flex-direction: column; }
+  .cares .card .nm { font-size: 21px; font-weight: 700; margin-bottom: 6px; }
+  .cares .card .role { font-size: 14px; color: rgba(200, 220, 255, 0.6); }
+  .cares .card .badge {
+    margin-left: auto; font-size: 13px; padding: 6px 14px; border-radius: 16px;
+    background: rgba(255, 150, 200, 0.14); border: 1px solid rgba(255, 150, 200, 0.4);
+    color: #ffb3d1; white-space: nowrap;
+  }
+
+  svg.lines { position: absolute; inset: 0; width: 100%; height: 100%; }
+  svg.lines path { stroke: rgba(0, 212, 255, 0.5); stroke-width: 2; fill: none; stroke-dasharray: 8 8; animation: flow 2.2s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -32; } }
+
+  .note {
+    position: absolute; top: 700px; left: 0; right: 0; text-align: center;
+    font-size: 18px; color: rgba(220, 235, 255, 0.75); letter-spacing: 2px;
+  }
+  .note .hl { color: #ffb3d1; }
+
+  .footer {
+    position: absolute; bottom: 40px; left: 0; right: 0; text-align: center;
+    font-size: 15px; letter-spacing: 5px; color: rgba(180, 200, 255, 0.45);
+  }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+
+  <div class="title">
+    <div class="en">ACTIVE CARE</div>
+    <div class="cn">主动关怀</div>
+    <div class="sub">它不只记得你 · 还会主动找你</div>
+  </div>
+
+  <svg class="lines">
+    <path d="M 470,340 Q 640,290 830,300" />
+    <path d="M 470,420 Q 640,420 830,420" />
+    <path d="M 470,500 Q 640,550 830,540" />
+  </svg>
+
+  <div class="signal-pool">
+    <div class="ico">📡</div>
+    <div class="nm">信号引擎</div>
+    <div class="sigs">
+      <div class="sig"><span class="dot"></span>记忆更新</div>
+      <div class="sig"><span class="dot"></span>情绪波动</div>
+      <div class="sig"><span class="dot"></span>待办到期</div>
+      <div class="sig"><span class="dot"></span>过度工作</div>
+    </div>
+  </div>
+
+  <div class="cares">
+    <div class="card">
+      <div class="ico">💙</div>
+      <div class="txt"><div class="nm">情绪主动关心</div><div class="role">察觉情绪波动，主动问候</div></div>
+      <div class="badge">主动触达</div>
+    </div>
+    <div class="card">
+      <div class="ico">📌</div>
+      <div class="txt"><div class="nm">待办提醒</div><div class="role">计划到期，及时提醒</div></div>
+      <div class="badge">主动触达</div>
+    </div>
+    <div class="card">
+      <div class="ico">⚠️</div>
+      <div class="txt"><div class="nm">过度工作预警</div><div class="role">连续加班，提醒休息</div></div>
+      <div class="badge">主动触达</div>
+    </div>
+  </div>
+
+  <div class="note">信号消费 = 主动关怀 · <span class="hl">谁消费谁标记</span>（原子认领 + 回执，不重复打扰）</div>
+
+  <div class="footer">ACTIVE CARE · 它不只记得你，还会主动找你</div>
+</body>
+</html>
