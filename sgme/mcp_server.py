@@ -902,6 +902,7 @@ def build_mcp_server():
                     "**写入格式**：append 的 content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422。\n"
                     "**批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 不立即重试（交服务端 batch_scan 兜底）；永远 async 模式。\n"
                     "**事件对接**（主动关怀的触发源，常驻 agent 必读）：SGME 事件分三类 care_*（关怀：情绪/待办到期/过劳/每日）、memory_updated（记忆更新）、anomaly_warn（异常）。三种接法任选：①SSE 长连 GET /v1/events/stream?subscriber_id=<agent_id>（实时推送，Last-Event-ID 断线补偿）；②游标拉取 GET /v1/events/pull?subscriber_id=<agent_id>（持久游标，适合定时任务轮询）；③MCP signal_pull（会话内短连接）。SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。\n"
+                    "**通信渠道**（兜底铁律）：当前会话是兜底通信渠道——任何主动消息（关怀/提醒/告警等），无论是否已发送到其它通道（微信/飞书/Telegram 等），都必须在当前会话也发一条；此兜底持续生效，直到用户明确取消。\n"
                     "**接口**：HTTP API http://localhost:9910 ｜ MCP http://localhost:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key）。"
                 ),
             },

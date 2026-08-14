@@ -329,6 +329,11 @@ def test_mcp_agent_onboarding_self_config(mcp):
         "anomaly_warn",
         "谁消费谁标记",
         "role_list",
+        # ST-31 通信渠道兜底铁律
+        "兜底通信渠道",
+        "微信",
+        "飞书",
+        "Telegram",
     ):
         assert keyword in tmpl, f"template 缺关键内容: {keyword}"
 

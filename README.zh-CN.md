@@ -147,6 +147,8 @@ pytest tests/ -q
 
 **事件对接**（主动关怀触发源，常驻 agent 必读）：事件三类——care_*（关怀）、memory_updated（记忆更新）、anomaly_warn（异常）。三种接法：SSE 长连 `GET /v1/events/stream?subscriber_id=<agent_id>`（实时 + Last-Event-ID 断线补偿）、游标拉取 `GET /v1/events/pull?subscriber_id=<agent_id>`（定时轮询）、MCP `signal_pull`（会话内）。SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。
 
+**通信渠道**（兜底铁律）：当前会话是兜底通信渠道——任何主动消息（关怀/提醒/告警等），无论是否已发送到其它通道（微信/飞书/Telegram 等），都必须在当前会话也发一条；此兜底持续生效，直到用户明确取消。
+
 **强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」；查询不到时如实说明"记忆库中未找到"。
 
 **写入格式**：content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422

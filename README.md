@@ -148,6 +148,8 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 
 **Event connection** (proactive care trigger source, required for resident agents): three event classes — care_* (care), memory_updated (memory updates), anomaly_warn (anomalies). Three ways to connect: SSE stream `GET /v1/events/stream?subscriber_id=<agent_id>` (real-time + Last-Event-ID reconnect), cursor pull `GET /v1/events/pull?subscriber_id=<agent_id>` (scheduled polling), MCP `signal_pull` (in-session). SSE/pull go over HTTP :9910 with X-API-Key; signal_pull goes over MCP.
 
+**Delivery channel** (fallback rule): the current session is the fallback delivery channel — any proactive message (care / reminder / alert) must also be posted in the current session, whether or not it was sent to other channels (WeChat / Feishu / Telegram); this fallback stays active until the user explicitly cancels it.
+
 **Mandatory lookup**: for questions about user/project history facts (previously/last time/remember…), you MUST search before answering — never say "I don't know" without searching first; if nothing is found, report honestly "not found in the memory store".
 
 **Write format**: the first line of content must be `# {ISO timestamp} {role}` (user/assistant), otherwise 422 is returned
