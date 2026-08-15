@@ -825,3 +825,14 @@ L1.5 冲突裁决、L2 场景聚合。
   - 后续镜像/部署变更必须：改项目 git → push → NAS 拉取 → 构建/更新 compose（B64 纪律正式生效）
   - 遗留：方案 B 的 NAS 全新构建（docker build from git）未在本轮执行——以 t69 固化镜像为当前生产态，下次有计划升级时按模板流程走
 - 文档：Backlog T-70；本记录 B67
+
+### B68. dshfind 可安装判定修复：根 package.json 瘦包装（dsh-sgme）+ README 安装段（2026-08-16）
+
+- 背景：dshfind.com 插件市场对 freehul/sgme 判定「这不是可安装的插件包」（仓库根无 package.json，`dsh plugin add github:freehul/sgme` 会失败）——实际 dsh-sgme 插件包（adapters/dsh/sgme-bridge/，Cordis SDK 原生 TS 插件）已发布 npm v0.1.1（2026-08-14，maintainer freehul），且 lib/ 构建产物已提交 git（dsh-mnemon 模式，运行时不要求宿主装 pnpm）；dshfind 的安装推导只看仓库根 manifest（scripts/lib/install.mjs manifestFacts），嵌套插件包不可见导致误判。查证：DSH 源码 runPlugin = pnpm 转发器，按安装后的包名解析 dsh.bundle 加入 dsh.profile.bundles 层栈，故根包装的 name 必须与 patch 引用名一致（dsh-sgme）。
+- 改动：
+  1. **根 package.json（新增）**：name=dsh-sgme v0.1.1 + `dsh.bundle.patch` → `./adapters/dsh/sgme-bridge/cordis.patch.yml` + main → `adapters/dsh/sgme-bridge/lib/index.js`（已提交，git 装免 prepare）；dependencies/peerDependencies 与 bridge 一致（schemastery + @deepseek-ai/cordis/dsh-tools/dsh-commands）；`prepublishOnly` 强制失败——根只是 git 安装包装，禁止从仓库根 npm publish（防覆盖已发布的 dsh-sgme 真实包）；description 注明包装语义
+  2. **README.md / README.zh-CN.md**：Quick Start 后新增「Install as a DSH plugin / 安装为 DSH 插件」段——主推 `dsh plugin --profile web add dsh-sgme`（npm），备用 `dsh plugin --profile web add github:freehul/sgme`（git 直装），引 adapters/dsh/README.md 完整指南
+  3. **.gitignore**：补 `/node_modules/`（根包装不装依赖）
+- 测试：node JSON 解析 + main/cordis.patch.yml 路径存在性校验；adapters/dsh pytest 无回归；dsh 临时 profile link 安装冒烟（dsh-sgme 进入 bundles 层栈，验证同 T-53 机制）
+- 运维影响：dshfind 每日同步后页面由「不是可安装插件包」变为 npm 安装命令（`dsh plugin --profile web add dsh-sgme`）；git 直装 `github:freehul/sgme` 亦可用；真实 npm 包仍以 adapters/dsh/sgme-bridge/ 为唯一发布源（根包装禁止发布）
+- 文档：Backlog T-71；本记录 B68
