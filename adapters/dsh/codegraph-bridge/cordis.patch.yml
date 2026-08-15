@@ -1,0 +1,10 @@
+# Mount the CodeGraph bridge into a DSH profile.
+# 把 colbymchenry/codegraph（本地代码知识图谱 CLI）暴露为 dsh 工具。
+# bin 指向 npm 全局安装的 npm-shim.js；projectPath 需已 `codegraph init` 建过索引。
+- insert:
+    - id: codegraph
+      name: "dsh-codegraph"
+      config:
+        bin: "C:\\Users\\LEO\\AppData\\Roaming\\npm\\node_modules\\@colbymchenry\\codegraph\\npm-shim.js"
+        projectPath: "D:\\Projects\\SGME"
+        queryLimit: 10

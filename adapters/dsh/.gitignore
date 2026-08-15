@@ -6,3 +6,6 @@
 sgme-bridge/node_modules/
 sgme-bridge/.tsbuildinfo
 # 注：lib/ 构建产物提交（dsh-mnemon 模式，运行时不要求宿主装 pnpm）
+# codegraph-bridge（dsh-codegraph 插件）
+codegraph-bridge/node_modules/
+codegraph-bridge/.tsbuildinfo

@@ -1,0 +1,41 @@
+{
+  "name": "dsh-codegraph",
+  "version": "0.1.0",
+  "description": "CodeGraph (colbymchenry/codegraph) bridge for DeepSeek Harness — 本地代码知识图谱工具（explore/query/node/status），100% 本地，零 Python 依赖。",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "codegraph",
+    "code-intelligence",
+    "cordis",
+    "plugin"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+  },
+  "packageManager": "pnpm@11.21.0"
+}
