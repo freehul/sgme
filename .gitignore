@@ -69,3 +69,6 @@ Thumbs.db
 .reasonix/
 # CodeGraph 本地索引（.codegraph/ 不入 git，可重建）
 /.codegraph/
+
+# 根 package.json 为 DSH 插件 git 安装包装（dsh-sgme）：根不装依赖，node_modules 不入库
+/node_modules/
