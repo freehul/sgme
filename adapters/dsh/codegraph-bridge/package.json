@@ -31,11 +31,11 @@
     }
   },
   "dependencies": {
-    "schemastery": "^3.18.0"
+    "schemastery": "^3.18.0",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+    "@deepseek-ai/cordis": "^4.0.1"
   },
   "packageManager": "pnpm@11.21.0"
 }
