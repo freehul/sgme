@@ -836,3 +836,16 @@ L1.5 冲突裁决、L2 场景聚合。
 - 测试：node JSON 解析 + main/cordis.patch.yml 路径存在性校验；adapters/dsh pytest 无回归；dsh 临时 profile link 安装冒烟（dsh-sgme 进入 bundles 层栈，验证同 T-53 机制）
 - 运维影响：dshfind 每日同步后页面由「不是可安装插件包」变为 npm 安装命令（`dsh plugin --profile web add dsh-sgme`）；git 直装 `github:freehul/sgme` 亦可用；真实 npm 包仍以 adapters/dsh/sgme-bridge/ 为唯一发布源（根包装禁止发布）
 - 文档：Backlog T-71；本记录 B68
+
+### B69. Docker 新用户开箱修复：多阶段 WebUI 镜像 + 首次启动物化 sgme.yaml + runbook Docker 章节 + NAS 全新构建验证（2026-08-16）
+
+- 背景：核查「用户从 Docker 安装部署会不会出问题」（2026-08-16 用户问询）——静态核查发现 4 缺口：①git Dockerfile 从未全新构建验证（B67 遗留：NAS 生产镜像 sgme:1.0.0b1-nas-git-t69 为 docker commit 固化，非从 Dockerfile 构建）②`SGME_HOME=/data` 时 `DEFAULT_SGME_CONFIG = $SGME_HOME/config/sgme.yaml`，镜像内 `/app/config/sgme.yaml` 永不加载——空卷启动 = 全默认配置：`l15.prescreen.enabled=False` + `fallback: full_recall`（B65 防烧钱的 skip_conflict 丢失，embed 不可达回退全量召回场景复现）③WebUI 不进镜像（Dockerfile 无 ui/、.dockerignore 排除 ui/dist；app.py 检测 /app/ui/dist 存在即挂载 SPA），compose 注释「HTTP API + WebUI」误导 ④docs/runbook.md 无 Docker 章节；NAS 拉取链路未接（/vol1/1000/git/sgme.git bare 仓为空、无 remote、cron 无拉取任务）。
+- 改动：
+  1. **Dockerfile 多阶段化**：Stage 1 node:20-alpine 构建 WebUI（npm ci + vite build → /ui/dist）；Stage 2 python:3.11-slim（git + safe.directory + pip 依赖清单与 pyproject 逐项一致）；`COPY --from=ui-build /ui/dist ui/dist/` 入镜像；`config/sgme.yaml` 语义明确为「首次启动模板」（非死代码）
+  2. **docker/entrypoint.sh（新增）**：`ENTRYPOINT` 接管——空卷首次启动把 `/app/config/sgme.yaml` 物化到 `$SGME_HOME/config/`（含生产调优 prescreen+skip_conflict），用户可编辑后重启；`exec "$@"` 透传 CMD
+  3. **docs/runbook.md §16 Docker 部署**：准备（.env.example→docker.env）/启动验证/配置（sgme.yaml 物化语义）/升级/NAS 部署流程（B64 纪律 + bare 仓拉取）
+  4. **NAS 拉取链路**：`/vol1/1000/git/sgme.git` bare 仓接 gitee remote + fetch（此前为空仓无 remote，B64「NAS 拉取」未落地）
+  5. **NAS 全新构建验证（E）**：`git fetch → clone → docker build（多阶段）→ 空卷 throwaway 容器 → /v1/health + WebUI index + 物化 sgme.yaml 校验 → 清理`（不触碰生产容器 sgme）
+- 测试：本地 ui 前端构建冒烟（vite build 800ms 出产物 ✓）；entrypoint sh 语法校验；NAS 全新构建 + 空卷启动冒烟结果见 E 段
+- 运维影响：新用户 `docker compose up -d --build` 开箱即用（WebUI 内置 + 防烧钱默认物化）；升级仍走 `git pull && docker compose up -d --build`；NAS 生产容器未动（当前 t69 镜像继续跑，下次计划升级时按 §16.5 流程切换新镜像）
+- 文档：Backlog T-72；本记录 B69

@@ -1,4 +1,4 @@
-﻿# SGME 运维手册 (Runbook)
+# SGME 运维手册 (Runbook)
 
 > 最小闭环 v0.4 · 单用户 Agent 记忆引擎 Server
 
@@ -707,3 +707,50 @@ print(f"pre_restore: {r.json()['pre_restore_snapshot']}")
 - `check_vector_availability`：sqlite-vec 扩展 + 向量表行数，不可用 → `vector.available=false`（含 reason）
 - `check_heartbeat`：综合心跳（LLM 可用 + 队列深度 + 最近提炼时间 + 停摆标记）
 - 心跳定时任务：每 10 分钟一次（`sgme/__main__.py` 注册）
+
+## 16. Docker 部署
+
+单机 / NAS 一键部署（HTTP API + WebUI :9910、MCP :9913）。多阶段镜像自带 WebUI 与 git（skills_hub 依赖），首次启动自动物化默认 `sgme.yaml` 到数据卷。
+
+### 16.1 准备
+
+```bash
+# 克隆仓库（任选远程）
+git clone https://gitee.com/freehul/sgme.git SGME
+cd SGME
+
+# 密钥：复制 .env.example 为 docker.env 并填入真实值
+# （DEEPSEEK_API_KEY / VOLC_API_KEY / SGME_ADMIN_KEY / SGME_AGENT_KEY，docker.env 已被 gitignore，勿提交）
+cp .env.example docker.env
+```
+
+### 16.2 启动与验证
+
+```bash
+docker compose up -d --build
+# 验证
+curl http://localhost:9910/v1/health
+# WebUI（含在镜像内）：打开 http://localhost:9910/
+# MCP：http://localhost:9913/mcp
+```
+
+### 16.3 配置（sgme.yaml）
+
+- **首次启动**（空数据卷）自动把默认 `config/sgme.yaml` 物化到数据卷 `config/` 下（entrypoint 复制镜像内模板）
+- 默认含生产调优：`l15.prescreen.enabled: true` + `fallback: skip_conflict`（embed 不可达时跳过冲突检测直接 store，防全量召回烧钱）与 `search.vector`（volc-plan 兜底）
+- 改配置：编辑数据卷 `config/sgme.yaml` 后重启容器；程序资源 `llm.yaml` / `providers.yaml` 始终读镜像内版本
+- 找数据卷：`docker volume ls` / `docker volume inspect <volume>`（compose 卷名形如 `sgme_sgme-data`）
+
+### 16.4 升级
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+### 16.5 NAS（群晖）部署
+
+- 部署真相源：`deploy/nas-docker-compose.yml`（模板，`{{IMAGE_TAG}}` 占位），NAS 生产 compose 非 git 仓库（B64 遗留）
+- 流程（B64 纪律）：改项目 git → push（github + gitee 双推）→ NAS 拉取（`/vol1/1000/git/sgme.git` bare 仓接 gitee remote 后 fetch）→ NAS 构建 → 更新 compose → up -d
+- 数据卷 bind mount 到共享文件夹（如 `/vol1/1000/Docker/sgme/data` → `/data`），文件站可直接备份
+- skills-hub 可选 bind mount：`/vol1/1000/git/skills-hub.git` → `/git/skills-hub.git`（file:// 直访，免 SSH key）
