@@ -756,3 +756,19 @@ L1.5 冲突裁决、L2 场景聚合。
   - **NAS 重启自愈**：看门狗 5 分钟内自动拉起（含 8/15 踩坑的 docker.service 依赖失败场景）；备份每天 03:30 落机械盘
   - **遗留**：Hermes 插件新 base_url 需 Hermes 重启后生效；sgme-care-heartbeat cron 已随 care_consumer 默认值修复恢复
 - 文档：Backlog 无关联任务（运维收尾）；本记录 B63
+
+### B64. SkillsHub 启用——Hermes skill 库同步 NAS + 迁移遗留配置修复（2026-08-16）
+
+- 背景：用户要求把 Hermes 本机 skill 库（%LOCALAPPDATA%\hermes\skills，392 个注册 skill）单向复制到 NAS skills-hub 远端仓（/vol1/1000/git/skills-hub.git），本地零删除，走 SGME skills_hub 模块正规链路（put_skill → POST /v1/admin/skills/sync to_remote）。
+- 改动（均为 NAS 部署位，非项目代码；代码侧无改动）：
+  1. **修复 B63 迁移遗留缺陷——生产配置从未生效**：SGME_HOME=/data 时用户配置路径为 `/data/config/sgme.yaml`，但迁移时漏拷，Gateway 一直跑内置默认配置（l1.chunk_size 8000 应为 5000、L1.5 预筛关闭应为开、向量模型 nomic 应为 doubao/volc-plan、skills_hub.enabled=false 应为 true）。修复：镜像内 `/app/config/sgme.yaml` 复制到 `/data/config/sgme.yaml`，重启生效。**影响面**：NAS 生产 SGME 首次真正跑在生产配置上
+  2. **NAS 容器镜像缺 git**：skills_hub 同步依赖 subprocess 调系统 git，但 sgme:1.0.0b1-nas 镜像未装。新增 `Dockerfile.git`（FROM sgme:1.0.0b1-nas + apt install git + `git config --global --add safe.directory /git/skills-hub.git`，容器内 root 访问属主 1000 的 bare 仓必需），NAS 上 docker build → `sgme:1.0.0b1-nas-git`（+139MB）
+  3. **compose 挂载 + env 覆盖**（/vol1/1000/Docker/sgme/docker-compose.yml / docker.env，均已留 .bak）：image 改 sgme:1.0.0b1-nas-git；volumes 增 `/vol1/1000/git/skills-hub.git:/git/skills-hub.git`（file:// 直访免 SSH key）；docker.env 增 `SGME_SKILLS_HUB_REMOTE=file:///git/skills-hub.git`（ST-20 env 覆盖机制，值仅存进程内存不落盘）
+  4. **Hermes skill 库同步**：本地 392 个 SKILL.md 打包（manifest 对齐 Hermes 注册名单、软链接解引用、排除 .archive/.curator_backups）→ 容器内 `SkillsHub.init → put_skill × 392`（PYTHONPATH=/app，脚本在 /data/import_skills.py，用后清理）→ `POST /v1/admin/skills/sync` direction=to_remote → 远端仓 main +1 commit（393 文件 = .gitignore + 392 SKILL.md，冲突按 local_wins 解决，败方备份 ref conflict-backup-20260816041111）
+  5. **容器重建验证闭环**：新镜像重建容器后工作区清空 → `sync` from_remote 全量恢复 392/392，远端仓→工作区链路验证通过
+- 测试：远端仓 `git ls-tree main` 393 文件抽查 sgme-operations/hermes-agent/zhangxuefeng-perspective 均在；本地 skills 目录零改动（406 SKILL.md 原样）；Gateway health OK（deepseek 链正常）
+- 运维影响：
+  - **正规流程纪律（用户纠正）**：本次镜像构建直接在 NAS 上旁路执行（Dockerfile.git 未先入项目 git），违反「发现问题→修复→提交本地→提交 GitHub→NAS 拉取部署」流程。已收尾：本记录 B64 登记；**Dockerfile 合入项目根（git 安装入主 Dockerfile 单一入口）推迟到下次镜像更新时执行**；此后镜像/部署变更必须先提交项目 git + push GitHub/Gitee，再 NAS 拉取构建
+  - **远端仓基线**：skills-hub.git main 现为权威基线（393 文件），Hermes 本地为唯一编辑源，后续变更走 put_skill + sync 双方向
+  - **遗留**：NAS 部署目录非 git 仓库（compose/docker.env 仅 .bak 备份），部署配置真相源在项目 git（tmp/nas-docker-compose.yml 模板 + 本记录）
+- 文档：Backlog 无关联任务（运维收尾）；本记录 B64
