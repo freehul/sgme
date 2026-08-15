@@ -11,6 +11,13 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # ---- 1. 依赖（先复制清单，利用 Docker 层缓存）----
+# git：skills_hub 同步依赖系统 git（B64 遗留：合入主 Dockerfile 单一入口，2026-08-16 T-70）
+# safe.directory：容器内 root 访问属主 1000 的 bare 仓必需（NAS bind mount /git/skills-hub.git）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && git config --global --add safe.directory /git/skills-hub.git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml README.md ./
 RUN pip install --no-cache-dir \
     "fastapi>=0.110" \
