@@ -100,3 +100,11 @@ dsh 对话回合结束 → session/event(turn/end) → sgme-bridge
 - dsh v0.1 API 不稳定（`SESSION_FORMAT_VERSION=0`，no compatibility promise）——插件代码加版本探测，pin dsh commit
 - `agent/pre-step` 注入语义复杂（agent-instructions 是首次注入 + 变更检测）——v1 只做首步注入，避开去重/预算冲突
 - TS 构建链对 SGME 项目（纯 Python）是新增依赖——`sgme-bridge/` 自带 `package.json`，`lib/` 产物提交，运行时不要求宿主装 pnpm
+
+## codegraph-bridge（dsh-codegraph 插件，2026-08-16 纳入）
+
+- 目录：`codegraph-bridge/` — CodeGraph 本地代码知识图谱桥接（explore/query/node/status 4 工具）
+- 源码随本项目 git 管理（与 sgme-bridge 同构）；web profile link 指向本项目内副本
+- 用户级技能：`C:/Users/LEO/.agents/skills/codegraph/SKILL.md`（可重建源：`codegraph-bridge/skills/codegraph/SKILL.md`）
+- 依赖：npm 全局 `@colbymchenry/codegraph`（npm-shim.js）；项目需 `codegraph index` 建索引（`.codegraph/codegraph.db`）
+- 改动后：`dsh plugin --profile web install` + 重启 web 生效
