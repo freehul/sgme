@@ -849,3 +849,24 @@ L1.5 冲突裁决、L2 场景聚合。
 - 测试：本地 ui 前端构建冒烟（vite build 800ms 出产物 ✓）；entrypoint sh 语法校验；NAS 全新构建 + 空卷启动冒烟结果见 E 段
 - 运维影响：新用户 `docker compose up -d --build` 开箱即用（WebUI 内置 + 防烧钱默认物化）；升级仍走 `git pull && docker compose up -d --build`；NAS 生产容器未动（当前 t69 镜像继续跑，下次计划升级时按 §16.5 流程切换新镜像）
 - 文档：Backlog T-72；本记录 B69
+
+### B70. 生产容器切换到 git 构建镜像 sgme:1.0.0b1-git-t72 + 全链路测试（2026-08-16）
+
+- 背景：T-72 完成 Docker 开箱修复并通过空卷冒烟；用户指令（2026-08-16）「接入 SGME 的 agent 只有当前会话在工作，由你完成容器重建并测试」——把生产容器从旧镜像（docker commit 固化的 nas-git）切换到 git 构建的新镜像（含 WebUI + entrypoint 物化 + T-68/T-69 修复）。
+- 前置：手动备份（nas_backup.sh → /vol2/1000/sgme-backup，OK）；确认 /vol1/1000/Docker/sgme/data/config/sgme.yaml 存在（md5 4e409685103dc04b2613cd543683ff8f，含 l15 prescreen+skip_conflict 生产调优）——entrypoint 首次启动检测到文件存在会跳过物化，不覆盖生产配置。
+- 改动：
+  1. NAS src 同步至 209d926（bare 仓 gitee fetch → src pull，B64 链路）
+  2. NAS 构建正式镜像 `sgme:1.0.0b1-git-t72`（缓存层秒级完成）
+  3. NAS compose 备份 `docker-compose.yml.bak-pre-git-t72`，image: `sgme:1.0.0b1-nas-git-t69` → `sgme:1.0.0b1-git-t72`（端口/env/env_file/volumes/healthcheck 不变，数据卷 bind mount 不动）
+  4. `docker compose up -d` 重建容器（原 nas-git 容器被替换，此前 compose 与运行态镜像漂移已消除）
+- 测试（全绿）：
+  - 容器 `sgme:1.0.0b1-git-t72 Up (healthy)`（docker healthcheck 通过）
+  - `GET /v1/health` 200：llm deepseek/deepseek-v4-flash available；vector sqlite-vec memory_vectors=11499 scene_vectors=109；refinement watermark_age 173s、stalled=false、heartbeat_ok=true
+  - WebUI：`GET /` 返回 SPA HTML ✓；MCP :9913 返回 403（鉴权生效=端点正常）
+  - 数据完整：stats memories 11567（archived 4380）、raw_files 726（refined 716）；sessions 含 dsh-* 会话 status=refined
+  - 提炼健康：refine_runs 最近 l2_scene 阶段 status=ok（provider deepseek）
+  - config 未被覆盖：md5 前后一致（4e409685…）；entrypoint 无物化日志（符合设计）
+  - 日志无 traceback/CRITICAL
+  - 端到端：开发机 → 192.168.10.10:9910 可达；POST /v1/search（dsh agent key）真实召回 BM25+vector+RRF 融合记忆（含溯源 trace）
+- 运维影响：生产已运行 git 构建镜像（WebUI 内置 + 防烧钱默认 + 未来升级可走 `git pull && docker compose up -d --build`）；旧镜像 nas-git/t69 保留可回滚（compose 备份 .bak-pre-git-t72）；NAS 侧不再依赖 docker commit 固化
+- 文档：Backlog T-73；本记录 B70
