@@ -370,3 +370,34 @@ def test_mark_status_error(session_conn):
     assert ok
     rf = session_dao.get_raw_file(session_conn, "f1")
     assert rf["status"] == "error"
+
+# ---------- T-69（2026-08-16）：memory_sources 幂等写入防御 ----------
+
+def test_memory_sources_unique_constraint(mem_with_registry):
+    """memory_sources 有 UNIQUE(memory_id, source_ref)，同源重复写入幂等忽略。"""
+    # 同一记忆写入两个不同 source_ref（正常）
+    mid = memory_dao.insert_memory(
+        mem_with_registry, content="T-69 测试记忆", memory_type="persona",
+        priority=50, time_velocity="static", ttl_days=None,
+        dimension_ids=["identity"],
+        sources=[("file_a:1", "session")],
+    )
+    n = mem_with_registry.execute(
+        "SELECT COUNT(*) FROM memory_sources WHERE memory_id=? AND source_ref='file_a:1'", (mid,)
+    ).fetchone()[0]
+    assert n == 1
+
+    # 直接 INSERT 同源（绕过 DAO）→ 触发 UNIQUE 约束抛 IntegrityError
+    import sqlite3
+    with pytest.raises(sqlite3.IntegrityError):
+        mem_with_registry.execute(
+            "INSERT INTO memory_sources (memory_id, source_ref, source_type) VALUES (?,?,?)",
+            (mid, "file_a:1", "session"),
+        )
+
+
+def test_memory_sources_schema_has_pk(mem_with_registry):
+    """schema 层：PRAGMA 确认复合主键存在。"""
+    cols = mem_with_registry.execute("PRAGMA table_info(memory_sources)").fetchall()
+    pk_cols = [r[1] for r in cols if r[5] > 0]
+    assert sorted(pk_cols) == ["memory_id", "source_ref"]

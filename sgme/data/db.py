@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS memory_tags (
 CREATE TABLE IF NOT EXISTS memory_sources (
   memory_id TEXT NOT NULL REFERENCES memories(memory_id),
   source_ref TEXT NOT NULL,
-  source_type TEXT NOT NULL);
+  source_type TEXT NOT NULL,
+  PRIMARY KEY (memory_id, source_ref));  -- 2026-08-16 T-69：同记忆同源唯一（幂等写入防御）
 CREATE INDEX IF NOT EXISTS idx_tags_dim ON memory_tags(dimension_id, memory_id);
 CREATE INDEX IF NOT EXISTS idx_mem_updated ON memories(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mem_priority ON memories(priority DESC);
