@@ -805,3 +805,23 @@ L1.5 冲突裁决、L2 场景聚合。
   - 代码部署（db.py + memory_dao.py）→ 容器重启 healthy → 提炼冒烟通过（L1.5 store=4 merge=4 archived=4，无异常）
 - 运维影响：备份位于挂载卷 `data/backups/`（持久，不随容器重建丢失）；后续新记忆写入自动受 UNIQUE 约束保护。
 - 文档：Backlog T-69；本记录 B66
+
+### B67. Docker 部署固化：镜像 commit 修复 + Dockerfile 合入 git + NAS 部署模板（2026-08-16）
+
+- 背景：T-68/T-69 的代码修复（prescreen 熔断、动态链 thinking 继承、去重约束）均经 docker cp 注入运行中容器（可写层）——镜像 sgme:1.0.0b1-nas-git 本身无修复，容器重建即丢（假部署风险）。B64 遗留「git 安装入主 Dockerfile 单一入口推迟到下次镜像更新」到期。
+- 风险核查（重建镜像前）：
+  1. `.dockerignore` 已排除 `.env`（密钥绝不进镜像）——项目 Dockerfile `COPY config/` 会跳过 config/.env ✅
+  2. NAS docker.env 密钥完整（DEEPSEEK/VOLC/ADMIN/AGENT 35-46 字符）且与容器实际 env 一致 ✅
+  3. 项目 config/.env 存在但被 dockerignore + gitignore 双排除，运行时密钥走 docker.env 注入 ✅
+- 改动：
+  1. **镜像固化（方案 A，零风险快照）**：`docker commit sgme sgme:1.0.0b1-nas-git-t69`（622MB）——把已验证 healthy + 冒烟通过、含全部修复的容器整体提交为新镜像。验证：镜像内 l15.py 5 处 PRESCREEN_SKIP_CONFLICT / resolve.py 7 处 static_node / db.py PRIMARY KEY / memory_dao.py INSERT OR IGNORE 全部在。
+  2. **NAS compose 指向 t69**：`/vol1/1000/Docker/sgme/docker-compose.yml` 改 image: sgme:1.0.0b1-nas-git-t69（留 .bak-pre-t69），当前容器保持运行不重建——即使 NAS 重启/重建容器，也从固化镜像拉起，修复不丢。
+  3. **Dockerfile 合入 git（方案 B 前置）**：主 Dockerfile 加 git 安装（apt install git + safe.directory /git/skills-hub.git，B64 遗留单一入口）。
+  4. **NAS 部署模板入 git**：`tmp/nas-docker-compose.yml`（{{IMAGE_TAG}} 占位 + 部署流程注释）——NAS 生产 compose 的真相源模板（NAS 部署目录非 git 仓库，B64 遗留）。
+  5. **项目 docker-compose.yml / .dockerignore** 首次纳入 git 跟踪（单机部署形态 + 构建排除规则）。
+- 测试：t69 镜像代码标记验证（4 项全过）；NAS docker.env 密钥完整性验证；容器 healthy。
+- 运维影响：
+  - 部署真相源闭环：Dockerfile/compose/模板入 git → NAS 可用 `docker build` 从项目拉取全新构建（方案 B 终态，本轮先 commit 固化保底）
+  - 后续镜像/部署变更必须：改项目 git → push → NAS 拉取 → 构建/更新 compose（B64 纪律正式生效）
+  - 遗留：方案 B 的 NAS 全新构建（docker build from git）未在本轮执行——以 t69 固化镜像为当前生产态，下次有计划升级时按模板流程走
+- 文档：Backlog T-70；本记录 B67
