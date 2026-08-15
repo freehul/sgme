@@ -772,3 +772,19 @@ L1.5 冲突裁决、L2 场景聚合。
   - **远端仓基线**：skills-hub.git main 现为权威基线（393 文件），Hermes 本地为唯一编辑源，后续变更走 put_skill + sync 双方向
   - **遗留**：NAS 部署目录非 git 仓库（compose/docker.env 仅 .bak 备份），部署配置真相源在项目 git（tmp/nas-docker-compose.yml 模板 + 本记录）
 - 文档：Backlog 无关联任务（运维收尾）；本记录 B64
+
+### B65. 提炼成本治理：prescreen fallback 熔断 + 动态链继承采样参数（2026-08-16）
+
+- 背景：搬家（PC→NAS）后用户发现 SGME 提炼账单占比过高（08-16 账单 ¥10.65/¥19.80 = 53.8%）。账单核查 + refine_runs 量化定位两个根因：
+  1. **prescreen 向量预筛失效时回退全量召回**：embed 不可达（搬家窗口曾向 deepseek /v1/embeddings 发请求 401）时 `_build_prescreened_candidates` 返回 None → 维度 OR 全量召回 → 单次 l1_conflict 最高 87 万 tokens（08-16 凌晨 03:08-03:37 的 6 次巨无霸调用吃掉当日 89%）。历史对照：08-11/12 同机制单日 9800 万 tokens（"一天 200+"的元凶），08-13 prescreen 上线后单次降至 3-5 万。
+  2. **T-43 动态提炼链丢失 thinking 禁用**：带 `agent_model=deepseek/deepseek-v4-flash` 的会话（DSH 会话 2456ee64，即用户当前会话）经 `resolve_refinement_chain` 重建链节点时，`_build_node` 只复制 providers 表连接字段（base_url/api_key_env 等），**丢失 llm.yaml 静态链节点的 `max_tokens: 16384` + `extra_body: thinking disabled`** → 思考型模型输出 reasoning_content、content 为空 → L1 解析失败（"Expecting value: line 1 column 1"）→ 2456ee64 连续 12 次 error、每轮 append+trigger 反复失败烧钱。静态链（无 agent_model 的 hermes 会话）不受影响，故此前未被发现。
+- 改动：
+  1. **`sgme/config.py`**：`DEFAULT_L15_CONFIG.prescreen` 新增 `fallback` 字段（默认 `"full_recall"` 向后兼容）+ `_merge_l15_config` 合并。
+  2. **`sgme/engine/l15.py`**：新增哨兵 `PRESCREEN_SKIP_CONFLICT`；`_build_prescreened_candidates` 在 embed 不可达时按 `fallback` 分流（`skip_conflict` → 返回哨兵；`full_recall` → 现状回退）；`build_candidate_groups` 识别哨兵清空该新记忆候选 → `resolve_conflicts` 既有短路（候选池全空 → 全部 store 零 LLM）自动生效。
+  3. **`sgme/llm/resolve.py`**：`_build_node` 新增 `static_node` 参数，从静态链同 provider 节点继承 `max_tokens/sampling/extra_body`；`resolve_refinement_chain` 建 `static_by_provider` 索引并透传（agent 节点与 override 节点均继承）。
+  4. **`config/sgme.yaml`**：生产配置 `l15.prescreen.fallback: skip_conflict`（embed 不可达时跳过冲突检测直接 store，防全量召回烧钱）。
+- 测试：`tests/test_l15_prescreen.py` +4（skip_conflict 清空候选 / 向量异常清空 / resolve_conflicts 短路零 LLM / 配置合并默认值）、`tests/test_llm_resolve.py` +4（agent 节点继承采样参数 / override 继承 / 无静态采样零污染 / override 内联优先）。相关套件 170 用例全绿（config/llm/resolve/l15/l1/operations_refine/refine_dao/batch_scan）。
+- 部署：3 文件 docker cp 入 NAS 容器 + `/data/config/sgme.yaml` 覆盖（挂载卷持久）+ `docker restart sgme`。容器内验证：语法 OK、`fallback: skip_conflict` 生效、动态链节点带 `max_tokens/extra_body`。
+- 真实链路验证（2026-08-16）：`POST /v1/admin/refine/trigger_async` 触发 → 2456ee64 从连续 12 次 error → **一次成功**（增量 130 条/记忆 40 条 + L1.5 正常裁决 merge 17/store 14/update 9，`last_refined_seq=131`）；容器 healthy。
+- 运维影响：错误文件复查——6 个 error 均为历史不活跃（5 个 08-14 dsh 旧会话 + 324B 搬家验证），不会持续烧钱；batch_scan 不重扫 error。
+- 文档：Backlog T-68；本记录 B65
