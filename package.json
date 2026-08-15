@@ -1,0 +1,24 @@
+{
+  "name": "dsh-sgme",
+  "version": "0.1.1",
+  "description": "SGME 仓库级 DSH 插件包装（真实插件包在 adapters/dsh/sgme-bridge/，dsh-sgme 已发布 npm）。本文件让 dsh plugin add github:freehul/sgme 直接可装，并让 dshfind 能推导出 npm 安装命令。",
+  "type": "module",
+  "main": "adapters/dsh/sgme-bridge/lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./adapters/dsh/sgme-bridge/cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "prepublishOnly": "node -e \"console.error('[dsh-sgme] 根 package.json 只是 git 安装包装：真实 npm 包在 adapters/dsh/sgme-bridge/，禁止从仓库根发布（防覆盖已发布的 dsh-sgme）');process.exit(1)\""
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-commands": "^0.1.0-rc.6"
+  },
+  "license": "MIT"
+}
