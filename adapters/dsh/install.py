@@ -38,7 +38,7 @@ ENV_FILE = Path(__file__).resolve().parent / ".env"
 # 默认 SGME 项目根（用户在项目根启动 dsh 最常见）；可用 --dsh-env 覆盖。
 DSH_ENV_FILE = PROJECT_ROOT / ".env"
 
-_BASE_URL = os.environ.get("SGME_BASE_URL", "http://127.0.0.1:9910").rstrip("/")
+_BASE_URL = os.environ.get("SGME_BASE_URL", "http://192.168.10.10:9910").rstrip("/")
 _ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", "dev-admin-key-change-me")
 _AGENT_ID = os.environ.get("SGME_DSH_AGENT_ID", "dsh")
 # T-43 动态链声明：dsh 提炼跟随的模型（provider/model 格式）。注册时落 agent_keys.json，

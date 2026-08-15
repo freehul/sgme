@@ -779,7 +779,7 @@ function normalizeRole(role) {
 const name = "dsh-sgme";
 const inject = ["tools", "commands"];
 const Config = Schema.object({
-	baseUrl: Schema.string().default("http://127.0.0.1:9910").description("SGME Gateway 地址"),
+	baseUrl: Schema.string().default("http://192.168.10.10:9910").description("SGME Gateway 地址"),
 	agentKey: Schema.string().default("").description("SGME agent key（/v1/admin/agents/register 签发）"),
 	adminKey: Schema.string().default("").description("SGME admin key（触发提炼用）"),
 	agentId: Schema.string().default("dsh").description("SGME agent id"),

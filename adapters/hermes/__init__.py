@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """SGME MemoryProvider — 桥接 Hermes 与 SGME 记忆引擎 Gateway.
 
-瘦桥接层：不碰 LLM、不碰数据库，纯 HTTP 调 SGME Gateway（127.0.0.1:9910）。
+瘦桥接层：不碰 LLM、不碰数据库，纯 HTTP 调 SGME Gateway（默认 http://192.168.10.10:9910，NAS 部署；SGME_BASE_URL 可覆盖）。
 重活（L1/L1.5/L2 提炼、向量、TTL）全在 SGME Gateway 侧。
 
 接入方式（Hermes 原生 memory provider 槽位）：
@@ -73,7 +73,7 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger("sgme.provider")
 
 # 默认 SGME 端点与 Key 环境变量（可经 plugin.yaml config 段覆盖）
-_DEFAULT_BASE_URL = os.environ.get("SGME_BASE_URL", "http://127.0.0.1:9910")
+_DEFAULT_BASE_URL = os.environ.get("SGME_BASE_URL", "http://192.168.10.10:9910")
 _DEFAULT_AGENT_KEY = os.environ.get("SGME_AGENT_KEY", "dev-agent-key-change-me")
 _DEFAULT_ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", "dev-admin-key-change-me")
 _DEFAULT_MODE = os.environ.get("SGME_INJECT_MODE", "daily")

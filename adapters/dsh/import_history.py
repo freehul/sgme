@@ -38,7 +38,7 @@ if _ENV_FILE.exists():
             _k, _v = _line.split("=", 1)
             os.environ.setdefault(_k.strip(), _v.strip())
 
-_BASE_URL = os.environ.get("SGME_BASE_URL", "http://127.0.0.1:9910").rstrip("/")
+_BASE_URL = os.environ.get("SGME_BASE_URL", "http://192.168.10.10:9910").rstrip("/")
 _AGENT_KEY = os.environ.get("SGME_AGENT_KEY", "dev-agent-key-change-me")
 _ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", "dev-admin-key-change-me")
 _AGENT_ID = os.environ.get("SGME_DSH_AGENT_ID", "dsh")

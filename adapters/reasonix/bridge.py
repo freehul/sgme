@@ -46,7 +46,7 @@ def _load_env_file() -> None:
 _load_env_file()
 
 # 与 adapters/hermes 一致的端点与 Key 环境变量
-_BASE_URL = os.environ.get("SGME_BASE_URL", "http://127.0.0.1:9910").rstrip("/")
+_BASE_URL = os.environ.get("SGME_BASE_URL", "http://192.168.10.10:9910").rstrip("/")
 _AGENT_KEY = os.environ.get("SGME_AGENT_KEY", "dev-agent-key-change-me")
 _ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", "dev-admin-key-change-me")
 _AGENT_ID = os.environ.get("SGME_REASONIX_AGENT_ID", "reasonix")

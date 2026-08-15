@@ -35,7 +35,7 @@ dsh 有完整插件 SDK（工具注册/事件监听/上下文注入/命令注册
 
 ## 前置条件
 
-1. SGME Gateway 运行中（`http://127.0.0.1:9910`，默认端口）
+1. SGME Gateway 运行中（`http://192.168.10.10:9910`，NAS 部署）
 2. dsh 已安装（`dsh --version` 可执行）
 3. SGME 项目 venv 可用（`.venv/Scripts/python.exe`）
 
@@ -67,7 +67,7 @@ dsh --profile web --dump-config
 /sgme 测试
 
 # 查 SGME 确认 L0 入库
-curl http://127.0.0.1:9910/v1/admin/sessions -H "X-API-Key: <admin-key>"
+curl http://192.168.10.10:9910/v1/admin/sessions -H "X-API-Key: <admin-key>"
 ```
 
 ## 数据流

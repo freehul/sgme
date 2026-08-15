@@ -24,7 +24,7 @@
    # 按 SGME 仓库 README 完成安装并启动（HTTP 9910 常驻运行）
    ```
 2. **注册 agent 拿密钥**：运行 SGME 的 `adapters/dsh/install.py`，注册 DSH agent，生成 `SGME_AGENT_KEY` / `SGME_ADMIN_KEY` 并写入 `.env`；
-3. **确认 SGME 在线**：`curl http://127.0.0.1:9910/v1/health` 返回 200 后再继续。
+3. **确认 SGME 在线**：`curl http://192.168.10.10:9910/v1/health` 返回 200 后再继续。
 
 ## 安装
 
@@ -38,7 +38,7 @@ dsh plugin --profile <你的profile> add dsh-sgme
 `cordis.patch.yml` 默认值：
 
 ```yaml
-baseUrl: http://127.0.0.1:9910
+baseUrl: http://192.168.10.10:9910
 agentKey: process.env.SGME_AGENT_KEY   # 环境变量注入，密钥不落盘
 adminKey: process.env.SGME_ADMIN_KEY
 agentId: dsh

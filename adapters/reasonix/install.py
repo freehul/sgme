@@ -31,7 +31,7 @@ PYTHON = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 BRIDGE = PROJECT_ROOT / "adapters" / "reasonix" / "bridge.py"
 ENV_FILE = Path(__file__).resolve().parent / ".env"
 
-_BASE_URL = os.environ.get("SGME_BASE_URL", "http://127.0.0.1:9910").rstrip("/")
+_BASE_URL = os.environ.get("SGME_BASE_URL", "http://192.168.10.10:9910").rstrip("/")
 _ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", "dev-admin-key-change-me")
 _AGENT_ID = os.environ.get("SGME_REASONIX_AGENT_ID", "reasonix")
 
