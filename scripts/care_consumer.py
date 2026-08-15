@@ -35,7 +35,8 @@ import requests
 BASE = Path(__file__).resolve().parents[1]
 STATE_DIR = BASE / "data" / "care"
 STATE_FILE = STATE_DIR / "consumer_state.json"
-BASE_URL = "http://127.0.0.1:9910"
+# 2026-08-16 搬家：默认指向 NAS（本机 Gateway 已退役）；SGME_BASE_URL 可覆盖
+BASE_URL = os.environ.get("SGME_BASE_URL", "http://192.168.10.10:9910")
 
 
 def _load_key() -> str:
