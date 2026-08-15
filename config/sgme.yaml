@@ -6,6 +6,7 @@ l15:
     enabled: true
     vector_top_k: 50
     dimension_top_n: 50
+    fallback: skip_conflict   # embed 不可达 → 跳过冲突检测直接 store（防全量召回烧钱）
 refine:
   refine_on_append: false
   batch_scan:
