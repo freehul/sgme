@@ -9,6 +9,49 @@
       "patch": "./adapters/dsh/sgme-bridge/cordis.patch.yml"
     }
   },
+  "dshWorkshop": {
+    "schema": "omdsh-workshop-package/v1",
+    "type": "plugin",
+    "integration": {
+      "protocol": "harness-profile",
+      "artifact": "adapters/dsh/sgme-bridge/cordis.patch.yml"
+    },
+    "install": {
+      "mode": "transactional",
+      "adapter": "profile-bundle",
+      "failurePolicy": "generation-rollback",
+      "touchesCurrentBeforeActivation": false
+    },
+    "lifecycle": {
+      "activation": "restart-profile",
+      "dispose": "supported"
+    },
+    "permissions": [
+      "harness:tool",
+      "harness:command",
+      "network:read",
+      "subprocess:none",
+      "shell:none",
+      "credentials:none"
+    ],
+    "compatibility": {
+      "dshVersions": [
+        "0.1.0-rc.6"
+      ]
+    },
+    "capability": {
+      "id": "memory_search",
+      "kind": "tool",
+      "invocation": "invoke the model-facing tool memory_search with a natural-language query through the DSH ToolRuntime",
+      "expected": "a bounded structured result of tagged memory entries matching the query, or an empty list when none match"
+    },
+    "evidence": {
+      "install": null,
+      "failureIsolation": null,
+      "hotReload": null,
+      "remove": null
+    }
+  },
   "scripts": {
     "prepublishOnly": "node -e \"console.error('[dsh-sgme] 根 package.json 只是 git 安装包装：真实 npm 包在 adapters/dsh/sgme-bridge/，禁止从仓库根发布（防覆盖已发布的 dsh-sgme）');process.exit(1)\""
   },
