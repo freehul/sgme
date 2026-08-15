@@ -738,3 +738,21 @@ L1.5 冲突裁决、L2 场景聚合。
   - **需重启 SGME 后端**生效（self_config 模板随 MCP 进程）；已接入 agent 下个会话重新 `agent_onboarding()` 拿到含通信渠道兜底的接入纪律
   - 主动关怀/提醒/告警的投递不再依赖单一通道——其它通道（微信/飞书/Telegram）不可用或未配置时，当前会话始终兜底，用户不会漏掉主动消息
 - 文档：Backlog ST-31 ✅ / T-67 ✅；本记录 B62
+
+### B63. 搬家收尾——本机 Gateway 退役，SGME 迁移 NAS（2026-08-16）
+
+- 背景：用户搬家，SGME 生产环境从本机（D:\Projects\SGME 直跑，nssm 服务"SGME Gateway"）迁移到 NAS（飞牛 fnOS，Docker 容器 sgme，/vol1/1000/Docker/sgme，bind mount data→/vol1/1000/Docker/sgme/data）。数据库与 raw 原件已复制，本任务为收尾闭环。
+- 改动：
+  1. **MCP 监听可配置**（`sgme/mcp_server.py`）：`run_mcp_server` host 从硬编码 `"127.0.0.1"` 改为 `os.environ.get("SGME_MCP_HOST", "127.0.0.1")`——容器部署必须绑 0.0.0.0 才能对外；`build_mcp_server` 增加 `transport_security` 参数：非本机部署（SGME_MCP_HOST≠127.0.0.1/localhost/::1）时显式关闭 FastMCP 自动 DNS 防重绑（该附加层默认只放行 localhost Host 头，容器场景导致 421 Invalid Host header），SGME 自身 ApiKeyMiddleware 鉴权不降级
+  2. **Hermes 插件指向**（`adapters/hermes/plugin.yaml` + `%LOCALAPPDATA%\hermes\plugins\sgme\plugin.yaml` 部署副本）：`base_url` → `http://192.168.10.10:9910`
+  3. **care_consumer**（`scripts/care_consumer.py`）：BASE_URL 默认 → NAS（SGME_BASE_URL 可覆盖）
+  4. **全部适配器默认指向 NAS**（`adapters/dsh|hermes|reasonix|trae|workbuddy` 共 12 文件）：默认 `http://192.168.10.10:9910`，SGME_BASE_URL 可覆盖；含 sgme-bridge（yml/ts/js/README）；顺手修复 README 中被脱敏损坏的 `<admin-key>` 占位符
+  5. **新增 NAS 运维脚本**（`scripts/nas_watchdog.sh` / `scripts/nas_backup.sh`）：看门狗（/etc/cron.d/sgme-watchdog，root 每 5 分钟：docker.sock 缺失→拉起 docker.service 含 containerd 重试；sgme 容器未运行→拉起）；每日备份（LEO crontab 03:30，rsync data→/vol2/1000/sgme-backup/ 轮转留 7 份）
+- 测试：`tests/test_mcp_server.py` 25 passed（MCP host 配置改动后回归）；`adapters/dsh/tests/test_install.py` 7 passed（默认值改动后回归，测试用显式 mock 覆盖不受影响）；实测 NAS MCP 握手成功（serverInfo SGME 1.29.0）、care/scan 200、inject/search 200
+- 运维影响：
+  - **本机 Gateway 已退役**：nssm 服务"SGME Gateway"停止+禁用，Hermes_Gateway_Watchdog 计划任务删除，本机 9910/9913 释放；E:\SGME_Backup 调度随进程停止（由 NAS 备份接管）
+  - **迁移后数据核对**：memories 11620 / scenes 246 / ideas 26 / demands 83 / project_meta 2 / raw 722 文件，两库一致；旧库留底 NAS `sync_tmp/old_db/`（稳定一周后删）
+  - **镜像链**：本机 `docker build -t sgme:1.0.0b1-nas` → docker save/load → NAS compose image 改 sgme:1.0.0b1-nas；docker.env 增 `SGME_MCP_HOST=0.0.0.0`；**后续改代码需重走此链**
+  - **NAS 重启自愈**：看门狗 5 分钟内自动拉起（含 8/15 踩坑的 docker.service 依赖失败场景）；备份每天 03:30 落机械盘
+  - **遗留**：Hermes 插件新 base_url 需 Hermes 重启后生效；sgme-care-heartbeat cron 已随 care_consumer 默认值修复恢复
+- 文档：Backlog 无关联任务（运维收尾）；本记录 B63
