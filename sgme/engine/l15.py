@@ -195,6 +195,12 @@ def _memory_tags(mem_conn: sqlite3.Connection, memory_id: str, cache: dict[str, 
     return cache[memory_id]
 
 
+#: 预筛降级哨兵：embed 不可达且 fallback=skip_conflict 时的返回标记。
+#: 调用方（build_candidate_groups）识别后清空该新记忆候选 → resolve_conflicts
+#: 短路直接 store（零 LLM 调用）。区别于 None（回退全量召回，宁贵勿漏）。
+PRESCREEN_SKIP_CONFLICT = "__PRESCREEN_SKIP_CONFLICT__"
+
+
 def _build_prescreened_candidates(
     mem_conn: sqlite3.Connection,
     new_mem: dict,
@@ -202,27 +208,39 @@ def _build_prescreened_candidates(
     prescreen: dict,
     tags_cache: dict[str, list[str]],
     dims: list[str],
-) -> list[dict] | None:
+) -> list[dict] | None | str:
     """向量预筛候选：向量 Top-K ∪ 维度 Top-N（priority 降序），按 memory_id 去重。
 
     2026-08-12 成本治理：记忆库 9k+ 时维度 OR 全量召回使单次 l1_conflict 消耗
     67-100 万 tokens。预筛把单记忆候选限制在 vector_top_k + dimension_top_n
     （默认 50+50），prompt 降到 ~2 万 tokens（降 98%）。
 
-    返回 None 表示降级（embed 不可达 / 向量检索异常）——调用方回退全量召回，
-    宁贵勿漏，功能不降级。
+    返回语义（2026-08-16 T-4x 成本治理，embed 不可达时的策略分流）：
+    - list[dict]：预筛成功，候选 = 向量 Top-K ∪ 维度 Top-N
+    - None：embed 不可达，fallback=full_recall → 调用方回退维度 OR 全量召回
+      （历史行为，宁贵勿漏；08-11/12 单日 9800 万 tokens 的元凶）
+    - PRESCREEN_SKIP_CONFLICT：embed 不可达，fallback=skip_conflict → 调用方
+      清空该新记忆候选，resolve_conflicts 短路直接 store（零 LLM 调用）。
+      向量链路异常时召回质量不可信，先保数据落地，事后补检。
     """
     vector_top_k = int(prescreen.get("vector_top_k", DEFAULT_TOP_K))
     dimension_top_n = int(prescreen.get("dimension_top_n", DEFAULT_TOP_K))
+    fallback = prescreen.get("fallback", "full_recall")
 
     # 1. 向量 Top-K（语义候选，可命中维度不重叠的记忆）
     try:
         vec = vector_mod.embed((new_mem.get("content", "") or ""), cfg)
         if vec is None:
-            logger.warning("L1.5 向量预筛降级：embedding 端点不可达，回退全量召回")
+            if fallback == "skip_conflict":
+                logger.warning("L1.5 向量预筛降级：embedding 端点不可达，fallback=skip_conflict 跳过冲突检测")
+                return PRESCREEN_SKIP_CONFLICT
+            logger.warning("L1.5 向量预筛降级：embedding 端点不可达，回退全量召回（fallback=full_recall）")
             return None
         vec_cands = vector_mod.vector_search(mem_conn, vec, limit=vector_top_k)
     except Exception as e:
+        if fallback == "skip_conflict":
+            logger.warning("L1.5 向量预筛异常，fallback=skip_conflict 跳过冲突检测: %s", e)
+            return PRESCREEN_SKIP_CONFLICT
         logger.warning("L1.5 向量预筛异常，回退全量召回: %s", e)
         return None
 
@@ -287,7 +305,14 @@ def build_candidate_groups(
         prescreen_used = False
         if prescreen and cfg and prescreen.get("enabled", False):
             pc = _build_prescreened_candidates(mem_conn, new_mem, cfg, prescreen, tags_cache, dims)
-            if pc is not None:
+            if pc is PRESCREEN_SKIP_CONFLICT:
+                # fallback=skip_conflict：向量链路异常 → 清空候选（无候选 = 短路直接 store，
+                # resolve_conflicts 不调 LLM），保数据落地不烧全量召回的钱
+                logger.warning(
+                    "L1.5 预筛跳过冲突检测（fallback=skip_conflict）: 新记忆#%d 直接 store", i,
+                )
+                prescreen_used = True
+            elif pc is not None:
                 cands = pc
                 prescreen_used = True
         if not prescreen_used and dims:

@@ -287,3 +287,71 @@ def test_resolve_conflicts_prescreen_disabled_full_recall_prompt(mem_conn, cfg, 
     result = resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
     assert result.error is None
     assert captured[0].count("[候选#") == 81  # 全量 80 + 模板示例 1
+
+
+# ---------- 5. fallback=skip_conflict 成本熔断（2026-08-16 T-4x） ----------
+
+def test_prescreen_embed_failure_skip_conflict_clears_candidates(mem_conn, cfg, monkeypatch):
+    """embed 不可达 + fallback=skip_conflict → 候选清空（不回退全量召回）。"""
+    for i in range(120):
+        _insert_existing(mem_conn, f"旧记忆{i}内容", ["tech_stack"], priority=60)
+
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)  # 端点不可达
+    monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: pytest.fail("不应调用"))
+
+    groups, _ = l15.build_candidate_groups(
+        mem_conn, [_new_mem()],
+        per_memory_budget_tokens=10**7,
+        cfg=cfg, prescreen=_ps_cfg() | {"fallback": "skip_conflict"},
+    )
+    assert len(groups) == 1
+    assert groups[0].candidates == []  # 候选清空 → resolve_conflicts 短路 store
+
+
+def test_prescreen_vector_search_exception_skip_conflict_clears_candidates(mem_conn, cfg, monkeypatch):
+    """向量检索抛异常 + fallback=skip_conflict → 候选清空，不崩溃不烧钱。"""
+    for i in range(120):
+        _insert_existing(mem_conn, f"旧记忆{i}内容", ["tech_stack"], priority=60)
+
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    def boom(*a, **kw):
+        raise RuntimeError("vector_search 挂了")
+    monkeypatch.setattr(vector_mod, "vector_search", boom)
+
+    groups, _ = l15.build_candidate_groups(
+        mem_conn, [_new_mem()],
+        per_memory_budget_tokens=10**7,
+        cfg=cfg, prescreen=_ps_cfg() | {"fallback": "skip_conflict"},
+    )
+    assert len(groups[0].candidates) == 0
+
+
+def test_resolve_conflicts_skip_conflict_short_circuit_no_llm(mem_conn, cfg, monkeypatch):
+    """端到端：embed 不可达 + fallback=skip_conflict → 全部直接 store，零 LLM 调用。"""
+    from sgme.engine.l15 import resolve_conflicts
+
+    for i in range(120):
+        _insert_existing(mem_conn, f"旧记忆{i}内容", ["tech_stack"], priority=60)
+
+    called = {"llm": False}
+    def fake_call(*a, **kw):
+        called["llm"] = True
+        raise AssertionError("skip_conflict 不应发起 LLM 调用")
+    import sgme.llm.chain as llm_chain
+    monkeypatch.setattr(llm_chain, "call_with_fallback", fake_call)
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)
+
+    cfg["l15"] = {"prescreen": _ps_cfg() | {"fallback": "skip_conflict"}}
+    result = resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
+    assert result.error is None
+    assert len(result.stored) == 1  # 短路 store，未调 LLM
+    assert not called["llm"]
+
+
+def test_config_merge_prescreen_fallback_default_full_recall():
+    """配置合并：fallback 默认 full_recall（向后兼容），显式可覆盖为 skip_conflict。"""
+    from sgme import config as sgme_config
+    base = sgme_config._merge_l15_config(None)
+    assert base["prescreen"]["fallback"] == "full_recall"
+    merged = sgme_config._merge_l15_config({"prescreen": {"fallback": "skip_conflict"}})
+    assert merged["prescreen"]["fallback"] == "skip_conflict"
