@@ -194,7 +194,7 @@ def insert_memory(
         if sources:
             for src_ref, src_type in sources:
                 conn.execute(
-                    "INSERT INTO memory_sources (memory_id, source_ref, source_type) VALUES (?,?,?)",
+                    "INSERT OR IGNORE INTO memory_sources (memory_id, source_ref, source_type) VALUES (?,?,?)",
                     (mid, src_ref, src_type),
                 )
         conn.commit()
