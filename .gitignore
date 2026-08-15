@@ -66,3 +66,5 @@ Thumbs.db
 /.worktrees/
 # Reasonix 部署产物（install.py 生成，本机绝对路径，不入库）
 .reasonix/
+# CodeGraph 本地索引（.codegraph/ 不入 git，可重建）
+/.codegraph/
