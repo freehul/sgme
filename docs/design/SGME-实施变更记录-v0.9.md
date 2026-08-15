@@ -788,3 +788,20 @@ L1.5 冲突裁决、L2 场景聚合。
 - 真实链路验证（2026-08-16）：`POST /v1/admin/refine/trigger_async` 触发 → 2456ee64 从连续 12 次 error → **一次成功**（增量 130 条/记忆 40 条 + L1.5 正常裁决 merge 17/store 14/update 9，`last_refined_seq=131`）；容器 healthy。
 - 运维影响：错误文件复查——6 个 error 均为历史不活跃（5 个 08-14 dsh 旧会话 + 324B 搬家验证），不会持续烧钱；batch_scan 不重扫 error。
 - 文档：Backlog T-68；本记录 B65
+
+### B66. 记忆去重治理：content 重复清理 + memory_sources 唯一约束（2026-08-16）
+
+- 背景：B65 成本治理核查时发现全库 11634 条记忆中有 73 组 content 重复（涉及 161 条 active 记忆）——全部是 08-06 及更早（L1.5 冲突裁决上线前，prompt_version=working-61c644de）的历史遗留，来源为早期 cron 会话与迁移导入；且 memory_sources 无唯一约束，历史数据同 source_ref 挂 271 条记忆（当时无 source_ref 锚点）。
+- 改动：
+  1. **`scripts/dedup_memories.py`**（新建）：content 重复清理工具。默认 dry-run（只统计），`--apply` 才执行；执行前自动备份 memory.db 到 `data/backups/pre_dedup/`；每组保留 updated_at 最新一条 active，其余经 `memory_dao.archive_memory` 归档（memory_archive 原件保留可溯源，不删除）；单条失败不中断。
+  2. **`sgme/data/db.py`**：`memory_sources` 表加 `PRIMARY KEY (memory_id, source_ref)`（幂等写入防御）。
+  3. **`sgme/data/memory_dao.py`**：`insert_memory` 的 sources 写入改 `INSERT OR IGNORE`——同记忆同源重复写入静默忽略（UNIQUE 约束兜底，不抛错不重复）。
+  4. **`scripts/migrate_sources_unique.py`**（新建）：存量库迁移（SQLite 重建表 12 步标准流程）。备份 → 重命名旧表 → 建新表（带复合主键）→ 按 (memory_id, source_ref) 去重拷贝（保留 rowid 最小）→ 删旧表 → 重建索引；可重入（已有 PK 跳过）。
+- 测试：`tests/test_storage.py` +2（schema PRAGMA 确认复合主键 / 同源重复 INSERT 抛 IntegrityError）。相关套件 170+ 用例全绿。
+- 真实执行（2026-08-16，NAS 容器）：
+  - dedup apply：备份 `pre_dedup/memory.db.bak-20260816-050809`；归档 88 条、保留 73 条 → 重复 active content 组数 **73 → 0**；active 记忆 11634 → 10710；archive 4293 条
+  - 迁移：备份 `pre_sources_unique/memory.db.bak-20260816-050815`；memory_sources 11548 行（去重后），PRAGMA 确认 PK=[memory_id, source_ref]；同源重复 INSERT 被 UNIQUE 拦截
+  - 同源多记忆 top3（271/208/164）复查为**内容各异合法记忆**（同一会话多事实提炼，组内 content 重复 0）——确认同源 ≠ 重复，content 才是正确判据
+  - 代码部署（db.py + memory_dao.py）→ 容器重启 healthy → 提炼冒烟通过（L1.5 store=4 merge=4 archived=4，无异常）
+- 运维影响：备份位于挂载卷 `data/backups/`（持久，不随容器重建丢失）；后续新记忆写入自动受 UNIQUE 约束保护。
+- 文档：Backlog T-69；本记录 B66
