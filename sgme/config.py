@@ -214,11 +214,17 @@ DEFAULT_L1_CONFIG = {
 # enabled：总开关（默认关=回退全量召回现状；生产 sgme.yaml 显式开启）
 # vector_top_k：向量语义候选数；dimension_top_n：维度 OR 候选截断数（priority 降序）
 # 预筛开启时单记忆候选 ≤ vector_top_k + dimension_top_n，embed 不可达自动回退全量（宁贵勿漏）
+# fallback：embed 不可达时的降级策略（2026-08-16 T-4x 成本治理，搬家 401 实锤）：
+#   - full_recall（默认，保持历史行为）：回退维度 OR 全量召回——单次 l1_conflict 可达
+#     80 万+ tokens（08-11/12 单日 9800 万 tokens 的元凶），宁贵勿漏
+#   - skip_conflict：跳过冲突检测直接 store（不调 LLM，零额外 token）——embed 不可达时
+#     说明向量链路本身异常，冲突检测的召回质量不可信，先保数据落地，事后补检
 DEFAULT_L15_CONFIG = {
     "prescreen": {
         "enabled": False,
         "vector_top_k": 50,
         "dimension_top_n": 50,
+        "fallback": "full_recall",
     },
 }
 
@@ -640,7 +646,7 @@ def _merge_l15_config(user_cfg: dict | None) -> dict:
         return base
     ps = user_cfg.get("prescreen")
     if isinstance(ps, dict):
-        for k in ("enabled", "vector_top_k", "dimension_top_n"):
+        for k in ("enabled", "vector_top_k", "dimension_top_n", "fallback"):
             if k in ps:
                 base["prescreen"][k] = ps[k]
     return base

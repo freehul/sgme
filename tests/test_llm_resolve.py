@@ -90,3 +90,59 @@ def test_build_refinement_cfg_pure():
     new_cfg = resolve_mod.build_refinement_cfg(cfg, agent_model="deepseek/deepseek-v4-flash")
     assert cfg["llm"]["chains"]["refinement"][0]["model"] == before  # 原 cfg 未变
     assert new_cfg["llm"]["chains"]["refinement"][0]["model"] == "deepseek-v4-flash"
+
+
+# ---------- 2026-08-16 T-4x：动态链继承静态节点采样参数 ----------
+
+def _base_cfg_with_sampling() -> dict:
+    """静态链 deepseek 节点带 max_tokens/extra_body（llm.yaml 生产形态）。"""
+    cfg = _base_cfg()
+    cfg["llm"]["chains"]["refinement"][0]["max_tokens"] = 16384
+    cfg["llm"]["chains"]["refinement"][0]["extra_body"] = {"thinking": {"type": "disabled"}}
+    return cfg
+
+
+def test_agent_node_inherits_static_sampling_params():
+    """agent_model 动态链节点继承静态链同 provider 节点的 max_tokens/extra_body。
+
+    回归锚点：DSH 会话 2456ee64 连续 12 次 L1 error——动态链丢失
+    extra_body.thinking.disabled 后思考型模型输出空 content。
+    """
+    cfg = _base_cfg_with_sampling()
+    chain = resolve_mod.resolve_refinement_chain(cfg, agent_model="deepseek/deepseek-v4-flash")
+    node = chain[0]
+    assert node["provider"] == "deepseek"
+    assert node["max_tokens"] == 16384  # 继承静态节点
+    assert node["extra_body"] == {"thinking": {"type": "disabled"}}  # 继承静态节点
+
+
+def test_override_node_inherits_static_sampling_params():
+    """llm_override 同 provider 时同样继承静态节点采样参数。"""
+    cfg = _base_cfg_with_sampling()
+    cfg["refine"]["llm_override"] = {"provider": "deepseek", "model": "deepseek-v4-flash"}
+    chain = resolve_mod.resolve_refinement_chain(cfg, agent_model=None)
+    node = chain[0]
+    assert node["max_tokens"] == 16384
+    assert node["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_agent_node_no_static_sampling_stays_clean():
+    """静态节点无采样参数 → 动态节点不带 max_tokens/extra_body（零污染）。"""
+    cfg = _base_cfg()  # 静态节点无采样参数
+    chain = resolve_mod.resolve_refinement_chain(cfg, agent_model="deepseek/deepseek-v4-flash")
+    node = chain[0]
+    assert "max_tokens" not in node
+    assert "extra_body" not in node
+
+
+def test_override_inline_params_beat_static_inheritance():
+    """override 内联参数优先于静态继承（extra 覆盖 static_node）。"""
+    cfg = _base_cfg_with_sampling()
+    cfg["refine"]["llm_override"] = {
+        "provider": "deepseek", "model": "deepseek-v4-flash",
+        "max_tokens": 8192, "extra_body": {"thinking": {"type": "disabled"}},
+    }
+    chain = resolve_mod.resolve_refinement_chain(cfg, agent_model=None)
+    node = chain[0]
+    assert node["max_tokens"] == 8192  # override 优先
+    assert node["extra_body"] == {"thinking": {"type": "disabled"}}
