@@ -224,6 +224,7 @@ def build_mcp_server():
     streamable_http_path 默认 '/mcp'（自托管时客户端访问 http://host:9913/mcp）。
     """
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
 
     # ST-23⑤：宽容处理 Trae 等客户端的非标准通知（幂等，进程级只打一次）
     _patch_lenient_notifications()
@@ -239,6 +240,14 @@ def build_mcp_server():
             "创意/待办/项目管理（idea_add/demand_create/project_register，2026-08-13："
             "创意由用户主动提出、需求池改为跨项目待办池、项目由用户主动立项）、"
             "连接即发现（agent_onboarding）。"
+        ),
+        # 2026-08-16 NAS 容器部署：MCP 绑 0.0.0.0 时 FastMCP 默认仅对本机
+        # 开 DNS 防重绑（allowed_hosts 只含 localhost）→ 外部访问 421。
+        # 非本机部署显式关闭该附加层（SGME 自身 ApiKeyMiddleware 鉴权不降级）。
+        transport_security=(
+            None
+            if os.environ.get("SGME_MCP_HOST", "127.0.0.1") in ("127.0.0.1", "localhost", "::1")
+            else TransportSecuritySettings(enable_dns_rebinding_protection=False)
         ),
     )
 
@@ -942,7 +951,7 @@ def mount_mcp(app, start_server: bool = True):
     run_mcp_server(
         mcp,
         key_store=app.state.key_store,
-        host="127.0.0.1",
+        host=os.environ.get("SGME_MCP_HOST", "127.0.0.1"),
         port=int(os.environ.get("SGME_MCP_PORT", "9913")),
     )
     return mcp
