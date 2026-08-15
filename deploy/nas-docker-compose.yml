@@ -1,0 +1,43 @@
+# SGME NAS 部署 compose（群晖 Docker / Container Manager）— 部署真相源模板
+#
+# ⚠️ 本文件是 NAS 生产 compose 的模板（真相源在项目 git）。
+# NAS 上实际生效的是 /vol1/1000/Docker/sgme/docker-compose.yml（bind mount + 已 load 镜像），
+# 由本模板复制并替换 {{IMAGE_TAG}} 后使用；NAS 部署目录非 git 仓库（B64 遗留），
+# 任何部署变更必须：改本项目 git → push → NAS 拉取 → 更新 NAS compose 副本。
+#
+# 用法：
+#   1. 项目 git 拉取最新代码
+#   2. NAS 构建镜像：docker build -t sgme:{{IMAGE_TAG}} .（在本项目目录）
+#      （或 docker load 传输已构建镜像）
+#   3. 复制本模板到 /vol1/1000/Docker/sgme/docker-compose.yml，替换 {{IMAGE_TAG}}
+#   4. docker compose up -d（用固化镜像重建，数据卷 bind mount 不动）
+#
+# 密钥：env_file docker.env（gitignore 忽略，勿提交）——DEEPSEEK_API_KEY / VOLC_API_KEY /
+#       SGME_ADMIN_KEY / SGME_AGENT_KEY
+# 数据卷：bind mount /vol1/1000/Docker/sgme/data → /data（SGME_HOME），升级/重建不丢数据
+# skills-hub：bind mount /vol1/1000/git/skills-hub.git → /git/skills-hub.git（file:// 直访）
+
+services:
+  sgme:
+    image: sgme:{{IMAGE_TAG}}
+    container_name: sgme
+    restart: unless-stopped
+    ports:
+      - "9910:9910"   # HTTP API + WebUI
+      - "9913:9913"   # MCP streamable HTTP
+    environment:
+      SGME_HOME: /data
+      SGME_HOST: 0.0.0.0
+      SGME_PORT: "9910"
+      TZ: Asia/Shanghai
+    env_file:
+      - docker.env
+    volumes:
+      - /vol1/1000/Docker/sgme/data:/data
+      - /vol1/1000/git/skills-hub.git:/git/skills-hub.git
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9910/v1/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
