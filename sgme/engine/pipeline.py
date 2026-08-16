@@ -253,6 +253,8 @@ def append_l0(
     from sgme.raw import store as raw_store
     from sgme.data import session_dao
 
+    # 写 L0 前擦除明文密钥（防工具输出带 key 进原始层，2026-08-17 安全加固）
+    content = raw_store.redact_secrets(content)
     messages = raw_store.parse_body_messages(content)
     if not messages:
         raise ValueError("content 解析出 0 条消息（需 # {ISO} {role} 格式）")
