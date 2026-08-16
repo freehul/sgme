@@ -131,6 +131,36 @@ export interface CareSignal {
   consumed_by: string | null
 }
 
+// ---------- wiki 知识库类型（/v1/wiki/*，Agent Key） ----------
+
+/** /v1/wiki/pages 列表响应（轻量字段，不含正文；W5，方案 v0.3 §5.5）。 */
+export interface WikiPagesResponse {
+  pages: WikiPageSummary[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** 页面轻量摘要（L1 展示用：title + description）。 */
+export interface WikiPageSummary {
+  page_id: string
+  title: string
+  category: string | null
+  tags: string[]
+  source_type: string | null
+  source_url: string | null
+  source_file: string | null
+  ingested_at: string | null
+  updated_at: string | null
+  description?: string | null
+}
+
+/** 页面详情（含正文全文）。 */
+export interface WikiPage extends WikiPageSummary {
+  content: string
+  content_seg?: string | null
+}
+
 // ---------- 客户端实现 ----------
 
 /**
@@ -278,6 +308,34 @@ export class SgmeClient {
       return null
     }
     return data?.signals ?? null
+  }
+
+  /** 列出 wiki 页面（GET /v1/wiki/pages，Agent Key；按 category 可选过滤）。失败返回 null。 */
+  async wikiListPages(category?: string | null, limit = 50, offset = 0): Promise<WikiPagesResponse | null> {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+    if (category) params.set('category', category)
+    const [data, err] = await this.get<WikiPagesResponse>(
+      `/v1/wiki/pages?${params.toString()}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] wikiListPages failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 取 wiki 页面详情（GET /v1/wiki/pages/{id}，Agent Key）。失败返回 null。 */
+  async wikiGetPage(pageId: string): Promise<WikiPage | null> {
+    const [data, err] = await this.get<WikiPage>(
+      `/v1/wiki/pages/${encodeURIComponent(pageId)}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] wikiGetPage failed: ${err}`)
+      return null
+    }
+    return data
   }
 
   /**

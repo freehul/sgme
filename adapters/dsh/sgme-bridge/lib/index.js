@@ -128,6 +128,29 @@ var SgmeClient = class {
 		}
 		return data?.signals ?? null;
 	}
+	/** 列出 wiki 页面（GET /v1/wiki/pages，Agent Key；按 category 可选过滤）。失败返回 null。 */
+	async wikiListPages(category, limit = 50, offset = 0) {
+		const params = new URLSearchParams({
+			limit: String(limit),
+			offset: String(offset)
+		});
+		if (category) params.set("category", category);
+		const [data, err] = await this.get(`/v1/wiki/pages?${params.toString()}`, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] wikiListPages failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 取 wiki 页面详情（GET /v1/wiki/pages/{id}，Agent Key）。失败返回 null。 */
+	async wikiGetPage(pageId) {
+		const [data, err] = await this.get(`/v1/wiki/pages/${encodeURIComponent(pageId)}`, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] wikiGetPage failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
 	/**
 	* 原子认领信号（POST /v1/admin/care/signals/{id}/consume）。
 	* 返回 true=本次认领成功 / false=已被他人消费（409）或失败 / null=网关不可达。
@@ -286,6 +309,85 @@ function createWikiSearchTool(client, defaultLimit) {
 	});
 }
 /**
+* 创建 wiki_pages 工具（按分类列出知识库页面，轻量字段）。
+*
+* W5（方案 v0.3 §5.5）：L2 索引层——模型按 category 发现手册，
+* 正文用 wiki_page 二次拉取（渐进式披露）。
+*/
+function createWikiPagesTool(client, defaultLimit) {
+	return defineTool({
+		name: "wiki_pages",
+		description: [
+			"列出 SGME 知识库页面（可按 category 分类过滤，如 skill/sgme 技能手册、design 设计文档）。",
+			"返回轻量字段（标题/描述/分类/标签），正文用 wiki_page 按 page_id 拉取。",
+			"渐进式披露：先列目录判断加载哪本，再拉全文，避免全量注入。"
+		].join(" "),
+		parameters: {
+			category: {
+				type: "string",
+				description: "分类过滤（如 skill/sgme、design；省略列出全部）"
+			},
+			limit: {
+				type: "number",
+				description: `返回条数上限（默认 ${defaultLimit}）`
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.wikiListPages(a.category ?? null, a.limit ?? defaultLimit, 0);
+			if (!resp) return "[wiki_pages 失败：SGME Gateway 不可达，稍后重试]";
+			if (resp.pages.length === 0) return `[wiki_pages 无结果${a.category ? `：category="${a.category}"` : ""}]`;
+			const lines = resp.pages.map((p, i) => {
+				const cat = p.category ? ` [${p.category}]` : "";
+				const desc = p.description ? ` — ${p.description}` : "";
+				return `${i + 1}. ${p.title}${cat}（${p.page_id}）${desc}`;
+			});
+			return `共 ${resp.total} 页（显示 ${resp.pages.length}）：\n` + lines.join("\n");
+		}
+	});
+}
+/**
+* 创建 wiki_page 工具（按 page_id 拉取知识库页面全文）。
+*
+* W5（方案 v0.3 §5.5）：L2 加载层——索引 skill 引导模型用本工具取手册正文执行。
+*/
+function createWikiPageTool(client) {
+	return defineTool({
+		name: "wiki_page",
+		description: ["按 page_id 拉取 SGME 知识库页面全文（技能手册正文，含 frontmatter 与踩坑记录）。", "page_id 来自 wiki_pages / wiki_search 返回结果。"].join(" "),
+		parameters: { page_id: {
+			type: "string",
+			required: true,
+			description: "页面 id（wiki_pages 返回的 page_id）"
+		} },
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const page = await client.wikiGetPage(a.page_id);
+			if (!page) return `[wiki_page 失败：页面不存在或 Gateway 不可达（page_id="${a.page_id}"）]`;
+			return [
+				`# ${page.title}`,
+				`page_id: ${page.page_id}`,
+				`category: ${page.category ?? "-"}`,
+				`tags: ${(page.tags ?? []).join(", ") || "-"}`
+			].join("\n") + "\n\n" + (page.content ?? "");
+		}
+	});
+}
+/**
 * 格式化检索结果为模型可读文本。
 *
 * 格式（对齐 reasonix fetch_search 输出）：
@@ -312,6 +414,8 @@ function formatSearchResults(results) {
 function registerTools(ctx, client, defaultLimit) {
 	ctx.tools.register(createMemorySearchTool(client, defaultLimit));
 	ctx.tools.register(createWikiSearchTool(client, defaultLimit));
+	ctx.tools.register(createWikiPagesTool(client, defaultLimit));
+	ctx.tools.register(createWikiPageTool(client));
 	ctx.tools.register(createSignalPullTool(client));
 	ctx.tools.register(createSignalClaimTool(client));
 	ctx.tools.register(createSignalAckTool(client));
