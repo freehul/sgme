@@ -265,8 +265,9 @@ def evolve_trigger_endpoint(
     conn: sqlite3.Connection = request.app.state.wiki_conn
     session_conn: sqlite3.Connection = request.app.state.session_conn
     data_dir = request.app.state.cfg.get("paths", {}).get("data_dir")
+    # 传 llm 段（含顶层 chains）：降级链 call_with_fallback 读 cfg["chains"]，完整 cfg 的 chains 在 cfg["llm"] 下
     result = evolve_operation(
-        conn, session_conn, {},
+        conn, session_conn, request.app.state.cfg["llm"],
         session_key=payload.session_key, limit=payload.limit,
         min_rounds=payload.min_rounds, data_dir=data_dir,
     )

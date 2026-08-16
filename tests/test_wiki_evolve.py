@@ -175,3 +175,84 @@ def test_evolve_idempotent(tmp_path, conn_wiki, conn_session, monkeypatch):
         data_dir=str(tmp_path),
     )
     assert result.data["status"] == "skipped"  # 已处理 → 跳过
+
+
+# ---------- cfg 透传（P0 修复回归：入口层把真实 cfg 的 llm 段透传给 evolve 管线） ----------
+
+def test_evolve_passes_cfg_with_chains_to_llm(tmp_path, conn_wiki, conn_session, monkeypatch):
+    """cfg 透传：evolve_trigger 把含顶层 chains 的 cfg 原样传给降级链 _llm_call。
+
+    根因（P0）：入口层传空配置 {} → call_with_fallback 读不到 chains 必抛
+    ValueError("未知链名: refinement")。本测试断言 cfg 非空且含 chains 键。
+    """
+    captured: dict = {}
+
+    def _capture(cfg, prompt):
+        captured["cfg"] = cfg
+        return json.dumps([{
+            "type": "create", "category": "skill/cfg", "title": "cfg透传手册",
+            "entry": "验证 cfg 透传",
+        }])
+
+    monkeypatch.setattr(evolve_mod, "_llm_call", _capture)
+    monkeypatch.setattr(evolve_mod, "_load_prompt", lambda stage: "模板")
+
+    # 模拟真实 cfg 的 llm 段：call_with_fallback 读顶层 chains 键，完整 cfg 的 chains 在 cfg["llm"] 下
+    cfg_real = {"chains": {"refinement": [{"provider": "mock", "model": "mock-model"}]}}
+    p = _write_session(tmp_path, "sess-cfg", blocks=6)
+    _register_raw(conn_session, "sess-cfg", p)
+    result = evolve_mod.evolve_trigger(
+        conn_wiki, conn_session, cfg_real, session_key="sess-cfg", min_rounds=5,
+        data_dir=str(tmp_path),
+    )
+    assert result.ok
+    assert captured["cfg"] is cfg_real  # 同一对象透传，未被替换
+    assert "chains" in captured["cfg"]   # 含 chains 键
+    assert "refinement" in captured["cfg"]["chains"]  # 降级链能读到 refinement 链
+
+
+def test_evolve_http_endpoint_passes_cfg(tmp_path, monkeypatch):
+    """HTTP 端点层（P0 修复）：/v1/wiki/evolve/trigger 把 app.state.cfg 的 llm 段透传给 evolve_trigger。
+
+    monkeypatch 替换 evolve_trigger 本身，断言第三个位置参数 cfg 非空且含 chains 键。
+    """
+    from fastapi.testclient import TestClient
+    from sgme import config as sgme_config
+    from sgme.data import db as db_mod
+    from sgme.data import memory_dao
+    from sgme.operations.errors import OperationResult
+    from sgme.server.app import create_app
+
+    cfg = sgme_config.load_config()
+    mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
+    memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
+    app = create_app(
+        cfg=cfg, mem_conn=mem_conn, session_conn=session_conn, wiki_conn=wiki_conn,
+        admin_key="test-admin-key", agent_key="test-agent-key", bearer_token="",
+    )
+    client = TestClient(app)
+
+    captured: dict = {}
+
+    def _fake_evolve(conn, session_conn, cfg_arg, **kwargs):
+        captured["cfg"] = cfg_arg
+        return OperationResult.succeed({"status": "skipped"})
+
+    # routes.py 端点函数体内 `from ... import evolve_trigger`，按模块属性解析 → 字符串路径 patch 生效
+    monkeypatch.setattr("sgme.operations.evolve.evolve_trigger", _fake_evolve)
+
+    try:
+        resp = client.post(
+            "/v1/wiki/evolve/trigger",
+            json={"session_key": "sess-http", "limit": 5, "min_rounds": 5},
+            headers={"X-API-Key": "test-agent-key"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert captured["cfg"] is not None  # 不再是空配置 {}
+        assert "chains" in captured["cfg"]   # 含 chains 键
+        assert "refinement" in captured["cfg"]["chains"]  # 降级链能读到 refinement 链
+    finally:
+        db_mod.close(mem_conn)
+        db_mod.close(session_conn)
+        db_mod.close(wiki_conn)
+
