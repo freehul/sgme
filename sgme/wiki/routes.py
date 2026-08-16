@@ -91,6 +91,10 @@ class WikiPageCreateRequest(BaseModel):
     source_type: str = "text"  # text / file / url
     source_url: str | None = None
     source_file: str | None = None
+    description: str | None = None  # L1 摘要（描述即索引，W3 打通 create 链路）
+    author: str | None = None
+    status: str | None = None
+    supersedes: str | None = None
 
 # ---------- 渲染（最小安全实现，不引第三方） ----------
 
@@ -285,6 +289,8 @@ def create_wiki_page(
         category=payload.category, tags=payload.tags,
         source_type=payload.source_type,
         source_url=payload.source_url, source_file=payload.source_file,
+        description=payload.description, author=payload.author,
+        status=payload.status, supersedes=payload.supersedes,
     )
     if not result.ok:
         raise api_error(result.error_code or "ERR_INTERNAL", result.message or "写入失败")

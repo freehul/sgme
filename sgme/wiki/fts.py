@@ -44,6 +44,19 @@ def _fts_has_description(conn: sqlite3.Connection) -> bool:
         return False
 
 
+def _triggers_have_description(conn: sqlite3.Connection) -> bool:
+    """检测同步触发器是否含 description_seg（2026-08-16 真实链路暴露的隐藏缺口：
+    DROP TABLE wiki_fts 不删触发器，IF NOT EXISTS 不会覆盖旧触发器——旧触发器
+    缺 description_seg 同步导致新行进索引时该列丢失，FTS 检索不到 description。"""
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='wiki_ai'"
+        ).fetchone()
+        return bool(row and row["sql"] and "description_seg" in row["sql"])
+    except Exception:
+        return False
+
+
 def init_wiki_fts(conn: sqlite3.Connection) -> bool:
     """初始化 wiki_fts 虚拟表与触发器（幂等，对称 init_scenes_fts）。
 
@@ -55,8 +68,13 @@ def init_wiki_fts(conn: sqlite3.Connection) -> bool:
         True=成功；False=失败（调用方降级 BM25/LIKE 兜底，不炸服务）。
     """
     try:
-        if not _fts_has_description(conn):
+        if not _fts_has_description(conn) or not _triggers_have_description(conn):
+            # 表缺列或触发器缺同步字段 → 一并重建（触发器挂在 wiki_pages 上，
+            # DROP TABLE 不删触发器，必须显式 DROP TRIGGER 否则旧版残留）
             conn.execute("DROP TABLE IF EXISTS wiki_fts")
+            conn.execute("DROP TRIGGER IF EXISTS wiki_ai")
+            conn.execute("DROP TRIGGER IF EXISTS wiki_ad")
+            conn.execute("DROP TRIGGER IF EXISTS wiki_au")
         conn.executescript(WIKI_FTS_DDL)
         conn.executescript(WIKI_FTS_TRIGGERS)
         # 存量数据回填（首次建表或重建时）

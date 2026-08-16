@@ -555,6 +555,8 @@ def build_mcp_server():
         source_type: str = "text",
         source_url: str | None = None,
         source_file: str | None = None,
+        description: str | None = None,
+        author: str | None = None,
     ) -> str:
         """wiki 页面直接写入（原样入库，不走 LLM 提炼；幂等 upsert，T-55）。
 
@@ -574,6 +576,7 @@ def build_mcp_server():
             create_page_operation, conn,
             title=title, content=content, category=category, tags=tags,
             source_type=source_type, source_url=source_url, source_file=source_file,
+            description=description, author=author,
         )
         return json.dumps(data, ensure_ascii=False)
 
