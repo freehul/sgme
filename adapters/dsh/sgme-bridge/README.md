@@ -55,13 +55,17 @@ syncOnTurnEnd: true
 
 ## 用法
 
-接入后，DSH 自动拥有 5 个工具：
+接入后，DSH 自动拥有 7 个工具：
 
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
-- `wiki_search(query, limit)` — 查提炼后的场景知识；
+- `wiki_search(query, limit)` — 查提炼后的场景知识（FTS5 BM25 + 中文分词）；
+- `wiki_pages(category, limit)` — 按 category 列知识库手册目录（如 skill/sgme），渐进式披露 L2 索引层（W5）；
+- `wiki_page(page_id)` — 按 page_id 拉取知识库手册全文（技能手册/踩坑记录），索引 skill 引导的加载通道（W5）；
 - `signal_pull(signal_type, limit)` — 会话开始拉未消费关怀信号；
 - `signal_claim(event_id)` — 原子认领信号（谁消费谁标记）；
 - `signal_ack(event_id, status, result)` — 写消费回执。
+
+自进化（W4）：每个 turn 结束自动触发 SGME 经验回写（`/v1/wiki/evolve/trigger`，evolveEnabled 默认 true）——会话中的踩坑/新流程由 LLM 提炼后追加到知识库手册「踩坑记录」，多 agent 共享。
 
 ## 接入纪律
 

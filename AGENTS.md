@@ -153,6 +153,7 @@
 **查证与搜索流程（动手前必走，五步）**：
 1. **本地优先**：先读「文档索引」对应章节 + 模块代码与测试，不猜形状
 2. **SGME 记忆**：涉及历史事实/项目决策/用户偏好 → MCP `search`（记忆池）+ `wiki_search`（知识库），不凭记忆断言
+3. **wiki 知识库（W1-W7，2026-08-16）**：手册/经验统一入 wiki_pages（category 分类 + FTS5 检索 + description 摘要 + status supersession）；检索走 `wiki_search`/`wiki_pages`/`wiki_page`，写回走 `wiki_page_add`/`wiki_page_update`（PATCH append ADD-only + hash 去重），自进化走 `wiki_evolve_trigger`（会话经验自动回写，费用门禁 + 规则闸门）
 3. **官方权威**：涉及工具/SDK/API/框架 → 官方文档为准（不猜格式）
 4. **联网兜底**：实现前先找轮子——GitHub 搜索 → 网页搜索 → 库文档，优先成熟方案（不重复造轮子）；JS 渲染/复杂页面用专业抓取工具（如 Firecrawl），不用裸 curl
 5. **三连败升级**：同一问题重试 3 次无效 → 停止重试，按 官方文档 → GitHub Issues → 社区 → 重评估方案 升级（不要在同一方向蛮力试）

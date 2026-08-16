@@ -62,7 +62,10 @@ AGENTS_MD_TEMPLATE = """# SGME 记忆系统（本项目已接入）
 5. **可用工具**：
    - `memory_search`：检索 SGME 长期记忆（L1.5 记忆池）
    - `wiki_search`：检索 SGME 知识库（L2 场景 + wiki_pages）
+   - `wiki_pages`：按 category 列知识库手册目录（如 skill/sgme），渐进式披露 L2 索引层
+   - `wiki_page`：按 page_id 拉取知识库手册全文（技能手册/踩坑记录）
    - `/sgme <关键词>`：综合检索命令（memory + wiki）
+6. **自进化**：会话自动回写经验到知识库手册（费用门禁 + 规则闸门，审计可查）——手册内容以 wiki 为准，本地不缓存
 
 > 注：以上路径为本机安装时生成；仓库迁移/克隆到其他机器后，重跑 install.py 即可刷新为本机路径。
 """

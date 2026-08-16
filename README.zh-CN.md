@@ -123,7 +123,7 @@ pytest tests/ -q
 
 ## 安装为 DSH 插件（DeepSeek Harness）
 
-SGME 自带一个原生 DeepSeek Harness 插件——`dsh-sgme`（Cordis SDK）：会话首步画像注入、`memory_search` / `wiki_search` 工具、`/sgme` 命令、逐轮会话入库。
+SGME 自带一个原生 DeepSeek Harness 插件——`dsh-sgme`（Cordis SDK）：会话首步画像注入、`memory_search` / `wiki_search` / `wiki_pages` / `wiki_page` 工具、`/sgme` 命令、逐轮会话入库、**自进化自动回写经验**（turn/end → evolve，W4）。
 
 ```bash
 # 一条命令从 npm 安装（推荐）
