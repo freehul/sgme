@@ -1,14 +1,17 @@
 /**
- * context.ts — 画像 + 相关记忆首步注入
+ * context.ts — 画像 + 相关记忆首步注入（v2：agent/pre-step middleware 真注入）
  *
- * v1 策略：在会话首个 agent step 之前，拉取 SGME 画像（/v1/inject）+ 项目相关记忆
- * （/v1/search），通过 agent.inject(message) 注入 dsh inbox。
- *
- * v1 只做首步注入（已注入标志位防重），每轮注入留 v2（需研究 agent/pre-step 去重/预算机制，
- * 避免与 dsh 内置 agent-instructions 冲突）。
+ * v2 策略（2026-08-16 对齐 dsh-agent-instructions 官方做法）：
+ * - 挂接 agent/pre-step waterfall middleware（与 dsh 内置 agent-instructions 同通道），
+ *   在首次 step 时拉取 SGME 画像（/v1/inject）+ 项目相关记忆（/v1/search），
+ *   通过返回 {kind:'enter', messages} 把注入消息真正插入模型决策流。
+ * - v1 的缺陷：只 ctx.logger.info 打日志，消息从未进入模型上下文（实测会话日志
+ *   agent/inbox/spliced 中只有用户消息，无 SGME 画像）→ 本次修复。
+ * - 注入时机：首个 step（step === 1）注入一次，之后不再重复（避免每轮污染上下文）。
  *
  * 契约对齐：POST /v1/inject（Agent Key，mode + custom_filter 二选一）
  */
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SgmeClient, InjectResponse } from './sgme-client.js'
 
 /** 注入模式（对应 templates/{mode}.yaml）。 */
@@ -22,20 +25,60 @@ export interface ContextConfig {
   projectHint?: string             // 项目名提示（用于相关记忆检索，可空）
 }
 
-/** agent/pre-step 事件需要的 ctx 能力（内联类型，对齐 dsh Cordis）。 */
+/**
+ * agent/pre-step 事件 payload（对齐 dsh-agent-instructions 用法）。
+ * waterfall middleware：先 await next() 拿基线 decision，再决定注入。
+ */
+export interface PreStepPayload {
+  agent: {
+    inbox: {
+      nextStep: unknown[]
+      remove: (id: unknown) => boolean
+    }
+    session?: {
+      header?: {
+        cwd?: string
+      }
+    }
+  }
+  messages: unknown[]
+  step: number
+  signal: AbortSignal
+}
+
+/** PreStepDecision：reject 或 enter（携带注入后的 messages）。 */
+export type PreStepDecision =
+  | { kind: 'reject' }
+  | { kind: 'enter'; messages: unknown[] }
+
+/** agent/pre-step 事件需要的 ctx 能力（对齐 dsh Cordis waterfall）。 */
 export interface ContextInjectionCtx {
-  on: (event: string, handler: (...args: unknown[]) => void) => () => void
-  /** dsh agent 注入消息到 inbox 的能力（v1 用 console 占位，T-53 本地加载时确认实际 API）。 */
+  on: (event: string, handler: (...args: any[]) => any) => () => void
   logger: { info: (msg: string) => void; warn: (msg: string) => void }
 }
 
+/** 注入消息源标记（对齐 agent-instructions 的 source.kind=plugin 约定）。 */
+const PLUGIN_NAME = 'dsh-sgme'
+
+/** 相同内容判定（对齐 agent-instructions sameContextPayload：content + source 全等）。 */
+function sameContextPayload(left: unknown, right: unknown): boolean {
+  if (typeof left !== 'object' || left === null || typeof right !== 'object' || right === null) {
+    return left === right
+  }
+  const l = left as Record<string, unknown>
+  const r = right as Record<string, unknown>
+  return JSON.stringify(l.content) === JSON.stringify(r.content)
+    && JSON.stringify(l.source) === JSON.stringify(r.source)
+}
+
 /**
- * 注册画像首步注入。
+ * 注册画像首步注入（agent/pre-step middleware）。
  *
- * 实现方式：监听 agent 事件（首步触发），拉取 SGME 画像 → 拼接为指令文本 → 返回给 dsh。
+ * 实现方式：监听 agent/pre-step（waterfall），首次 step 时拉取 SGME 画像 + 相关记忆，
+ * 拼接为 user 角色消息，返回 {kind:'enter', messages: ...} 注入模型决策流。
  *
- * 注意：dsh 的 agent.inject(message) API 在 v0.1 不稳定，本实现先用返回值方式
- * （通过 agent/pre-step 事件返回注入内容），T-53 本地加载时确认实际注入路径。
+ * 与 agent-instructions 共存：同通道多 middleware 串行叠加，SGME 消息插在
+ * claimed messages 之后（lastClaimedIndex+1），不影响 agent-instructions 的注入。
  *
  * @returns 清理函数（由 ctx.effect 调用方管理生命周期）
  */
@@ -44,51 +87,120 @@ export function registerContextInjection(
   client: SgmeClient,
   config: ContextConfig,
 ): () => void {
-  let injected = false  // 首步注入标志位（v1 只注入一次）
+  // 预拉取缓存：turn/start 时异步拉取画像，pre-step 直接用缓存（不阻塞主循环）
+  let profileCache: { text: string; ts: number } | null = null
+  // 正在拉取中的 promise（防并发重复拉取）
+  let fetching: Promise<void> | null = null
+  // 注入状态：仅成功注入后置位
+  let injected = false
 
-  // handler 接收 dsh session/event 的可变参数（...args）。
-  // 兼容 (session, event) 与 (event) 两种调用形态：找第一个含 type 字段的对象作为 event。
-  const handler = (...args: unknown[]): void => {
-    let event: ({ type?: string } & Record<string, unknown>) | undefined
-    for (const a of args) {
-      if (typeof a === 'object' && a !== null && 'type' in a) {
-        event = a as ({ type?: string } & Record<string, unknown>)
-        break
-      }
-    }
-    // 只在 turn/start 时触发首步注入（对齐 dsh-agent-instructions 的 session/event 用法）
-    if (event?.type !== 'turn/start') return
-    if (injected) return  // 已注入，跳过
-    injected = true
-
-    // 异步拉取画像 + 相关记忆（不阻塞 dsh 主循环，失败只 log）
-    void (async () => {
+  /** 预拉取画像 + 相关记忆（turn/start 触发，失败不置位，下轮重试）。 */
+  const prefetch = (projectHint: string | undefined): void => {
+    if (fetching) return
+    fetching = (async () => {
       try {
         const [profile, related] = await Promise.all([
           client.inject({ mode: config.injectMode }),
-          config.projectHint
+          projectHint
             ? client.search({
-                query: config.projectHint,
+                query: projectHint,
                 scopes: ['memory'],
                 limit: config.searchLimit,
               })
             : Promise.resolve(null),
         ])
-
-        const injectionText = buildInjectionText(profile, related)
-        if (injectionText) {
-          // v1：通过 logger 输出注入文本（dsh agent.inbox.splice API 待 v2 接入）
-          ctx.logger.info(`[SGME 画像注入]\n${injectionText}`)
+        const text = buildInjectionText(profile, related)
+        if (text) {
+          profileCache = { text, ts: Date.now() }
         }
       } catch (e) {
-        ctx.logger.warn(`[SGME 画像注入失败] ${e instanceof Error ? e.message : String(e)}`)
+        ctx.logger.warn(`[SGME 画像预拉取失败] ${e instanceof Error ? e.message : String(e)}`)
+      } finally {
+        fetching = null
       }
     })()
   }
 
-  // 监听 session/event（dsh 统一事件流），过滤 turn/start 触发首步注入
-  const dispose = ctx.on('session/event', handler)
-  return dispose
+  const handler = async (payload: PreStepPayload, next: () => Promise<PreStepDecision>): Promise<PreStepDecision> => {
+    const decision = await next()
+    if (injected) return decision
+    if (payload.step !== 1) return decision
+    if (decision.kind === 'reject') return decision
+
+    // 项目提示：显式配置 > 环境变量 > 会话 cwd 目录名推断
+    const projectHint = config.projectHint
+      || process.env.SGME_PROJECT_HINT
+      || (payload.agent?.session?.header?.cwd
+        ? payload.agent.session.header.cwd.split(/[\\/]/).filter(Boolean).pop()
+        : undefined)
+
+    // 预拉取未完成则等它（首轮画像应尽快注入）
+    if (fetching) {
+      try { await fetching } catch { /* 已 log */ }
+    }
+    // 仍无缓存（预拉取失败且未重试）→ 现场拉一次
+    if (!profileCache) {
+      try {
+        const [profile, related] = await Promise.all([
+          client.inject({ mode: config.injectMode }),
+          projectHint
+            ? client.search({
+                query: projectHint,
+                scopes: ['memory'],
+                limit: config.searchLimit,
+              })
+            : Promise.resolve(null),
+        ])
+        const text = buildInjectionText(profile, related)
+        if (text) profileCache = { text, ts: Date.now() }
+      } catch (e) {
+        ctx.logger.warn(`[SGME 画像注入失败] ${e instanceof Error ? e.message : String(e)}`)
+        return decision  // 不置位 injected，下轮重试
+      }
+    }
+
+    if (!profileCache) return decision  // 画像为空，跳过（不置位，下轮可重试）
+
+    injected = true  // 成功注入后才置位
+
+    const desired = createUserMessage({
+      content: [{ type: 'text', text: profileCache.text }],
+      source: { kind: 'plugin', plugin: PLUGIN_NAME },
+    })
+
+    // 已存在相同注入则跳过
+    if (decision.messages.some((message) => sameContextPayload(message, desired))) {
+      return decision
+    }
+
+    // 注入位置：首条消息之前（优化前缀缓存——稳定画像靠前）
+    const firstClaimedIndex = decision.messages.findIndex((message) =>
+      (payload.messages ?? []).includes(message),
+    )
+    const insertAt = firstClaimedIndex === -1 ? 0 : firstClaimedIndex
+    ctx.logger.info(`[SGME 画像注入] 已注入 ${profileCache.text.length} 字符（step ${payload.step}）`)
+    return {
+      kind: 'enter',
+      messages: decision.messages.toSpliced(insertAt, 0, desired),
+    }
+  }
+
+  // turn/start 时预拉取画像（异步，不阻塞）
+  const disposePrefetch = ctx.on('turn/start', (payload: unknown) => {
+    const agent = (payload as { agent?: { session?: { header?: { cwd?: string } } } })?.agent
+    const projectHint = config.projectHint
+      || process.env.SGME_PROJECT_HINT
+      || (agent?.session?.header?.cwd
+        ? agent.session.header.cwd.split(/[\\/]/).filter(Boolean).pop()
+        : undefined)
+    prefetch(projectHint)
+  })
+
+  const disposePreStep = ctx.on('agent/pre-step', handler)
+  return () => {
+    disposePrefetch()
+    disposePreStep()
+  }
 }
 
 /**

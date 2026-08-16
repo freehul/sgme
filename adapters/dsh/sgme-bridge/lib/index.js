@@ -1,5 +1,10 @@
+import { createRequire } from "node:module";
 import Schema from "schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import "@deepseek-ai/cordis";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 //#region src/sgme-client.ts
 /**
 * SGME HTTP 客户端。
@@ -421,43 +426,1068 @@ function createSignalAckTool(client) {
 	});
 }
 //#endregion
+//#region node_modules/.pnpm/@deepseek-ai+cosmokit@1.8.2/node_modules/@deepseek-ai/cosmokit/lib/index.js
+/** Return true when a value is `null` or `undefined`. */
+function isNullable(value) {
+	return value === null || value === void 0;
+}
+/** Return true for non-array object values. */
+function isPlainObject(data) {
+	return data && typeof data === "object" && !Array.isArray(data);
+}
+/** Filter object entries and return a new object. */
+function filterKeys(object, filter) {
+	return Object.fromEntries(Object.entries(object).filter(([key, value]) => filter(key, value)));
+}
+/** Map object values while preserving the original key set. */
+function mapValues(object, transform) {
+	return Object.fromEntries(Object.entries(object).map(([key, value]) => [key, transform(value, key)]));
+}
+/** Pick selected keys from an object, optionally including `undefined` values. */
+function pick(source, keys, forced) {
+	if (!keys) return { ...source };
+	const result = {};
+	for (const key of keys) if (forced || source[key] !== void 0) result[key] = source[key];
+	return result;
+}
+/** Test values using `instanceof` with a `toStringTag` fallback. */
+function is(type, value) {
+	if (arguments.length === 1) return (value) => is(type, value);
+	return type in globalThis && value instanceof globalThis[type] || Object.prototype.toString.call(value).slice(8, -1) === type;
+}
+function isArrayBufferLike(value) {
+	return is("ArrayBuffer", value) || is("SharedArrayBuffer", value);
+}
+function isArrayBufferSource(value) {
+	return isArrayBufferLike(value) || ArrayBuffer.isView(value);
+}
+/** Binary source detection and base64/hex conversion helpers. */
+var Binary;
+(function(Binary) {
+	Binary.is = isArrayBufferLike;
+	Binary.isSource = isArrayBufferSource;
+	function fromSource(source) {
+		if (ArrayBuffer.isView(source)) return source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+		else return source;
+	}
+	Binary.fromSource = fromSource;
+	function toBase64(source) {
+		source = fromSource(source);
+		if (typeof Buffer !== "undefined") return Buffer.from(source).toString("base64");
+		let binary = "";
+		const bytes = new Uint8Array(source);
+		for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+		return btoa(binary);
+	}
+	Binary.toBase64 = toBase64;
+	function fromBase64(source) {
+		if (typeof Buffer !== "undefined") return fromSource(Buffer.from(source, "base64"));
+		return Uint8Array.from(atob(source), (c) => c.charCodeAt(0));
+	}
+	Binary.fromBase64 = fromBase64;
+	function toHex(source) {
+		source = fromSource(source);
+		if (typeof Buffer !== "undefined") return Buffer.from(source).toString("hex");
+		return Array.from(new Uint8Array(source), (byte) => byte.toString(16).padStart(2, "0")).join("");
+	}
+	Binary.toHex = toHex;
+	function fromHex(source) {
+		if (typeof Buffer !== "undefined") return fromSource(Buffer.from(source, "hex"));
+		const hex = source.length % 2 === 0 ? source : source.slice(0, source.length - 1);
+		const buffer = [];
+		for (let i = 0; i < hex.length; i += 2) buffer.push(parseInt(`${hex[i]}${hex[i + 1]}`, 16));
+		return Uint8Array.from(buffer).buffer;
+	}
+	Binary.fromHex = fromHex;
+})(Binary || (Binary = {}));
+Binary.fromBase64;
+Binary.toBase64;
+Binary.fromHex;
+Binary.toHex;
+/** Deep-clone common JavaScript values while preserving prototypes and cycles. */
+function clone(source, refs = /* @__PURE__ */ new Map()) {
+	if (!source || typeof source !== "object") return source;
+	if (is("Date", source)) return new Date(source.valueOf());
+	if (is("RegExp", source)) return new RegExp(source.source, source.flags);
+	if (isArrayBufferLike(source)) return source.slice(0);
+	if (ArrayBuffer.isView(source)) return source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+	const cached = refs.get(source);
+	if (cached) return cached;
+	if (Array.isArray(source)) {
+		const result = [];
+		refs.set(source, result);
+		source.forEach((value, index) => {
+			result[index] = Reflect.apply(clone, null, [value, refs]);
+		});
+		return result;
+	}
+	const result = Object.create(Object.getPrototypeOf(source));
+	refs.set(source, result);
+	for (const key of Reflect.ownKeys(source)) {
+		const descriptor = { ...Reflect.getOwnPropertyDescriptor(source, key) };
+		if ("value" in descriptor) descriptor.value = Reflect.apply(clone, null, [descriptor.value, refs]);
+		Reflect.defineProperty(result, key, descriptor);
+	}
+	return result;
+}
+/** Deeply compare arrays, dates, regexps, buffers, and plain object fields. */
+function deepEqual(a, b, strict) {
+	if (a === b) return true;
+	if (!strict && isNullable(a) && isNullable(b)) return true;
+	if (typeof a !== typeof b) return false;
+	if (typeof a !== "object") return false;
+	if (!a || !b) return false;
+	function check(test, then) {
+		return test(a) ? test(b) ? then(a, b) : false : test(b) ? false : void 0;
+	}
+	return check(Array.isArray, (a, b) => a.length === b.length && a.every((item, index) => deepEqual(item, b[index]))) ?? check(is("Date"), (a, b) => a.valueOf() === b.valueOf()) ?? check(is("RegExp"), (a, b) => a.source === b.source && a.flags === b.flags) ?? check(isArrayBufferLike, (a, b) => {
+		if (a.byteLength !== b.byteLength) return false;
+		const viewA = new Uint8Array(a);
+		const viewB = new Uint8Array(b);
+		for (let i = 0; i < viewA.length; i++) if (viewA[i] !== viewB[i]) return false;
+		return true;
+	}) ?? Object.keys({
+		...a,
+		...b
+	}).every((key) => deepEqual(a[key], b[key], strict));
+}
+/** Time constants plus parsing and formatting helpers. */
+var Time;
+(function(Time) {
+	Time.millisecond = 1;
+	Time.second = 1e3;
+	Time.minute = Time.second * 60;
+	Time.hour = Time.minute * 60;
+	Time.day = Time.hour * 24;
+	Time.week = Time.day * 7;
+	let timezoneOffset = (/* @__PURE__ */ new Date()).getTimezoneOffset();
+	function setTimezoneOffset(offset) {
+		timezoneOffset = offset;
+	}
+	Time.setTimezoneOffset = setTimezoneOffset;
+	function getTimezoneOffset() {
+		return timezoneOffset;
+	}
+	Time.getTimezoneOffset = getTimezoneOffset;
+	function getDateNumber(date = /* @__PURE__ */ new Date(), offset) {
+		if (typeof date === "number") date = new Date(date);
+		if (offset === void 0) offset = timezoneOffset;
+		return Math.floor((date.valueOf() / Time.minute - offset) / 1440);
+	}
+	Time.getDateNumber = getDateNumber;
+	function fromDateNumber(value, offset) {
+		const date = new Date(value * Time.day);
+		if (offset === void 0) offset = timezoneOffset;
+		return new Date(+date + offset * Time.minute);
+	}
+	Time.fromDateNumber = fromDateNumber;
+	const numeric = /\d+(?:\.\d+)?/.source;
+	const timeRegExp = new RegExp(`^${[
+		"w(?:eek(?:s)?)?",
+		"d(?:ay(?:s)?)?",
+		"h(?:our(?:s)?)?",
+		"m(?:in(?:ute)?(?:s)?)?",
+		"s(?:ec(?:ond)?(?:s)?)?"
+	].map((unit) => `(${numeric}${unit})?`).join("")}$`);
+	function parseTime(source) {
+		const capture = timeRegExp.exec(source);
+		if (!capture) return 0;
+		return (parseFloat(capture[1]) * Time.week || 0) + (parseFloat(capture[2]) * Time.day || 0) + (parseFloat(capture[3]) * Time.hour || 0) + (parseFloat(capture[4]) * Time.minute || 0) + (parseFloat(capture[5]) * Time.second || 0);
+	}
+	Time.parseTime = parseTime;
+	function parseDate(date) {
+		const parsed = parseTime(date);
+		if (parsed) date = Date.now() + parsed;
+		else if (/^\d{1,2}(:\d{1,2}){1,2}$/.test(date)) date = `${(/* @__PURE__ */ new Date()).toLocaleDateString()}-${date}`;
+		else if (/^\d{1,2}-\d{1,2}-\d{1,2}(:\d{1,2}){1,2}$/.test(date)) date = `${(/* @__PURE__ */ new Date()).getFullYear()}-${date}`;
+		return date ? new Date(date) : /* @__PURE__ */ new Date();
+	}
+	Time.parseDate = parseDate;
+	function format(ms) {
+		const abs = Math.abs(ms);
+		if (abs >= Time.day - Time.hour / 2) return Math.round(ms / Time.day) + "d";
+		else if (abs >= Time.hour - Time.minute / 2) return Math.round(ms / Time.hour) + "h";
+		else if (abs >= Time.minute - Time.second / 2) return Math.round(ms / Time.minute) + "m";
+		else if (abs >= Time.second) return Math.round(ms / Time.second) + "s";
+		return ms + "ms";
+	}
+	Time.format = format;
+	function toDigits(source, length = 2) {
+		return source.toString().padStart(length, "0");
+	}
+	Time.toDigits = toDigits;
+	function template(template, time = /* @__PURE__ */ new Date()) {
+		return template.replace("yyyy", time.getFullYear().toString()).replace("yy", time.getFullYear().toString().slice(2)).replace("MM", toDigits(time.getMonth() + 1)).replace("dd", toDigits(time.getDate())).replace("hh", toDigits(time.getHours())).replace("mm", toDigits(time.getMinutes())).replace("ss", toDigits(time.getSeconds())).replace("SSS", toDigits(time.getMilliseconds(), 3));
+	}
+	Time.template = template;
+})(Time || (Time = {}));
+//#endregion
+//#region node_modules/.pnpm/@deepseek-ai+schemastery@3.18.1/node_modules/@deepseek-ai/schemastery/lib/index.mjs
+const kSchema = Symbol.for("schemastery");
+const kValidationError = Symbol.for("ValidationError");
+globalThis.__schemastery_index__ ??= 0;
+globalThis.__schemastery_refs__ = void 0;
+var ValidationError = class extends TypeError {
+	options;
+	name = "ValidationError";
+	constructor(message, options) {
+		let prefix = "$";
+		for (const segment of options.path || []) if (typeof segment === "string") prefix += "." + segment;
+		else if (typeof segment === "number") prefix += "[" + segment + "]";
+		else if (typeof segment === "symbol") prefix += `[Symbol(${segment.toString()})]`;
+		if (prefix.startsWith(".")) prefix = prefix.slice(1);
+		super((prefix === "$" ? "" : `${prefix} `) + message);
+		this.options = options;
+	}
+	static is(error) {
+		return !!error?.[kValidationError];
+	}
+};
+Object.defineProperty(ValidationError.prototype, kValidationError, { value: true });
+const Schema$1 = function(options) {
+	const schema = function(data, options = {}) {
+		return Schema$1.resolve(data, schema, options)[0];
+	};
+	if (options.refs) {
+		const refs = mapValues(options.refs, (options) => new Schema$1(options));
+		const getRef = (uid) => refs[uid];
+		for (const key in refs) {
+			const options = refs[key];
+			options.sKey = getRef(options.sKey);
+			options.inner = getRef(options.inner);
+			options.list = options.list && options.list.map(getRef);
+			options.dict = options.dict && mapValues(options.dict, getRef);
+		}
+		return refs[options.uid];
+	}
+	Object.assign(schema, options);
+	if (typeof schema.callback === "string") try {
+		schema.callback = new Function("return " + schema.callback)();
+	} catch {}
+	Object.defineProperty(schema, "uid", { value: globalThis.__schemastery_index__++ });
+	Object.setPrototypeOf(schema, Schema$1.prototype);
+	schema.meta ||= {};
+	schema.toString = schema.toString.bind(schema);
+	return schema;
+};
+Schema$1.prototype = Object.create(Function.prototype);
+Schema$1.prototype[kSchema] = true;
+Object.defineProperty(Schema$1.prototype, "~standard", { get() {
+	return {
+		version: 1,
+		vendor: "schemastery",
+		validate: (value) => {
+			try {
+				return { value: Schema$1.resolve(value, this, {})[0] };
+			} catch (error) {
+				if (ValidationError.is(error)) return { issues: [{
+					message: error.message,
+					path: error.options.path
+				}] };
+				throw error;
+			}
+		}
+	};
+} });
+Schema$1.ValidationError = ValidationError;
+Schema$1.prototype.toJSON = function toJSON() {
+	if (globalThis.__schemastery_refs__) {
+		globalThis.__schemastery_refs__[this.uid] ??= JSON.parse(JSON.stringify({ ...this }));
+		return this.uid;
+	}
+	globalThis.__schemastery_refs__ = { [this.uid]: { ...this } };
+	globalThis.__schemastery_refs__[this.uid] = JSON.parse(JSON.stringify({ ...this }));
+	const result = {
+		uid: this.uid,
+		refs: globalThis.__schemastery_refs__
+	};
+	globalThis.__schemastery_refs__ = void 0;
+	return result;
+};
+Schema$1.prototype.set = function set(key, value) {
+	this.dict[key] = value;
+	return this;
+};
+Schema$1.prototype.push = function push(value) {
+	this.list.push(value);
+	return this;
+};
+function mergeDesc(original, messages) {
+	const result = typeof original === "string" ? { "": original } : { ...original };
+	for (const locale in messages) {
+		const value = messages[locale];
+		if (value?.$description || value?.$desc) result[locale] = value.$description || value.$desc;
+		else if (typeof value === "string") result[locale] = value;
+	}
+	return result;
+}
+function getInner(value) {
+	return value?.$value ?? value?.$inner;
+}
+function extractKeys(data) {
+	return filterKeys(data ?? {}, (key) => !key.startsWith("$"));
+}
+Schema$1.prototype.i18n = function i18n(messages) {
+	const schema = Schema$1(this);
+	const desc = mergeDesc(schema.meta.description, messages);
+	if (Object.keys(desc).length) schema.meta.description = desc;
+	if (schema.dict) schema.dict = mapValues(schema.dict, (inner, key) => {
+		return inner.i18n(mapValues(messages, (data) => getInner(data)?.[key] ?? data?.[key]));
+	});
+	if (schema.list) schema.list = schema.list.map((inner, index) => {
+		return inner.i18n(mapValues(messages, (data = {}) => {
+			if (Array.isArray(getInner(data))) return getInner(data)[index];
+			if (Array.isArray(data)) return data[index];
+			return extractKeys(data);
+		}));
+	});
+	if (schema.inner) schema.inner = schema.inner.i18n(mapValues(messages, (data) => {
+		if (getInner(data)) return getInner(data);
+		return extractKeys(data);
+	}));
+	if (schema.sKey) schema.sKey = schema.sKey.i18n(mapValues(messages, (data) => data?.$key));
+	return schema;
+};
+Schema$1.prototype.extra = function extra(key, value) {
+	const schema = Schema$1(this);
+	schema.meta = {
+		...schema.meta,
+		[key]: value
+	};
+	return schema;
+};
+for (const key of [
+	"required",
+	"disabled",
+	"collapse",
+	"hidden",
+	"loose"
+]) Object.assign(Schema$1.prototype, { [key](value = true) {
+	const schema = Schema$1(this);
+	schema.meta = {
+		...schema.meta,
+		[key]: value
+	};
+	return schema;
+} });
+Schema$1.prototype.deprecated = function deprecated() {
+	const schema = Schema$1(this);
+	schema.meta.badges ||= [];
+	schema.meta.badges.push({
+		text: "deprecated",
+		type: "danger"
+	});
+	return schema;
+};
+Schema$1.prototype.experimental = function experimental() {
+	const schema = Schema$1(this);
+	schema.meta.badges ||= [];
+	schema.meta.badges.push({
+		text: "experimental",
+		type: "warning"
+	});
+	return schema;
+};
+Schema$1.prototype.pattern = function pattern(regexp) {
+	const schema = Schema$1(this);
+	const pattern = pick(regexp, ["source", "flags"]);
+	schema.meta = {
+		...schema.meta,
+		pattern
+	};
+	return schema;
+};
+Schema$1.prototype.simplify = function simplify(value) {
+	if (deepEqual(value, this.meta.default, this.type === "dict")) return null;
+	if (isNullable(value)) return value;
+	if (this.type === "object" || this.type === "dict") {
+		const result = {};
+		for (const key in value) {
+			const item = (this.type === "object" ? this.dict[key] : this.inner)?.simplify(value[key]);
+			if (this.type === "dict" || !isNullable(item)) result[key] = item;
+		}
+		if (deepEqual(result, this.meta.default, this.type === "dict")) return null;
+		return result;
+	} else if (this.type === "array" || this.type === "tuple") {
+		const result = [];
+		value.forEach((value, index) => {
+			const schema = this.type === "array" ? this.inner : this.list[index];
+			const item = schema ? schema.simplify(value) : value;
+			result.push(item);
+		});
+		return result;
+	} else if (this.type === "intersect") {
+		const result = {};
+		for (const item of this.list) Object.assign(result, item.simplify(value));
+		return result;
+	} else if (this.type === "union") for (const schema of this.list) try {
+		Schema$1.resolve(value, schema, {});
+		return schema.simplify(value);
+	} catch {}
+	return value;
+};
+Schema$1.prototype.toString = function toString(inline) {
+	return formatters[this.type]?.(this, inline) ?? `Schema<${this.type}>`;
+};
+Schema$1.prototype.role = function role(role, extra) {
+	const schema = Schema$1(this);
+	schema.meta = {
+		...schema.meta,
+		role,
+		extra
+	};
+	return schema;
+};
+for (const key of [
+	"default",
+	"link",
+	"comment",
+	"description",
+	"max",
+	"min",
+	"step"
+]) Object.assign(Schema$1.prototype, { [key](value) {
+	const schema = Schema$1(this);
+	schema.meta = {
+		...schema.meta,
+		[key]: value
+	};
+	return schema;
+} });
+const resolvers = {};
+Schema$1.extend = function extend(type, resolve) {
+	resolvers[type] = resolve;
+};
+Schema$1.resolve = function resolve(data, schema, options = {}, strict = false) {
+	if (!schema) return [data];
+	if (options.ignore?.(data, schema)) return [data];
+	if (isNullable(data) && schema.type !== "lazy") {
+		if (schema.meta.required) throw new ValidationError(`missing required value`, options);
+		let current = schema;
+		let fallback = schema.meta.default;
+		while (current?.type === "intersect" && isNullable(fallback)) {
+			current = current.list[0];
+			fallback = current?.meta.default;
+		}
+		if (isNullable(fallback)) return [data];
+		data = clone(fallback);
+	}
+	const callback = resolvers[schema.type];
+	if (!callback) throw new ValidationError(`unsupported type "${schema.type}"`, options);
+	try {
+		return callback(data, schema, options, strict);
+	} catch (error) {
+		if (!schema.meta.loose) throw error;
+		return [schema.meta.default];
+	}
+};
+Schema$1.from = function from(source) {
+	if (isNullable(source)) return Schema$1.any();
+	else if ([
+		"string",
+		"number",
+		"boolean"
+	].includes(typeof source)) return Schema$1.const(source).required();
+	else if (source[kSchema]) return source;
+	else if (typeof source === "function") switch (source) {
+		case String: return Schema$1.string().required();
+		case Number: return Schema$1.number().required();
+		case Boolean: return Schema$1.boolean().required();
+		case Function: return Schema$1.function().required();
+		default: return Schema$1.is(source).required();
+	}
+	else throw new TypeError(`cannot infer schema from ${source}`);
+};
+Schema$1.lazy = function lazy(builder) {
+	const toJSON = () => {
+		if (!schema.inner[kSchema]) {
+			schema.inner = schema.builder();
+			schema.inner.meta = {
+				...schema.meta,
+				...schema.inner.meta
+			};
+		}
+		return schema.inner.toJSON();
+	};
+	const schema = new Schema$1({
+		type: "lazy",
+		builder,
+		inner: { toJSON }
+	});
+	return schema;
+};
+Schema$1.natural = function natural() {
+	return Schema$1.number().step(1).min(0);
+};
+Schema$1.percent = function percent() {
+	return Schema$1.number().step(.01).min(0).max(1).role("slider");
+};
+Schema$1.date = function date() {
+	return Schema$1.union([Schema$1.is(Date), Schema$1.transform(Schema$1.string().role("datetime"), (value, options) => {
+		const date = new Date(value);
+		if (isNaN(+date)) throw new ValidationError(`invalid date "${value}"`, options);
+		return date;
+	}, true)]);
+};
+Schema$1.regExp = function regExp(flag = "") {
+	return Schema$1.union([Schema$1.is(RegExp), Schema$1.transform(Schema$1.string().role("regexp", { flag }), (value, options) => {
+		try {
+			return new RegExp(value, flag);
+		} catch (e) {
+			throw new ValidationError(e.message, options);
+		}
+	}, true)]);
+};
+Schema$1.arrayBuffer = function arrayBuffer(encoding) {
+	return Schema$1.union([
+		Schema$1.is(ArrayBuffer),
+		Schema$1.is(SharedArrayBuffer),
+		Schema$1.transform(Schema$1.any(), (value, options) => {
+			if (Binary.isSource(value)) return Binary.fromSource(value);
+			throw new ValidationError(`expected ArrayBufferSource but got ${value}`, options);
+		}, true),
+		...encoding ? [Schema$1.transform(Schema$1.string(), (value, options) => {
+			try {
+				return encoding === "base64" ? Binary.fromBase64(value) : Binary.fromHex(value);
+			} catch (e) {
+				throw new ValidationError(e.message, options);
+			}
+		}, true)] : []
+	]);
+};
+Schema$1.extend("lazy", (data, schema, options, strict) => {
+	if (!schema.inner[kSchema]) {
+		schema.inner = schema.builder();
+		schema.inner.meta = {
+			...schema.meta,
+			...schema.inner.meta
+		};
+	}
+	return Schema$1.resolve(data, schema.inner, options, strict);
+});
+Schema$1.extend("any", (data) => {
+	return [data];
+});
+Schema$1.extend("never", (data, _, options) => {
+	throw new ValidationError(`expected nullable but got ${data}`, options);
+});
+Schema$1.extend("const", (data, { value }, options) => {
+	if (deepEqual(data, value)) return [value];
+	throw new ValidationError(`expected ${value} but got ${data}`, options);
+});
+function checkWithinRange(data, meta, description, options, skipMin = false) {
+	const { max = Infinity, min = -Infinity } = meta;
+	if (data > max) throw new ValidationError(`expected ${description} <= ${max} but got ${data}`, options);
+	if (data < min && !skipMin) throw new ValidationError(`expected ${description} >= ${min} but got ${data}`, options);
+}
+Schema$1.extend("string", (data, { meta }, options) => {
+	if (typeof data !== "string") throw new ValidationError(`expected string but got ${data}`, options);
+	if (meta.pattern) {
+		const regexp = new RegExp(meta.pattern.source, meta.pattern.flags);
+		if (!regexp.test(data)) throw new ValidationError(`expect string to match regexp ${regexp}`, options);
+	}
+	checkWithinRange(data.length, meta, "string length", options);
+	return [data];
+});
+function decimalShift(data, digits) {
+	const str = data.toString();
+	if (str.includes("e")) return data * Math.pow(10, digits);
+	const index = str.indexOf(".");
+	if (index === -1) return data * Math.pow(10, digits);
+	const frac = str.slice(index + 1);
+	const integer = str.slice(0, index);
+	if (frac.length <= digits) return +(integer + frac.padEnd(digits, "0"));
+	return +(integer + frac.slice(0, digits) + "." + frac.slice(digits));
+}
+function isMultipleOf(data, min, step) {
+	step = Math.abs(step);
+	if (!/^\d+\.\d+$/.test(step.toString())) return (data - min) % step === 0;
+	const index = step.toString().indexOf(".");
+	const digits = step.toString().slice(index + 1).length;
+	return Math.abs(decimalShift(data, digits) - decimalShift(min, digits)) % decimalShift(step, digits) === 0;
+}
+Schema$1.extend("number", (data, { meta }, options) => {
+	if (typeof data !== "number") throw new ValidationError(`expected number but got ${data}`, options);
+	checkWithinRange(data, meta, "number", options);
+	const { step } = meta;
+	if (step && !isMultipleOf(data, meta.min ?? 0, step)) throw new ValidationError(`expected number multiple of ${step} but got ${data}`, options);
+	return [data];
+});
+Schema$1.extend("boolean", (data, _, options) => {
+	if (typeof data === "boolean") return [data];
+	throw new ValidationError(`expected boolean but got ${data}`, options);
+});
+Schema$1.extend("bitset", (data, { bits, meta }, options) => {
+	let value = 0, keys = [];
+	if (typeof data === "number") {
+		value = data;
+		for (const key in bits) if (data & bits[key]) keys.push(key);
+	} else if (Array.isArray(data)) {
+		keys = data;
+		for (const key of keys) {
+			if (typeof key !== "string") throw new ValidationError(`expected string but got ${key}`, options);
+			if (key in bits) value |= bits[key];
+		}
+	} else throw new ValidationError(`expected number or array but got ${data}`, options);
+	if (value === meta.default) return [value];
+	return [value, keys];
+});
+Schema$1.extend("function", (data, _, options) => {
+	if (typeof data === "function") return [data];
+	throw new ValidationError(`expected function but got ${data}`, options);
+});
+Schema$1.extend("is", (data, { constructor }, options) => {
+	if (typeof constructor === "function") {
+		if (data instanceof constructor) return [data];
+		throw new ValidationError(`expected ${constructor.name} but got ${data}`, options);
+	} else {
+		if (isNullable(data)) throw new ValidationError(`expected ${constructor} but got ${data}`, options);
+		let prototype = Object.getPrototypeOf(data);
+		while (prototype) {
+			if (prototype.constructor?.name === constructor) return [data];
+			prototype = Object.getPrototypeOf(prototype);
+		}
+		throw new ValidationError(`expected ${constructor} but got ${data}`, options);
+	}
+});
+function property(data, key, schema, options) {
+	try {
+		const [value, adapted] = Schema$1.resolve(data[key], schema, {
+			...options,
+			path: [...options.path || [], key]
+		});
+		if (adapted !== void 0) data[key] = adapted;
+		return value;
+	} catch (e) {
+		if (!options?.autofix) throw e;
+		delete data[key];
+		return schema.meta.default;
+	}
+}
+Schema$1.extend("array", (data, { inner, meta }, options) => {
+	if (!Array.isArray(data)) throw new ValidationError(`expected array but got ${data}`, options);
+	checkWithinRange(data.length, meta, "array length", options, !isNullable(inner.meta.default));
+	return [data.map((_, index) => property(data, index, inner, options))];
+});
+Schema$1.extend("dict", (data, { inner, sKey }, options, strict) => {
+	if (!isPlainObject(data)) throw new ValidationError(`expected object but got ${data}`, options);
+	const result = {};
+	for (const key in data) {
+		let rKey;
+		try {
+			rKey = Schema$1.resolve(key, sKey, options)[0];
+		} catch (error) {
+			if (strict) continue;
+			throw error;
+		}
+		result[rKey] = property(data, key, inner, options);
+		data[rKey] = data[key];
+		if (key !== rKey) delete data[key];
+	}
+	return [result];
+});
+Schema$1.extend("tuple", (data, { list }, options, strict) => {
+	if (!Array.isArray(data)) throw new ValidationError(`expected array but got ${data}`, options);
+	const result = list.map((inner, index) => property(data, index, inner, options));
+	if (strict) return [result];
+	result.push(...data.slice(list.length));
+	return [result];
+});
+function merge(result, data) {
+	for (const key in data) {
+		if (key in result) continue;
+		result[key] = data[key];
+	}
+}
+Schema$1.extend("object", (data, { dict }, options, strict) => {
+	if (!isPlainObject(data)) throw new ValidationError(`expected object but got ${data}`, options);
+	const result = {};
+	for (const key in dict) {
+		const value = property(data, key, dict[key], options);
+		if (!isNullable(value) || key in data) result[key] = value;
+	}
+	if (!strict) merge(result, data);
+	return [result];
+});
+Schema$1.extend("union", (data, { list, toString }, options, strict) => {
+	const messages = [];
+	for (const inner of list) try {
+		return Schema$1.resolve(data, inner, options, strict);
+	} catch (error) {
+		messages.push(error);
+	}
+	throw new ValidationError(`expected ${toString()} but got ${JSON.stringify(data)}`, options);
+});
+Schema$1.extend("intersect", (data, { list, toString }, options, strict) => {
+	if (!list.length) return [data];
+	let result;
+	for (const inner of list) {
+		const value = Schema$1.resolve(data, inner, options, true)[0];
+		if (isNullable(value)) continue;
+		if (isNullable(result)) result = value;
+		else if (typeof result !== typeof value) throw new ValidationError(`expected ${toString()} but got ${JSON.stringify(data)}`, options);
+		else if (typeof value === "object") merge(result ??= {}, value);
+		else if (result !== value) throw new ValidationError(`expected ${toString()} but got ${JSON.stringify(data)}`, options);
+	}
+	if (!strict && isPlainObject(data)) merge(result, data);
+	return [result];
+});
+Schema$1.extend("transform", (data, { inner, callback, preserve }, options) => {
+	const [result, adapted = data] = Schema$1.resolve(data, inner, options, true);
+	if (preserve) return [callback(result)];
+	else return [callback(result), callback(adapted)];
+});
+const formatters = {};
+function defineMethod(name, keys, format) {
+	formatters[name] = format;
+	Object.assign(Schema$1, { [name](...args) {
+		const schema = new Schema$1({ type: name });
+		keys.forEach((key, index) => {
+			switch (key) {
+				case "sKey":
+					schema.sKey = args[index] ?? Schema$1.string();
+					break;
+				case "inner":
+					schema.inner = Schema$1.from(args[index]);
+					break;
+				case "list":
+					schema.list = args[index].map(Schema$1.from);
+					break;
+				case "dict":
+					schema.dict = mapValues(args[index], Schema$1.from);
+					break;
+				case "bits":
+					schema.bits = {};
+					for (const key in args[index]) {
+						if (typeof args[index][key] !== "number") continue;
+						schema.bits[key] = args[index][key];
+					}
+					break;
+				case "callback": {
+					const callback = schema.callback = args[index];
+					callback["toJSON"] ||= () => callback.toString();
+					break;
+				}
+				case "constructor": {
+					const constructor = schema.constructor = args[index];
+					if (typeof constructor === "function") constructor["toJSON"] ||= () => constructor["name"];
+					break;
+				}
+				default: schema[key] = args[index];
+			}
+		});
+		if (name === "object" || name === "dict") schema.meta.default = {};
+		else if (name === "array" || name === "tuple") schema.meta.default = [];
+		else if (name === "bitset") schema.meta.default = 0;
+		return schema;
+	} });
+}
+defineMethod("is", ["constructor"], ({ constructor }) => {
+	if (typeof constructor === "function") return constructor.name;
+	else return constructor;
+});
+defineMethod("any", [], () => "any");
+defineMethod("never", [], () => "never");
+defineMethod("const", ["value"], ({ value }) => typeof value === "string" ? JSON.stringify(value) : value);
+defineMethod("string", [], () => "string");
+defineMethod("number", [], () => "number");
+defineMethod("boolean", [], () => "boolean");
+defineMethod("bitset", ["bits"], () => "bitset");
+defineMethod("function", [], () => "function");
+defineMethod("array", ["inner"], ({ inner }) => `${inner.toString(true)}[]`);
+defineMethod("dict", ["inner", "sKey"], ({ inner, sKey }) => `{ [key: ${sKey.toString()}]: ${inner.toString()} }`);
+defineMethod("tuple", ["list"], ({ list }) => `[${list.map((inner) => inner.toString()).join(", ")}]`);
+defineMethod("object", ["dict"], ({ dict }) => {
+	if (Object.keys(dict).length === 0) return "{}";
+	return `{ ${Object.entries(dict).map(([key, inner]) => {
+		return `${key}${inner.meta.required ? "" : "?"}: ${inner.toString()}`;
+	}).join(", ")} }`;
+});
+defineMethod("union", ["list"], ({ list }, inline) => {
+	const result = list.map(({ toString: format }) => format()).join(" | ");
+	return inline ? `(${result})` : result;
+});
+defineMethod("intersect", ["list"], ({ list }) => {
+	return `${list.map((inner) => inner.toString(true)).join(" & ")}`;
+});
+defineMethod("transform", [
+	"inner",
+	"callback",
+	"preserve"
+], ({ inner }, isInner) => inner.toString(isInner));
+//#endregion
+//#region node_modules/.pnpm/@deepseek-ai+dsh-timeout@0.1.0-rc.6_@deepseek-ai+cordis@4.0.1_@deepseek-ai+dsh-invariants@0.1_rfhz2vo7cpgebyrk6pl5k7eyo4/node_modules/@deepseek-ai/dsh-timeout/lib/index.js
+/** Largest delay Node schedules without clamping it to one millisecond. */
+const MAX_TIMER_DELAY_MS = 2147483647;
+//#endregion
+//#region node_modules/.pnpm/@deepseek-ai+dsh-llm@0.1.0-rc.6_@deepseek-ai+cordis@4.0.1_@deepseek-ai+dsh-attachment@0.1.0-r_hprhh64pvy7rp3ljnmddhare6q/node_modules/@deepseek-ai/dsh-llm/lib/index.js
+/**
+* dsh-llm's owned branded ids: tool-call correlation and provider request
+* diagnostics.
+*
+* The `Branded<B>` primitive itself lives in `@deepseek-ai/dsh-brand` (a
+* zero-dependency type-only package) so every owner of a cross-boundary id can
+* brand it without depending on dsh-llm; see that package's README for the
+* nominal-typing policy.
+*
+* @module @deepseek-ai/dsh-llm/brand
+*/
+/**
+* Brand a message identifier.
+* @param id - the opaque message identifier.
+* @returns the same string, branded; no validation is performed.
+*/
+function MessageId(id) {
+	return id;
+}
+/**
+* Deep-freeze a value in place with an iterative traversal, guarding cycles,
+* so later mutation throws without imposing a JavaScript call-stack depth cap.
+* {@link AbortSignal} objects are deliberately skipped because they are the
+* request's live cancellation channel and freezing them breaks abort.
+* @param value - the value to freeze in place.
+* @returns the same value, frozen.
+*/
+function deepFreeze(value) {
+	const seen = /* @__PURE__ */ new WeakSet();
+	const pending = [{
+		kind: "visit",
+		node: value
+	}];
+	while (pending.length > 0) {
+		const task = pending.pop();
+		/* v8 ignore next -- the loop condition guarantees one pending task. */
+		if (task === void 0) continue;
+		if (task.kind === "property") {
+			pending.push({
+				kind: "visit",
+				node: task.source[task.key]
+			});
+			continue;
+		}
+		const node = task.node;
+		if (node === null || typeof node !== "object") continue;
+		if (node instanceof AbortSignal) continue;
+		if (seen.has(node)) continue;
+		seen.add(node);
+		Object.freeze(node);
+		const keys = Object.keys(node);
+		for (let index = keys.length - 1; index >= 0; index--) {
+			const key = keys[index];
+			/* v8 ignore next -- the loop is bounded by the captured key count. */
+			if (key === void 0) continue;
+			pending.push({
+				kind: "property",
+				source: node,
+				key
+			});
+		}
+	}
+	return value;
+}
+/**
+* Detach and deep-freeze a message whose identity already exists.
+* @param message - complete message, including its stable identity.
+* @returns an immutable snapshot that preserves the identity.
+*/
+function freezeMessage(message) {
+	return deepFreeze(structuredClone(message));
+}
+/**
+* Create one identified message and freeze it before publication.
+* @param input - complete role, content, and source for a new message.
+* @returns an immutable message with a fresh stable identity.
+*/
+function createMessage(input) {
+	return freezeMessage({
+		...input,
+		id: MessageId(crypto.randomUUID())
+	});
+}
+/**
+* Create one identified user-role message and freeze it before publication.
+* @param input - complete content and source for a new user message.
+* @returns an immutable user message with a fresh stable identity.
+*/
+function createUserMessage(input) {
+	return createMessage({
+		...input,
+		role: "user"
+	});
+}
+/**
+* Canonical provider-neutral code for a response that completed normally but
+* carried no content blocks at all. Providers occasionally emit a degenerate
+* completion (a terminal stop with zero output); adapters classify it as this
+* failure instead of yielding an empty assistant message, because an empty
+* message silently ends the turn with nothing for the user or the loop to act
+* on. The attempt produced nothing durable, so retry policy treats it as safe
+* to repeat.
+*/
+const EMPTY_RESPONSE_CODE = "EMPTY_RESPONSE";
+new RegExp(String.raw`(?:^|[^a-z0-9])context[\s_-](?:length|window)[\s_-]` + String.raw`(?:exceed(?:ed|s)?|overflow(?:ed)?|limit[\s_-]exceeded)(?:$|[^a-z0-9])`, "i");
+new RegExp(String.raw`\b(?:request|prompt|input|messages?)\s+(?:is\s+|are\s+)?` + String.raw`too\s+(?:large|long)\s+for\s+(?:(?:this|the)\s+)?` + String.raw`(?:model(?:'s)?\s+)?context(?:\s+window)?\b`, "i");
+new RegExp(String.raw`\b(?:input|prompt|request|messages?)\b.{0,40}` + String.raw`\b(?:exceed(?:s|ed)?|overflows?|is\s+larger\s+than)\b.{0,40}` + String.raw`\b(?:the\s+)?(?:model(?:'s)?\s+)?context(?:\s+(?:length|window))?\b`, "i");
+/**
+* Provider-owned request-retry policy configuration and resolution.
+*
+* Adapters expose one resolved policy per registered provider route; the
+* optional dsh-llm-retry plugin executes it on the agent's failed-step extension point.
+*
+* @module @deepseek-ai/dsh-llm/retry-policy
+*/
+const DEFAULT_MAX_RETRIES = 2;
+const DEFAULT_INITIAL_DELAY_MS = 500;
+const DEFAULT_MAX_DELAY_MS = 1e4;
+const DEFAULT_JITTER_RATIO = .1;
+const DEFAULT_RETRYABLE_CODES = Object.freeze([
+	EMPTY_RESPONSE_CODE,
+	"RATE_LIMIT",
+	"SERVER",
+	"TIMEOUT",
+	"TRANSPORT"
+]);
+const backoffSchema = Schema$1.object({
+	initialDelayMs: Schema$1.number().max(MAX_TIMER_DELAY_MS).default(DEFAULT_INITIAL_DELAY_MS),
+	maxDelayMs: Schema$1.number().max(MAX_TIMER_DELAY_MS).default(DEFAULT_MAX_DELAY_MS),
+	jitterRatio: Schema$1.number().min(0).max(1).default(DEFAULT_JITTER_RATIO)
+});
+const normalPolicySchema = Schema$1.object({
+	mode: Schema$1.const("normal").required(),
+	maxRetries: Schema$1.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_MAX_RETRIES),
+	retryableCodes: Schema$1.array(Schema$1.string()).default([...DEFAULT_RETRYABLE_CODES]),
+	backoff: backoffSchema
+});
+const alwaysPolicySchema = Schema$1.object({
+	mode: Schema$1.const("always").required(),
+	backoff: backoffSchema
+});
+Schema$1.union([normalPolicySchema, alwaysPolicySchema]);
+/**
+* Centralize the non-secret product identity every provider request sends as `User-Agent`, keeping
+* adapters from drifting. See
+* `.agents/notes/implemented/architecture/2026-06-21-mandatory-app-attribution-headers.md`.
+*
+* App-attribution vocabulary for provider requests.
+* @module @deepseek-ai/dsh-llm/attribution
+*/
+const { version } = createRequire(import.meta.url)("../package.json");
+//#endregion
 //#region src/context.ts
 /**
-* 注册画像首步注入。
+* context.ts — 画像 + 相关记忆首步注入（v2：agent/pre-step middleware 真注入）
 *
-* 实现方式：监听 agent 事件（首步触发），拉取 SGME 画像 → 拼接为指令文本 → 返回给 dsh。
+* v2 策略（2026-08-16 对齐 dsh-agent-instructions 官方做法）：
+* - 挂接 agent/pre-step waterfall middleware（与 dsh 内置 agent-instructions 同通道），
+*   在首次 step 时拉取 SGME 画像（/v1/inject）+ 项目相关记忆（/v1/search），
+*   通过返回 {kind:'enter', messages} 把注入消息真正插入模型决策流。
+* - v1 的缺陷：只 ctx.logger.info 打日志，消息从未进入模型上下文（实测会话日志
+*   agent/inbox/spliced 中只有用户消息，无 SGME 画像）→ 本次修复。
+* - 注入时机：首个 step（step === 1）注入一次，之后不再重复（避免每轮污染上下文）。
 *
-* 注意：dsh 的 agent.inject(message) API 在 v0.1 不稳定，本实现先用返回值方式
-* （通过 agent/pre-step 事件返回注入内容），T-53 本地加载时确认实际注入路径。
+* 契约对齐：POST /v1/inject（Agent Key，mode + custom_filter 二选一）
+*/
+/** 注入消息源标记（对齐 agent-instructions 的 source.kind=plugin 约定）。 */
+const PLUGIN_NAME = "dsh-sgme";
+/** 相同内容判定（对齐 agent-instructions sameContextPayload：content + source 全等）。 */
+function sameContextPayload(left, right) {
+	if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return left === right;
+	const l = left;
+	const r = right;
+	return JSON.stringify(l.content) === JSON.stringify(r.content) && JSON.stringify(l.source) === JSON.stringify(r.source);
+}
+/**
+* 注册画像首步注入（agent/pre-step middleware）。
+*
+* 实现方式：监听 agent/pre-step（waterfall），首次 step 时拉取 SGME 画像 + 相关记忆，
+* 拼接为 user 角色消息，返回 {kind:'enter', messages: ...} 注入模型决策流。
+*
+* 与 agent-instructions 共存：同通道多 middleware 串行叠加，SGME 消息插在
+* claimed messages 之后（lastClaimedIndex+1），不影响 agent-instructions 的注入。
 *
 * @returns 清理函数（由 ctx.effect 调用方管理生命周期）
 */
 function registerContextInjection(ctx, client, config) {
+	let profileCache = null;
+	let fetching = null;
 	let injected = false;
-	const handler = (...args) => {
-		let event;
-		for (const a of args) if (typeof a === "object" && a !== null && "type" in a) {
-			event = a;
-			break;
-		}
-		if (event?.type !== "turn/start") return;
-		if (injected) return;
-		injected = true;
-		(async () => {
+	/** 预拉取画像 + 相关记忆（turn/start 触发，失败不置位，下轮重试）。 */
+	const prefetch = (projectHint) => {
+		if (fetching) return;
+		fetching = (async () => {
 			try {
-				const [profile, related] = await Promise.all([client.inject({ mode: config.injectMode }), config.projectHint ? client.search({
-					query: config.projectHint,
+				const [profile, related] = await Promise.all([client.inject({ mode: config.injectMode }), projectHint ? client.search({
+					query: projectHint,
 					scopes: ["memory"],
 					limit: config.searchLimit
 				}) : Promise.resolve(null)]);
-				const injectionText = buildInjectionText(profile, related);
-				if (injectionText) ctx.logger.info(`[SGME 画像注入]\n${injectionText}`);
+				const text = buildInjectionText(profile, related);
+				if (text) profileCache = {
+					text,
+					ts: Date.now()
+				};
 			} catch (e) {
-				ctx.logger.warn(`[SGME 画像注入失败] ${e instanceof Error ? e.message : String(e)}`);
+				ctx.logger.warn(`[SGME 画像预拉取失败] ${e instanceof Error ? e.message : String(e)}`);
+			} finally {
+				fetching = null;
 			}
 		})();
 	};
-	return ctx.on("session/event", handler);
+	const handler = async (payload, next) => {
+		const decision = await next();
+		if (injected) return decision;
+		if (payload.step !== 1) return decision;
+		if (decision.kind === "reject") return decision;
+		const projectHint = config.projectHint || process.env.SGME_PROJECT_HINT || (payload.agent?.session?.header?.cwd ? payload.agent.session.header.cwd.split(/[\\/]/).filter(Boolean).pop() : void 0);
+		if (fetching) try {
+			await fetching;
+		} catch {}
+		if (!profileCache) try {
+			const [profile, related] = await Promise.all([client.inject({ mode: config.injectMode }), projectHint ? client.search({
+				query: projectHint,
+				scopes: ["memory"],
+				limit: config.searchLimit
+			}) : Promise.resolve(null)]);
+			const text = buildInjectionText(profile, related);
+			if (text) profileCache = {
+				text,
+				ts: Date.now()
+			};
+		} catch (e) {
+			ctx.logger.warn(`[SGME 画像注入失败] ${e instanceof Error ? e.message : String(e)}`);
+			return decision;
+		}
+		if (!profileCache) return decision;
+		injected = true;
+		const desired = createUserMessage({
+			content: [{
+				type: "text",
+				text: profileCache.text
+			}],
+			source: {
+				kind: "plugin",
+				plugin: PLUGIN_NAME
+			}
+		});
+		if (decision.messages.some((message) => sameContextPayload(message, desired))) return decision;
+		const firstClaimedIndex = decision.messages.findIndex((message) => (payload.messages ?? []).includes(message));
+		const insertAt = firstClaimedIndex === -1 ? 0 : firstClaimedIndex;
+		ctx.logger.info(`[SGME 画像注入] 已注入 ${profileCache.text.length} 字符（step ${payload.step}）`);
+		return {
+			kind: "enter",
+			messages: decision.messages.toSpliced(insertAt, 0, desired)
+		};
+	};
+	const disposePrefetch = ctx.on("turn/start", (payload) => {
+		const agent = payload?.agent;
+		const projectHint = config.projectHint || process.env.SGME_PROJECT_HINT || (agent?.session?.header?.cwd ? agent.session.header.cwd.split(/[\\/]/).filter(Boolean).pop() : void 0);
+		prefetch(projectHint);
+	});
+	const disposePreStep = ctx.on("agent/pre-step", handler);
+	return () => {
+		disposePrefetch();
+		disposePreStep();
+	};
 }
 /**
 * 拼接画像注入文本（模型可读格式）。
@@ -762,6 +1792,60 @@ function normalizeRole(role) {
 	return "tool";
 }
 //#endregion
+//#region src/rules.ts
+/**
+* rules.ts — DSH 用户级规则加载（dsg:rules system section）
+*
+* 读取 ~/.dsh/dsg-rules/rules.md（DSH 专用配置：身份/铁律/SGME手册/用户偏好/环境事实），
+* 注册为 dsh-system-prompt 的稳定 section（order -70，位于 harness:identity(-100) 与
+* persona(0) 之间）——稳定内容进 system 层，前缀缓存全命中。
+*
+* 设计要点（2026-08-16 定稿）：
+* - 单文件单 section：规则类内容阅读/修改场景一致，不拆多文件
+* - 用户级目录（~/.dsh/）不在任何 git 仓库内，天然不被提交；.gitignore 双保险
+* - 文件缺失/读取失败 → 静默跳过，绝不阻塞插件启动
+* - 支持热重载：文件 mtime 变化时更新 section（保留变更通知）
+*/
+/** dsg:rules section 的 order（位于 harness:identity=-100 与 persona=0 之间）。 */
+const DSG_RULES_SECTION = "dsg:rules";
+/** 默认规则文件路径（~/.dsh/dsg-rules/rules.md）。 */
+function defaultRulesPath(dshHome) {
+	const home = dshHome ?? process.env.DSH_HOME ?? join(homedir(), ".dsh");
+	return join(home, "dsg-rules", "rules.md");
+}
+/**
+* 注册 dsg:rules section。
+* 读取规则文件 → 注册为稳定 section；文件不存在时跳过（不报错）。
+*
+* @returns 清理函数（由 ctx.effect 调用方管理生命周期）
+*/
+async function registerRulesSection(ctx, rulesPath = defaultRulesPath()) {
+	let dispose = null;
+	const loadAndRegister = async () => {
+		let content;
+		try {
+			content = await readFile(rulesPath, "utf8");
+		} catch (e) {
+			if (e.code === "ENOENT") ctx.logger.info(`[dsg-rules] ${rulesPath} 不存在，跳过规则注入`);
+			else ctx.logger.warn(`[dsg-rules] 读取失败: ${e instanceof Error ? e.message : String(e)}`);
+			return;
+		}
+		const text = content.trim();
+		if (!text) return;
+		dispose?.();
+		dispose = ctx.systemPrompt.section({
+			name: DSG_RULES_SECTION,
+			order: -70,
+			text
+		});
+		ctx.logger.info(`[dsg-rules] 已注册 ${DSG_RULES_SECTION}（order -70，${text.length} 字符）`);
+	};
+	await loadAndRegister();
+	return () => {
+		dispose?.();
+	};
+}
+//#endregion
 //#region src/index.ts
 /**
 * dsh-sgme — SGME 记忆引擎 × DeepSeek Harness 桥接插件
@@ -777,7 +1861,11 @@ function normalizeRole(role) {
 * 契约来源：sgme/server/routes_memory.py / routes_admin.py（2026-08-14 调研确认）
 */
 const name = "dsh-sgme";
-const inject = ["tools", "commands"];
+const inject = [
+	"tools",
+	"commands",
+	"systemPrompt"
+];
 const Config = Schema.object({
 	baseUrl: Schema.string().default("http://192.168.10.10:9910").description("SGME Gateway 地址"),
 	agentKey: Schema.string().default("").description("SGME agent key（/v1/admin/agents/register 签发）"),
@@ -791,6 +1879,8 @@ const Config = Schema.object({
 	]).default("daily").description("画像注入模式"),
 	injectMaxTokens: Schema.number().default(800).description("画像注入 token 上限"),
 	searchLimit: Schema.number().default(5).description("检索返回条数上限"),
+	projectHint: Schema.string().default("").description("项目名提示（用于相关记忆检索，可空；缺省按会话 cwd 目录名推断）"),
+	rulesPath: Schema.string().default("").description("DSH 用户级规则文件（缺省 ~/.dsh/dsg-rules/rules.md，注册为 dsg:rules system section）"),
 	syncOnTurnEnd: Schema.boolean().default(true).description("是否在 turn/end 时同步入库"),
 	turnBatchSize: Schema.number().default(1).description("入库攒批大小（v1=1 即每 turn 即 append）")
 });
@@ -817,16 +1907,19 @@ function apply(ctx, config) {
 	});
 	registerTools({ tools: ctx.tools }, client, config.searchLimit);
 	logger.info("工具已注册：memory_search, wiki_search");
-	const disposeContext = registerContextInjection({
+	const contextCtx = {
 		on: ctx.on,
 		logger: {
 			info: logger.info,
 			warn: logger.warn
 		}
-	}, client, {
+	};
+	const projectHint = config.projectHint || (process.env.SGME_PROJECT_HINT ?? "");
+	const disposeContext = registerContextInjection(contextCtx, client, {
 		injectMode: config.injectMode,
 		injectMaxTokens: config.injectMaxTokens,
-		searchLimit: config.searchLimit
+		searchLimit: config.searchLimit,
+		...projectHint ? { projectHint } : {}
 	});
 	ctx.effect(() => disposeContext, "sgme-context-injection");
 	registerSgmeCommand({ commands: ctx.commands }, client, { searchLimit: config.searchLimit });
@@ -843,7 +1936,20 @@ function apply(ctx, config) {
 		turnBatchSize: config.turnBatchSize
 	});
 	ctx.effect(() => disposeSync, "sgme-session-sync");
-	logger.info("SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步）");
+	const rulesPath = config.rulesPath || defaultRulesPath();
+	registerRulesSection({
+		systemPrompt: ctx.systemPrompt,
+		logger: {
+			info: logger.info,
+			warn: logger.warn
+		}
+	}, rulesPath).then((disposeRules) => {
+		ctx.effect(() => disposeRules, "sgme-rules-section");
+	}).catch((e) => {
+		const msg = e instanceof Error ? e.message : String(e);
+		logger.warn(`[dsg-rules] 注册失败: ${msg}`);
+	});
+	logger.info("SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules）");
 }
 //#endregion
 export { Config, apply, inject, name };
