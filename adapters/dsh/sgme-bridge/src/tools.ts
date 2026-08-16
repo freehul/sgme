@@ -215,6 +215,58 @@ export function createWikiPageTool(client: SgmeClient) {
 }
 
 /**
+ * 创建 wiki_page_update 工具（按 page_id 更新知识库页面）。
+ *
+ * W5（方案 v0.3 §5.5）：L2 写回层——模型修正手册或追加踩坑记录（PATCH append，默认追加）。
+ */
+export function createWikiPageUpdateTool(client: SgmeClient) {
+  return defineTool({
+    name: 'wiki_page_update',
+    description: [
+      '按 page_id 更新 SGME 知识库页面（PATCH，默认 append=true 追加正文）。',
+      '用于修正手册内容、追加踩坑记录或更新元数据（title/category/tags/description/author）。',
+      'page_id 来自 wiki_pages / wiki_search 返回结果；append=false 时整体覆盖 content。',
+    ].join(' '),
+    parameters: {
+      page_id: {
+        type: 'string',
+        required: true,
+        description: '页面 id（wiki_pages 返回的 page_id）',
+      },
+      content: {
+        type: 'string',
+        required: true,
+        description: '要写入的正文内容（append=true 时追加到末尾）',
+      },
+      append: {
+        type: 'boolean',
+        description: '默认 true 追加',
+      },
+      author: {
+        type: 'string',
+        description: '作者标识（可选，如 agent 名）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { page_id: string; content: string; append?: boolean; author?: string }
+      const resp = await client.wikiUpdatePage(a.page_id, {
+        content: a.content,
+        append: a.append ?? true,
+        author: a.author ?? null,
+      })
+      if (!resp) {
+        return `[wiki_page_update 失败：页面不存在或 Gateway 不可达（page_id="${a.page_id}"）]`
+      }
+      return `[wiki_page_update 已更新：page_id=${resp.page_id} status=${resp.status}]`
+    },
+  })
+}
+
+/**
  * 格式化检索结果为模型可读文本。
  *
  * 格式（对齐 reasonix fetch_search 输出）：
@@ -257,6 +309,7 @@ export function registerTools(
   ctx.tools.register(createWikiSearchTool(client, defaultLimit))
   ctx.tools.register(createWikiPagesTool(client, defaultLimit))
   ctx.tools.register(createWikiPageTool(client))
+  ctx.tools.register(createWikiPageUpdateTool(client))
   ctx.tools.register(createSignalPullTool(client))
   ctx.tools.register(createSignalClaimTool(client))
   ctx.tools.register(createSignalAckTool(client))
