@@ -9,3 +9,6 @@ sgme-bridge/.tsbuildinfo
 # codegraph-bridge（dsh-codegraph 插件）
 codegraph-bridge/node_modules/
 codegraph-bridge/.tsbuildinfo
+
+# DSH 用户级规则（~/.dsh/dsg-rules/ 属用户目录，不随插件分发）
+dsg-rules/
