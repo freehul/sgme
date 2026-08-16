@@ -92,12 +92,22 @@ def init_wiki_fts(conn: sqlite3.Connection) -> bool:
         return False
 
 
-def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10) -> list[dict]:
+def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10, exclude_skill: bool = False) -> list[dict]:
     """wiki_fts BM25 检索（L0 兜底：FTS 不可用/空召回 → LIKE）。
+
+    Args:
+        exclude_skill: True 时 SQL 层排除 skill 标记页（tags JSON 含 ``"skill"``，
+            精确匹配带引号元素，不误伤 "skills"；NULL 兜底）——统一搜索
+            （/v1/search scope=wiki_pages）用，防 skill 页挤占 top-N 窗口；
+            wiki_search 执行通道默认 False 不过滤（W2 语义）。
 
     Returns:
         [{page_id, title, snippet}]（按 BM25 相关度降序）。
     """
+    skill_filter = (
+        " AND (p.tags IS NULL OR p.tags NOT LIKE '%\"skill\"%')"
+        if exclude_skill else ""
+    )
     results: list[dict] = []
     try:
         # 中文查询用 OR 拆词（jieba），英文整句直接 MATCH
@@ -108,7 +118,7 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
                 "SELECT p.page_id, p.title, p.content, p.tags,"
                 " bm25(wiki_fts) AS score"
                 " FROM wiki_fts JOIN wiki_pages p ON p.rowid = wiki_fts.rowid"
-                " WHERE wiki_fts MATCH ? AND p.status='active'"
+                f" WHERE wiki_fts MATCH ? AND p.status='active'{skill_filter}"
                 " ORDER BY score LIMIT ?",
                 (match_expr, limit),
             ).fetchall()
@@ -125,9 +135,10 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
     if not results:
         try:
             like = f"%{query}%"
+            like_filter = skill_filter.replace("p.tags", "tags").replace("p.status", "status")
             rows = conn.execute(
                 "SELECT page_id, title, content, tags FROM wiki_pages"
-                " WHERE (content LIKE ? OR title LIKE ?) AND status='active'"
+                f" WHERE (content LIKE ? OR title LIKE ?) AND status='active'{like_filter}"
                 " ORDER BY updated_at DESC LIMIT ?",
                 (like, like, limit),
             ).fetchall()

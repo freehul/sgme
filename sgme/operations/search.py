@@ -171,12 +171,14 @@ def _search_wiki_pages(
     if wiki_conn is None:
         return []
     try:
-        rows = wiki_fts.search_wiki_fts(wiki_conn, query, limit=limit)
+        # W2（方案 v0.3 §5.2）：统一搜索默认排除 skill 标记页（回忆通道不见手册）。
+        # SQL 层下沉过滤（exclude_skill=True）——防 skill 页挤占 top-N 窗口
+        # （2026-08-16 批量入库 370 skill 页暴露：过滤在 LIMIT 后，知识页被挤出）。
+        rows = wiki_fts.search_wiki_fts(wiki_conn, query, limit=limit, exclude_skill=True)
     except Exception as e:
         logger.warning("wiki_pages 检索失败（该层空结果）: %s", e)
         return []
-    # W2（方案 v0.3 §5.2）：统一搜索默认排除 skill 标记页（回忆通道不见手册）。
-    # 精确判断（tags JSON 解析，防双重编码脏数据，2026-08-14 前科），不用 LIKE。
+    # Python 层精确过滤保留作双保险（tags JSON 解析，防双重编码脏数据，2026-08-14 前科）。
     rows = [r for r in rows if not _is_skill_page(r.get("tags"))]
     return [
         {
