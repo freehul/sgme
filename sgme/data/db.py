@@ -205,7 +205,12 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
   source_file TEXT,
   ingested_at TEXT,
   updated_at TEXT,
-  content_seg TEXT);
+  content_seg TEXT,
+  description TEXT,
+  description_seg TEXT,
+  author TEXT,
+  status TEXT DEFAULT 'active',
+  supersedes TEXT);
 CREATE INDEX IF NOT EXISTS idx_wiki_pages_updated ON wiki_pages(updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS wiki_links (
@@ -434,7 +439,35 @@ def connect_wiki(data_dir: str | Path | None = None) -> sqlite3.Connection:
     conn = _connect(d / "wiki.db")
     _ensure_schema(conn, WIKI_DDL, SCHEMA_VERSION, "wiki_v4")
     _migrate_ingest_tasks_table(conn)
+    _migrate_wiki_page_columns(conn)
     return conn
+
+
+def _migrate_wiki_page_columns(conn: sqlite3.Connection) -> None:
+    """老库迁移：wiki_pages 补 description/description_seg/author/status/supersedes 列
+    （wiki 渐进式披露 W1，2026-08-16，方案 v0.3 §5.1）。
+
+    分层职责（照 _migrate_mem_content_seg 先例）：本函数只 ALTER 补空列；
+    列内容（description_seg 分词）由 wiki_dao 写入时计算，FTS 重建由
+    wiki/fts.py init_wiki_fts 负责。status 默认 'active'（多 agent 共享
+    supersession 基础）。幂等：列已存在则无操作；表不存在时 no-op。
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='wiki_pages'"
+    ).fetchone()
+    if not has_table:
+        return
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(wiki_pages)").fetchall()]
+    for col, ddl in (
+        ("description", "ALTER TABLE wiki_pages ADD COLUMN description TEXT"),
+        ("description_seg", "ALTER TABLE wiki_pages ADD COLUMN description_seg TEXT"),
+        ("author", "ALTER TABLE wiki_pages ADD COLUMN author TEXT"),
+        ("status", "ALTER TABLE wiki_pages ADD COLUMN status TEXT DEFAULT 'active'"),
+        ("supersedes", "ALTER TABLE wiki_pages ADD COLUMN supersedes TEXT"),
+    ):
+        if col not in cols:
+            conn.execute(ddl)
+    conn.commit()
 
 
 def _migrate_wiki_scene_seg(conn: sqlite3.Connection) -> None:
