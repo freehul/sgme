@@ -34,6 +34,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# 明文密钥值模式：常见 API key 前缀 + 12+ 位字母数字/连字符
+_SECRET_PATTERN = re.compile(r"(?:sk-|ark-|sgme_admin_|sgme_agent_)[A-Za-z0-9-]{12,}")
+
+
+def redact_secrets(text: str) -> str:
+    """擦除文本中的明文密钥值，防工具输出带 key 进 L0。
+
+    只替换「key 前缀 + 长随机串」的 key 值本身，不误伤变量名
+    （DEEPSEEK_API_KEY / VOLC_API_KEY 等）与占位符说明。
+    """
+    return _SECRET_PATTERN.sub("<REDACTED>", text)
+
+
 # ---------- 数据结构 ----------
 
 @dataclass

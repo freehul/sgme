@@ -265,3 +265,35 @@ def test_append_pipeline_runtime_error_internal(conns, cfg, monkeypatch):
     assert res.ok is False
     assert res.error_code == ERR_INTERNAL
     assert res.message == "写 L0 文件失败: 写盘炸了"
+
+
+# ---------- 8. 密钥脱敏（2026-08-17 安全加固） ----------
+
+def test_append_redacts_plaintext_keys(conns, cfg):
+    """append content 含明文 key → L0 落盘后 key 值被擦除，变量名保留。"""
+    content = _make_content(
+        "DEEPSEEK_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456\n"
+        "VOLC_API_KEY=ark-12345678-1234-1234-1234-123456789012\n"
+        "SGME_ADMIN_KEY=sgme_admin_abcdefghijklmnopqrstuvwxyz\n"
+        "SGME_AGENT_KEY=sgme_agent_abcdefghijklmnopqrstuvwxyz"
+    )
+    res = _append(conns, cfg, content=content)
+    assert res.ok is True
+    text = _raw_file_of(res).read_text(encoding="utf-8")
+    # key 值被擦除
+    assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in text
+    assert "ark-12345678" not in text
+    assert "sgme_admin_abcdefghijklmnopqrstuvwxyz" not in text
+    assert "sgme_agent_abcdefghijklmnopqrstuvwxyz" not in text
+    assert "<REDACTED>" in text
+    # 变量名保留
+    assert "DEEPSEEK_API_KEY" in text
+    assert "VOLC_API_KEY" in text
+
+
+def test_redact_secrets_preserves_normal_text():
+    """redact_secrets 只擦 key 值，不误伤变量名与普通文本。"""
+    from sgme.raw.store import redact_secrets
+    assert redact_secrets("DEEPSEEK_API_KEY=sk-1234567890123456") == "DEEPSEEK_API_KEY=<REDACTED>"
+    assert redact_secrets("今天天气不错，聊聊架构") == "今天天气不错，聊聊架构"
+    assert redact_secrets("占位符 sk-xxx 只是示例") == "占位符 sk-xxx 只是示例"  # 不足 12 位不替换
