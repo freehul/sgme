@@ -197,6 +197,8 @@ content 格式（首行必须）：
 - `refinement.queue_depth / stalled`：提炼水位是否健康
 - 数据源：`stats()` 看记忆/原始文件是否为空
 
+> **两个模型**：SGME 提炼靠 LLM（`DEEPSEEK_API_KEY`），语义检索靠向量 embedding（`VOLC_API_KEY`）——缺了分别降级为「直存」/「纯 BM25」，`health` 里 `llm.available` / `vector.available` 会如实反映，哪个 false 补哪个。
+
 **LLM 或数据源缺失时，主动提醒用户，表述提供商无关**（不要报任何品牌）：
 
 > LLM 未配置——请配置你所用提供商的 key（见 `config/providers.yaml`）。
