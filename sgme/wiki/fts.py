@@ -87,10 +87,10 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
         if terms:
             match_expr = " OR ".join(f'"{t}"' for t in terms)
             rows = conn.execute(
-                "SELECT p.page_id, p.title, p.content,"
+                "SELECT p.page_id, p.title, p.content, p.tags,"
                 " bm25(wiki_fts) AS score"
                 " FROM wiki_fts JOIN wiki_pages p ON p.rowid = wiki_fts.rowid"
-                " WHERE wiki_fts MATCH ?"
+                " WHERE wiki_fts MATCH ? AND p.status='active'"
                 " ORDER BY score LIMIT ?",
                 (match_expr, limit),
             ).fetchall()
@@ -99,6 +99,7 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
                     "page_id": r["page_id"],
                     "title": r["title"],
                     "snippet": r["content"][:200] if r["content"] else "",
+                    "tags": r["tags"] or [],
                 })
     except Exception:
         results = []
@@ -107,13 +108,15 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
         try:
             like = f"%{query}%"
             rows = conn.execute(
-                "SELECT page_id, title, content FROM wiki_pages"
-                " WHERE content LIKE ? OR title LIKE ? ORDER BY updated_at DESC LIMIT ?",
+                "SELECT page_id, title, content, tags FROM wiki_pages"
+                " WHERE (content LIKE ? OR title LIKE ?) AND status='active'"
+                " ORDER BY updated_at DESC LIMIT ?",
                 (like, like, limit),
             ).fetchall()
             results = [
                 {"page_id": r["page_id"], "title": r["title"],
-                 "snippet": (r["content"] or "")[:200]}
+                 "snippet": (r["content"] or "")[:200],
+                 "tags": r["tags"] or []}
                 for r in rows
             ]
         except Exception:

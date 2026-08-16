@@ -129,12 +129,14 @@ def list_pages(
     """页面列表（按 updated_at 降序；category 可选过滤）。"""
     if category:
         rows = conn.execute(
-            "SELECT * FROM wiki_pages WHERE category=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM wiki_pages WHERE category=? AND status='active'"
+            " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
             (category, limit, offset),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM wiki_pages ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM wiki_pages WHERE status='active'"
+            " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
     return [_parse_tags(dict(r)) for r in rows]
