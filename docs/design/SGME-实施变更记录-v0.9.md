@@ -953,3 +953,20 @@ L1.5 冲突裁决、L2 场景聚合。
 **测试**：删除后 grep 确认无断链 import（tests/ 无 `from adapters.reasonix import` 残留）；全量 pytest 待跑。
 
 **文档**：本记录 B75
+
+### B76. 提炼链 API key 接线至 DEEPSEEK_API_KEY_SGME + NAS 生产同步（2026-08-17）
+
+**背景**：三把 DeepSeek key 的隔离梳理（Hermes=DEEPSEEK_API_KEY、DSH=DEEPSEEK_API_KEY_DSH、SGME 提炼=DEEPSEEK_API_KEY_SGME）。查证发现提炼链实际引用 DEEPSEEK_API_KEY（providers.yaml），与 wiki 手册记载的「提炼专用 DEEPSEEK_API_KEY_SGME」不一致——SGME 自持密钥文件 config/.env 里放的其实是提炼专用 key 但变量名未区分；且用户环境变量已有 Hermes 的 DEEPSEEK_API_KEY，load_env_file 的 setdefault 语义下若 Gateway 继承用户环境启动会误用 Hermes key（预算隔离失效）。
+
+**改动**：
+- config/providers.yaml：deepseek 节点 api_key_env: DEEPSEEK_API_KEY → DEEPSEEK_API_KEY_SGME
+- config/.env：DEEPSEEK_API_KEY= 改名 DEEPSEEK_API_KEY_SGME=（值不动；原文件备份 config/.env.bak-20260816-A，gitignore 不随 git）
+- tests/test_providers.py：4 处断言/夹具同步（55/99/132/210；186/192 旧内联回退模拟保留历史值）
+- NAS 生产同步：本地 git push → NAS bare 仓（/vol1/1000/git/sgme.git）→ src pull → 构建 sgme:1.0.0b2-nas-key → docker.env 补 DEEPSEEK_API_KEY_SGME（值复制自 NAS 的 DEEPSEEK_API_KEY，sed 不落屏）→ compose image 切换 → 容器重建
+- 备份：NAS docker-compose.yml / docker.env 各留 .bak-时间戳
+
+**测试**：本机 config/provider 相关 pytest 82 通过 0 失败；本机真实 LLM 冒烟 9 tokens 正常；NAS 容器内验证（docker exec + PYTHONPATH=/app）：链节点 api_key_env=DEEPSEEK_API_KEY_SGME、key 解析成功（len 35）、真实调用 provider=deepseek 回复正常；NAS /v1/health 全绿（version 1.0.0b2，llm available，向量 11648 条数据完整）。
+
+**运维影响**：NAS 生产容器镜像 sgme:1.0.0b2-nas-key（Up healthy）；数据卷 bind mount 不动；生产 sgme.yaml 挂载卷保留。后续 NAS 提炼用量在 DeepSeek 平台按 SGME 专用 key 归因。NAS 上 src 目录有杂项文件（构建转义残留），可清理。
+
+**文档**：本记录 B76
