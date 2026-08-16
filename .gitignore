@@ -72,3 +72,7 @@ Thumbs.db
 
 # 根 package.json 为 DSH 插件 git 安装包装（dsh-sgme）：根不装依赖，node_modules 不入库
 /node_modules/
+
+# DSH 专用用户级规则（~/.dsh/dsg-rules/ 用户目录，不属本仓库；此处双保险防误拷入）
+**/dsg-rules/
+**/rules.md.private
