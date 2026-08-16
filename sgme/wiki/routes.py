@@ -81,6 +81,14 @@ class WikiPageUpdateRequest(BaseModel):
     author: str | None = None
 
 
+class WikiEvolveRequest(BaseModel):
+    """自进化触发请求（W4 方案 v0.3 §5.4）。"""
+
+    session_key: str | None = None   # 指定会话；缺省扫未处理会话
+    limit: int = 5                   # 缺省模式最大处理会话数
+    min_rounds: int = 5              # 费用门禁：会话消息块下限
+
+
 class WikiPageCreateRequest(BaseModel):
     """直接写入请求（T-55，不走提炼通道）：原样入库。"""
 
@@ -239,6 +247,32 @@ def search_wiki(
     conn: sqlite3.Connection = request.app.state.wiki_conn
     results = wiki_fts_mod.search_wiki_fts(conn, q, limit=limit)
     return {"results": results}
+
+
+@router.post("/v1/wiki/evolve/trigger")
+def evolve_trigger_endpoint(
+    payload: WikiEvolveRequest,
+    request: Request,
+    _: str = Depends(require_agent_key),
+):
+    """自进化触发（W4）：会话 → 经验 → 写回 wiki 手册。
+
+    流程：费用门禁（消息块 ≥ min_rounds）→ LLM 提炼（结构化 JSON）
+    → 规则闸门 → 写入（append 踩坑记录 / create 新手册页）→ 审计。
+    """
+    from sgme.operations.evolve import evolve_trigger as evolve_operation
+
+    conn: sqlite3.Connection = request.app.state.wiki_conn
+    session_conn: sqlite3.Connection = request.app.state.session_conn
+    data_dir = request.app.state.cfg.get("paths", {}).get("data_dir")
+    result = evolve_operation(
+        conn, session_conn, {},
+        session_key=payload.session_key, limit=payload.limit,
+        min_rounds=payload.min_rounds, data_dir=data_dir,
+    )
+    if not result.ok:
+        raise api_error(result.error_code or "ERR_INTERNAL", result.message or "自进化失败")
+    return result.data
 
 
 @router.patch("/v1/wiki/pages/{page_id}")
