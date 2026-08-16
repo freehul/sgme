@@ -905,6 +905,18 @@ L1.5 冲突裁决、L2 场景聚合。
 
 **测试**：wiki 相关 5 文件 37 passed / 0 failed；bridge vitest 95 passed / 0 failed + build 成功。
 
-**遗留（非本次范围）**：①bridge package.json 的 `types`/exports.types 指向 `lib/types/index.d.ts`，但 tsdown clean:true 清掉 declarationDir 输出，实际产物是扁平 `lib/index.d.ts`——既有 build 配置不一致，待后续处理。②`evolve.py` 的 `_llm_call`/`evolve_trigger` 参数名 `cfg` 实为 llm 段，命名误导是本次 P0 深层成因，待后续重命名澄清。
+**遗留（已于 B73 处理）**：①bridge package.json 的 `types`/exports.types 指向 `lib/types/index.d.ts`，但 tsdown clean:true 清掉 declarationDir 输出，实际产物是扁平 `lib/index.d.ts`——既有 build 配置不一致，待后续处理。②`evolve.py` 的 `_llm_call`/`evolve_trigger` 参数名 `cfg` 实为 llm 段，命名误导是本次 P0 深层成因，待后续重命名澄清。
 
 **文档**：Backlog T-81~T-83；本记录 B72
+
+### B73. wiki 渐进式披露遗留两项处理（bridge types 路径 + evolve 参数重命名，2026-08-16）
+
+**背景**：B72 遗留两项——①bridge package.json types 指向不存在的 lib/types/index.d.ts ②evolve 参数 cfg 实为 llm 段命名误导。
+
+**改动**：
+- ①bridge package.json：types→lib/index.d.ts、exports.types→./lib/index.d.ts；build 脚本 tsc&&tsdown→tsdown（去冗余——tsdown.config.ts dts:true 已生成扁平 lib/index.d.ts，tsc declarationDir 产物被 clean:true 清掉属死产物）；tsconfig.build.json 加废弃注释保留备查。
+- ②evolve.py：_llm_call/evolve_trigger 参数 cfg→llm_cfg（含 docstring 澄清 llm 段语义），外部位置参数调用零影响。
+
+**测试**：wiki 相关 5 文件 37 passed / 0 failed；pnpm build 单步生成 lib/index.d.ts（2.40 kB）+ lib/index.js（80.23 kB），lib/types 已清理。
+
+**文档**：Backlog T-84~T-85；本记录 B73
