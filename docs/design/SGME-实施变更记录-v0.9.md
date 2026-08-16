@@ -850,6 +850,25 @@ L1.5 冲突裁决、L2 场景聚合。
 - 运维影响：新用户 `docker compose up -d --build` 开箱即用（WebUI 内置 + 防烧钱默认物化）；升级仍走 `git pull && docker compose up -d --build`；NAS 生产容器未动（当前 t69 镜像继续跑，下次计划升级时按 §16.5 流程切换新镜像）
 - 文档：Backlog T-72；本记录 B69
 
+### B71. wiki 渐进式披露共享知识库改造（W1-W7 + NAS 部署，2026-08-16）
+
+**背景**：技能/知识碎片化（Hermes 与 DSH 各维护独立技能库、布局不兼容）+ 上下文膨胀 + 多 agent 共享需求。三路并行调研（AIRDT docs/research/wiki-kb-benchmark/：13 工具全景 / 方法论 / 业界前沿）后定稿方案 v0.3（docs/design/SGME-wiki渐进式披露共享知识库改造方案-v0.3.md，送审稿 v0.1 存档），设计决策已入 wiki。
+
+**改动**（ST-32 / T-74~T-80）：
+- **W1 数据模型**：wiki_pages 加 description/description_seg/author/status/supersedes（_migrate_wiki_page_columns 幂等自愈）；FTS 扩 description_seg（保留 content_seg 中文分词）；修复 FTS 触发器升级遗漏（_triggers_have_description 检测重建，DROP TABLE 不删触发器的隐藏缺口，真实链路验证暴露）
+- **W2 检索语义**：统一搜索排除 skill 标记页（_is_skill_page Python 层精确判断防脏数据）+ superseded 全路径过滤（BM25/LIKE/list_pages）
+- **W3 写回接口**：PATCH /v1/wiki/pages/{id} + MCP wiki_page_update（append ADD-only + entry hash 去重幂等 + description 默认不动）；create 链路 description 贯通
+- **W4 自进化管线**：独立第三条管线（会话→经验→写回手册），费用门禁（min_rounds）+ LLM 提炼（复用 llm 降级链 + prompts 版本管理）+ 规则闸门 + 独立 wiki_evolve 游标（与 memory 提炼物理分离）
+- **W5 bridge**：wiki_pages/wiki_page 工具 + turn/end 自动触发 evolve（evolveEnabled 默认 true）
+- **W6 索引 skill**：wiki-skill-discovery（源随 git + install 幂等部署）
+- **W7 手册**：SGME操作手册完整版入库（含 description）
+
+**NAS 部署**（2026-08-16）：push → NAS src pull → docker build sgme:1.0.0b1-wiki-v1（多阶段）→ 容器替换（数据卷不动）→ 生产验证 10/10 全绿（迁移字段 / PATCH 幂等 / FTS 命中 description / 统一搜索过滤 / evolve 冒烟）；手册规整（完整版 active + 旧版 superseded）。
+
+**提交**：bceb792（W1）d0c618e（W2）b8b8773+8702e5b（W3）d4d45c6（W4）5fb9e3f+2224470（W5）a310c39（W6）4b62aa0（方案文档）。
+
+**验收**：全量 pytest 100% 无 FAILED（多轮）；bridge vitest 92 passed + typecheck + build；NAS 生产 10/10 + 检索/过滤/写回全链路 PASS。
+
 ### B70. 生产容器切换到 git 构建镜像 sgme:1.0.0b1-git-t72 + 全链路测试（2026-08-16）
 
 - 背景：T-72 完成 Docker 开箱修复并通过空卷冒烟；用户指令（2026-08-16）「接入 SGME 的 agent 只有当前会话在工作，由你完成容器重建并测试」——把生产容器从旧镜像（docker commit 固化的 nas-git）切换到 git 构建的新镜像（含 WebUI + entrypoint 物化 + T-68/T-69 修复）。
