@@ -52,7 +52,7 @@ providers:
     name: deepseek
     display_name: "DeepSeek 云端"
     base_url: https://api.deepseek.com/v1
-    api_key_env: DEEPSEEK_API_KEY
+    api_key_env: DEEPSEEK_API_KEY_SGME
     provider_type: openai_compat
     default_model: deepseek-v4-flash
     context_window: 1048576
@@ -96,7 +96,7 @@ def test_load_providers_default_file_has_deepseek():
                 "health_endpoint", "health_interval_s"}
     missing = required - set(providers["deepseek"])
     assert not missing, f"供应商 deepseek 缺字段 {missing}"
-    assert providers["deepseek"]["api_key_env"] == "DEEPSEEK_API_KEY"
+    assert providers["deepseek"]["api_key_env"] == "DEEPSEEK_API_KEY_SGME"
 
 
 def test_load_providers_missing_file_returns_empty(tmp_path):
@@ -129,7 +129,7 @@ def test_merge_injects_connection_fields(tmp_path):
     # 连接字段注入（内存结构与原内联格式一致）
     assert head["provider"] == "deepseek"
     assert head["base_url"] == "https://api.deepseek.com/v1"
-    assert head["api_key_env"] == "DEEPSEEK_API_KEY"
+    assert head["api_key_env"] == "DEEPSEEK_API_KEY_SGME"
     assert head["context_window"] == 1048576
     assert head["provider_type"] == "openai_compat"
     assert head["health_endpoint"] == "/models"
@@ -207,7 +207,7 @@ def test_real_config_memory_structure_compatible():
         assert k in head, f"首链缺 {k}"
     assert head["provider"] == "deepseek"
     assert head["base_url"] == "https://api.deepseek.com/v1"
-    assert head["api_key_env"] == "DEEPSEEK_API_KEY"
+    assert head["api_key_env"] == "DEEPSEEK_API_KEY_SGME"
     assert head["context_window"] == 1048576
     assert head["max_tokens"] == 16384
     # 末链为规则兜底（lm-studio 已移除，2026-08-14 用户决策）
