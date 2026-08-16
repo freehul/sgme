@@ -53,7 +53,7 @@ SCENE_RESULT_KEYS = [
     "updated_at", "routes",
 ]
 WIKI_PAGES_RESULT_KEYS = [
-    "rank", "source", "page_id", "title", "content", "routes",
+    "rank", "source", "page_id", "title", "content", "category", "tags", "routes",
 ]
 
 AGENT_HEADERS = {"X-API-Key": "test-agent-key"}

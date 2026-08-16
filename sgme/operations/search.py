@@ -149,6 +149,19 @@ def _is_skill_page(tags: object) -> bool:
         return False
 
 
+def _parse_wiki_tags(tags: object) -> list:
+    """wiki tags（可能双重编码的 JSON 字符串）→ list，供统一搜索返回。"""
+    if not tags:
+        return []
+    try:
+        val = json.loads(tags) if isinstance(tags, str) else tags
+        if isinstance(val, str):
+            val = json.loads(val)
+        return val if isinstance(val, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
 def _collapse_spaces(text: str) -> str:
     """连续空白折叠为单空格（大小写/空格容忍的归一化前置）。"""
     return re.sub(r"\s+", " ", text).strip()
@@ -187,6 +200,8 @@ def _search_wiki_pages(
             "page_id": r["page_id"],
             "title": r["title"],
             "content": r.get("snippet") or "",
+            "category": r.get("category") or None,
+            "tags": _parse_wiki_tags(r.get("tags")),
             "routes": ["wiki_fts"],
         }
         for i, r in enumerate(rows)
