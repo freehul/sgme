@@ -24,11 +24,12 @@ MCP  ``wiki_page``                         ``get_page``（无投影，data 即�
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from typing import Any
 
 from sgme.data import wiki_dao
-from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult
+from sgme.operations.errors import ERR_INTERNAL, ERR_NOT_FOUND, InvalidArgs, OperationResult
 from sgme.wiki import fts as wiki_fts
 
 # 列表投影剔除的大字段（content 全文 / content_seg 分词列），避免响应臃肿
@@ -79,6 +80,49 @@ def get_page(conn: sqlite3.Connection, page_id: str) -> OperationResult:
         return OperationResult.fail(ERR_NOT_FOUND, f"页面不存在: {page_id}")
     page.pop("content_seg", None)
     return OperationResult.succeed({"page": page})
+
+
+def update_page(
+    conn: sqlite3.Connection,
+    page_id: str,
+    content: str,
+    append: bool = True,
+    title: str | None = None,
+    category: str | None = None,
+    tags: list[str] | None = None,
+    description: str | None = None,
+    author: str | None = None,
+) -> OperationResult:
+    """按 page_id 更新/追加 wiki 页面（自进化写回主通道，W3 方案 v0.3 §5.3）。
+
+    append=True（默认）：content 追加到现有正文末尾（ADD-only），追加片段自带
+    「来源 + entry hash」标记；入口查重（现有 content 检索 hash，已存在 → noop，
+    幂等）。append=False：整体替换 content。
+    description 默认不动（显式传才更新——追加经验不改页级摘要，P2 修订）。
+    """
+    page = wiki_dao.get_page(conn, page_id)
+    if page is None:
+        return OperationResult.fail(ERR_NOT_FOUND, f"页面不存在: {page_id}")
+    entry_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]
+    marker = f"hash: {entry_hash}"
+    if append:
+        if marker in (page.get("content") or ""):
+            return OperationResult.succeed(
+                {"page_id": page_id, "status": "noop", "reason": "entry hash 已存在，幂等跳过"}
+            )
+        source = f"来源: {author or 'agent'}"
+        new_content = (page.get("content") or "").rstrip() + f"\n\n> {source} | {marker}\n{content}"
+    else:
+        new_content = content
+    ok = wiki_dao.update_page_content(
+        conn, page_id, new_content,
+        title=title, category=category, tags=tags, description=description,
+    )
+    if not ok:
+        return OperationResult.fail(ERR_INTERNAL, "页面更新失败")
+    return OperationResult.succeed(
+        {"page_id": page_id, "status": "appended" if append else "updated"}
+    )
 
 
 def create_page(

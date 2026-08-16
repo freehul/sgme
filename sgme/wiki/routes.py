@@ -69,6 +69,18 @@ class WikiIngestRequest(BaseModel):
     category: str | None = None
 
 
+class WikiPageUpdateRequest(BaseModel):
+    """PATCH 请求（W3）：按 id 精确更新/追加，append 默认追加（ADD-only + hash 去重）。"""
+
+    content: str
+    append: bool = True
+    title: str | None = None
+    category: str | None = None
+    tags: list[str] | None = None
+    description: str | None = None
+    author: str | None = None
+
+
 class WikiPageCreateRequest(BaseModel):
     """直接写入请求（T-55，不走提炼通道）：原样入库。"""
 
@@ -223,6 +235,32 @@ def search_wiki(
     conn: sqlite3.Connection = request.app.state.wiki_conn
     results = wiki_fts_mod.search_wiki_fts(conn, q, limit=limit)
     return {"results": results}
+
+
+@router.patch("/v1/wiki/pages/{page_id}")
+def update_wiki_page(
+    page_id: str,
+    payload: WikiPageUpdateRequest,
+    request: Request,
+    _: str = Depends(require_agent_key),
+):
+    """按 page_id 精确更新/追加（自进化写回主通道，W3 方案 v0.3 §5.3）。
+
+    append=true（默认）：content 追加到现有正文末尾，带「来源+hash」标记，
+    entry hash 已存在则 noop（幂等）；description 默认不动。
+    """
+    from sgme.operations.wiki import update_page as update_page_operation
+
+    conn: sqlite3.Connection = request.app.state.wiki_conn
+    result = update_page_operation(
+        conn, page_id,
+        content=payload.content, append=payload.append,
+        title=payload.title, category=payload.category, tags=payload.tags,
+        description=payload.description, author=payload.author,
+    )
+    if not result.ok:
+        raise api_error(result.error_code or "ERR_INTERNAL", result.message or "更新失败")
+    return result.data
 
 
 @router.post("/v1/wiki/pages")
