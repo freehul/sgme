@@ -213,7 +213,7 @@ sgme/
 ├── config.py        # config loading — the only read/write owner (llm.yaml/registry/sgme.yaml; filter_keys/apply_section/persist_config)
 ├── data/            # three-DB connections/schema/DAOs (memory/session/wiki) + stats_dao (sole stats entry)
 │   └── search/      # BM25 + vector + RRF fused retrieval (merged from the former sgme/search)
-├── llm/             # fallback chain (deepseek → lm-studio → drop_batch)
+├── llm/             # LLM fallback chain (primary model per providers.yaml, rule drop_batch tail)
 ├── raw/             # L0 file read/write (frontmatter + message blocks + incremental segments)
 ├── engine/          # core engine (l1/l15/l2/refine/prune/health/normalize)
 │   └── pipeline.py  # sole pipeline orchestration entry (append_l0 writes L0 + chains L1→L1.5→L2)
