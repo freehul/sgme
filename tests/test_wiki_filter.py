@@ -95,3 +95,35 @@ def test_list_pages_filters_superseded(conn):
     ids = {p["page_id"] for p in pages}
     assert "a1" in ids
     assert "o1" not in ids
+
+
+# ---------- 回归（2026-08-16）：skill 页不得挤占知识页 top-N 窗口 ----------
+
+def test_fts_exclude_skill_param(conn):
+    """fts 层 exclude_skill 参数：True 排除 skill 标记页，False（执行通道）不过滤。"""
+    wiki_dao.insert_page(conn, "s1", "手册", "正文甲", tags=["skill", "x"])
+    wiki_dao.insert_page(conn, "n1", "手册", "正文乙", tags=["research"])
+    _init_fts(conn)
+    excl = wiki_fts_mod.search_wiki_fts(conn, "手册", limit=5, exclude_skill=True)
+    ids_excl = {r["page_id"] for r in excl}
+    assert "s1" not in ids_excl
+    assert "n1" in ids_excl
+    all_r = wiki_fts_mod.search_wiki_fts(conn, "手册", limit=5)
+    ids_all = {r["page_id"] for r in all_r}
+    assert "s1" in ids_all  # 执行通道不过滤
+
+
+def test_search_wiki_pages_not_squeezed_by_skill(conn):
+    """回归：skill 页占满 FTS top-N 时知识页仍可召回（过滤必须下沉 SQL，
+    不能在 LIMIT 之后 Python 过滤——2026-08-16 批量入库 370 skill 页暴露）。"""
+    for i in range(15):
+        wiki_dao.insert_page(conn, f"skill{i}", "手册",
+                             f"手册内容第{i}号", category="skill/design",
+                             tags=["skill", f"skill{i}"])
+    wiki_dao.insert_page(conn, "note1", "研究笔记", "手册研究内容",
+                         category="design", tags=["research"])
+    _init_fts(conn)
+    results = _search_wiki_pages(conn, "手册", 5)
+    ids = {r["page_id"] for r in results}
+    assert "note1" in ids  # 知识页不被 skill 页挤掉
+    assert not any(r["page_id"].startswith("skill") for r in results)
