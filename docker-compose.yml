@@ -10,7 +10,7 @@
 services:
   sgme:
     build: .
-    image: sgme:1.0.0b1
+    image: sgme:1.0.0b2
     container_name: sgme
     restart: unless-stopped
     ports:
