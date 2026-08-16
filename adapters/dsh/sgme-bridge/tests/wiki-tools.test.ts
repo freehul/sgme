@@ -5,7 +5,7 @@
  * 结果格式化与降级路径。
  */
 import { describe, it, expect, vi } from 'vitest'
-import { createWikiPagesTool, createWikiPageTool, createWikiPageUpdateTool } from '../src/tools.js'
+import { createWikiSearchTool, createWikiPagesTool, createWikiPageTool, createWikiPageUpdateTool } from '../src/tools.js'
 import type { SgmeClient, WikiPagesResponse, WikiPage } from '../src/sgme-client.js'
 
 type ToolLike = {
@@ -49,6 +49,45 @@ const pageDetail: WikiPage = {
   content: '# SGME 操作手册\n\n正文内容',
   content_seg: 'SGME 操作手册 正文内容',
 }
+
+describe('wiki_search tool', () => {
+  it('工具名和描述正确', () => {
+    const tool = asToolLike(createWikiSearchTool(makeMockClient({}), 20))
+    expect(tool.name).toBe('wiki_search')
+    expect(tool.description).toContain('skill')
+  })
+
+  it('execute 走执行通道调 wikiSearch 并格式化结果（含 skill 页）', async () => {
+    const client = makeMockClient({
+      wikiSearch: vi.fn(async () => ({
+        results: [
+          { page_id: 'sgme操作手册-58ca9939', title: 'SGME操作手册', snippet: '手册正文摘要', tags: '["skill","sgme"]' },
+        ],
+      })),
+    })
+    const tool = asToolLike(createWikiSearchTool(client, 20))
+    const result = (await tool.execute({ query: '操作手册' })) as string
+
+    expect(client.wikiSearch).toHaveBeenCalledWith('操作手册', 20)
+    expect(result).toContain('SGME操作手册')
+    expect(result).toContain('手册正文摘要')
+    expect(result).toContain('skill')   // tags JSON 字符串解析后展示
+  })
+
+  it('execute 无结果时返回提示', async () => {
+    const client = makeMockClient({ wikiSearch: vi.fn(async () => ({ results: [] })) })
+    const tool = asToolLike(createWikiSearchTool(client, 20))
+    const result = (await tool.execute({ query: 'nope' })) as string
+    expect(result).toContain('无结果')
+  })
+
+  it('execute Gateway 不可达时返回降级提示', async () => {
+    const client = makeMockClient({ wikiSearch: vi.fn(async () => null) })
+    const tool = asToolLike(createWikiSearchTool(client, 20))
+    const result = (await tool.execute({ query: 'x' })) as string
+    expect(result).toContain('不可达')
+  })
+})
 
 describe('wiki_pages tool', () => {
   it('工具名和描述正确', () => {

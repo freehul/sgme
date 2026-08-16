@@ -178,6 +178,19 @@ export interface WikiPageUpdateResponse {
   status: string              // appended / updated / noop
 }
 
+/** /v1/wiki/search 结果项（执行通道：含 skill 手册，不过滤；FTS5 BM25 + LIKE 兜底）。 */
+export interface WikiSearchResult {
+  page_id: string
+  title: string
+  snippet: string
+  tags?: string[] | string    // 服务端 tags 列可能为 JSON 字符串或数组，消费侧防御解析
+}
+
+/** /v1/wiki/search 响应体。 */
+export interface WikiSearchResponse {
+  results: WikiSearchResult[]
+}
+
 // ---------- 客户端实现 ----------
 
 /**
@@ -355,6 +368,20 @@ export class SgmeClient {
       return null
     }
     return data?.signals ?? null
+  }
+
+  /** 检索 wiki 知识库页面（GET /v1/wiki/search，执行通道——含 skill 手册，不过滤；Agent Key）。失败返回 null。 */
+  async wikiSearch(query: string, limit = 10): Promise<WikiSearchResponse | null> {
+    const params = new URLSearchParams({ q: query, limit: String(limit) })
+    const [data, err] = await this.get<WikiSearchResponse>(
+      `/v1/wiki/search?${params.toString()}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] wikiSearch failed: ${err}`)
+      return null
+    }
+    return data
   }
 
   /** 列出 wiki 页面（GET /v1/wiki/pages，Agent Key；按 category 可选过滤）。失败返回 null。 */
