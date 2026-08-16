@@ -3,7 +3,7 @@ providers:
     name: deepseek
     display_name: DeepSeek 云端
     base_url: https://api.deepseek.com/v1
-    api_key_env: DEEPSEEK_API_KEY
+    api_key_env: DEEPSEEK_API_KEY_SGME
     provider_type: openai_compat
     default_model: deepseek-v4-flash
     context_window: 1048576
