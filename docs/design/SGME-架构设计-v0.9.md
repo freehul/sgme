@@ -271,10 +271,28 @@ CREATE TABLE wiki_pages (
     source_file  TEXT,               -- raw/ 中的原件路径
     ingested_at  TEXT,
     updated_at   TEXT,
-    content_seg  TEXT                -- jieba 分词
+    content_seg  TEXT,               -- jieba 分词
+    description  TEXT,               -- L1 摘要（描述即索引，W1 2026-08-16）
+    description_seg TEXT,            -- description 的 jieba 分词（进 FTS）
+    author       TEXT,               -- 写入 agent/会话（溯源，仅 skill 经验写回）
+    status       TEXT DEFAULT 'active',   -- active | superseded（确定性 supersession）
+    supersedes   TEXT                -- 被取代的 page_id（旧行标记不删除）
 );
 
-CREATE VIRTUAL TABLE wiki_fts USING fts5(title, content, content=wiki_pages);
+-- FTS 外部内容表（W1：content_seg + description_seg 双分词列，中文检索）
+CREATE VIRTUAL TABLE wiki_fts USING fts5(content_seg, description_seg, page_id UNINDEXED, content=wiki_pages, content_rowid=rowid);
+
+-- wiki_evolve：自进化独立游标（W4，与 memory 提炼 refine_cursor 物理分离）
+CREATE TABLE wiki_evolve (
+    session_key  TEXT PRIMARY KEY,
+    status       TEXT NOT NULL DEFAULT 'queued',  -- queued|done|skipped|rejected|error
+    action       TEXT,               -- appended|created|noop|skipped|rejected
+    entry_hash   TEXT,               -- 经验条目 hash（去重幂等）
+    page_id      TEXT,               -- 写入的目标手册页
+    error        TEXT,
+    created_at   TEXT,
+    processed_at TEXT
+);
 
 CREATE TABLE wiki_links (
     source_id   TEXT,
@@ -369,8 +387,10 @@ def extract(prompt: str, output_schema: dict, model_cfg: dict) -> dict:
 ```
 POST /v1/wiki/ingest               # 提交处理任务（file/url/image）
 GET  /v1/wiki/ingest/{id}          # 查询处理进度
-POST /v1/wiki/pages                # 直接写入（原样入库，不走提炼；幂等 upsert；T-55）
-GET  /v1/wiki/pages                # 列表（按 category/tags 过滤，分页）
+POST /v1/wiki/pages                # 直接写入（原样入库，不走提炼；幂等 upsert；T-55；可带 description/author/status/supersedes，W3）
+PATCH /v1/wiki/pages/{id}          # 按 id 精确更新/追加（append 默认 ADD-only + entry hash 去重幂等；description 默认不动，W3 自进化写回主通道）
+POST /v1/wiki/evolve/trigger       # 自进化触发（会话→经验→写回手册；费用门禁 min_rounds + 规则闸门 + 独立游标 wiki_evolve，W4）
+GET  /v1/wiki/pages                # 列表（按 category/tags 过滤，分页；过滤 superseded）
 GET  /v1/wiki/pages/{id}           # JSON（AI/WebUI 用）
 GET  /v1/wiki/pages/{id}?view=html # 实时渲染 HTML
 GET  /v1/wiki/pages/{id}/export    # 导出自包含 HTML
@@ -885,7 +905,7 @@ CREATE TABLE refine_cursor (
 ### 5.1 MCP 接口
 
 - 端点：`http://<host>:9913/mcp`（streamable HTTP transport，FastMCP 自托管，与 HTTP API 同进程但**独立监听端口**）
-- 工具集（16 个）：`append` / `inject` / `search` / `wiki_search` / `wiki_pages` / `wiki_page` / `memory_get` / `memory_reject` / `refine_trigger` / `refine_batch` / `refine_status` / `stats` / `health` / `config_get` / `config_update` / `agent_onboarding`（与 HTTP 端点功能等价；`agent_onboarding` 返回新接入 Agent 的能力清单与接入指引，能力清单与 @mcp.tool 一一对应、测试断言防漂移；wiki 三工具 T-22 新增 2026-08-13，检索/浏览 wiki_pages 知识文档，数据源与 L2 场景检索不同）
+- 工具集（18 个）：`append` / `inject` / `search` / `wiki_search` / `wiki_pages` / `wiki_page` / `wiki_page_add` / `wiki_page_update` / `wiki_evolve_trigger` / `memory_get` / `memory_reject` / `refine_trigger` / `refine_batch` / `refine_status` / `stats` / `health` / `config_get` / `config_update` / `agent_onboarding`（与 HTTP 端点功能等价；`agent_onboarding` 返回新接入 Agent 的能力清单与接入指引，能力清单与 @mcp.tool 一一对应、测试断言防漂移；wiki 三工具 T-22 新增 2026-08-13，检索/浏览 wiki_pages 知识文档，数据源与 L2 场景检索不同）
 - 鉴权：管理端工具依赖环境变量 `SGME_ADMIN_KEY` 与 HTTP 对齐
 
 ### 5.2 GET /v1/admin/agents — Agent 只读列表（管理员 Key）

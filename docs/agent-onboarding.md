@@ -66,7 +66,7 @@ asyncio.run(main())
 
 ## 3. 连接即发现：agent_onboarding 工具
 
-连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 16 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
+连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 18 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
 
 **自助配置（2026-08-13，接入完成标准）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v1`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
 
@@ -77,7 +77,7 @@ asyncio.run(main())
 
 > 目的：接入从「人复制 README 提示词」变为「agent 连接后自助配置」——换 Agent 零成本：不管工具的文件机制差异，只要求结果（下个会话起 SGME 纪律生效）。
 
-**MCP 16 工具清单与用途**（PR#7 + T-22 补 wiki 三工具）：
+**MCP 18 工具清单与用途**（PR#7 + T-22 补 wiki 三工具 + W3/W4 补 wiki_page_update/wiki_evolve_trigger）：
 
 | 工具 | 用途 | 一句话用法 |
 |---|---|---|
@@ -88,6 +88,9 @@ asyncio.run(main())
 | `wiki_search` | 检索 wiki 知识库（wiki_pages 知识文档，FTS5 BM25 + 兜底） | `wiki_search(query, limit)` |
 | `wiki_pages` | wiki 页面列表（category 过滤；不含正文） | `wiki_pages(category='ops')` 先列表定位 |
 | `wiki_page` | wiki 页面详情（标题/正文全文/分类/来源） | `wiki_page(page_id)` 按 id 取正文 |
+| `wiki_page_add` | wiki 页面直接写入（幂等 upsert，可带 description） | `wiki_page_add(title, content, category)` 建手册页 |
+| `wiki_page_update` | 按 page_id 更新/追加（append 默认 ADD-only + entry hash 去重幂等） | `wiki_page_update(page_id, content)` 追加踩坑记录（W3） |
+| `wiki_evolve_trigger` | 自进化触发：会话→经验→写回手册（费用门禁 + 规则闸门） | 会话后触发，经验自动沉淀（W4） |
 | `memory_get` | 单条记忆详情（内容/维度/TTL + 溯源 + 归档链） | `memory_get(memory_id)` |
 | `memory_reject` | 标记记忆「不采用」（不删除、可恢复） | `memory_reject(memory_id, reason)` |
 | `refine_trigger` | 触发提炼：单文件或扫 status=new 批量 | `refine_trigger(async_mode=true)` 异步排队即返 |
@@ -97,6 +100,8 @@ asyncio.run(main())
 | `health` | 健康检查：LLM 可用性/提炼水位/心跳/向量 | 就绪检查必调 |
 | `config_get` | 读取运行时配置（l1/l2/refine/search/backup） | `config_get(section='refine')` |
 | `config_update` | 更新配置段（热生效 + 落盘） | 跨机部署远程设配置 |
+
+**自进化（W4，2026-08-16）**：会话自动触发经验回写——踩坑/新流程由 LLM 提炼后追加到知识库手册「踩坑记录」章节（category=skill/<domain>），多 agent 共享；手册内容以 wiki 为准，本地不缓存副本。
 
 ## 4. 记忆写入与消费节奏（五条铁律）
 
