@@ -16,10 +16,10 @@
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "types": "lib/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
+      "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
     "./package.json": "./package.json"
@@ -36,7 +36,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && tsdown",
+    "build": "tsdown",
     "bundle": "tsdown",
     "prepublishOnly": "pnpm run verify",
     "typecheck": "tsc -p tsconfig.json --noEmit",

@@ -1,3 +1,5 @@
+// 已废弃（2026-08-16）：build 由 tsdown 单步完成（tsdown.config.ts dts:true 生成扁平 lib/index.d.ts），
+// 本文件 declarationDir=lib/types 的产物会被 tsdown clean:true 清掉，不再被 build 引用，仅保留备查。
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
