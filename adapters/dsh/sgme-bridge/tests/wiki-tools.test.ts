@@ -1,11 +1,11 @@
 /**
- * wiki 工具测试 — wiki_pages + wiki_page（W5，方案 v0.3 §5.5）。
+ * wiki 工具测试 — wiki_pages + wiki_page + wiki_page_update（W5，方案 v0.3 §5.5）。
  *
  * mock SgmeClient 的 wikiListPages / wikiGetPage，验证工具参数传递、
  * 结果格式化与降级路径。
  */
 import { describe, it, expect, vi } from 'vitest'
-import { createWikiPagesTool, createWikiPageTool } from '../src/tools.js'
+import { createWikiPagesTool, createWikiPageTool, createWikiPageUpdateTool } from '../src/tools.js'
 import type { SgmeClient, WikiPagesResponse, WikiPage } from '../src/sgme-client.js'
 
 type ToolLike = {
@@ -104,6 +104,37 @@ describe('wiki_page tool', () => {
     const client = makeMockClient({ wikiGetPage: vi.fn(async () => null) })
     const tool = asToolLike(createWikiPageTool(client))
     const result = (await tool.execute({ page_id: 'nope' })) as string
+    expect(result).toContain('失败')
+  })
+})
+
+describe('wiki_page_update tool', () => {
+  it('工具名和描述正确', () => {
+    const tool = asToolLike(createWikiPageUpdateTool(makeMockClient({})))
+    expect(tool.name).toBe('wiki_page_update')
+    expect(tool.description).toContain('append')
+  })
+
+  it('execute 调 wikiUpdatePage 并返回含 status 的结果', async () => {
+    const client = makeMockClient({
+      wikiUpdatePage: vi.fn(async () => ({ page_id: 'p1', status: 'appended' })),
+    })
+    const tool = asToolLike(createWikiPageUpdateTool(client))
+    const result = (await tool.execute({ page_id: 'p1', content: '追加内容' })) as string
+
+    expect(client.wikiUpdatePage).toHaveBeenCalledWith('p1', {
+      content: '追加内容',
+      append: true,
+      author: null,
+    })
+    expect(result).toContain('已更新')
+    expect(result).toContain('status=appended')
+  })
+
+  it('execute 失败（返回 null）时返回失败提示', async () => {
+    const client = makeMockClient({ wikiUpdatePage: vi.fn(async () => null) })
+    const tool = asToolLike(createWikiPageUpdateTool(client))
+    const result = (await tool.execute({ page_id: 'nope', content: 'x' })) as string
     expect(result).toContain('失败')
   })
 })

@@ -161,6 +161,23 @@ export interface WikiPage extends WikiPageSummary {
   content_seg?: string | null
 }
 
+/** /v1/wiki/pages/{page_id} 更新请求体（PATCH，W5 方案 v0.3 §5.5）。 */
+export interface WikiPageUpdateRequest {
+  content: string
+  append?: boolean            // 默认 true 追加
+  title?: string | null
+  category?: string | null
+  tags?: string[] | null
+  description?: string | null
+  author?: string | null
+}
+
+/** /v1/wiki/pages/{page_id} 更新响应体。 */
+export interface WikiPageUpdateResponse {
+  page_id: string
+  status: string              // appended / updated / noop
+}
+
 // ---------- 客户端实现 ----------
 
 /**
@@ -295,6 +312,36 @@ export class SgmeClient {
     }
   }
 
+  /** 统一 PATCH 请求，返回 [data, error]。失败时 data=null。 */
+  private async patch<T>(path: string, body: unknown): Promise<[T | null, string | null]> {
+    const url = `${this.baseUrl}${path}`
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs)
+      const resp = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': this.agentKey,
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+        // 防代理劫持：不读环境变量代理（与 post/get 一致）
+        ...({} as Record<string, unknown>),
+      })
+      clearTimeout(timer)
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        return [null, `HTTP ${resp.status}: ${text.slice(0, 200)}`]
+      }
+      const data = (await resp.json()) as T
+      return [data, null]
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return [null, `fetch error: ${msg}`]
+    }
+  }
+
   /** 拉取未消费关怀信号（GET /v1/admin/care/signals?unconsumed_only=true）。失败返回 null。 */
   async pullCareSignals(signalType?: string | null, limit = 20): Promise<CareSignal[] | null> {
     const params = new URLSearchParams({ unconsumed_only: 'true', limit: String(limit) })
@@ -333,6 +380,19 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] wikiGetPage failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 更新 wiki 页面（PATCH /v1/wiki/pages/{id}，Agent Key）。失败返回 null。 */
+  async wikiUpdatePage(pageId: string, body: WikiPageUpdateRequest): Promise<WikiPageUpdateResponse | null> {
+    const [data, err] = await this.patch<WikiPageUpdateResponse>(
+      `/v1/wiki/pages/${encodeURIComponent(pageId)}`,
+      body,
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] wikiUpdatePage failed: ${err}`)
       return null
     }
     return data
