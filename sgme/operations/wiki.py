@@ -32,7 +32,7 @@ from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult
 from sgme.wiki import fts as wiki_fts
 
 # 列表投影剔除的大字段（content 全文 / content_seg 分词列），避免响应臃肿
-_LIST_SKIP_FIELDS = ("content", "content_seg")
+_LIST_SKIP_FIELDS = ("content", "content_seg", "description_seg")
 
 
 def search(

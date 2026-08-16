@@ -42,8 +42,16 @@ def insert_page(
     source_url: str | None = None,
     source_file: str | None = None,
     ingested_at: str | None = None,
+    description: str | None = None,
+    author: str | None = None,
+    status: str | None = None,
+    supersedes: str | None = None,
 ) -> str:
     """插入 wiki 页面（按 page_id 幂等：已存在则更新内容与元数据）。
+
+    W1 新增：description（L1 摘要，描述即索引）/ author / status / supersedes
+    （多 agent 共享溯源，方案 v0.3 §5.1）。description_seg 由 _seg 计算。
+    status 缺省 'active'。
 
     Returns:
         page_id。
@@ -53,20 +61,28 @@ def insert_page(
         """
         INSERT INTO wiki_pages (page_id, title, content, category, tags,
                                 source_type, source_url, source_file,
-                                ingested_at, updated_at, content_seg)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                                ingested_at, updated_at, content_seg,
+                                description, description_seg, author, status, supersedes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(page_id) DO UPDATE SET
             title=excluded.title, content=excluded.content,
             category=excluded.category, tags=excluded.tags,
             source_type=excluded.source_type, source_url=excluded.source_url,
             source_file=excluded.source_file, updated_at=excluded.updated_at,
-            content_seg=excluded.content_seg
+            content_seg=excluded.content_seg,
+            description=excluded.description,
+            description_seg=excluded.description_seg,
+            author=excluded.author,
+            status=excluded.status,
+            supersedes=excluded.supersedes
         """,
         (
             page_id, title, content, category,
             json.dumps(tags, ensure_ascii=False) if tags else None,
             source_type, source_url, source_file,
             now, now, _seg(content),
+            description, _seg(description),
+            author, status if status is not None else "active", supersedes,
         ),
     )
     conn.commit()
@@ -131,23 +147,42 @@ def update_page_content(
     title: str | None = None,
     category: str | None = None,
     tags: list[str] | None = None,
+    description: str | None = None,
 ) -> bool:
-    """更新页面内容与可选元数据（title/category/tags 传 None 表示不修改）。"""
-    cur = conn.execute("SELECT title, category, tags FROM wiki_pages WHERE page_id=?", (page_id,))
+    """更新页面内容与可选元数据（title/category/tags/description 传 None 表示不修改）。
+
+    W1：description 显式传入时同步重算 description_seg（API 层 PATCH 默认不动
+    description，本函数仅数据层能力）。
+    """
+    cur = conn.execute(
+        "SELECT title, category, tags, description FROM wiki_pages WHERE page_id=?",
+        (page_id,),
+    )
     row = cur.fetchone()
     if row is None:
         return False
     new_title = title if title is not None else row["title"]
     new_cat = category if category is not None else row["category"]
     new_tags = json.dumps(tags, ensure_ascii=False) if tags is not None else row["tags"]
-    conn.execute(
-        """
-        UPDATE wiki_pages SET title=?, content=?, category=?, tags=?,
-               updated_at=?, content_seg=?
-        WHERE page_id=?
-        """,
-        (new_title, content, new_cat, new_tags, _now_iso(), _seg(content), page_id),
-    )
+    if description is not None:
+        conn.execute(
+            """
+            UPDATE wiki_pages SET title=?, content=?, category=?, tags=?,
+                   updated_at=?, content_seg=?, description=?, description_seg=?
+            WHERE page_id=?
+            """,
+            (new_title, content, new_cat, new_tags, _now_iso(), _seg(content),
+             description, _seg(description), page_id),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE wiki_pages SET title=?, content=?, category=?, tags=?,
+                   updated_at=?, content_seg=?
+            WHERE page_id=?
+            """,
+            (new_title, content, new_cat, new_tags, _now_iso(), _seg(content), page_id),
+        )
     conn.commit()
     return True
 

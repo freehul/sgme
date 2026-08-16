@@ -10,6 +10,7 @@ import sqlite3
 WIKI_FTS_DDL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS wiki_fts USING fts5(
     content_seg,
+    description_seg,
     page_id UNINDEXED,
     content='wiki_pages',
     content_rowid='rowid'
@@ -18,35 +19,50 @@ CREATE VIRTUAL TABLE IF NOT EXISTS wiki_fts USING fts5(
 
 WIKI_FTS_TRIGGERS = """
 CREATE TRIGGER IF NOT EXISTS wiki_ai AFTER INSERT ON wiki_pages BEGIN
-    INSERT INTO wiki_fts(rowid, content_seg, page_id)
-    VALUES (new.rowid, new.content_seg, new.page_id);
+    INSERT INTO wiki_fts(rowid, content_seg, description_seg, page_id)
+    VALUES (new.rowid, new.content_seg, new.description_seg, new.page_id);
 END;
 CREATE TRIGGER IF NOT EXISTS wiki_ad AFTER DELETE ON wiki_pages BEGIN
-    INSERT INTO wiki_fts(wiki_fts, rowid, content_seg, page_id)
-    VALUES ('delete', old.rowid, old.content_seg, old.page_id);
+    INSERT INTO wiki_fts(wiki_fts, rowid, content_seg, description_seg, page_id)
+    VALUES ('delete', old.rowid, old.content_seg, old.description_seg, old.page_id);
 END;
 CREATE TRIGGER IF NOT EXISTS wiki_au AFTER UPDATE ON wiki_pages BEGIN
-    INSERT INTO wiki_fts(wiki_fts, rowid, content_seg, page_id)
-    VALUES ('delete', old.rowid, old.content_seg, old.page_id);
-    INSERT INTO wiki_fts(rowid, content_seg, page_id)
-    VALUES (new.rowid, new.content_seg, new.page_id);
+    INSERT INTO wiki_fts(wiki_fts, rowid, content_seg, description_seg, page_id)
+    VALUES ('delete', old.rowid, old.content_seg, old.description_seg, old.page_id);
+    INSERT INTO wiki_fts(rowid, content_seg, description_seg, page_id)
+    VALUES (new.rowid, new.content_seg, new.description_seg, new.page_id);
 END;
 """
+
+
+def _fts_has_description(conn: sqlite3.Connection) -> bool:
+    """检测 wiki_fts 是否含 description_seg 列（FTS5 无法 ALTER 加索引列，缺则重建）。"""
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(wiki_fts)").fetchall()]
+        return "description_seg" in cols
+    except Exception:
+        return False
 
 
 def init_wiki_fts(conn: sqlite3.Connection) -> bool:
     """初始化 wiki_fts 虚拟表与触发器（幂等，对称 init_scenes_fts）。
 
+    结构升级（W1，2026-08-16）：老结构缺 description_seg → DROP 重建
+    （FTS5 外部内容表加索引列无法 ALTER），重建后回填 content_seg/description_seg。
+    中文检索不降级：content_seg 保留，description_seg 同 jieba 分词方案。
+
     Returns:
         True=成功；False=失败（调用方降级 BM25/LIKE 兜底，不炸服务）。
     """
     try:
+        if not _fts_has_description(conn):
+            conn.execute("DROP TABLE IF EXISTS wiki_fts")
         conn.executescript(WIKI_FTS_DDL)
         conn.executescript(WIKI_FTS_TRIGGERS)
-        # 存量数据回填（首次建表时）
+        # 存量数据回填（首次建表或重建时）
         conn.execute(
-            "INSERT OR IGNORE INTO wiki_fts(rowid, content_seg, page_id)"
-            " SELECT rowid, content_seg, page_id FROM wiki_pages"
+            "INSERT OR IGNORE INTO wiki_fts(rowid, content_seg, description_seg, page_id)"
+            " SELECT rowid, content_seg, description_seg, page_id FROM wiki_pages"
         )
         conn.commit()
         return True
