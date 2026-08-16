@@ -7,6 +7,10 @@ export interface WikiPage {
   content: string
   category?: string | null
   tags?: string[]
+  description?: string | null
+  status?: string | null
+  supersedes?: string | null
+  author?: string | null
   created_at: string
   updated_at: string
 }
@@ -46,6 +50,7 @@ export function createWikiPage(body: {
   content: string
   category?: string | null
   tags?: string[]
+  description?: string | null
 }) {
   return api.post<{ page_id: string; status: string }>('/v1/wiki/pages', body)
 }

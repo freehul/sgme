@@ -22,9 +22,15 @@ const newTitle = ref('')
 const newContent = ref('')
 const newCategory = ref('')
 const newTags = ref('')
+const newDescription = ref('')
 const busy = ref(false)
 
 const CATEGORY_COLOR: Record<string, string> = {
+  skill: 'red',
+  design: 'blue',
+  research: 'purple',
+  ops: 'green',
+  // 旧分类（历史页面可能仍用，保留不删）
   identity: 'blue',
   projects: 'green',
   goals: 'green',
@@ -34,7 +40,8 @@ const CATEGORY_COLOR: Record<string, string> = {
 }
 
 function catClass(cat?: string | null): string {
-  const c = CATEGORY_COLOR[cat || ''] || 'neutral'
+  const key = (cat || '').split('/')[0] || ''
+  const c = CATEGORY_COLOR[key] || 'neutral'
   return `cat-${c}`
 }
 
@@ -95,6 +102,7 @@ async function create() {
       title: newTitle.value.trim(),
       content: newContent.value,
       category: newCategory.value.trim() || null,
+      description: newDescription.value.trim() || null,
       tags,
     })
     showNew.value = false
@@ -102,6 +110,7 @@ async function create() {
     newContent.value = ''
     newCategory.value = ''
     newTags.value = ''
+    newDescription.value = ''
     await load()
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : String(e)
@@ -137,9 +146,9 @@ watch(() => route.query.page_id, (pid) => {
         <div class="card-head">
           <span class="card-title">{{ p.title }}</span>
           <span v-if="p.category" class="tag" :class="catClass(p.category)">{{ p.category }}</span>
-          <span v-for="t in p.tags || []" :key="t" class="dim-tag">{{ t }}</span>
+          <span v-for="t in p.tags || []" :key="t" class="dim-tag" :class="{ 'skill-tag': t === 'skill' }">{{ t }}</span>
         </div>
-        <p class="content line-clamp-2">{{ collapseBlankLines(p.content) }}</p>
+        <p class="content line-clamp-2">{{ collapseBlankLines(p.description || p.content) }}</p>
         <div class="meta">
           <span>更新 {{ new Date(p.updated_at).toLocaleString() }}</span>
           <button class="btn btn-sm" @click.stop="doExport(p)">导出 HTML</button>
@@ -160,7 +169,10 @@ watch(() => route.query.page_id, (pid) => {
           <input v-model="newTitle" placeholder="页面标题（必填）" />
         </label>
         <label>分类
-          <input v-model="newCategory" placeholder="category（可选，如 ops / design）" />
+          <input v-model="newCategory" placeholder="category（可选，如 ops / design / skill/sgme）" />
+        </label>
+        <label>摘要
+          <input v-model="newDescription" placeholder="description（可选，列表展示用摘要）" />
         </label>
         <label>标签
           <input v-model="newTags" placeholder="逗号分隔（可选）" />
@@ -188,9 +200,10 @@ watch(() => route.query.page_id, (pid) => {
           <template v-else-if="detail">
             <div class="drawer-meta">
               <span v-if="detail.category" class="tag" :class="catClass(detail.category)">{{ detail.category }}</span>
-              <span v-for="t in detail.tags || []" :key="t" class="dim-tag">{{ t }}</span>
+              <span v-for="t in detail.tags || []" :key="t" class="dim-tag" :class="{ 'skill-tag': t === 'skill' }">{{ t }}</span>
               <span class="d-ts">更新 {{ new Date(detail.updated_at).toLocaleString() }}</span>
             </div>
+            <p v-if="detail.description" class="desc">{{ detail.description }}</p>
             <div class="markdown-content" v-html="renderMarkdown(detail.content)" />
           </template>
         </div>
@@ -224,6 +237,8 @@ watch(() => route.query.page_id, (pid) => {
 .markdown-content :deep(blockquote) { border-left: 4px solid var(--brand); padding: 8px 14px; color: var(--text-muted); background: var(--brand-soft); border-radius: 0 8px 8px 0; margin: 10px 0; }
 .markdown-content :deep(a) { color: var(--brand-text); }
 /* 类别颜色胶囊（对齐参考设计） */
+.dim-tag.skill-tag { background: rgba(239,68,68,.15); color: #EF4444; }
+.desc { color: var(--text-muted); font-size: 13px; margin: 0 0 10px; line-height: 1.6; }
 .tag.cat-blue { background: rgba(59,130,246,.1); color: #3B82F6; }
 .tag.cat-green { background: rgba(16,185,129,.1); color: #10B981; }
 .tag.cat-yellow { background: rgba(245,158,11,.12); color: #B45309; }
