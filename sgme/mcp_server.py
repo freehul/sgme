@@ -166,6 +166,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "wiki_pages", "description": "wiki 页面列表（updated_at 降序；category 可选过滤；不含正文）"},
     {"name": "wiki_page", "description": "wiki 页面详情（标题/正文/分类/来源/更新时间）"},
     {"name": "wiki_page_add", "description": "wiki 页面直接写入（原样入库，不走 LLM 提炼；幂等 upsert，返回 page_id+status）"},
+    {"name": "wiki_page_update", "description": "wiki 页面按 id 更新/追加（自进化写回主通道：append 默认追加 ADD-only + entry hash 去重幂等；description 默认不动，W3）"},
     {"name": "memory_get", "description": "单条记忆详情（内容/维度/TTL + 溯源 + 归档链）"},
     {"name": "memory_reject", "description": "标记记忆「不采用」（不删除、可恢复），带纠错理由"},
     {"name": "refine_trigger", "description": "触发提炼：单文件或扫 status=new 批量（async_mode 分流同步/异步）"},
@@ -573,6 +574,33 @@ def build_mcp_server():
             create_page_operation, conn,
             title=title, content=content, category=category, tags=tags,
             source_type=source_type, source_url=source_url, source_file=source_file,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def wiki_page_update(
+        page_id: str,
+        content: str,
+        append: bool = True,
+        author: str | None = None,
+        description: str | None = None,
+    ) -> str:
+        """按 page_id 更新/追加 wiki 页面（自进化写回主通道，W3）。
+
+        append=true（默认）：追加到正文末尾（ADD-only + entry hash 去重幂等，
+        content 同 hash 重复提交返回 noop）；description 默认不动（显式传才更新）。
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.wiki import update_page as update_page_operation
+
+        conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        if conn is None:
+            return json.dumps({"error": "wiki 扩展未启用"}, ensure_ascii=False)
+        data = _op_json(
+            update_page_operation, conn, page_id,
+            content=content, append=append, author=author, description=description,
         )
         return json.dumps(data, ensure_ascii=False)
 
