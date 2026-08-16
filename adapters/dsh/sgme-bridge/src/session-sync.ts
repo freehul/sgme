@@ -28,6 +28,8 @@ export interface SessionSyncConfig {
   agentId: string               // SGME agent_id（默认 "dsh"）
   syncOnTurnEnd: boolean        // 是否启用 turn/end 同步
   turnBatchSize: number         // v1=1 即每 turn 即 append
+  evolveEnabled?: boolean       // W4 自进化自动触发（默认 true；evolve 侧幂等+门禁兜底）
+  evolveMinRounds?: number      // 费用门禁：会话消息块下限（默认 5）
 }
 
 /** session/event 事件需要的 ctx 能力。 */
@@ -297,6 +299,19 @@ async function syncTurnToSgme(
       ctx.logger.warn('[SGME session-sync] 提炼触发失败（数据已在 L0 等待，可稍后手动触发）')
     } else {
       ctx.logger.info(`[SGME session-sync] 提炼已触发：${refineResp.file_id} ${refineResp.status}`)
+    }
+
+    // 3. 自进化触发（W4：会话→经验→写回 wiki 手册；evolve 侧幂等 + 费用门禁兜底）
+    if (config.evolveEnabled !== false) {
+      const evolveResp = await client.evolveTrigger(
+        sessionKey,
+        config.evolveMinRounds ?? 5,
+      )
+      if (!evolveResp) {
+        ctx.logger.warn(`[SGME session-sync] 自进化触发失败：session=${sessionKey}`)
+      } else {
+        ctx.logger.info(`[SGME session-sync] 自进化已触发：${sessionKey} status=${evolveResp.status}`)
+      }
     }
   } catch (e) {
     ctx.logger.warn(`[SGME session-sync] 同步异常：${e instanceof Error ? e.message : String(e)}`)

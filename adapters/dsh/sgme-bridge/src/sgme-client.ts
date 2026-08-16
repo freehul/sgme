@@ -338,6 +338,20 @@ export class SgmeClient {
     return data
   }
 
+  /** 自进化触发（POST /v1/wiki/evolve/trigger，Agent Key；W4 自动闭环）。失败返回 null。 */
+  async evolveTrigger(sessionKey?: string | null, minRounds = 5): Promise<{ status: string } | null> {
+    const [data, err] = await this.post<{ status: string }>(
+      '/v1/wiki/evolve/trigger',
+      { session_key: sessionKey ?? null, min_rounds: minRounds },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] evolveTrigger failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
   /**
    * 原子认领信号（POST /v1/admin/care/signals/{id}/consume）。
    * 返回 true=本次认领成功 / false=已被他人消费（409）或失败 / null=网关不可达。
