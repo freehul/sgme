@@ -7,6 +7,17 @@
 
 SGME 是一个单用户 Agent 记忆引擎 Server：把你的会话提炼成标签化记忆，按场景注入回来。**你（接入的 Agent）负责两件事——把会话写进去（append），把记忆读出来（inject/search）**；提炼由服务端引擎做，你只负责触发。
 
+## 0.5 部署前置：两个模型
+
+SGME 的提炼与检索各依赖一个外部模型，**缺了会静默降级，不是故障**：
+
+| 依赖 | 用途 | 配置 | 缺失后果 |
+|---|---|---|---|
+| 提炼 LLM | L1 提取记忆 | `DEEPSEEK_API_KEY`（或 providers.yaml 其它 LLM） | 降级直存（不丢但不出标签） |
+| 向量 embedding | 语义检索 | `VOLC_API_KEY`（`search.vector` 段） | 检索降级纯 BM25（关键词仍可用） |
+
+接入后先调 `health` 看 `llm.available` / `vector.available`，哪个 false 就补哪个的 key。
+
 ## 1. 端口与传输
 
 | 服务 | 端口 | 说明 |
