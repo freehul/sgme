@@ -212,7 +212,7 @@ sgme/
 ├── config.py        # 配置加载 + 唯一读写方（llm.yaml/registry/sgme.yaml；filter_keys/apply_section/persist_config）
 ├── data/            # 三库连接/建表/DAO（memory/session/wiki）+ stats_dao（统计唯一出口）
 │   └── search/      # BM25 + 向量 + RRF 融合检索（原 sgme/search 并入）
-├── llm/             # 降级链（deepseek → lm-studio → drop_batch）
+├── llm/             # LLM 降级链（主模型按 providers.yaml 用户设定，rule drop_batch 兜底）
 ├── raw/             # L0 文件读写（frontmatter + 消息块 + 增量段）
 ├── engine/          # 核心引擎（l1/l15/l2/refine/prune/health/normalize）
 │   └── pipeline.py  # 管线编排唯一出口（append_l0 写 L0 + L1→L1.5→L2 串联）

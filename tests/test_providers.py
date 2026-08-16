@@ -82,21 +82,26 @@ def _write(tmp_path, name: str, body: str):
 
 # ---------- providers.yaml 解析 ----------
 
-def test_load_providers_default_file_has_deepseek():
-    """真实 providers.yaml：至少含 deepseek 主供应商，§13.2 连接字段齐全。
+def test_load_providers_default_file_structure_complete():
+    """真实 providers.yaml：LLM 供应商连接字段齐全（不固化品牌，ST-22 提供商无关）。
 
-    lm-studio 已移除（2026-08-14 用户决策：本地模型能力/向量维度不足，
-    提炼统一走云端 DeepSeek）。T-47 统一供应商模型后 embedding 提供商
-    （volc-plan/siliconflow/nvidia）并入 providers 段，断言用子集而非精确相等。
+    lm-studio 已移除（2026-08-14 用户决策）。主 LLM 供应商 = 含 context_window
+    （LLM 链引用）；embedding 供应商（volc-plan/siliconflow/nvidia）并入 providers 段。
+    断言验「字段结构 + 密钥铁律」，不绑定具体品牌——用户替换 providers.yaml 为
+    任意 OpenAI 兼容提供商后本测试依然成立。
     """
     providers = config.load_providers_config()
-    assert "deepseek" in providers
+    assert providers
+    llm_providers = {n: p for n, p in providers.items() if p.get("context_window")}
+    assert llm_providers, "至少一个 LLM 供应商（含 context_window 字段）"
     required = {"name", "display_name", "base_url", "provider_type",
                 "default_model", "context_window", "timeout_s", "max_retries",
                 "health_endpoint", "health_interval_s"}
-    missing = required - set(providers["deepseek"])
-    assert not missing, f"供应商 deepseek 缺字段 {missing}"
-    assert providers["deepseek"]["api_key_env"] == "DEEPSEEK_API_KEY_SGME"
+    for pname, p in llm_providers.items():
+        missing = required - set(p)
+        assert not missing, f"LLM 供应商 {pname} 缺字段 {missing}"
+        # 密钥铁律（#10）：api_key_env 只存环境变量名，禁止明文
+        assert p.get("api_key_env"), f"LLM 供应商 {pname} 缺 api_key_env"
 
 
 def test_load_providers_missing_file_returns_empty(tmp_path):
@@ -198,19 +203,23 @@ def test_missing_providers_file_falls_back_to_inline(tmp_path):
 # ---------- 真实配置集成（内存结构兼容） ----------
 
 def test_real_config_memory_structure_compatible():
-    """真实 llm.yaml + providers.yaml 合并后，首链字段与原内联格式一致，末链 rule 兜底。"""
+    """真实 llm.yaml + providers.yaml 合并后，链结构合法（首节点连接字段齐，末链 rule 兜底）。
+
+    ST-22 提供商无关：不断言具体品牌/地址/窗口值，只验结构与降级链机制——
+    用户替换 providers.yaml 为任意 OpenAI 兼容提供商后本测试依然成立。
+    """
     cfg = config.load_llm_config()
     refinement = cfg["chains"]["refinement"]
     head = refinement[0]
     for k in ("provider", "model", "base_url", "api_key_env",
               "context_window", "max_tokens", "extra_body"):
         assert k in head, f"首链缺 {k}"
-    assert head["provider"] == "deepseek"
-    assert head["base_url"] == "https://api.deepseek.com/v1"
-    assert head["api_key_env"] == "DEEPSEEK_API_KEY_SGME"
-    assert head["context_window"] == 1048576
-    assert head["max_tokens"] == 16384
-    # 末链为规则兜底（lm-studio 已移除，2026-08-14 用户决策）
+    assert head["provider"], "首链 provider 非空"
+    assert head["base_url"], "首链 base_url 非空"
+    assert head["api_key_env"], "首链 api_key_env 非空（环境变量名，铁律 #10）"
+    assert head["context_window"] > 0
+    assert head["max_tokens"] > 0
+    # 末链为规则兜底（降级链机制本身，与品牌无关）
     last = refinement[-1]
     assert last["provider"] == "rule"
     assert last["rule"] == "drop_batch"
