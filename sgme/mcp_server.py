@@ -167,6 +167,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "wiki_page", "description": "wiki 页面详情（标题/正文/分类/来源/更新时间）"},
     {"name": "wiki_page_add", "description": "wiki 页面直接写入（原样入库，不走 LLM 提炼；幂等 upsert，返回 page_id+status）"},
     {"name": "wiki_page_update", "description": "wiki 页面按 id 更新/追加（自进化写回主通道：append 默认追加 ADD-only + entry hash 去重幂等；description 默认不动，W3）"},
+    {"name": "wiki_evolve_trigger", "description": "自进化触发（W4）：会话 → 经验 → 写回 wiki 手册（费用门禁 + 规则闸门 + 独立游标 wiki_evolve）"},
     {"name": "memory_get", "description": "单条记忆详情（内容/维度/TTL + 溯源 + 归档链）"},
     {"name": "memory_reject", "description": "标记记忆「不采用」（不删除、可恢复），带纠错理由"},
     {"name": "refine_trigger", "description": "触发提炼：单文件或扫 status=new 批量（async_mode 分流同步/异步）"},
@@ -604,6 +605,32 @@ def build_mcp_server():
         data = _op_json(
             update_page_operation, conn, page_id,
             content=content, append=append, author=author, description=description,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def wiki_evolve_trigger(
+        session_key: str | None = None,
+        min_rounds: int = 5,
+        limit: int = 5,
+    ) -> str:
+        """自进化触发（W4）：会话 → 经验 → 写回 wiki 手册。
+
+        流程：费用门禁（消息块 ≥ min_rounds）→ LLM 提炼 → 规则闸门 →
+        写入（append 踩坑记录 / create 新手册页）→ 审计（wiki_evolve）。
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.evolve import evolve_trigger as evolve_operation
+
+        conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        session_conn: sqlite3.Connection | None = _app_state.get("session_conn")
+        if conn is None or session_conn is None:
+            return json.dumps({"error": "wiki/session 扩展未启用"}, ensure_ascii=False)
+        data = _op_json(
+            evolve_operation, conn, session_conn, {},
+            session_key=session_key, limit=limit, min_rounds=min_rounds,
         )
         return json.dumps(data, ensure_ascii=False)
 

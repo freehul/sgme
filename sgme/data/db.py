@@ -440,6 +440,7 @@ def connect_wiki(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _ensure_schema(conn, WIKI_DDL, SCHEMA_VERSION, "wiki_v4")
     _migrate_ingest_tasks_table(conn)
     _migrate_wiki_page_columns(conn)
+    _migrate_wiki_evolve_table(conn)
     return conn
 
 
@@ -467,6 +468,28 @@ def _migrate_wiki_page_columns(conn: sqlite3.Connection) -> None:
     ):
         if col not in cols:
             conn.execute(ddl)
+    conn.commit()
+
+
+def _migrate_wiki_evolve_table(conn: sqlite3.Connection) -> None:
+    """老库迁移：wiki.db 建 wiki_evolve 表（W4 自进化独立游标，2026-08-16）。
+
+    照 _migrate_ingest_tasks_table 先例：CREATE TABLE IF NOT EXISTS 幂等；
+    与 memory 提炼的 refine_cursor 完全分离（P0-2 修正：不复用同一水位）。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wiki_evolve (
+          session_key TEXT PRIMARY KEY,
+          status TEXT NOT NULL DEFAULT 'queued',
+          action TEXT,
+          entry_hash TEXT,
+          page_id TEXT,
+          error TEXT,
+          created_at TEXT,
+          processed_at TEXT)
+        """
+    )
     conn.commit()
 
 

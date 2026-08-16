@@ -24,6 +24,10 @@ stages:
     active: '@working'
     ab:
       enabled: false
+  evolve_extraction:
+    active: '@working'
+    ab:
+      enabled: false
 versions:
   tier0_summary:
   - version: v001
