@@ -889,3 +889,22 @@ L1.5 冲突裁决、L2 场景聚合。
   - 端到端：开发机 → 192.168.10.10:9910 可达；POST /v1/search（dsh agent key）真实召回 BM25+vector+RRF 融合记忆（含溯源 trace）
 - 运维影响：生产已运行 git 构建镜像（WebUI 内置 + 防烧钱默认 + 未来升级可走 `git pull && docker compose up -d --build`）；旧镜像 nas-git/t69 保留可回滚（compose 备份 .bak-pre-git-t72）；NAS 侧不再依赖 docker commit 固化
 - 文档：Backlog T-73；本记录 B70
+
+### B72. wiki 渐进式披露三处缺陷修复（evolve cfg 空配置 / supersession 未实现 / bridge 缺 wiki_page_update，2026-08-16）
+
+**背景**：对 ST-32「wiki 渐进式披露共享知识库」做逻辑闭环与冲突审查，发现 3 处已实现功能的缺陷：
+
+1. **P0 — 自进化 LLM 腿断**：`sgme/wiki/routes.py` / `sgme/mcp_server.py` 两入口把空配置 `{}` 传给 `evolve_trigger`，`llm/chain.py::call_with_fallback` 读 `cfg["chains"]` 必抛 `ValueError("未知链名: refinement")`，自进化永远产不出经验条目（turn/end 自动触发后每次记 error）。根因更深一层：`chains` 在 `cfg["llm"]["chains"]` 而非顶层，与 tier0/l2/care 各管线传 `cfg["llm"]` 的约定不符——传完整 cfg 也修不好，必须传 llm 段。
+2. **P1 — supersession 未实现**：设计 §5.1（P1-7 标注已解决）要求 create 时同 category+title 的 active 旧页 content 不同 → 旧页置 superseded，但 `create_page` 只做 upsert 无判等，`status`/`supersedes` 成死字段，同题不同内容并存两个 active 页。
+3. **P1 — 消费侧回写工具缺一环**：设计 W5 要求 bridge 3 工具，`tools.ts` 只实现 wiki_pages/wiki_page，缺 wiki_page_update，SKILL.md 要求回写但 DSH 侧 agent 无工具。
+
+**改动**：
+- ①两入口改传 `cfg["llm"]`（HTTP `request.app.state.cfg["llm"]` / MCP `_app_state.get("cfg", {}).get("llm")`）+ test_wiki_evolve.py +2 用例（单元透传 + HTTP 端点透传）
+- ②`wiki_dao` 加 `find_active_same_title` / `mark_superseded`；`create_page` not exists 时查同 title+category 旧页并标记 superseded；test_wiki_supersession.py 6 用例
+- ③`sgme-client` 加 `patch` / `wikiUpdatePage`；`tools.ts` 加 `createWikiPageUpdateTool` 并注册；wiki-tools.test.ts +3 用例；重建 lib/index.js
+
+**测试**：wiki 相关 5 文件 37 passed / 0 failed；bridge vitest 95 passed / 0 failed + build 成功。
+
+**遗留（非本次范围）**：①bridge package.json 的 `types`/exports.types 指向 `lib/types/index.d.ts`，但 tsdown clean:true 清掉 declarationDir 输出，实际产物是扁平 `lib/index.d.ts`——既有 build 配置不一致，待后续处理。②`evolve.py` 的 `_llm_call`/`evolve_trigger` 参数名 `cfg` 实为 llm 段，命名误导是本次 P0 深层成因，待后续重命名澄清。
+
+**文档**：Backlog T-81~T-83；本记录 B72
