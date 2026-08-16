@@ -628,8 +628,9 @@ def build_mcp_server():
         session_conn: sqlite3.Connection | None = _app_state.get("session_conn")
         if conn is None or session_conn is None:
             return json.dumps({"error": "wiki/session 扩展未启用"}, ensure_ascii=False)
+        # 传 llm 段（含顶层 chains）：降级链 call_with_fallback 读 cfg["chains"]，完整 cfg 的 chains 在 cfg["llm"] 下
         data = _op_json(
-            evolve_operation, conn, session_conn, {},
+            evolve_operation, conn, session_conn, _app_state.get("cfg", {}).get("llm"),
             session_key=session_key, limit=limit, min_rounds=min_rounds,
         )
         return json.dumps(data, ensure_ascii=False)
