@@ -65,7 +65,7 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  baseUrl: Schema.string().default('http://192.168.10.10:9910').description('SGME Gateway 地址'),
+  baseUrl: Schema.string().default('http://localhost:9910').description('SGME Gateway 地址（本机部署默认 localhost；SGME 在其他机器请改成对应 IP）'),
   agentKey: Schema.string().default('').description('SGME agent key（/v1/admin/agents/register 签发）'),
   adminKey: Schema.string().default('').description('SGME admin key（触发提炼用）'),
   agentId: Schema.string().default('dsh').description('SGME agent id'),

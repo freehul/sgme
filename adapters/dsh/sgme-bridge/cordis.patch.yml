@@ -5,7 +5,7 @@
     - id: sgme
       name: "dsh-sgme"
       config:
-        baseUrl: http://192.168.10.10:9910
+        baseUrl: http://localhost:9910
         # key 通过环境变量注入（符合 SGME 密钥不落盘铁律 #10）：
         # SGME_AGENT_KEY / SGME_ADMIN_KEY 由 install.py 注册 agent 后写入
         # <cwd>/.env 或 $DSH_HOME/.env，dsh 启动时物化进 process.env。

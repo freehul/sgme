@@ -17,6 +17,8 @@
 
 ## 前置条件
 
+> ⚠️ **兼容性**：本插件面向 dsh `0.1.0-rc.6` 开发（`@deepseek-ai/dsh-tools` / `dsh-commands` / `cordis` 均按此版本锁定）；DSH 处于 RC 快速迭代期，用其他 dsh 版本可能遇到兼容问题，请先确认版本匹配。
+
 > ⚠️ **本插件依赖 SGME 本体，没有它插件是空壳**——装插件前先装好 SGME：
 
 1. **安装 SGME 拾光记忆引擎**（GitHub 仓库 [freehul/sgme](https://github.com/freehul/sgme)）：
@@ -26,7 +28,7 @@
    # 按 SGME 仓库 README 完成安装并启动（HTTP 9910 常驻运行）
    ```
 2. **注册 agent 拿密钥**：运行 SGME 的 `adapters/dsh/install.py`，注册 DSH agent，生成 `SGME_AGENT_KEY` / `SGME_ADMIN_KEY` 并写入 `.env`；
-3. **确认 SGME 在线**：`curl http://192.168.10.10:9910/v1/health` 返回 200 后再继续。
+3. **确认 SGME 在线**：`curl http://localhost:9910/v1/health` 返回 200 后再继续（SGME 部署在其他机器时换成对应 IP）。
 
 ## 安装
 
@@ -40,7 +42,7 @@ dsh plugin --profile <你的profile> add dsh-sgme
 `cordis.patch.yml` 默认值：
 
 ```yaml
-baseUrl: http://192.168.10.10:9910
+baseUrl: http://localhost:9910
 agentKey: process.env.SGME_AGENT_KEY   # 环境变量注入，密钥不落盘
 adminKey: process.env.SGME_ADMIN_KEY
 agentId: dsh

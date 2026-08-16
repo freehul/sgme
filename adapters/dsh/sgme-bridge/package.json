@@ -1,6 +1,6 @@
 {
   "name": "dsh-sgme",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "SGME memory engine bridge for DeepSeek Harness — multi-agent shared long-term memory via HTTP.",
   "keywords": [
     "deepseek-harness",
