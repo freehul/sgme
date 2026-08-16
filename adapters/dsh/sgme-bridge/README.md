@@ -8,10 +8,12 @@
 
 | 能力 | 说明 |
 |---|---|
+| **画像自动注入** | `agent/pre-step` middleware：会话首步自动拉取 SGME 画像 + 相关记忆注入模型上下文（v2，2026-08-16 从"打日志"升级为真注入） |
 | **自动捕获** | session-sync 监听会话事件，每轮对话自动 `append` 落盘（零 LLM 成本） |
 | **记忆检索** | `memory_search` 检索 L1.5 标签化记忆池（带溯源） |
 | **知识库检索** | `wiki_search` 检索 L2 场景知识库（比记忆更精炼） |
 | **主动关怀** | `signal_pull` / `signal_claim` / `signal_ack` 三工具，消费 SGME 关怀信号——信号消费 = 主动关怀，谁消费谁标记 |
+| **DSH 规则注入** | 读取 `~/.dsh/dsg-rules/rules.md` 注册为 `dsg:rules` system section（order -70）——身份/铁律/SGME手册/偏好/环境进稳定层，前缀缓存全命中（v0.2，2026-08-16） |
 
 ## 前置条件
 

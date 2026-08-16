@@ -15,5 +15,7 @@
         injectMode: daily
         injectMaxTokens: 800
         searchLimit: 5
+        # projectHint 用于首步注入时检索"项目相关记忆"；缺省按会话 cwd 目录名推断（可选）
+        # projectHint: !!js process.env.SGME_PROJECT_HINT ?? ''
         syncOnTurnEnd: true
         turnBatchSize: 1

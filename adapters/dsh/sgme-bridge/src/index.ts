@@ -20,17 +20,25 @@ import type { InjectMode } from './context.js'
 import { registerSgmeCommand } from './commands.js'
 import type { CommandResult, CommandInvocation } from './commands.js'
 import { registerSessionSync } from './session-sync.js'
+import { registerRulesSection, defaultRulesPath } from './rules.js'
 
 export const name = 'dsh-sgme'
 
 // 依赖声明：dsh 的工具/命令/事件能力
-export const inject = ['tools', 'commands']
+export const inject = ['tools', 'commands', 'systemPrompt']
 
 // Cordis Context 类型（对齐 dsh-commands / dsh-tools 官方 register 签名，2026-08-14 T-53 确认）
 interface CordisContext {
   logger: (name: string) => { info: (msg: string) => void; warn: (msg: string) => void }
   effect: (fn: () => () => void, label?: string) => void
-  on: (event: string, handler: (...args: unknown[]) => void) => () => void
+  on: (event: string, handler: (...args: any[]) => any) => () => void
+  systemPrompt: {
+    section: (section: {
+      name: string
+      order: number
+      text: string | ((context: Record<string, unknown>) => string)
+    }) => () => void
+  }
   tools: { register: (tool: ToolDefinition) => () => void }
   commands: {
     register: (definition: {
@@ -50,6 +58,8 @@ export interface Config {
   injectMode: InjectMode
   injectMaxTokens: number
   searchLimit: number
+  projectHint?: string             // 项目名提示（用于相关记忆检索，可空）
+  rulesPath?: string               // DSH 用户级规则文件（缺省 ~/.dsh/dsg-rules/rules.md）
   syncOnTurnEnd: boolean
   turnBatchSize: number
 }
@@ -62,6 +72,8 @@ export const Config: Schema<Config> = Schema.object({
   injectMode: Schema.union(['daily', 'full', 'coding', 'work']).default('daily').description('画像注入模式'),
   injectMaxTokens: Schema.number().default(800).description('画像注入 token 上限'),
   searchLimit: Schema.number().default(5).description('检索返回条数上限'),
+  projectHint: Schema.string().default('').description('项目名提示（用于相关记忆检索，可空；缺省按会话 cwd 目录名推断）'),
+  rulesPath: Schema.string().default('').description('DSH 用户级规则文件（缺省 ~/.dsh/dsg-rules/rules.md，注册为 dsg:rules system section）'),
   syncOnTurnEnd: Schema.boolean().default(true).description('是否在 turn/end 时同步入库'),
   turnBatchSize: Schema.number().default(1).description('入库攒批大小（v1=1 即每 turn 即 append）'),
 })
@@ -102,10 +114,13 @@ export function apply(ctx: CordisContext, config: Config): void {
     on: ctx.on,
     logger: { info: logger.info, warn: logger.warn },
   }
+  const projectHint = config.projectHint
+    || (process.env.SGME_PROJECT_HINT ?? '')
   const disposeContext = registerContextInjection(contextCtx, client, {
     injectMode: config.injectMode,
     injectMaxTokens: config.injectMaxTokens,
     searchLimit: config.searchLimit,
+    ...(projectHint ? { projectHint } : {}),
   })
   ctx.effect(() => disposeContext, 'sgme-context-injection')
 
@@ -126,5 +141,19 @@ export function apply(ctx: CordisContext, config: Config): void {
   })
   ctx.effect(() => disposeSync, 'sgme-session-sync')
 
-  logger.info('SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步）')
+  // 5. DSH 用户级规则（dsg:rules system section，order -70）
+  // 读取 ~/.dsh/dsg-rules/rules.md → 注册为稳定 section（前缀缓存命中）
+  // apply 是同步的：async 注册 fire-and-forget，dispose 经闭包在完成时接回
+  const rulesPath = config.rulesPath || defaultRulesPath()
+  void registerRulesSection(
+    { systemPrompt: ctx.systemPrompt, logger: { info: logger.info, warn: logger.warn } },
+    rulesPath,
+  ).then((disposeRules) => {
+    ctx.effect(() => disposeRules, 'sgme-rules-section')
+  }).catch((e) => {
+    const msg = e instanceof Error ? e.message : String(e)
+    logger.warn(`[dsg-rules] 注册失败: ${msg}`)
+  })
+
+  logger.info('SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules）')
 }

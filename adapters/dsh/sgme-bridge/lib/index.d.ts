@@ -28,7 +28,14 @@ interface CordisContext {
     warn: (msg: string) => void;
   };
   effect: (fn: () => () => void, label?: string) => void;
-  on: (event: string, handler: (...args: unknown[]) => void) => () => void;
+  on: (event: string, handler: (...args: any[]) => any) => () => void;
+  systemPrompt: {
+    section: (section: {
+      name: string;
+      order: number;
+      text: string | ((context: Record<string, unknown>) => string);
+    }) => () => void;
+  };
   tools: {
     register: (tool: ToolDefinition) => () => void;
   };
@@ -49,6 +56,8 @@ interface Config {
   injectMode: InjectMode;
   injectMaxTokens: number;
   searchLimit: number;
+  projectHint?: string;
+  rulesPath?: string;
   syncOnTurnEnd: boolean;
   turnBatchSize: number;
 }
