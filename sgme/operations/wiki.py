@@ -135,6 +135,10 @@ def create_page(
     source_type: str = "text",
     source_url: str | None = None,
     source_file: str | None = None,
+    description: str | None = None,
+    author: str | None = None,
+    status: str | None = None,
+    supersedes: str | None = None,
 ) -> OperationResult:
     """wiki 页面直接写入（原样入库，不走 LLM 提炼；T-55）。
 
@@ -160,6 +164,7 @@ def create_page(
         title=title, content=content,
         category=category, tags=tags,
         source_type=source_type, source_url=source_url, source_file=source_file,
+        description=description, author=author, status=status, supersedes=supersedes,
     )
     return OperationResult.succeed(
         {"page_id": page_id, "status": "updated" if exists else "created"}

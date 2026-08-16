@@ -129,3 +129,31 @@ def test_fts_rebuild_adds_description_seg(conn):
     assert wiki_fts_mod.init_wiki_fts(conn) is True
     results = wiki_fts_mod.search_wiki_fts(conn, "重建测试词xyz", limit=5)
     assert any(r["page_id"] == "p1" for r in results)
+
+def test_fts_rebuild_when_trigger_stale(conn):
+    """新结构 FTS 表 + 旧版触发器残留（DROP TABLE 不删触发器，真实升级路径）
+    → init_wiki_fts 检测触发器缺 description_seg 一并重建（2026-08-16 修复）。"""
+    conn.execute("DROP TABLE IF EXISTS wiki_fts")
+    conn.execute("DROP TRIGGER IF EXISTS wiki_ai")
+    conn.execute("DROP TRIGGER IF EXISTS wiki_ad")
+    conn.execute("DROP TRIGGER IF EXISTS wiki_au")
+    # 新结构表 + 旧版触发器（只同步 content_seg）——模拟真实库升级后残留
+    conn.execute(
+        "CREATE VIRTUAL TABLE wiki_fts USING fts5("
+        " content_seg, description_seg, page_id UNINDEXED,"
+        " content='wiki_pages', content_rowid='rowid')"
+    )
+    conn.executescript(
+        "CREATE TRIGGER wiki_ai AFTER INSERT ON wiki_pages BEGIN"
+        "  INSERT INTO wiki_fts(rowid, content_seg, page_id)"
+        "  VALUES (new.rowid, new.content_seg, new.page_id);"
+        "END;"
+    )
+    conn.commit()
+    assert wiki_fts_mod._triggers_have_description(conn) is False
+    assert wiki_fts_mod.init_wiki_fts(conn) is True
+    assert wiki_fts_mod._triggers_have_description(conn) is True
+    # 重建后带 description 的新页可被 FTS 命中
+    wiki_dao.insert_page(conn, "p1", "手册", "正文", description="触发器重建词xyz")
+    results = wiki_fts_mod.search_wiki_fts(conn, "触发器重建词xyz", limit=5)
+    assert any(r["page_id"] == "p1" for r in results)
