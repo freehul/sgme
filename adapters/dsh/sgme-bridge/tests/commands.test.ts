@@ -6,30 +6,63 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { executeSgmeCommand } from '../src/commands.js'
-import type { SgmeClient, SearchResponse } from '../src/sgme-client.js'
+import type { SgmeClient, SearchResponse, HealthResponse } from '../src/sgme-client.js'
 
-function makeMockClient(searchImpl: (req: unknown) => SearchResponse | null): SgmeClient {
+function makeMockClient(
+  searchImpl: (req: unknown) => SearchResponse | null,
+  healthImpl?: () => HealthResponse | null,
+): SgmeClient {
   return {
     search: vi.fn(searchImpl) as unknown as SgmeClient['search'],
+    health: vi.fn(healthImpl ?? (() => null)) as unknown as SgmeClient['health'],
   } as unknown as SgmeClient
 }
 
 describe('executeSgmeCommand', () => {
-  it('空查询返回 error + 用法说明', async () => {
-    const client = makeMockClient(() => null)
-    const result = await executeSgmeCommand(client, { searchLimit: 5 }, '')
+  it('空查询返回 status 报告（Gateway 不可达 → error + 桥接插件定位与安装指引）', async () => {
+    const client = makeMockClient(() => null, () => null)
+    const result = await executeSgmeCommand(
+      client,
+      { searchLimit: 5, baseUrl: 'http://127.0.0.1:9910', agentKeySet: false, adminKeySet: false },
+      '',
+    )
     expect(result.kind).toBe('error')
-    expect(result.text).toContain('用法')
-    expect(result.text).toContain('/sgme <关键词>')
+    expect(result.text).toContain('不可达')
+    expect(result.text).toContain('桥接插件')
+    expect(result.text).toContain('https://github.com/freehul/sgme')
+    expect(result.text).toContain('baseUrl: http://127.0.0.1:9910')
     // 不应调用 search
     expect(client.search).not.toHaveBeenCalled()
   })
 
-  it('纯空格查询返回 error + 用法说明', async () => {
-    const client = makeMockClient(() => null)
-    const result = await executeSgmeCommand(client, { searchLimit: 5 }, '   ')
-    expect(result.kind).toBe('error')
-    expect(result.text).toContain('用法')
+  it('空查询返回 status 报告（连接正常 → success + 版本/LLM/记忆水位）', async () => {
+    const client = makeMockClient(() => null, () => ({
+      status: 'ok',
+      version: '1.0.0b2',
+      llm: { available: true, model: 'deepseek-v4-flash' },
+      refinement: { watermark_age_sec: 10, queue_depth: 0, stalled: false },
+      vector: { memory_vectors: 1234 },
+    }))
+    const result = await executeSgmeCommand(
+      client,
+      { searchLimit: 5, baseUrl: 'http://127.0.0.1:9910', agentKeySet: true, adminKeySet: true },
+      '',
+    )
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('连接: 正常')
+    expect(result.text).toContain('1.0.0b2')
+    expect(result.text).toContain('deepseek-v4-flash')
+    expect(result.text).toContain('1234')
+    expect(result.text).toContain('agent key: 已配置')
+    expect(client.search).not.toHaveBeenCalled()
+  })
+
+  it('status 子命令返回状态报告', async () => {
+    const client = makeMockClient(() => null, () => ({ status: 'ok', version: '1.0.0b2' }))
+    const result = await executeSgmeCommand(client, { searchLimit: 5, baseUrl: 'http://127.0.0.1:9910' }, 'status')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('[/sgme status]')
+    expect(client.search).not.toHaveBeenCalled()
   })
 
   it('有结果时返回 success + 格式化结果', async () => {

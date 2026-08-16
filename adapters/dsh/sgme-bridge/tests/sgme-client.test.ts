@@ -46,6 +46,27 @@ describe('SgmeClient', () => {
     vi.restoreAllMocks()
   })
 
+  // ---------- health ----------
+
+  it('health 正常返回（GET /v1/health 免鉴权）', async () => {
+    globalThis.fetch = makeFetchMock({ ok: true, status: 200, body: { status: 'ok', version: '1.0.0b2' } })
+    const h = await makeClient().health()
+    expect(h?.status).toBe('ok')
+    expect(h?.version).toBe('1.0.0b2')
+  })
+
+  it('health 失败返回 null（不抛异常，故障隔离）', async () => {
+    globalThis.fetch = makeFetchMock({ ok: false, status: 500, body: {} })
+    const h = await makeClient().health()
+    expect(h).toBeNull()
+  })
+
+  it('health 网络异常返回 null（不抛异常）', async () => {
+    globalThis.fetch = vi.fn(async () => { throw new Error('network down') })
+    const h = await makeClient().health()
+    expect(h).toBeNull()
+  })
+
   // ---------- search ----------
 
   it('search 成功返回 SearchResponse', async () => {
