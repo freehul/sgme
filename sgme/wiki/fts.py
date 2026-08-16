@@ -115,7 +115,7 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10, exclu
         if terms:
             match_expr = " OR ".join(f'"{t}"' for t in terms)
             rows = conn.execute(
-                "SELECT p.page_id, p.title, p.content, p.tags,"
+                "SELECT p.page_id, p.title, p.content, p.tags, p.category,"
                 " bm25(wiki_fts) AS score"
                 " FROM wiki_fts JOIN wiki_pages p ON p.rowid = wiki_fts.rowid"
                 f" WHERE wiki_fts MATCH ? AND p.status='active'{skill_filter}"
@@ -128,6 +128,7 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10, exclu
                     "title": r["title"],
                     "snippet": r["content"][:200] if r["content"] else "",
                     "tags": r["tags"] or [],
+                    "category": r["category"] or None,
                 })
     except Exception:
         results = []
@@ -137,7 +138,7 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10, exclu
             like = f"%{query}%"
             like_filter = skill_filter.replace("p.tags", "tags").replace("p.status", "status")
             rows = conn.execute(
-                "SELECT page_id, title, content, tags FROM wiki_pages"
+                "SELECT page_id, title, content, tags, category FROM wiki_pages"
                 f" WHERE (content LIKE ? OR title LIKE ?) AND status='active'{like_filter}"
                 " ORDER BY updated_at DESC LIMIT ?",
                 (like, like, limit),
@@ -145,7 +146,8 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10, exclu
             results = [
                 {"page_id": r["page_id"], "title": r["title"],
                  "snippet": (r["content"] or "")[:200],
-                 "tags": r["tags"] or []}
+                 "tags": r["tags"] or [],
+                 "category": r["category"] or None}
                 for r in rows
             ]
         except Exception:

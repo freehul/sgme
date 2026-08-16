@@ -106,6 +106,8 @@ watch(() => route.query, syncFromQuery, { immediate: true })
           <span v-if="r.dimensions.length" class="tag-group">
             <span v-for="d in r.dimensions" :key="d" class="dim-tag">{{ d }}</span>
           </span>
+          <span v-if="r.source === 'wiki_pages' && r.category" class="dim-tag">{{ r.category }}</span>
+          <span v-for="t in r.tags || []" :key="t" class="dim-tag">{{ t }}</span>
         </div>
         <p v-if="r.source === 'wiki_pages' && r.title" class="title">{{ r.title }}</p>
         <p class="content">{{ r.content }}</p>

@@ -90,6 +90,8 @@ export interface SearchResult {
   scene_id?: string
   page_id?: string
   title?: string
+  category?: string | null
+  tags?: string[]
   content: string
   dimensions: string[]
   priority: number
