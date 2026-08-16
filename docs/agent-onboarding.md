@@ -180,11 +180,11 @@ content 格式（首行必须）：
 
 | 档位 | 机制 | 适用 | 你要做的事 |
 |---|---|---|---|
-| **hooks 型** | 检测会话结束事件（SessionEnd/Stop），自动触发提炼 | Hermes / Reasonix / Claude Code | 配自动提炼 hook，无需每会话手动收尾 |
+| **hooks 型** | 检测会话结束事件（SessionEnd/Stop），自动触发提炼 | Hermes / Claude Code（有 hook 可自研适配器） | 配自动提炼 hook，无需每会话手动收尾 |
 | **自律型** | 无 hooks → 会话收尾主动调提炼 | Trae / ZCode | 指引要求：结束前 `refine_trigger(async_mode=true)`，别指望别人 |
 | **保底型** | 服务端兜底，不依赖 agent 自觉 | 任何 agent（最后防线） | 服务端 `batch_scan` 常驻定时器扫 status=new；`refine_on_append=true` 时 append 后自动单文件提炼 |
 
-> **已接入工具登记（2026-08-13）**：Reasonix（本机 Desktop + CLI）——走 **hooks 适配层**（`adapters/reasonix/`）：SessionStart 注入画像/相关记忆 + SessionEnd 导出会话触发提炼（`.reasonix/settings.json` 两条 hooks，已装），会话中 `/sgme <关键词>` 命令检索（bridge.py 调 `/v1/search`，memory+wiki 两层）；全局规则 `%APPDATA%/reasonix/AGENTS.md`（用户级 standing instructions：SGME 纪律 + 项目开发流程约束 + 五步查证），项目级规则随项目根 AGENTS.md 自动加载（install 已追加 SGME 记忆系统声明段）；key 在 `adapters/reasonix/.env`（agent_id=reasonix）。**不走 MCP**（hooks 专用适配是既定设计，MCP 留给无 hooks 的 Agent）。
+> **官方适配器登记（2026-08-16）**：Hermes（memory.provider 插件）+ DSH（Cordis 插件）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
 
 **判断方法**：有 SessionEnd/Stop 事件机制 = hooks 型；没有 = 自律型；两者都失效还有保底型兜底——记忆不会丢，只会晚提炼。
 

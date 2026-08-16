@@ -40,7 +40,7 @@ AI 说出的每一句话，背后都有据可查：从画像一路追回当时�
 
 ### 多智能体共享记忆——一个大脑，多个身体
 
-Hermes、Trae、Reasonix……你的所有 AI 共享同一个记忆大脑。在这边聊的事，那边自动知道；台式机、笔记本、NAS 部署的 AI，记忆互通。AI 之间不再各说各话。
+Hermes、DSH……你的所有 AI 共享同一个记忆大脑。在这边聊的事，那边自动知道；台式机、笔记本、NAS 部署的 AI，记忆互通。AI 之间不再各说各话。
 
 <img src="assets/selling-point-02-shared-memory.png" alt="多智能体共享记忆" width="800"/>
 
@@ -183,7 +183,7 @@ dsh plugin --profile web add github:freehul/sgme
 | WorkBuddy | SOUL.md（身份 + 行为准则） |
 | Claude Code | CLAUDE.md |
 | DeepSeek Harness (DSH) | AGENTS.md（项目级自动加载） |
-| 通用 / 其它（含 Trae、Reasonix） | AGENTS.md（项目级自动加载） |
+| 通用 / 其它（走 MCP 通用接入） | AGENTS.md（项目级自动加载） |
 
 ## 服务化部署（Windows 服务）
 

@@ -8,8 +8,6 @@
 | 适配器 | 形态 | 运行时 Python 依赖 |
 |---|---|---|
 | hermes | Python 插件部署副本 | 是（Hermes 加载 Python 插件） |
-| reasonix | Python bridge.py（hooks 桥接） | 是（hooks 调外部脚本） |
-| trae | Python bridge.py（瘦桥接） | 是（MCP 直连 + 桥接） |
 | **dsh（本适配器）** | **TS 原生插件（Cordis SDK）** | **否（运行时零 Python）** |
 
 dsh 有完整插件 SDK（工具注册/事件监听/上下文注入/命令注册），运行时能力全部在 TS 插件内完成，
