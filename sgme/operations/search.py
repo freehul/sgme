@@ -51,6 +51,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -132,6 +133,22 @@ def normalize_query_terms(query: str, term_aliases: dict[str, str]) -> str:
     return out if changed else query
 
 
+def _is_skill_page(tags: object) -> bool:
+    """页面是否 skill 标记（tags 为 JSON 字符串或列表，精确判断 'skill' in tags）。
+
+    双重编码防御（对齐 wiki_dao._parse_tags）：第一层 loads 得到 str 则再解一层。
+    """
+    if not tags:
+        return False
+    try:
+        val = json.loads(tags) if isinstance(tags, str) else tags
+        if isinstance(val, str):
+            val = json.loads(val)
+        return isinstance(val, list) and "skill" in val
+    except (TypeError, ValueError):
+        return False
+
+
 def _collapse_spaces(text: str) -> str:
     """连续空白折叠为单空格（大小写/空格容忍的归一化前置）。"""
     return re.sub(r"\s+", " ", text).strip()
@@ -158,6 +175,9 @@ def _search_wiki_pages(
     except Exception as e:
         logger.warning("wiki_pages 检索失败（该层空结果）: %s", e)
         return []
+    # W2（方案 v0.3 §5.2）：统一搜索默认排除 skill 标记页（回忆通道不见手册）。
+    # 精确判断（tags JSON 解析，防双重编码脏数据，2026-08-14 前科），不用 LIKE。
+    rows = [r for r in rows if not _is_skill_page(r.get("tags"))]
     return [
         {
             "rank": i + 1,
