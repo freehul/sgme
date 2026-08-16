@@ -93,6 +93,38 @@ def write_agents_md(project_dir: Path) -> Path:
     return target
 
 
+# ---------- 索引 skill 部署（W6，方案 v0.3 §5.6） ----------
+
+# 源 skill（随 git 管理，部署副本可重建）
+SKILL_SRC = Path(__file__).resolve().parent / "skills" / "wiki-skill-discovery" / "SKILL.md"
+
+
+def default_skills_dir() -> Path:
+    """消费端技能根（DSH agentsHome skills；可用环境变量覆盖）。"""
+    env = os.environ.get("DSH_SKILLS_DIR", "")
+    return Path(env) if env else Path.home() / ".agents" / "skills"
+
+
+def deploy_index_skill(skills_dir: Path) -> Path | None:
+    """部署 wiki-skill-discovery 到消费端 skills 目录（可重建的部署副本）。
+
+    幂等：目标已存在且内容一致 → 跳过；不一致 → 覆盖更新（源在 git，重跑即重建）。
+    返回部署目标路径；源缺失时返回 None。
+    """
+    if not SKILL_SRC.exists():
+        logger.warning("索引 skill 源缺失: %s", SKILL_SRC)
+        return None
+    target = skills_dir / "wiki-skill-discovery" / "SKILL.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    src_text = SKILL_SRC.read_text(encoding="utf-8")
+    if target.exists() and target.read_text(encoding="utf-8") == src_text:
+        logger.info("索引 skill 已部署且一致（跳过）: %s", target)
+        return target
+    target.write_text(src_text, encoding="utf-8")
+    logger.info("索引 skill 已部署: %s", target)
+    return target
+
+
 # ---------- agent 注册 ----------
 
 def _http() -> httpx.Client | None:
@@ -157,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="DeepSeek Harness × SGME 适配器安装")
     parser.add_argument("--dir", required=True, help="目标项目目录（生成其 AGENTS.md）")
     parser.add_argument("--no-register", action="store_true", help="跳过 agent 注册")
+    parser.add_argument("--skills-dir", default=str(default_skills_dir()),
+                        help="消费端 skills 目录（部署索引 skill，默认 ~/.agents/skills）")
     parser.add_argument("--dsh-env", default=str(DSH_ENV_FILE),
                         help="dsh 可加载的 .env 路径（dsh 从启动目录 <cwd>/.env 或 $DSH_HOME/.env 读取），"
                              "默认 SGME 项目根 .env")
@@ -182,7 +216,14 @@ def main(argv: list[str] | None = None) -> int:
     agents_path = write_agents_md(Path(args.dir))
     print(f"  {agents_path}（模型启动必加载，知悉记忆系统）")
 
-    print("[3/3] dsh 插件加载命令（请手动执行确认环境）")
+    print("[3/4] 部署索引 skill（wiki-skill-discovery）")
+    deployed = deploy_index_skill(Path(args.skills_dir))
+    if deployed:
+        print(f"  {deployed}（源在 adapters/dsh/skills/，随 git 管理，重跑本脚本可重建）")
+    else:
+        print("  ⚠️ 索引 skill 源缺失，部署跳过")
+
+    print("[4/4] dsh 插件加载命令（请手动执行确认环境）")
     bridge_posix = str(SGME_BRIDGE_DIR).replace("\\", "/")
     print(f"  # 本地开发（link 模式，改代码即生效）")
     print(f'  dsh plugin --profile web add "link:{bridge_posix}"')
