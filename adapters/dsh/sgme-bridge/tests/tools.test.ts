@@ -120,42 +120,39 @@ describe('memory_search tool', () => {
   })
 })
 
-// ---------- wiki_search ----------
+// ---------- wiki_search（执行通道：GET /v1/wiki/search，含 skill 手册） ----------
 
 describe('wiki_search tool', () => {
   it('工具名和描述正确', () => {
-    const client = makeMockClient(() => null)
+    const client = { wikiSearch: vi.fn(async () => null) } as unknown as SgmeClient
     const tool = asToolLike(createWikiSearchTool(client, 5))
     expect(tool.name).toBe('wiki_search')
     expect(tool.description).toContain('知识库')
   })
 
-  it('execute 传 scopes=["wiki","wiki_pages"]', async () => {
-    const client = makeMockClient(() => ({
-      results: [{ rank: 1, source: 'wiki', content: '场景1', title: '场景标题', routes: ['bm25'] }],
-      meta: { routes: ['bm25'], rrf_k: 60 },
-    }))
+  it('execute 走执行通道调 wikiSearch（含 skill 页）', async () => {
+    const client = {
+      wikiSearch: vi.fn(async () => ({
+        results: [{ page_id: 'p1', title: '手册标题', snippet: '手册摘要', tags: ['skill'] }],
+      })),
+    } as unknown as SgmeClient
     const tool = asToolLike(createWikiSearchTool(client, 5))
     const result = (await tool.execute({ query: '测试' })) as string
 
-    expect(client.search).toHaveBeenCalledWith(expect.objectContaining({
-      scopes: ['wiki', 'wiki_pages'],
-    }))
-    expect(result).toContain('场景1')
-    expect(result).toContain('场景标题')
+    expect(client.wikiSearch).toHaveBeenCalledWith('测试', 5)
+    expect(result).toContain('手册标题')
+    expect(result).toContain('手册摘要')
   })
 
   it('execute Gateway 不可达时返回降级提示', async () => {
-    const client = makeMockClient(() => null)
+    const client = { wikiSearch: vi.fn(async () => null) } as unknown as SgmeClient
     const tool = asToolLike(createWikiSearchTool(client, 5))
     const result = (await tool.execute({ query: 'x' })) as string
     expect(result).toContain('失败')
   })
 
   it('execute 无结果时返回空提示', async () => {
-    const client = makeMockClient(() => ({
-      results: [], meta: { routes: [], rrf_k: 60 },
-    }))
+    const client = { wikiSearch: vi.fn(async () => ({ results: [] })) } as unknown as SgmeClient
     const tool = asToolLike(createWikiSearchTool(client, 5))
     const result = (await tool.execute({ query: 'x' })) as string
     expect(result).toContain('无结果')

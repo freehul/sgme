@@ -82,17 +82,20 @@ export function createMemorySearchTool(client: SgmeClient, defaultLimit: number)
 }
 
 /**
- * 创建 wiki_search 工具（检索 L2 知识库）。
+ * 创建 wiki_search 工具（检索 wiki 知识库页面，执行通道）。
  *
- * 差异化能力：dsh-mnemon 只有记忆检索，SGME 额外提供场景化知识库。
+ * 走 GET /v1/wiki/search（执行通道，exclude_skill=False），保留 skill 手册——
+ * 设计 D4/D5 语义「回忆通道不见手册，执行通道专找」。与统一搜索（/v1/search
+ * 的 wiki_pages 层滤 skill）区分开。
  */
 export function createWikiSearchTool(client: SgmeClient, defaultLimit: number) {
   return defineTool({
     name: 'wiki_search',
     description: [
-      '检索 SGME 知识库（L2 场景 + wiki_pages）。',
-      '用于查询已经过 L1.5 冲突提炼的结构化场景知识，比记忆池更精炼。',
-      '与 memory_search 互补：memory 是原始记忆，wiki 是提炼后的场景。',
+      '检索 SGME wiki 知识库页面（wiki_pages，含 skill 技能手册——执行通道，不过滤 skill）。',
+      '用于查找操作手册/技能手册/经验文档等 wiki 页面正文。',
+      '配合 wiki_pages（按分类列目录）/ wiki_page（按 page_id 拉全文）使用。',
+      '与 memory_search 互补：memory 是原始记忆，wiki_search 是 wiki 知识库页面。',
     ].join(' '),
     parameters: {
       query: {
@@ -111,20 +114,36 @@ export function createWikiSearchTool(client: SgmeClient, defaultLimit: number) {
     },
     async execute(args, _exec) {
       const a = args as unknown as SearchArgs
-      const resp = await client.search({
-        query: a.query,
-        scopes: ['wiki', 'wiki_pages'],
-        limit: a.limit ?? defaultLimit,
-      })
+      const resp = await client.wikiSearch(a.query, a.limit ?? defaultLimit)
       if (!resp) {
         return '[wiki_search 失败：SGME Gateway 不可达，稍后重试]'
       }
       if (resp.results.length === 0) {
         return `[wiki_search 无结果：query="${a.query}"]`
       }
-      return formatSearchResults(resp.results)
+      return formatWikiSearchResults(resp.results)
     },
   })
+}
+
+/** 格式化 /v1/wiki/search 结果（page_id/title/snippet/tags，tags 防御解析 JSON 字符串/数组）。 */
+function formatWikiSearchResults(
+  results: Array<{ page_id: string; title: string; snippet: string; tags?: string[] | string }>,
+): string {
+  const lines = results.map((r, i) => {
+    let tagsText = ''
+    const tags = r.tags
+    if (Array.isArray(tags)) {
+      tagsText = tags.length > 0 ? ` [${tags.join(', ')}]` : ''
+    } else if (typeof tags === 'string' && tags) {
+      try {
+        const parsed = JSON.parse(tags)
+        if (Array.isArray(parsed) && parsed.length > 0) tagsText = ` [${parsed.join(', ')}]`
+      } catch { /* 保持空 */ }
+    }
+    return `## ${i + 1}. ${r.title}${tagsText}\n${r.snippet}`
+  })
+  return lines.join('\n\n')
 }
 
 /**
