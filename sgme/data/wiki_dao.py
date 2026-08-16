@@ -189,6 +189,46 @@ def update_page_content(
     return True
 
 
+def find_active_same_title(
+    conn: sqlite3.Connection,
+    title: str,
+    category: str | None,
+) -> dict | None:
+    """查「同 title + 同 category + status='active'」的页（LIMIT 1）。
+
+    category 匹配正确处理 None：category 为 None 时用 category IS NULL，
+    否则 category=?（SQL 中 =? 无法命中 NULL 行）。命中返回 _parse_tags(dict(row))，
+    否则 None。
+    """
+    if category is not None:
+        row = conn.execute(
+            "SELECT * FROM wiki_pages WHERE title=? AND category=? AND status='active' LIMIT 1",
+            (title, category),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM wiki_pages WHERE title=? AND category IS NULL AND status='active' LIMIT 1",
+            (title,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _parse_tags(dict(row))
+
+
+def mark_superseded(conn: sqlite3.Connection, page_id: str, supersedes_by: str) -> bool:
+    """将旧页标记为已被取代：status='superseded' + supersedes=新 page_id。
+
+    Returns:
+        是否影响至少一行（rowcount > 0）。
+    """
+    cur = conn.execute(
+        "UPDATE wiki_pages SET status='superseded', supersedes=? WHERE page_id=?",
+        (supersedes_by, page_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def delete_page(conn: sqlite3.Connection, page_id: str) -> bool:
     """删除页面（级联删除关联链接）。"""
     cur = conn.execute("SELECT 1 FROM wiki_pages WHERE page_id=?", (page_id,))

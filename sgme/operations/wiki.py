@@ -145,6 +145,10 @@ def create_page(
     幂等语义：page_id 由「标题 slug + 内容哈希」决定——同 title+content 重复
     写入命中同一 page_id → upsert 更新（status=updated），不会重复建页。
 
+    supersession（方案 v0.3 §5.1）：同 title 但 content 不同（生成新 page_id）且
+    存在「同 category + 同 title」的 active 旧页时，旧页置 status='superseded' +
+    supersedes=新 page_id，返回 data 额外带 superseded 字段（旧 page_id）。
+
     索引保证：先 ``init_wiki_fts``（幂等，确保虚拟表与触发器就位）再
     ``insert_page``（FTS 触发器自动同步）——冷启动库（FTS 未初始化）写入后
     也立即可被 wiki_search 检索，不存在「有页面无索引」状态。
@@ -158,6 +162,15 @@ def create_page(
 
     page_id = _gen_page_id(title, content)
     exists = wiki_dao.get_page(conn, page_id) is not None
+    # supersession（方案 v0.3 §5.1）：存在「同 category + 同 title」的 active 旧页且
+    # content 不同（page_id 由 title+content 哈希决定，content 不同 ⇒ page_id 不同）→
+    # 新页为新版本（新 page_id），旧页置 status='superseded' + supersedes=新 page_id。
+    superseded = None
+    if not exists:
+        old_page = wiki_dao.find_active_same_title(conn, title, category)
+        if old_page is not None and old_page["page_id"] != page_id:
+            wiki_dao.mark_superseded(conn, old_page["page_id"], page_id)
+            superseded = old_page["page_id"]
     wiki_fts.init_wiki_fts(conn)  # 幂等：触发器先就位，插入即索引
     wiki_dao.insert_page(
         conn, page_id,
@@ -166,7 +179,8 @@ def create_page(
         source_type=source_type, source_url=source_url, source_file=source_file,
         description=description, author=author, status=status, supersedes=supersedes,
     )
-    return OperationResult.succeed(
-        {"page_id": page_id, "status": "updated" if exists else "created"}
-    )
+    result = {"page_id": page_id, "status": "updated" if exists else "created"}
+    if superseded is not None:
+        result["superseded"] = superseded
+    return OperationResult.succeed(result)
 
