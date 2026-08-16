@@ -1,7 +1,7 @@
-"""dsh 历史会话全量导入（适配层专用方法，对称 adapters/reasonix/import_history.py）。
+"""dsh 历史会话全量导入（适配层专用方法）。
 
 适配层职责（架构 v0.6 §8）：每个 Agent 适配器提供「会话导入」专用方法——
-不同 Agent 会话保存形式不同（Hermes state.db / Reasonix jsonl / dsh SQLite…），
+不同 Agent 会话保存形式不同（Hermes state.db / dsh SQLite…），
 格式解析在适配层收敛，SGME 只收标准 L0。
 
 dsh 会话存储：dsh v0.1 使用 SQLite 持久化 session（packages/session/），
@@ -69,7 +69,7 @@ def parse_session_file(path: Path) -> list[dict]:
 
     TODO（dsh 稳定后补全）：
     - dsh session 事件结构待实测（turn/end 事件的 payload schema）
-    - 当前实现假设 jsonl 行格式与 reasonix 类似（role/content/createdAt）
+    - 当前实现假设 jsonl 行格式与常见会话 jsonl 类似（role/content/createdAt）
     - dsh 实际格式确认后调整字段映射
     """
     msgs: list[dict] = []
@@ -93,7 +93,7 @@ def parse_session_file(path: Path) -> list[dict]:
 
 
 def to_l0(messages: list[dict]) -> str:
-    """消息列表 → SGME L0 消息块文本（与 reasonix to_l0 同款格式）。
+    """消息列表 → SGME L0 消息块文本（与 L0 格式约定一致）。
 
     格式：`# {ts} user` / `## {ts} assistant|tool`（tool 块首行 `**tool**: {name}`）。
     """

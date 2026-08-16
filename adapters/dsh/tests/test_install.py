@@ -1,6 +1,5 @@
 """install.py 测试（dsh 适配器安装引导）。
 
-对称 adapters/reasonix/tests/test_install.py：
 - AGENTS.md 生成与幂等
 - agent 注册（mock httpx）
 - key 写入 .env

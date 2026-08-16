@@ -1,6 +1,6 @@
 """install.py — DeepSeek Harness (dsh) × SGME 适配器一键安装。
 
-与 reasonix install.py 对齐的瘦安装引导（运行时逻辑全在 sgme-bridge TS 插件内，
+瘦安装引导（运行时逻辑全在 sgme-bridge TS 插件内，
 本脚本不含运行时桥接）。
 
 功能：
@@ -165,7 +165,7 @@ def register_agent() -> str | None:
 def save_key(key: str, env_file: Path | None = None) -> Path:
     """key 写入 .env（install.py 写入，sgme-bridge TS 插件运行时读）。
 
-    与 reasonix 同款：保留已有非 SGME_AGENT_KEY 行，追加新 key。
+    保留已有非 SGME_AGENT_KEY 行，追加新 key。
     env_file 缺省写 ENV_FILE（adapters/dsh/.env）；也可指定 dsh 加载路径。
     """
     env_file = env_file or ENV_FILE

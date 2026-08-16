@@ -1,6 +1,6 @@
 """import_history.py 测试（dsh 历史会话补导入）。
 
-对称 adapters/reasonix/tests/ 的测试模式：
+测试覆盖：
 - L0 格式转换（to_l0）
 - session 解析（parse_session_file）
 - 幂等去重（get_existing_session_keys）

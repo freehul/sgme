@@ -1,3 +1,0 @@
-# 密钥不进仓库（2026-08-11 安全加固：已注册 agent key 只落本地 .env）
-.env
-.export_cursor.json
