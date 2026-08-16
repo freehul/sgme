@@ -920,3 +920,19 @@ L1.5 冲突裁决、L2 场景聚合。
 **测试**：wiki 相关 5 文件 37 passed / 0 failed；pnpm build 单步生成 lib/index.d.ts（2.40 kB）+ lib/index.js（80.23 kB），lib/types 已清理。
 
 **文档**：Backlog T-84~T-85；本记录 B73
+
+### B74. 统一搜索 skill 过滤下沉 SQL（W2 回归修复，2026-08-16）
+
+**背景**：2026-08-16 批量入库 370 skill 页后暴露 W2 实现缺陷——统一搜索（/v1/search scope=wiki_pages）的 skill 过滤在 SQL LIMIT 之后（Python 层），skill 页在 FTS 中分数高、占满 top-N 窗口，知识页被挤出（实测"设计"limit=10 → 0 条，limit=50 → 3 条；修复后 10 条）。
+
+**改动**（892e98b）：
+- `sgme/wiki/fts.py`：`search_wiki_fts` 加 `exclude_skill: bool = False` 参数——FTS BM25 路径 + LIKE 兜底路径 SQL 均追加 `AND (p.tags IS NULL OR p.tags NOT LIKE '%"skill"%')`（JSON 元素精确匹配，不误伤 "skills"；NULL 兜底）。默认 False，wiki_search 执行通道不受影响。
+- `sgme/operations/search.py`：`_search_wiki_pages` 传 `exclude_skill=True`；Python 层 `_is_skill_page` 过滤保留作双保险（防双重编码脏数据，8-14 前科）。
+
+**测试**：test_wiki_filter.py 新增 2 用例（exclude_skill 参数语义 + skill 页占满 top-N 时知识页仍召回）；wiki 相关 6 文件全量通过。
+
+**数据修正**：AI弱电通-技术架构与选型定稿-2026-08-14-旧版已归档（e8d8e945）标 superseded（POST 时 W1 同 title 取代锚点自动处理，直改幂等确认）；注意 POST 幂等锚点对 title 变更敏感（page_id 含 title slug）——PATCH 改 title 后原 page_id 无法被 POST 命中，改 status 需数据库直改（PATCH 不支持 status 字段，待补）。
+
+**部署**：push GitHub/Gitee + NAS bare（/vol1/1000/git/sgme.git）→ NAS src pull → build sgme:1.0.0b1-wiki-v3 → compose 替换（数据卷不动）→ 生产验证 5/5 全绿（统一搜索恢复 / 执行通道不受影响 / 记忆正常 / chronomemo 不可见 / 旧版页不可见）。
+
+**文档**：本记录 B74
