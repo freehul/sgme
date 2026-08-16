@@ -128,10 +128,15 @@ export function apply(ctx: CordisContext, config: Config): void {
   })
   ctx.effect(() => disposeContext, 'sgme-context-injection')
 
-  // 3. /sgme 命令
+  // 3. /sgme 命令（status 自检 + 检索）
   const commandsCtx = { commands: ctx.commands }
-  registerSgmeCommand(commandsCtx, client, { searchLimit: config.searchLimit })
-  logger.info('命令已注册：/sgme')
+  registerSgmeCommand(commandsCtx, client, {
+    searchLimit: config.searchLimit,
+    baseUrl: config.baseUrl,
+    agentKeySet: !!config.agentKey,
+    adminKeySet: !!config.adminKey,
+  })
+  logger.info('命令已注册：/sgme（status 自检 + 检索）')
 
   // 4. turn/end 会话入库
   const syncCtx = {
@@ -161,5 +166,24 @@ export function apply(ctx: CordisContext, config: Config): void {
     logger.warn(`[dsg-rules] 注册失败: ${msg}`)
   })
 
-  logger.info('SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules）')
+  // 6. 启动连接探测（fire-and-forget，不阻塞插件加载；不可达给出本体安装指引）
+  // 解决「只装插件没装本体 = 空壳」的困惑：启动即明确提示，而非调用时才报错
+  void client.health().then((h) => {
+    if (h) {
+      logger.info(
+        'SGME 连接正常: v' + (h.version ?? '?') + ' llm=' + (h.llm?.model ?? '?') + ' 记忆向量=' + (h.vector?.memory_vectors ?? '?'),
+      )
+    } else {
+      logger.warn(
+        '[dsh-sgme] SGME Gateway 不可达（baseUrl=' + config.baseUrl + '）——'
+        + '本插件是桥接插件，依赖 SGME 本体（Python 服务 :9910），没有本体是空壳。'
+        + '安装指引见 README 前置条件：https://github.com/freehul/sgme',
+      )
+    }
+  }).catch((e) => {
+    const msg = e instanceof Error ? e.message : String(e)
+    logger.warn('[dsh-sgme] 启动连接探测异常: ' + msg)
+  })
+
+  logger.info('SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules + 连接探测）')
 }

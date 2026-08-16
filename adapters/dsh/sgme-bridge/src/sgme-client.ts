@@ -191,6 +191,31 @@ export interface WikiSearchResponse {
   results: WikiSearchResult[]
 }
 
+/** /v1/health 响应（健康检查；含版本/LLM/提炼水位/向量水位）。 */
+export interface HealthResponse {
+  status: string
+  version?: string
+  llm?: {
+    available?: boolean
+    provider?: string
+    model?: string
+    error?: string | null
+  }
+  refinement?: {
+    watermark_age_sec?: number
+    queue_depth?: number
+    last_refined_at?: string
+    stalled?: boolean
+    heartbeat_ok?: boolean
+  }
+  vector?: {
+    available?: boolean
+    engine?: string
+    memory_vectors?: number
+    scene_vectors?: number
+  }
+}
+
 // ---------- 客户端实现 ----------
 
 /**
@@ -216,6 +241,20 @@ export class SgmeClient {
     this.timeoutMs = config.timeoutMs ?? 5000
   }
 
+  /** SGME 健康检查（GET /v1/health，免鉴权——Bearer 可选，不强制 X-API-Key）。失败返回 null。 */
+  async health(): Promise<HealthResponse | null> {
+    const url = this.baseUrl + '/v1/health'
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs)
+      const resp = await fetch(url, { signal: ctrl.signal })
+      clearTimeout(timer)
+      if (!resp.ok) return null
+      return (await resp.json()) as HealthResponse
+    } catch {
+      return null
+    }
+  }
   /** 统一 POST 请求，返回 [data, error]。失败时 data=null。 */
   private async post<T>(
     path: string,

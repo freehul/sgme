@@ -19,16 +19,35 @@
 
 > ⚠️ **兼容性**：本插件面向 dsh `0.1.0-rc.6` 开发（`@deepseek-ai/dsh-tools` / `dsh-commands` / `cordis` 均按此版本锁定）；DSH 处于 RC 快速迭代期，用其他 dsh 版本可能遇到兼容问题，请先确认版本匹配。
 
-> ⚠️ **本插件依赖 SGME 本体，没有它插件是空壳**——装插件前先装好 SGME：
+> ⚠️ **本插件依赖 SGME 本体（Python 服务 :9910），没有它插件是空壳**——先装本体，再装插件。两种路径任选：
 
-1. **安装 SGME 拾光记忆引擎**（GitHub 仓库 [freehul/sgme](https://github.com/freehul/sgme)）：
-   ```bash
-   git clone https://github.com/freehul/sgme.git
-   cd sgme
-   # 按 SGME 仓库 README 完成安装并启动（HTTP 9910 常驻运行）
-   ```
-2. **注册 agent 拿密钥**：运行 SGME 的 `adapters/dsh/install.py`，注册 DSH agent，生成 `SGME_AGENT_KEY` / `SGME_ADMIN_KEY` 并写入 `.env`；
-3. **确认 SGME 在线**：`curl http://localhost:9910/v1/health` 返回 200 后再继续（SGME 部署在其他机器时换成对应 IP）。
+**路径 A：Docker 一键部署（推荐）**
+
+```bash
+git clone https://github.com/freehul/sgme.git
+cd sgme
+docker compose up -d                      # 首次自动构建镜像并启动（HTTP 9910）
+curl http://localhost:9910/v1/health      # 返回 {"status":"ok"} 即就绪
+```
+
+> 需要本机已装 Docker；若 SGME 部署在其他机器/NAS，跳过本机安装，直接把下面的 `SGME_BASE_URL` 指过去即可。
+
+**路径 B：Python 本地开发**
+
+```bash
+git clone https://github.com/freehul/sgme.git
+cd sgme
+python -m venv .venv                      # 需 Python 3.11+
+.venv\Scripts\activate                # Windows；Linux/macOS: source .venv/bin/activate
+pip install -e .
+cp config/.env.example .env               # 填入 DEEPSEEK_API_KEY / VOLC_API_KEY 等密钥
+python -m sgme                            # 启动服务（HTTP 9910 常驻）
+curl http://localhost:9910/v1/health
+```
+
+**注册 agent 拿密钥**（两条路径都需要）：本体启动后运行 `adapters/dsh/install.py`，注册 DSH agent，把 `SGME_AGENT_KEY` / `SGME_ADMIN_KEY` 写入 `.env`。
+
+**服务地址**：插件 `baseUrl` 由环境变量 `SGME_BASE_URL` 注入（缺省指向 NAS `192.168.10.10:9910`，面向多 agent 共享场景）。本地部署时设 `SGME_BASE_URL=http://127.0.0.1:9910` 即可，无需改代码。
 
 ## 安装
 
@@ -36,6 +55,24 @@
 # 安装到 profile（dsh plugin 转发 pnpm）
 dsh plugin --profile <你的profile> add dsh-sgme
 ```
+
+## 安装后验证（三步自检）
+
+1. **确认插件已挂载**：`dsh --profile <你的profile> --dump-config`，输出应含 `dsh-sgme`；
+2. **一条命令自检**：会话内输入 `/sgme`（或 `/sgme status`）——显示 SGME 连接状态、版本、LLM、记忆水位；不可达时直接给出本体安装指引；
+3. **首次对话观察**：对话开始会自动注入画像与相关记忆；可先 `/sgme 试试` 确认检索链路。
+
+> 冷启动提示：新装后记忆池是空的，前几轮对话后记忆才开始积累；`wiki_search` 可立即查到 SGME 自带的操作手册。
+
+## 故障排查
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `/sgme status` 显示不可达 | SGME 本体未启动或地址不对 | 按「前置条件」装好本体，确认 `curl /v1/health` 返回 200；本地部署设 `SGME_BASE_URL=http://127.0.0.1:9910` |
+| 401 / key 无效 | agent key 未注册或过期 | 运行 `adapters/dsh/install.py` 重新注册 |
+| 插件加载报版本不兼容 | dsh 版本与插件锁定版本不符 | 本插件面向 dsh `0.1.0-rc.6`，升级 dsh 前先确认兼容 |
+| 注入/检索超时或异常走外网 | 代理劫持 localhost | 插件 fetch 显式禁用代理；检查系统代理是否拦截 127.0.0.1 |
+| 日志去哪看 | — | 插件日志在 dsh stderr；SGME 日志在 `logs/`（本机）或 `docker logs sgme`（容器） |
 
 ## 配置
 

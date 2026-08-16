@@ -17,6 +17,12 @@ import type { SgmeClient } from './sgme-client.js'
 /** /sgme 命令配置。 */
 export interface CommandConfig {
   searchLimit: number
+  /** 状态报告用：SGME 地址（缺省显示未知）。 */
+  baseUrl?: string
+  /** 状态报告用：agent key 是否已配置。 */
+  agentKeySet?: boolean
+  /** 状态报告用：admin key 是否已配置。 */
+  adminKeySet?: boolean
 }
 
 /** dsh 命令结果（对齐 dsh-commands CommandResult）。 */
@@ -31,6 +37,43 @@ export interface CommandInvocation {
 }
 
 /**
+ * 构建 /sgme status 状态报告（连接自检：health + key 配置 + 记忆水位）。
+ *
+ * 不可达时给出桥接插件定位与本体安装指引（防止「装了插件没记忆功能」困惑）。
+ */
+async function buildStatusReport(
+  client: SgmeClient,
+  config: CommandConfig,
+): Promise<CommandResult> {
+  const health = await client.health()
+  if (!health) {
+    return {
+      kind: 'error',
+      text: [
+        '[/sgme status] SGME Gateway 不可达',
+        '',
+        'baseUrl: ' + (config.baseUrl ?? '(未知)'),
+        'agent key: ' + (config.agentKeySet ? '已配置' : '未配置'),
+        'admin key: ' + (config.adminKeySet ? '已配置' : '未配置'),
+        '',
+        '本插件是桥接插件，依赖 SGME 本体（Python 服务 :9910）才能工作，没有本体是空壳。',
+        '安装指引见插件 README「前置条件」：https://github.com/freehul/sgme',
+      ].join('\n'),
+    }
+  }
+  const lines = [
+    '[/sgme status]',
+    '- 连接: 正常' + (health.version ? '（v' + health.version + '）' : ''),
+    '- baseUrl: ' + (config.baseUrl ?? '?'),
+    '- agent key: ' + (config.agentKeySet ? '已配置' : '未配置'),
+    '- LLM: ' + (health.llm?.model ?? '未知') + '（' + (health.llm?.available ? '可用' : '不可用') + '）',
+    '- 提炼: 水位 ' + (health.refinement?.watermark_age_sec ?? '?') + 's / 队列 ' + (health.refinement?.queue_depth ?? '?') + (health.refinement?.stalled ? '（停摆!）' : ''),
+    '- 记忆向量: ' + (health.vector?.memory_vectors ?? '?'),
+  ]
+  return { kind: 'success', text: lines.join('\n') }
+}
+
+/**
  * 执行 /sgme 检索，返回 dsh CommandResult。
  *
  * @param query 用户输入的检索关键词（/sgme 后的参数）
@@ -41,16 +84,9 @@ export async function executeSgmeCommand(
   query: string,
 ): Promise<CommandResult> {
   const trimmed = query.trim()
-  if (!trimmed) {
-    return {
-      kind: 'error',
-      text: [
-        '用法：/sgme <关键词>',
-        '',
-        '检索 SGME 记忆池 + 知识库，查询用户/项目的历史事实与场景知识。',
-        '示例：/sgme 之前提过的项目',
-      ].join('\n'),
-    }
+  // 无参数或 status → 连接状态报告（安装后自检：一条命令确认插件是否就绪）
+  if (!trimmed || trimmed === 'status') {
+    return buildStatusReport(client, config)
   }
 
   const resp = await client.search({
@@ -99,7 +135,7 @@ export function registerSgmeCommand(
 ): void {
   ctx.commands.register({
     name: 'sgme',
-    description: '检索 SGME 记忆 + 知识库（query 为关键词）',
+    description: 'SGME 状态/检索（无参数或 status = 连接自检；<关键词> = 记忆+知识库检索）',
     async handler(invocation) {
       return executeSgmeCommand(client, config, invocation.rawInput)
     },

@@ -27,6 +27,20 @@ var SgmeClient = class {
 		this.agentId = config.agentId;
 		this.timeoutMs = config.timeoutMs ?? 5e3;
 	}
+	/** SGME 健康检查（GET /v1/health，免鉴权——Bearer 可选，不强制 X-API-Key）。失败返回 null。 */
+	async health() {
+		const url = this.baseUrl + "/v1/health";
+		try {
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+			const resp = await fetch(url, { signal: ctrl.signal });
+			clearTimeout(timer);
+			if (!resp.ok) return null;
+			return await resp.json();
+		} catch {
+			return null;
+		}
+	}
 	/** 统一 POST 请求，返回 [data, error]。失败时 data=null。 */
 	async post(path, body, keyType) {
 		const key = keyType === "agent" ? this.agentKey : this.adminKey;
@@ -1765,21 +1779,46 @@ function formatRelatedMemories(results) {
 //#endregion
 //#region src/commands.ts
 /**
+* 构建 /sgme status 状态报告（连接自检：health + key 配置 + 记忆水位）。
+*
+* 不可达时给出桥接插件定位与本体安装指引（防止「装了插件没记忆功能」困惑）。
+*/
+async function buildStatusReport(client, config) {
+	const health = await client.health();
+	if (!health) return {
+		kind: "error",
+		text: [
+			"[/sgme status] SGME Gateway 不可达",
+			"",
+			"baseUrl: " + (config.baseUrl ?? "(未知)"),
+			"agent key: " + (config.agentKeySet ? "已配置" : "未配置"),
+			"admin key: " + (config.adminKeySet ? "已配置" : "未配置"),
+			"",
+			"本插件是桥接插件，依赖 SGME 本体（Python 服务 :9910）才能工作，没有本体是空壳。",
+			"安装指引见插件 README「前置条件」：https://github.com/freehul/sgme"
+		].join("\n")
+	};
+	return {
+		kind: "success",
+		text: [
+			"[/sgme status]",
+			"- 连接: 正常" + (health.version ? "（v" + health.version + "）" : ""),
+			"- baseUrl: " + (config.baseUrl ?? "?"),
+			"- agent key: " + (config.agentKeySet ? "已配置" : "未配置"),
+			"- LLM: " + (health.llm?.model ?? "未知") + "（" + (health.llm?.available ? "可用" : "不可用") + "）",
+			"- 提炼: 水位 " + (health.refinement?.watermark_age_sec ?? "?") + "s / 队列 " + (health.refinement?.queue_depth ?? "?") + (health.refinement?.stalled ? "（停摆!）" : ""),
+			"- 记忆向量: " + (health.vector?.memory_vectors ?? "?")
+		].join("\n")
+	};
+}
+/**
 * 执行 /sgme 检索，返回 dsh CommandResult。
 *
 * @param query 用户输入的检索关键词（/sgme 后的参数）
 */
 async function executeSgmeCommand(client, config, query) {
 	const trimmed = query.trim();
-	if (!trimmed) return {
-		kind: "error",
-		text: [
-			"用法：/sgme <关键词>",
-			"",
-			"检索 SGME 记忆池 + 知识库，查询用户/项目的历史事实与场景知识。",
-			"示例：/sgme 之前提过的项目"
-		].join("\n")
-	};
+	if (!trimmed || trimmed === "status") return buildStatusReport(client, config);
 	const resp = await client.search({
 		query: trimmed,
 		scopes: [
@@ -1819,7 +1858,7 @@ async function executeSgmeCommand(client, config, query) {
 function registerSgmeCommand(ctx, client, config) {
 	ctx.commands.register({
 		name: "sgme",
-		description: "检索 SGME 记忆 + 知识库（query 为关键词）",
+		description: "SGME 状态/检索（无参数或 status = 连接自检；<关键词> = 记忆+知识库检索）",
 		async handler(invocation) {
 			return executeSgmeCommand(client, config, invocation.rawInput);
 		}
@@ -2157,8 +2196,13 @@ function apply(ctx, config) {
 		...projectHint ? { projectHint } : {}
 	});
 	ctx.effect(() => disposeContext, "sgme-context-injection");
-	registerSgmeCommand({ commands: ctx.commands }, client, { searchLimit: config.searchLimit });
-	logger.info("命令已注册：/sgme");
+	registerSgmeCommand({ commands: ctx.commands }, client, {
+		searchLimit: config.searchLimit,
+		baseUrl: config.baseUrl,
+		agentKeySet: !!config.agentKey,
+		adminKeySet: !!config.adminKey
+	});
+	logger.info("命令已注册：/sgme（status 自检 + 检索）");
 	const disposeSync = registerSessionSync({
 		on: ctx.on,
 		logger: {
@@ -2186,7 +2230,14 @@ function apply(ctx, config) {
 		const msg = e instanceof Error ? e.message : String(e);
 		logger.warn(`[dsg-rules] 注册失败: ${msg}`);
 	});
-	logger.info("SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules）");
+	client.health().then((h) => {
+		if (h) logger.info("SGME 连接正常: v" + (h.version ?? "?") + " llm=" + (h.llm?.model ?? "?") + " 记忆向量=" + (h.vector?.memory_vectors ?? "?"));
+		else logger.warn("[dsh-sgme] SGME Gateway 不可达（baseUrl=" + config.baseUrl + "）——本插件是桥接插件，依赖 SGME 本体（Python 服务 :9910），没有本体是空壳。安装指引见 README 前置条件：https://github.com/freehul/sgme");
+	}).catch((e) => {
+		const msg = e instanceof Error ? e.message : String(e);
+		logger.warn("[dsh-sgme] 启动连接探测异常: " + msg);
+	});
+	logger.info("SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules + 连接探测）");
 }
 //#endregion
 export { Config, apply, inject, name };
