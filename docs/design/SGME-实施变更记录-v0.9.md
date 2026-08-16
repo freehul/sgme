@@ -936,3 +936,20 @@ L1.5 冲突裁决、L2 场景聚合。
 **部署**：push GitHub/Gitee + NAS bare（/vol1/1000/git/sgme.git）→ NAS src pull → build sgme:1.0.0b1-wiki-v3 → compose 替换（数据卷不动）→ 生产验证 5/5 全绿（统一搜索恢复 / 执行通道不受影响 / 记忆正常 / chronomemo 不可见 / 旧版页不可见）。
 
 **文档**：本记录 B74
+
+### B75. 接入契约 + 适配器收敛——官方只维护 hermes/dsh，其余走 MCP/自研（2026-08-16）
+
+**背景**：产品化定位讨论——SGME 的「新手」是接入的 Agent，不是人；人只丢 GitHub 链接让 Agent 自助装。查证发现三线接入（已有适配器 / MCP / HTTP）里，已有适配器参差（trae/workbuddy 半成品、reasonix 缺统一标准），HTTP 自研线支撑最薄（接口契约埋在 2276 行架构 §22，无独立契约页/骨架/验收标准）。用户定案：①删除 reasonix/trae/workbuddy 三适配器；②官方只维护 hermes+dsh；③接口契约单独成文档给 agent 看。
+
+**改动**：
+- 删除 `adapters/reasonix/`、`adapters/trae/`、`adapters/workbuddy/`（git rm，含各自 tests/）+ 连带 `tests/test_reasonix_adapter.py`
+- 新增 `docs/design/SGME-接入契约-v0.1.md`（三线决策树 + 准入表 + 官方质量标准 + 指向接口契约）
+- 新增 `docs/design/SGME-接口契约-v0.1.md`（自包含 HTTP 契约：端口/鉴权/错误结构/核心端点/L0 格式/最小动作集/验收标准）
+- 同步引用：README.zh-CN / README（接入文案 + 放置位置表去 Trae/Reasonix）、docs/agent-onboarding.md（hooks 型例子去 Reasonix、登记段改官方适配器）、架构 v0.9 §3.2/§5/§14.3（adapters 表 + Agent 侧 + 双层暴露）、adapters/dsh（README 对比表 + install.py/import_history.py 注释去 reasonix 指向）
+- `adapters/hermes/README.md` 补「验证」+「常见坑」两节，对齐 dsh 质量标准
+
+**注意**：reasonix 用户（本机 + 笔记本）删适配器后降级 MCP 自律型（会话收尾主动 refine + batch_scan 兜底），不再有 SessionStart/End 自动捕获；如需恢复 hooks 深度集成，按《接入契约 §4》自研。
+
+**测试**：删除后 grep 确认无断链 import（tests/ 无 `from adapters.reasonix import` 残留）；全量 pytest 待跑。
+
+**文档**：本记录 B75

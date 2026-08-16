@@ -40,7 +40,7 @@ Everything your AI says is backed by evidence: trace any persona statement all t
 
 ### Shared memory across agents — one brain, many bodies
 
-Hermes, Trae, Reasonix... all your AIs share the same memory brain. What you discuss in one place is automatically known in another; AIs on your desktop, laptop, and NAS share the same memory. No more siloed conversations.
+Hermes, DSH... all your AIs share the same memory brain. What you discuss in one place is automatically known in another; AIs on your desktop, laptop, and NAS share the same memory. No more siloed conversations.
 
 <img src="assets/selling-point-02-shared-memory.png" alt="Shared memory across agents" width="800"/>
 
@@ -184,7 +184,7 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 | WorkBuddy | SOUL.md (identity + rules) |
 | Claude Code | CLAUDE.md |
 | DeepSeek Harness (DSH) | AGENTS.md (auto-loaded per project) |
-| Generic / others (incl. Trae, Reasonix) | AGENTS.md (auto-loaded per project) |
+| Generic / others (via MCP) | AGENTS.md (auto-loaded per project) |
 
 ## Deployment (Windows Service)
 

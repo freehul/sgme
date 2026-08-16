@@ -63,7 +63,7 @@ SGME 是单用户 Agent 记忆引擎 Server：把 Agent 会话提炼为标签化
 | 模块 | 职责 | 开关 |
 |------|------|------|
 | **wiki/** | 知识库管理（wiki.db + 实时渲染 + 按需导出） | `wiki.enabled` |
-| **adapters/** | Hermes/Reasonix 等 Agent 适配器 | 各 adapter 独立 install.py |
+| **adapters/** | 官方 Agent 适配器（hermes / dsh） | 各 adapter 独立 install.py |
 | **skills-hub/** | 用户自有技能仓库（map/copy 双模式） | `skills_hub.enabled` |
 | **mcp_server.py** | MCP 协议入口（无适配 Agent 的通用接入） | `SGME_MCP_DISABLED=1` |
 
@@ -99,7 +99,7 @@ SCSM 是 SGME 的外部调度方，经 HTTP 调用 SGME 端点（`/v1/append`、
 
 ## 5. Agent 侧
 
-Agent（Hermes / Reasonix 等）经 `sgme/adapters/` 适配器接入：深度集成的 Agent 走 HTTP `/v1/*`（:9910），无适配的 Agent 走 MCP（:9913）。Agent 会话经 `POST /v1/append` 沉淀为 L0 原始文件，经 `POST /v1/inject` 获取画像，经 `POST /v1/search` 检索记忆。多 Agent 以 `agent_id` 区分（仅溯源，不做隔离）。
+Agent 接入分两路：有官方适配器的（Hermes / DSH）经 `sgme/adapters/` 深度集成（HTTP `/v1/*` :9910），其余 Agent 走 MCP（:9913）通用接入。Agent 会话经 `POST /v1/append` 沉淀为 L0 原始文件，经 `POST /v1/inject` 获取画像，经 `POST /v1/search` 检索记忆。多 Agent 以 `agent_id` 区分（仅溯源，不做隔离）。
 
 ---
 
@@ -496,7 +496,7 @@ providers:
 ### 14.3 双层暴露
 
 ```
-有深度集成的 Agent（Hermes plugin / Reasonix hook）
+有深度集成的 Agent（Hermes plugin / DSH 插件）
   → HTTP /v1/* (9910)
   → 性能最优，零协议开销
 
