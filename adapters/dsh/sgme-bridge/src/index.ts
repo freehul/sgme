@@ -62,6 +62,8 @@ export interface Config {
   rulesPath?: string               // DSH 用户级规则文件（缺省 ~/.dsh/dsg-rules/rules.md）
   syncOnTurnEnd: boolean
   turnBatchSize: number
+  evolveEnabled?: boolean          // W4 自进化自动触发（默认 true）
+  evolveMinRounds?: number         // 费用门禁：会话消息块下限（默认 5）
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -76,6 +78,8 @@ export const Config: Schema<Config> = Schema.object({
   rulesPath: Schema.string().default('').description('DSH 用户级规则文件（缺省 ~/.dsh/dsg-rules/rules.md，注册为 dsg:rules system section）'),
   syncOnTurnEnd: Schema.boolean().default(true).description('是否在 turn/end 时同步入库'),
   turnBatchSize: Schema.number().default(1).description('入库攒批大小（v1=1 即每 turn 即 append）'),
+  evolveEnabled: Schema.boolean().default(true).description('自进化自动触发（W4：turn/end 后调 /v1/wiki/evolve/trigger，evolve 侧幂等+费用门禁兜底）'),
+  evolveMinRounds: Schema.number().default(5).description('自进化费用门禁：会话消息块下限'),
 })
 
 /**
@@ -138,6 +142,8 @@ export function apply(ctx: CordisContext, config: Config): void {
     agentId: config.agentId,
     syncOnTurnEnd: config.syncOnTurnEnd,
     turnBatchSize: config.turnBatchSize,
+    ...(config.evolveEnabled !== undefined ? { evolveEnabled: config.evolveEnabled } : {}),
+    ...(config.evolveMinRounds !== undefined ? { evolveMinRounds: config.evolveMinRounds } : {}),
   })
   ctx.effect(() => disposeSync, 'sgme-session-sync')
 

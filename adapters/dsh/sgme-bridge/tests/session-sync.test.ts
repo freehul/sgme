@@ -38,6 +38,7 @@ function makeMockCtx(): MockCtx & { handlerRef: { current: ((...args: unknown[])
 function makeMockClient(
   appendImpl?: () => AppendResponse | null,
   refineImpl?: () => RefineTriggerResponse | null,
+  evolveImpl?: (() => Promise<{ status: string }>) | (() => { status: string }) | null,
 ): SgmeClient {
   return {
     append: vi.fn(appendImpl ?? (() => ({
@@ -46,6 +47,7 @@ function makeMockClient(
     triggerRefine: vi.fn(refineImpl ?? (() => ({
       triggered: 'async', file_id: 'batch', status: 'queued', note: '',
     }))) as unknown as SgmeClient['triggerRefine'],
+    evolveTrigger: vi.fn(evolveImpl ?? (() => ({ status: 'done' }))) as unknown as SgmeClient['evolveTrigger'],
   } as unknown as SgmeClient
 }
 
@@ -357,5 +359,39 @@ describe('registerSessionSync', () => {
     expect(client.append).toHaveBeenCalledTimes(1)
     const callArgs = (client.append as ReturnType<typeof vi.fn>).mock.calls[0]![0] as { content: string }
     expect(callArgs.content).toContain('有效消息')
+  })
+})
+
+// ---------- 自进化触发（W4） ----------
+
+describe('session-sync 自进化触发', () => {
+  it('turn/end 同步后触发 evolve（默认开启，带 session_key + min_rounds）', async () => {
+    const evolve = vi.fn(async () => ({ status: 'done' }))
+    const client = makeMockClient(undefined, undefined, evolve) as unknown as SgmeClient
+    const ctx = makeMockCtx()
+    registerSessionSync(ctx as unknown as Parameters<typeof registerSessionSync>[0], client, {
+      agentId: 'dsh', syncOnTurnEnd: true, turnBatchSize: 1,
+      evolveEnabled: true, evolveMinRounds: 5,
+    })
+    ctx.handlerRef.current?.(
+      ev('user/message', 1000, { content: [{ type: 'text', text: '第一条' }] }),
+    )
+    ctx.handlerRef.current?.(ev('turn/end', 2000, { turn: 1 }))
+    await flushMicrotasks()
+    expect(evolve).toHaveBeenCalledWith('dsh-1000', 5)
+  })
+
+  it('evolveEnabled=false 时不触发', async () => {
+    const evolve = vi.fn(async () => ({ status: 'done' }))
+    const client = makeMockClient(undefined, undefined, evolve) as unknown as SgmeClient
+    const ctx = makeMockCtx()
+    registerSessionSync(ctx as unknown as Parameters<typeof registerSessionSync>[0], client, {
+      agentId: 'dsh', syncOnTurnEnd: true, turnBatchSize: 1,
+      evolveEnabled: false,
+    })
+    ctx.handlerRef.current?.(ev('user/message', 1000, { content: [{ type: 'text', text: 'x' }] }))
+    ctx.handlerRef.current?.(ev('turn/end', 2000, { turn: 1 }))
+    await flushMicrotasks()
+    expect(evolve).not.toHaveBeenCalled()
   })
 })

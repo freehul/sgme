@@ -151,6 +151,18 @@ var SgmeClient = class {
 		}
 		return data;
 	}
+	/** 自进化触发（POST /v1/wiki/evolve/trigger，Agent Key；W4 自动闭环）。失败返回 null。 */
+	async evolveTrigger(sessionKey, minRounds = 5) {
+		const [data, err] = await this.post("/v1/wiki/evolve/trigger", {
+			session_key: sessionKey ?? null,
+			min_rounds: minRounds
+		}, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] evolveTrigger failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
 	/**
 	* 原子认领信号（POST /v1/admin/care/signals/{id}/consume）。
 	* 返回 true=本次认领成功 / false=已被他人消费（409）或失败 / null=网关不可达。
@@ -1866,6 +1878,11 @@ async function syncTurnToSgme(ctx, client, config, payload) {
 		const refineResp = await client.triggerRefine({ limit: 50 });
 		if (!refineResp) ctx.logger.warn("[SGME session-sync] 提炼触发失败（数据已在 L0 等待，可稍后手动触发）");
 		else ctx.logger.info(`[SGME session-sync] 提炼已触发：${refineResp.file_id} ${refineResp.status}`);
+		if (config.evolveEnabled !== false) {
+			const evolveResp = await client.evolveTrigger(sessionKey, config.evolveMinRounds ?? 5);
+			if (!evolveResp) ctx.logger.warn(`[SGME session-sync] 自进化触发失败：session=${sessionKey}`);
+			else ctx.logger.info(`[SGME session-sync] 自进化已触发：${sessionKey} status=${evolveResp.status}`);
+		}
 	} catch (e) {
 		ctx.logger.warn(`[SGME session-sync] 同步异常：${e instanceof Error ? e.message : String(e)}`);
 	}
@@ -1986,7 +2003,9 @@ const Config = Schema.object({
 	projectHint: Schema.string().default("").description("项目名提示（用于相关记忆检索，可空；缺省按会话 cwd 目录名推断）"),
 	rulesPath: Schema.string().default("").description("DSH 用户级规则文件（缺省 ~/.dsh/dsg-rules/rules.md，注册为 dsg:rules system section）"),
 	syncOnTurnEnd: Schema.boolean().default(true).description("是否在 turn/end 时同步入库"),
-	turnBatchSize: Schema.number().default(1).description("入库攒批大小（v1=1 即每 turn 即 append）")
+	turnBatchSize: Schema.number().default(1).description("入库攒批大小（v1=1 即每 turn 即 append）"),
+	evolveEnabled: Schema.boolean().default(true).description("自进化自动触发（W4：turn/end 后调 /v1/wiki/evolve/trigger，evolve 侧幂等+费用门禁兜底）"),
+	evolveMinRounds: Schema.number().default(5).description("自进化费用门禁：会话消息块下限")
 });
 /**
 * 插件入口（Cordis apply）。
@@ -2037,7 +2056,9 @@ function apply(ctx, config) {
 	}, client, {
 		agentId: config.agentId,
 		syncOnTurnEnd: config.syncOnTurnEnd,
-		turnBatchSize: config.turnBatchSize
+		turnBatchSize: config.turnBatchSize,
+		...config.evolveEnabled !== void 0 ? { evolveEnabled: config.evolveEnabled } : {},
+		...config.evolveMinRounds !== void 0 ? { evolveMinRounds: config.evolveMinRounds } : {}
 	});
 	ctx.effect(() => disposeSync, "sgme-session-sync");
 	const rulesPath = config.rulesPath || defaultRulesPath();

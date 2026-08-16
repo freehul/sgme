@@ -60,6 +60,8 @@ interface Config {
   rulesPath?: string;
   syncOnTurnEnd: boolean;
   turnBatchSize: number;
+  evolveEnabled?: boolean;
+  evolveMinRounds?: number;
 }
 declare const Config: Schema<Config>;
 /**
