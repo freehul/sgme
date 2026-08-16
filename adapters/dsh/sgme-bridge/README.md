@@ -42,7 +42,7 @@ dsh plugin --profile <你的profile> add dsh-sgme
 `cordis.patch.yml` 默认值：
 
 ```yaml
-baseUrl: http://localhost:9910
+baseUrl: process.env.SGME_BASE_URL ?? 'http://192.168.10.10:9910'   # 环境变量注入，缺省指向 NAS
 agentKey: process.env.SGME_AGENT_KEY   # 环境变量注入，密钥不落盘
 adminKey: process.env.SGME_ADMIN_KEY
 agentId: dsh
@@ -50,8 +50,8 @@ injectMode: daily
 syncOnTurnEnd: true
 ```
 
-- 密钥通过环境变量注入（符合 SGME 密钥不落盘铁律）；
-- 生产环境请用 SGME 的 `adapters/dsh/install.py` 注册 agent 后覆盖 dev key。
+- `baseUrl` 与密钥均通过环境变量注入（符合 SGME 密钥不落盘铁律）；`SGME_BASE_URL` 缺省指向 NAS（192.168.10.10:9910），SGME 部署在其他机器时改环境变量即可，无需改代码；
+- 生产环境请用 SGME 的 `adapters/dsh/install.py` 注册 agent 后覆盖 dev key（install.py 已把 `SGME_BASE_URL` 一并写入 `.env`）。
 
 ## 用法
 
