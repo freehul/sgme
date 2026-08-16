@@ -40,9 +40,13 @@ def _load_prompt(stage: str) -> str:
     return PromptStore().get(stage).text
 
 
-def _llm_call(cfg: dict, prompt: str) -> str:
-    """降级链调 LLM（chain=refinement，与提炼同链）。返回文本。"""
-    text, _provider, _usage = llm_chain.call_with_fallback(cfg, prompt, chain_name="refinement")
+def _llm_call(llm_cfg: dict, prompt: str) -> str:
+    """降级链调 LLM（chain=refinement，与提炼同链）。返回文本。
+
+    llm_cfg 为 llm 段（含顶层 chains/rules，即 load_config()["llm"]），
+    与 tier0/l2/care 各管线传 cfg["llm"] 的约定一致。
+    """
+    text, _provider, _usage = llm_chain.call_with_fallback(llm_cfg, prompt, chain_name="refinement")
     return text
 
 
@@ -133,7 +137,7 @@ def _apply_entry(
 def evolve_trigger(
     conn_wiki: sqlite3.Connection,
     conn_session: sqlite3.Connection,
-    cfg: dict,
+    llm_cfg: dict,
     session_key: str | None = None,
     limit: int = 5,
     min_rounds: int = 5,
@@ -183,7 +187,7 @@ def evolve_trigger(
         try:
             prompt = _load_prompt("evolve_extraction")
             raw = _llm_call(
-                cfg, prompt + "\n\n<session>\n" + content[:6000] + "\n</session>"
+                llm_cfg, prompt + "\n\n<session>\n" + content[:6000] + "\n</session>"
             )
             entries = _parse_entries(raw)
         except Exception as e:
