@@ -6,9 +6,6 @@
 sgme-bridge/node_modules/
 sgme-bridge/.tsbuildinfo
 # 注：lib/ 构建产物提交（dsh-mnemon 模式，运行时不要求宿主装 pnpm）
-# codegraph-bridge（dsh-codegraph 插件）
-codegraph-bridge/node_modules/
-codegraph-bridge/.tsbuildinfo
-
+# codegraph-bridge 已迁出独立仓库 D:/Projects/dsh-codegraph-bridge（2026-08-17）
 # DSH 用户级规则（~/.dsh/dsg-rules/ 属用户目录，不随插件分发）
 dsg-rules/
