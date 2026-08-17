@@ -163,15 +163,15 @@ def test_inject_mode_ok_tier0_absent(conns, cfg, summary_path):
 
 def test_inject_custom_filter_ok(conns, cfg, summary_path):
     """custom_filter 分支：过滤正确，stats.mode="custom"，tier0 字段齐全。"""
-    # Arrange：projects 与 identity 各一条
+    # Arrange：goals 与 identity 各一条
     mem_conn, _session_conn, _ = conns
-    _insert(mem_conn, "项目 A 进行中", dims=["projects"], time_velocity="dynamic", ttl_days=90)
+    _insert(mem_conn, "目标 A 进行中", dims=["goals"], time_velocity="dynamic", ttl_days=90)
     _insert(mem_conn, "我是测试用户", dims=["identity"])
     tier0_mod.save_summary("画像摘要：测试用户", path=summary_path)
 
-    # Act：只查 projects
+    # Act：只查 goals
     res = inject_operation(
-        mem_conn, cfg, custom_filter={"dimensions": ["projects"]},
+        mem_conn, cfg, custom_filter={"dimensions": ["goals"]},
     )
 
     # Assert
@@ -180,8 +180,8 @@ def test_inject_custom_filter_ok(conns, cfg, summary_path):
     assert data["stats"]["mode"] == "custom"
     assert data["stats"]["queries"] == 1
     assert data["tier0"] == {"present": True, "content": "画像摘要：测试用户"}
-    # 自定义 section 只含 projects 记忆
-    assert "项目 A 进行中" in _block_items(data["blocks"])
+    # 自定义 section 只含 goals 记忆
+    assert "目标 A 进行中" in _block_items(data["blocks"])
     assert "我是测试用户" not in _block_items(data["blocks"])
     # 兼容 memory_types 别名
     res2 = inject_operation(
@@ -309,7 +309,7 @@ def test_inject_empty_custom_filter_has_note(conns, cfg, summary_path):
     mem_conn, _session_conn, _ = conns
 
     # Act
-    res = inject_operation(mem_conn, cfg, custom_filter={"dimensions": ["projects"]})
+    res = inject_operation(mem_conn, cfg, custom_filter={"dimensions": ["goals"]})
 
     # Assert
     assert res.ok is True

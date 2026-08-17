@@ -333,15 +333,10 @@ onMounted(loadAll)
 <style scoped>
 .monitor-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr; /* 2026-08-18 用户定：系统健康与 Dream 日报上下显示 */
   gap: 16px;
   margin-bottom: 16px;
   align-items: start;
-}
-@media (max-width: 900px) {
-  .monitor-grid {
-    grid-template-columns: 1fr;
-  }
 }
 .tabs-line {
   display: flex;

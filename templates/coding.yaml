@@ -1,18 +1,12 @@
 name: coding
 display_name: 编码模式
-memory_types: [projects, tech_stack, style, skills]
+memory_types: [tech_stack, style, skills]  # 2026-08-18：projects 维度移除（项目池专用）
 token_budget: 600
 sections:
   - title: "🧩 技术栈与踩坑"
     query:
       dimensions: [tech_stack]
       priority_min: 70
-      limit: 5
-  - title: "📁 进行中项目"
-    query:
-      dimensions: [projects]
-      ttl_filter: true
-      sort: updated_at DESC
       limit: 5
   - title: "⚙️ 工作方式"
     query:

@@ -1059,3 +1059,24 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：新部署/重建容器自动有内置角色；现有容器已手动物化（/data/roles 持久）。
 
 **文档**：本记录 B80；wiki 操作手册踩坑记录追加。
+
+---
+
+
+### B81. WebUI 五问题修复 + 维度裁剪 + 画像去重 + 待办主动登记（2026-08-18）
+
+**背景**：用户反馈 WebUI 5 问题（统一检索无结果 / Dashboard 布局 / 画像重复 / 维度冗余 / 会话原文）。
+
+**改动**：
+1. **统一检索修复**（前端 pickKey）：AGENT_KEY_PATHS 端点（/v1/search 等）Agent Key 为空时回退 Admin Key（后端 is_agent 接受 admin key）——用户只填一个 key 也能检索（根因：前端只读 agent key，用户只填了 admin key → search 无 key 403）
+2. **Dashboard 布局**：系统健康与 Dream 日报由并排改上下显示（用户定）
+3. **画像重复**：a) 生产记忆去重（46 组 166 条 → 归档 120 条，memory_archive 原件保留）b) inject 跨 section 去重升级：memory_id + content 前 50 字前缀判重（L1 提炼相似内容兜底）
+4. **维度裁剪**（用户定：项目池/待办池为专用落地点）：registry/dimensions.yaml 移除 projects/tasks + aliases.yaml 同步清理 + templates（work/coding/full）去 projects/tasks section 与 memory_types + 测试维度引用修正；**存量标签保留**（memory_tags 历史数据不删，仅不再注入/筛选/展示）
+5. **待办主动登记强化**：AGENTS.md 三池段 + agent_onboarding 模板新增指引——会话中遇到待办主动 demand_create（title + project_id），完成标记 done（现状：83 条待办全来自 Backlog 导入，agent 未主动创建）
+6. **场景关联记忆**（前序 99f58c0 已含）：scene_dao related_memories + 前端详情列表
+
+**测试**：相关模块 51 passed（inject/key_missing/health/vector_connectivity）；build 通过
+
+**运维影响**：维度移除后存量 projects/tasks 标签不再注入（历史保留）；生产已跑记忆去重（120 归档）；待办需 agent 按新指引主动登记
+
+**文档**：本记录 B81；AGENTS.md 三池/约束 3/4 更新

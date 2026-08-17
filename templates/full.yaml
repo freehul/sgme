@@ -1,6 +1,6 @@
 name: full
 display_name: 全量模式
-memory_types: [identity, family, social, values, skills, tech_stack, preferences, habits, environment, style, focus, projects, goals, tasks, status]
+memory_types: [identity, family, social, values, skills, tech_stack, preferences, habits, environment, style, focus, goals, status]  # 2026-08-18：projects/tasks 维度移除
 token_budget: 1200
 sections:
   - title: "👤 用户画像"
@@ -20,7 +20,7 @@ sections:
       limit: 8
   - title: "🔥 当前状态"
     query:
-      dimensions: [focus, projects, goals, tasks, status]
+      dimensions: [focus, goals, status]  # 2026-08-18：projects/tasks 移除
       match: any
       ttl_filter: true
       sort: updated_at DESC

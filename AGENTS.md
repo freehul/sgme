@@ -77,9 +77,9 @@
 
 2. 双库 + 文件：memory.db（记忆池）、wiki.db（场景+raw_files 索引）、raw/（原始 MD 文件）；`*.db`、`raw/`、`tmp/` 不入 git
 
-3. 维度一律用注册表 id（identity/projects/...），API 请求侧不收中文名；中文仅展示
+3. 维度一律用注册表 id（identity/goals/...），API 请求侧不收中文名；中文仅展示；projects/tasks 维度已移除（2026-08-18：项目池 project_meta / 待办池 demands 为专用落地点）
 
-4. TTL：动态维度默认（status 7d/focus·tasks 30d/projects·goals 90d），**起算 updated_at**（update/merge 续期）；过期退出注入、保留可溯源
+4. TTL：动态维度默认（status 7d/focus 30d/goals 90d），**起算 updated_at**（update/merge 续期）；过期退出注入、保留可溯源
 
 5. 注入零 LLM：模板查询 = 纯结构化 SQL（标签过滤 + 排序 + limit + time_window + TTL 过滤）；FTS5/向量仅 /search
 
@@ -133,7 +133,7 @@
 ### 三池职责（2026-08-13 用户定，防漂移）
 
 - **创意池**（`ideas` 维度，WebUI 创意池页 / `POST /v1/admin/ideas` / MCP `idea_add`）：创意**只由用户主动提出**才记录，**提炼 LLM 不再自动打标**（prompts/l1_extraction.txt 已移除创意识别）；删除由用户主动（WebUI 删除或提出由 agent 删，软删可恢复）
-- **待办池**（`demands` 表，WebUI 待办页 / `/v1/admin/demands*` / MCP `demand_create`）：**跨项目统一待办**——不管哪个项目的待办都加进来，带 `project_id` 标记可过滤；`project_id` 是**自由标记**（未登记项目也允许，只回 warning）；状态机 pending→done 两态 + `created_at`/`resolved_at` 时间戳；由 agent 维护
+- **待办池**（`demands` 表，WebUI 待办页 / `/v1/admin/demands*` / MCP `demand_create`）：**跨项目统一待办**——不管哪个项目的待办都加进来，带 `project_id` 标记可过滤；`project_id` 是**自由标记**（未登记项目也允许，只回 warning）；状态机 pending→done 两态 + `created_at`/`resolved_at` 时间戳；**由 agent 主动维护（2026-08-18 强化）**：会话中遇到用户要办的事 / 项目要做的任务 / 后续待跟进事项，**主动调 `demand_create` 登记**（title 一句概括 + `project_id` 关联项目；跨项目统一收进待办池），不要只留在对话里；完成时标记 done
 - **项目池**（`project_meta` 表，WebUI 项目页 / `/v1/admin/projects*` / MCP `project_register`）：项目**由用户主动提出立项/创建**，agent 执行；可从创意升格（promote）
 
 ### 动手纪律（报备）
