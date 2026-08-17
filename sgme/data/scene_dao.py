@@ -275,4 +275,44 @@ def list_scenes_page(
         params + [int(limit), max(0, (int(page) - 1) * int(limit))],
     ).fetchall()
 
-    return [dict(r) for r in rows], int(total)
+    items = [dict(r) for r in rows]
+    # related_memories（2026-08-18 T-55 后续：WebUI 场景详情展示关联记忆）：
+    # 每场景关联记忆前 N 条（content 截断 + 维度标签），批量查询避免 N+1
+    if items:
+        _RELATED_LIMIT = 5
+        scene_ids = [it["scene_id"] for it in items]
+        ph = ",".join("?" * len(scene_ids))
+        rel_rows = conn.execute(
+            f"""
+            SELECT sm.scene_id, m.memory_id, m.content, m.updated_at
+            FROM scene_memories sm
+            JOIN memories m ON m.memory_id = sm.memory_id
+            WHERE sm.scene_id IN ({ph})
+            ORDER BY sm.scene_id, m.updated_at DESC
+            """,
+            scene_ids,
+        ).fetchall()
+        rel_map: dict[str, list[dict]] = {}
+        mem_ids: list[str] = []
+        for r in rel_rows:
+            rel_map.setdefault(r["scene_id"], []).append({
+                "memory_id": r["memory_id"],
+                "content": (r["content"] or "")[:120],
+                "updated_at": r["updated_at"],
+            })
+            mem_ids.append(r["memory_id"])
+        dim_map: dict[str, list[str]] = {}
+        if mem_ids:
+            ph2 = ",".join("?" * len(mem_ids))
+            for row in conn.execute(
+                f"SELECT memory_id, dimension_id FROM memory_tags WHERE memory_id IN ({ph2})",
+                mem_ids,
+            ).fetchall():
+                dim_map.setdefault(row["memory_id"], []).append(row["dimension_id"])
+        for it in items:
+            rel = rel_map.get(it["scene_id"], [])[:_RELATED_LIMIT]
+            for m in rel:
+                m["dimensions"] = dim_map.get(m["memory_id"], [])
+            it["related_memories"] = rel
+
+    return items, int(total)

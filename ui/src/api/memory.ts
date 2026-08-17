@@ -120,3 +120,18 @@ export function search(params: {
     include_sources: params.include_sources ?? true,
   })
 }
+
+// ---------- POST /v1/inject（画像注入，ProfileView 用） ----------
+export interface InjectBlock {
+  title: string
+  items: { content: string; relative_time?: string; memory_id?: string }[]
+  present: boolean
+}
+export interface InjectResponse {
+  blocks: InjectBlock[]
+  stats: { mode: string; queries: number; tokens_est: number; tier0_present: boolean }
+  tier0?: { present: boolean; content?: string | null }
+}
+export function injectProfile(mode: string) {
+  return api.post<InjectResponse>('/v1/inject', { mode })
+}

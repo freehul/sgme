@@ -11,6 +11,12 @@ export interface Scene {
   created_at: string
   updated_at: string
   memories_count: number
+  related_memories?: {
+    memory_id: string
+    content: string
+    updated_at: string
+    dimensions: string[]
+  }[]
 }
 export interface ScenesPage {
   items: Scene[]
