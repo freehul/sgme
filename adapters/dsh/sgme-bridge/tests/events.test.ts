@@ -56,10 +56,11 @@ describe('SgmeEventSubscriber', () => {
     await new Promise((r) => setTimeout(r, 100))
     const pending = sub.pendingEvents()
     expect(pending.length).toBe(2)
-    expect(pending[0].type).toBe('care_daily')
-    expect(pending[1].type).toBe('anomaly_warn')
+    expect(pending[0]?.type).toBe('care_daily')
+    expect(pending[1]?.type).toBe('anomaly_warn')
     // 请求带 X-API-Key 和 subscriber_id
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const firstCall = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const [url, init] = firstCall
     expect(String(url)).toContain('subscriber_id=dsh-test')
     expect((init.headers as Record<string, string>)['X-API-Key']).toBe('agt_test')
     sub.stop()

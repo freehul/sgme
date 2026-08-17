@@ -3,11 +3,14 @@
  *
  * 封装 4 个 SGME 端点调用，故障隔离（失败只 log + 返回 null，绝不抛异常阻塞 dsh 主循环）。
  *
- * 契约来源：sgme/server/routes_memory.py / routes_admin.py（2026-08-14 调研确认）
+ * 契约来源：sgme/server/routes_memory.py / routes_admin.py / routes_care.py（2026-08-14 调研确认，T-86 扩充）
  * - POST /v1/search        — Agent Key — 记忆+wiki 检索
  * - POST /v1/inject         — Agent Key — 画像注入（注意：max_tokens 协议接受但不消费）
  * - POST /v1/append         — Agent Key — L0 写入
  * - POST /v1/admin/refine/trigger_async — Admin Key — 触发提炼（实际返回 200，非 202）
+ * - POST /v1/admin/ideas|demands|projects — Admin Key — 三池登记（T-86）
+ * - GET/PUT /v1/admin/roles* + /v1/admin/care/active-role — Agent Key — 角色模板（T-86）
+ * - GET /v1/memory/{id} + POST /v1/memory/{id}/reject — Agent Key — 记忆纠错（T-86）
  */
 
 /** SGME 客户端配置（由插件 Config 注入）。 */
@@ -237,6 +240,108 @@ export interface HealthResponse {
   }
 }
 
+// ---------- 三池登记类型（T-86：创意/待办/项目，Admin Key） ----------
+
+/** POST /v1/admin/ideas 请求体（用户主动提出才记录）。 */
+export interface IdeaAddRequest {
+  content: string
+  priority?: number | null         // 0-100，缺省 50
+  source_ref?: string | null       // 溯源（如会话标识）
+}
+
+/** POST /v1/admin/ideas 响应体。 */
+export interface IdeaAddResponse {
+  idea: Record<string, unknown>
+  created: boolean
+}
+
+/** POST /v1/admin/demands 请求体（跨项目统一待办池）。 */
+export interface DemandCreateRequest {
+  title: string                    // 一句概括
+  content?: string | null
+  priority?: number | null         // 0-100，缺省 50
+  project_id?: string | null       // 自由标记（未登记项目允许，服务端只回 warning）
+  origin_idea_id?: string | null   // 从创意升格
+  source_ref?: string | null
+}
+
+/** POST /v1/admin/demands 响应体（条目字段 + warnings）。 */
+export interface DemandCreateResponse {
+  demand_id: string
+  title: string
+  status: string
+  warnings?: string[]
+  [k: string]: unknown
+}
+
+/** POST /v1/admin/projects 请求体（upsert，二次登记=更新）。 */
+export interface ProjectRegisterRequest {
+  project_id: string               // 纯英文
+  path?: string | null             // 新建时必填（服务端校验）
+  name?: string | null
+  git_repo?: string | null
+  milestone?: string | null
+}
+
+/** POST /v1/admin/projects 响应体。 */
+export interface ProjectRegisterResponse {
+  project_id: string
+  [k: string]: unknown
+}
+
+// ---------- 角色模板类型（T-86：ST-29 换皮不换芯，Agent Key） ----------
+
+/** 角色卡轻量摘要（GET /v1/admin/roles 列表项）。 */
+export interface RoleSummary {
+  role_id: string
+  name: string
+  description?: string | null
+  [k: string]: unknown
+}
+
+/** GET /v1/admin/roles 响应体。 */
+export interface RoleListResponse {
+  roles: RoleSummary[]
+  total: number
+}
+
+/** GET /v1/admin/roles/{role_id}/assemble 响应体（角色沟通提示词装配产物）。 */
+export interface RoleAssembleResponse {
+  role_id: string
+  role_name: string
+  system_prompt: string            // 含 {{char}}/{{user}} 宏，消费方拼接
+  care_policy?: Record<string, unknown> | null
+  persona?: string | null
+  profile_blocks?: Array<Record<string, unknown>>
+}
+
+/** GET/PUT /v1/admin/care/active-role 响应体。 */
+export interface RoleActiveResponse {
+  role_id: string | null
+  status?: string
+}
+
+// ---------- 记忆纠错类型（T-86：Agent Key） ----------
+
+/** GET /v1/memory/{id} 响应体（http_payload 投影：memory + 溯源 + 归档链）。 */
+export interface MemoryDetailResponse {
+  memory: {
+    memory_id: string
+    content: string
+    status?: string
+    [k: string]: unknown
+  }
+  sources?: Array<Record<string, unknown>>
+  archive_chain?: Array<Record<string, unknown>>
+}
+
+/** POST /v1/memory/{id}/reject 响应体。 */
+export interface MemoryRejectResponse {
+  memory_id: string
+  status: string                   // rejected
+  reject_reason?: string
+}
+
 // ---------- 客户端实现 ----------
 
 /**
@@ -415,6 +520,36 @@ export class SgmeClient {
     }
   }
 
+  /** 统一 PUT 请求（T-86：设置当前角色用），返回 [data, error]。失败时 data=null。 */
+  private async put<T>(path: string, body: unknown): Promise<[T | null, string | null]> {
+    const url = `${this.baseUrl}${path}`
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs)
+      const resp = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': this.agentKey,
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+        // 防代理劫持：不读环境变量代理（与 post/get/patch 一致）
+        ...({} as Record<string, unknown>),
+      })
+      clearTimeout(timer)
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        return [null, `HTTP ${resp.status}: ${text.slice(0, 200)}`]
+      }
+      const data = (await resp.json()) as T
+      return [data, null]
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return [null, `fetch error: ${msg}`]
+    }
+  }
+
   /** 拉取未消费关怀信号（GET /v1/admin/care/signals?unconsumed_only=true）。失败返回 null。 */
   async pullCareSignals(signalType?: string | null, limit = 20): Promise<CareSignal[] | null> {
     const params = new URLSearchParams({ unconsumed_only: 'true', limit: String(limit) })
@@ -548,6 +683,118 @@ export class SgmeClient {
       return false
     }
     return data?.status === status
+  }
+
+  // ---------- 三池登记（T-86：创意/待办/项目，Admin Key） ----------
+
+  /** 添加创意（POST /v1/admin/ideas，Admin Key；用户主动提出才记录）。失败返回 null。 */
+  async ideaAdd(body: IdeaAddRequest): Promise<IdeaAddResponse | null> {
+    const [data, err] = await this.post<IdeaAddResponse>('/v1/admin/ideas', body, 'admin')
+    if (err) {
+      console.warn(`[sgme-bridge] ideaAdd failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 新建待办（POST /v1/admin/demands，Admin Key；跨项目统一待办池）。失败返回 null。 */
+  async demandCreate(body: DemandCreateRequest): Promise<DemandCreateResponse | null> {
+    const [data, err] = await this.post<DemandCreateResponse>('/v1/admin/demands', body, 'admin')
+    if (err) {
+      console.warn(`[sgme-bridge] demandCreate failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 登记项目（POST /v1/admin/projects，Admin Key；upsert，二次登记=更新）。失败返回 null。 */
+  async projectRegister(body: ProjectRegisterRequest): Promise<ProjectRegisterResponse | null> {
+    const [data, err] = await this.post<ProjectRegisterResponse>('/v1/admin/projects', body, 'admin')
+    if (err) {
+      console.warn(`[sgme-bridge] projectRegister failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 角色模板（T-86：ST-29 换皮不换芯，Agent Key） ----------
+
+  /** 角色列表（GET /v1/admin/roles，Agent Key）。失败返回 null。 */
+  async roleList(): Promise<RoleListResponse | null> {
+    const [data, err] = await this.get<RoleListResponse>('/v1/admin/roles', 'agent')
+    if (err) {
+      console.warn(`[sgme-bridge] roleList failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 装配角色沟通提示词（GET /v1/admin/roles/{role_id}/assemble，Agent Key）。失败返回 null。 */
+  async roleAssemble(roleId: string, injectMode?: string | null): Promise<RoleAssembleResponse | null> {
+    const params = new URLSearchParams()
+    if (injectMode) params.set('inject_mode', injectMode)
+    const qs = params.toString()
+    const [data, err] = await this.get<RoleAssembleResponse>(
+      `/v1/admin/roles/${encodeURIComponent(roleId)}/assemble${qs ? `?${qs}` : ''}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] roleAssemble failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 读取当前沟通角色（GET /v1/admin/care/active-role，Agent Key）。失败返回 null。 */
+  async roleActiveGet(): Promise<RoleActiveResponse | null> {
+    const [data, err] = await this.get<RoleActiveResponse>('/v1/admin/care/active-role', 'agent')
+    if (err) {
+      console.warn(`[sgme-bridge] roleActiveGet failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 设置当前沟通角色（PUT /v1/admin/care/active-role，Agent Key）。失败返回 null。 */
+  async roleActiveSet(roleId: string): Promise<RoleActiveResponse | null> {
+    const [data, err] = await this.put<RoleActiveResponse>(
+      '/v1/admin/care/active-role',
+      { role_id: roleId },
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] roleActiveSet failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 记忆纠错（T-86：Agent Key） ----------
+
+  /** 单条记忆详情（GET /v1/memory/{id}，Agent Key；含溯源 + 归档链）。失败返回 null。 */
+  async memoryGet(memoryId: string): Promise<MemoryDetailResponse | null> {
+    const [data, err] = await this.get<MemoryDetailResponse>(
+      `/v1/memory/${encodeURIComponent(memoryId)}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] memoryGet failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 标记记忆不采用（POST /v1/memory/{id}/reject，Agent Key；不删除、可恢复）。失败返回 null。 */
+  async memoryReject(memoryId: string, reason?: string | null): Promise<MemoryRejectResponse | null> {
+    const [data, err] = await this.post<MemoryRejectResponse>(
+      `/v1/memory/${encodeURIComponent(memoryId)}/reject`,
+      { reason: reason ?? null },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] memoryReject failed: ${err}`)
+      return null
+    }
+    return data
   }
 }
 

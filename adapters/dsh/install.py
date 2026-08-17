@@ -64,6 +64,11 @@ AGENTS_MD_TEMPLATE = """# SGME 记忆系统（本项目已接入）
    - `wiki_search`：检索 SGME 知识库（L2 场景 + wiki_pages）
    - `wiki_pages`：按 category 列知识库手册目录（如 skill/sgme），渐进式披露 L2 索引层
    - `wiki_page`：按 page_id 拉取知识库手册全文（技能手册/踩坑记录）
+   - `demand_create`：登记待办到待办池（跨项目统一；会话中遇到用户要办的事**主动登记**，不要只留在对话里）
+   - `idea_add`：用户主动提出创意时登记创意池
+   - `project_register`：用户主动立项时登记项目池
+   - `role_list` / `role_assemble`：发现并装配沟通角色（换皮不换芯）
+   - `memory_get` / `memory_reject`：记忆详情查看与纠错（用户发现记忆有误时标不采用）
    - `/sgme <关键词>`：综合检索命令（memory + wiki）
 6. **自进化**：会话自动回写经验到知识库手册（费用门禁 + 规则闸门，审计可查）——手册内容以 wiki 为准，本地不缓存
 
@@ -88,8 +93,8 @@ def write_agents_md(project_dir: Path) -> Path:
         if "SGME 记忆系统" not in text:
             # 用户自建文件：追加 SGME 段，不覆盖
             target.write_text(text.rstrip() + "\n---\n\n" + generate_agents_md(), encoding="utf-8")
-        elif "历史会话补导入" not in text:
-            # 旧版模板（规则不全）：整体升级
+        elif "历史会话补导入" not in text or "demand_create" not in text:
+            # 旧版模板（规则不全 / T-86 前缺三池工具清单）：整体升级
             target.write_text(generate_agents_md(), encoding="utf-8")
         return target
     target.write_text(generate_agents_md(), encoding="utf-8")
