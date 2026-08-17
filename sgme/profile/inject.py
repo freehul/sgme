@@ -122,17 +122,23 @@ def build_inject_blocks(
 
     sections = template.get("sections", [])
     # 跨 section 去重（2026-08-18 修复）：多维度记忆会在多个 section 重复命中，
-    # 同一记忆只保留在首个命中的 section（memory_id 判等，注入去重不丢语义）
+    # 同一记忆只保留在首个命中的 section（memory_id 判等，注入去重不丢语义）。
+    # 内容前缀兜底：L1 提炼可能产生字符级细微差异的相似记忆（如句式微变），
+    # 按 content 前 50 字判重，语义重复只注入一条（2026-08-18 升级）。
     seen_ids: set[str] = set()
+    seen_prefix: set[str] = set()
     for section, results in zip(sections, section_results):
         items = []
         for r in results:
             mid = r.get("memory_id")
-            if mid:
-                if mid in seen_ids:
-                    continue
-                seen_ids.add(mid)
             content = r.get("content", "")
+            if mid and mid in seen_ids:
+                continue
+            if content[:50] in seen_prefix:
+                continue
+            seen_prefix.add(content[:50])
+            if mid:
+                seen_ids.add(mid)
             rel = _relative_time(r.get("updated_at"))
             if rel:
                 items.append({

@@ -101,14 +101,7 @@ dimensions:
     description: 当前关注的话题（SGME 记忆系统、ComfyUI）。
     boundaries: "vs 状态：关注=话题内容，状态=身心/处境瞬时量；vs 项目：话题可无项目载体"
 
-  - id: projects
-    display_name: 项目
-    category: 动态
-    time_velocity: dynamic
-    ttl_days: 90
-    description: 进行中的项目及状态（SGME 架构设计阶段）。
-    boundaries: "vs 目标：项目=长期工作容器（持续数周~数月），目标=可打勾的完成判定；vs 待办：待办=天~周级具体行动项"
-
+# projects/tasks 维度已移除（2026-08-18 用户定：项目池 project_meta / 待办池 demands 为专用落地点）
   - id: goals
     display_name: 目标
     category: 动态
@@ -116,14 +109,6 @@ dimensions:
     ttl_days: 90
     description: 短期目标与愿望（SGME 本月跑通最小闭环）。
     boundaries: "vs 项目：见项目；同一事实可双标签（如『跑通最小闭环』=项目+目标）"
-
-  - id: tasks
-    display_name: 待办
-    category: 动态
-    time_velocity: dynamic
-    ttl_days: 30
-    description: 近期待办与截止日（D7 提炼管线讨论）。
-    boundaries: "vs 项目：见项目；vs 目标：待办=行动项，目标=成果"
 
   - id: status
     display_name: 状态
