@@ -114,6 +114,9 @@ python -m sgme
 #   SGME_ADMIN_KEY=<随机串>   SGME_AGENT_KEY=<随机串>   # 生成：python -c "import secrets;print(secrets.token_hex(32))"
 # 不配置时使用内置默认 key（仅限本机首次体验，启动有告警；配置后默认 key 即失效 403）
 #   SGME_BEARER_TOKEN 可选：传输层令牌，默认关闭（localhost 旁路）
+# 模型 Key（可选，支持免费档）：提炼主链智谱 GLM-4.7-Flash（永久免费）→ 备用 deepseek；向量检索硅基流动 BAAI/bge-m3（零费用）。
+# Key 缺失时 /v1/health 的 model_config.missing_keys 会列出缺哪些——按 docs/guide/免费模型Key申请指南.md 申请免费 Key 即可。
+#   ZHIPU_API_KEY=<智谱key>   SILICONFLOW_API_KEY=<硅基流动key>
 
 # 4. 运行测试
 pytest tests/ -q
