@@ -119,6 +119,11 @@ async function create() {
   }
 }
 
+function relLabel(rel: string): string {
+  const m: Record<string, string> = { references: '引用', related: '相关', similar: '相似', implements: '实现', supersedes: '取代' }
+  return m[rel] || rel
+}
+
 onMounted(load)
 
 // 支持从统一检索结果 ?page_id= 直达详情，并响应后续 page_id 变化（T-34 闭环）
@@ -205,6 +210,15 @@ watch(() => route.query.page_id, (pid) => {
             </div>
             <p v-if="detail.description" class="desc">{{ detail.description }}</p>
             <div class="markdown-content" v-html="renderMarkdown(detail.content)" />
+            <div v-if="detail.links?.length" class="wiki-links">
+              <h4>关联页面（{{ detail.links.length }}）</h4>
+              <div class="link-list">
+                <a v-for="lk in detail.links" :key="lk.page_id" class="link-item" @click="openDetail(lk.page_id)">
+                  <span class="rel">{{ relLabel(lk.rel_type) }}</span>
+                  <span class="link-title">{{ lk.title }}</span>
+                </a>
+              </div>
+            </div>
           </template>
         </div>
       </div>

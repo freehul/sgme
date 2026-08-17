@@ -212,6 +212,19 @@ def get_wiki_page(
         raise HTTPException(status_code=404, detail={"error": {"code": "ERR_NOT_FOUND", "message": f"页面不存在: {page_id}"}})
     if view == "html":
         return HTMLResponse(build_page_html(page))
+    # 关联页面（2026-08-18 自动关联：wiki_auto_link 建链 + 本端点展示）
+    links = wiki_dao.list_links(conn, page_id)
+    related = []
+    for lk in links:
+        other_id = lk["target_id"] if lk["source_id"] == page_id else lk["source_id"]
+        other = wiki_dao.get_page(conn, other_id)
+        if other:
+            related.append({
+                "page_id": other["page_id"],
+                "title": other.get("title") or other["page_id"],
+                "rel_type": lk["rel_type"],
+            })
+    page["links"] = related
     return page
 
 

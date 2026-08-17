@@ -13,6 +13,7 @@ export interface WikiPage {
   author?: string | null
   created_at: string
   updated_at: string
+  links?: { page_id: string; title: string; rel_type: string }[]
 }
 
 export interface WikiPages {
