@@ -38,6 +38,21 @@ from sgme.profile import tier0 as tier0_mod
 from sgme.data import memory_dao
 
 
+def _attach_key_missing_note(response: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    """模型 Key 缺失引导（T-53）：提炼/向量端点缺 Key 时在 stats.note 附申请提醒。
+
+    只在缺失时附加（缺失=降级，提醒有行动价值）；Key 齐全零噪音。
+    复用 llm.model_keys_notice（只读 os.environ，无副作用）。
+    """
+    from sgme.operations.llm import model_keys_notice
+
+    notice = model_keys_notice(cfg)
+    if notice:
+        current = response.get("stats", {}).get("note", "")
+        response["stats"]["note"] = (current + "\n" + notice).strip()
+    return response
+
+
 def _attach_empty_note(response: dict[str, Any]) -> dict[str, Any]:
     """空结果引导（ST-22④）：所有 block 均无 items 时在 ``stats.note`` 附加可行动提示。
 
@@ -107,7 +122,7 @@ def inject(
                 "present": tier0_summary is not None,
                 "content": tier0_summary,
             }
-            return OperationResult.succeed(_attach_empty_note(response))
+            return OperationResult.succeed(_attach_key_missing_note(_attach_empty_note(response), cfg))
 
         # ---------- 分支 2：custom_filter 自定义查询 ----------
         if custom_filter:
@@ -148,7 +163,7 @@ def inject(
                 "content": tier0_summary,
             }
             response["stats"]["mode"] = "custom"
-            return OperationResult.succeed(_attach_empty_note(response))
+            return OperationResult.succeed(_attach_key_missing_note(_attach_empty_note(response), cfg))
 
         # 两个分支都未指定 → 参数非法（照 v0.6 路由兜底文案）
         return OperationResult.fail(ERR_INVALID_ARGS, "需指定 mode 或 custom_filter")

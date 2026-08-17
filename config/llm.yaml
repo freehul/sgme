@@ -17,7 +17,10 @@
 #   需人工维护时以此版为基线。
 chains:
   refinement:
-    - provider: deepseek        # 示例：云端 OpenAI 兼容提供商（可替换为任意 OpenAI 兼容提供商）
+    - provider: zhipu          # 主模型（2026-08-18 用户定）：GLM-4.7-Flash 永久免费无限调用；限流/故障自动降级 deepseek
+      model: glm-4.7-flash
+      max_tokens: 8192
+    - provider: deepseek        # 备用（付费）：主链限流/故障时兜底，思考型模型关思考模式
       model: deepseek-v4-flash
       max_tokens: 16384
       extra_body:               # 提供商特有参数（如关闭思考模式），按需传

@@ -33,7 +33,7 @@ from sgme.data import memory_dao
 # ---------- v0.6 冻结契约（改造前逐字段抄录，任何变动即破坏性变更） ----------
 # ST-22② 有意新增顶层 vector 字段（只增不改既有字段）——列表随之更新。
 
-HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "vector"]
+HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "vector", "model_config"]  # T-53：Key 缺失引导（只增不改既有字段）
 HTTP_REFINEMENT_KEYS = [
     "watermark_age_sec",
     "queue_depth",
@@ -464,7 +464,9 @@ def test_vector_field_in_http_response(client, conns):
     assert "vector" in body
     assert set(body["vector"].keys()) == {
         "available", "engine", "memory_vectors", "scene_vectors", "reason",
+        "connectivity",  # T-53 2026-08-18：向量模型连通性（只增不改既有字段）
     }
+    assert "available" in body["vector"]["connectivity"]
     assert body["vector"]["available"] is True
     assert body["vector"]["engine"] == "sqlite-vec"
     assert body["vector"]["memory_vectors"] == 0

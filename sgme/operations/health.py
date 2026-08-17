@@ -27,12 +27,21 @@ v0.7 的目标是抽取业务逻辑，**不是**统一 API 契约（用户硬约
 """
 from __future__ import annotations
 
+import logging
+import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from sgme.engine import health as engine_health
+from sgme.llm.provider import make_client
 from sgme.operations.errors import OperationResult
+from sgme.operations.llm import detect_missing_model_keys, model_keys_notice
+
+logger = logging.getLogger("sgme.operations.health")
 
 # 版本号：原先硬编码在 routes_memory.health_check 与 mcp_server.health 两处，
 # v0.7 收敛到此单点常量。取值与 sgme.__version__ 一致（两者的统一属 v0.8 清理项，
@@ -69,6 +78,102 @@ def watermark_age_sec(last_refined_at: str | None) -> int | None:
 
 # 向后兼容别名：health 切片（commit d36fef1）以私有名发布，测试与既有调用方沿用。
 _watermark_age_sec = watermark_age_sec
+
+
+# ---------- 向量模型连通性（T-53 2026-08-18：health 加模型探测 + 失效信号） ----------
+
+_VECTOR_PROBE_TIMEOUT_S = 5.0
+# 健康探测用极短输入（免费模型零费用；仅连通性验证，不产生语义向量用途）
+_VECTOR_PROBE_INPUT = "."
+
+
+def check_vector_model_connectivity(
+    cfg: dict,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """向量模型连通性探测：调 search.vector 的 embeddings 端点一次。
+
+    - 输入 "."（极短），5s 超时，Bearer key（api_key_env 引用，铁律 #10 禁明文）
+    - httpx 必须 trust_env=False（防代理劫持，make_client 保证）
+    - **永不抛异常**（健康检查必须健壮）：任何失败 → available=False + error
+    - 返回 available / provider / model / latency_ms / error
+
+    与 check_vector_availability 的分工：那是「引擎 + 数据规模」（本地无网络）；
+    本函数是「模型 API 连通性」（云端端点可达、key 有效）。两者互补。
+    """
+    vec = (cfg.get("search") or {}).get("vector") or {}
+    provider = str(vec.get("provider", ""))
+    model = str(vec.get("model", ""))
+    base_url = (vec.get("base_url") or "").rstrip("/")
+    api_key_env = vec.get("api_key_env") or ""
+    if not base_url or not model:
+        return {
+            "available": False, "provider": provider, "model": model,
+            "latency_ms": None, "error": "向量端点未配置（base_url/model 缺失）",
+        }
+    headers = None
+    key = os.environ.get(api_key_env) if api_key_env else None
+    if key:
+        headers = {"Authorization": f"Bearer {key}"}
+    own_client = client is None
+    cli = client or make_client(timeout_s=_VECTOR_PROBE_TIMEOUT_S)
+    t0 = time.monotonic()
+    try:
+        resp = cli.post(
+            f"{base_url}/embeddings",
+            json={"model": model, "input": _VECTOR_PROBE_INPUT},
+            headers=headers,
+            timeout=_VECTOR_PROBE_TIMEOUT_S,
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        if resp.status_code == 200:
+            return {
+                "available": True, "provider": provider, "model": model,
+                "latency_ms": latency_ms, "error": None,
+            }
+        return {
+            "available": False, "provider": provider, "model": model,
+            "latency_ms": latency_ms, "error": f"HTTP {resp.status_code}",
+        }
+    except httpx.HTTPError as e:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        return {
+            "available": False, "provider": provider, "model": model,
+            "latency_ms": latency_ms, "error": str(e)[:200],
+        }
+    finally:
+        if own_client:
+            cli.close()
+
+
+def _publish_vector_signal(
+    mem_conn: sqlite3.Connection,
+    conn_check: dict[str, Any],
+) -> None:
+    """向量模型失效 → anomaly_warn 信号（接入 agent 经 SSE/拉取可见并提醒用户）。
+
+    - 复用 signal.engine.publish（既有的 anomaly_warn 通道，SSE/pull 消费端零改动）
+    - suppress_hint 由 publish 内部处理（同源同类型 30 分钟重复附 hint）
+    - 发布失败仅日志，不抛异常（与 check_heartbeat 的 anomaly_warn 同语义）
+    """
+    try:
+        from sgme.signal import engine as signal_engine
+        signal_engine.publish(
+            event_type="anomaly_warn",
+            source="vector",
+            payload={
+                "component": "vector_model",
+                "provider": conn_check.get("provider"),
+                "model": conn_check.get("model"),
+                "error": conn_check.get("error"),
+                "hint": "向量模型不可用：/search 向量通路将回退纯 BM25。"
+                        "接入 agent 请提醒用户检查 SILICONFLOW_API_KEY / 硅基流动账户状态，"
+                        "申请流程见 docs/guide/免费模型Key申请指南.md",
+            },
+            mem_conn=mem_conn,
+        )
+    except Exception as e:  # noqa: BLE001 —— 信号发布必须健壮，禁止上抛
+        logger.warning("向量 anomaly_warn 发布失败（不阻塞）: %s", e)
 
 
 # ---------- 向量可用性（ST-22②：health 加 vector 可用性） ----------
@@ -160,6 +265,25 @@ def _count_vector_rows(mem_conn: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
+def _vector_block(mem_conn: sqlite3.Connection, cfg: dict) -> dict[str, Any]:
+    """向量块组装：引擎可用性 + 模型连通性两层；连通失败写日志 + 发信号。"""
+    vec_avail = check_vector_availability(mem_conn)
+    conn_check = check_vector_model_connectivity(cfg)
+    if not conn_check["available"]:
+        # 未配置（base_url/model 缺失）不算「失效」——Key 缺失引导（model_config）已覆盖，
+        # 不发 anomaly_warn 避免噪音；仅配置存在但探测失败才告警。
+        unconfigured = "未配置" in (conn_check.get("error") or "")
+        logger.warning(
+            "向量模型%s: %s (%s) latency=%s",
+            "未配置" if unconfigured else "不可用",
+            conn_check.get("model"), conn_check.get("error"),
+            conn_check.get("latency_ms"),
+        )
+        if not unconfigured:
+            _publish_vector_signal(mem_conn, conn_check)
+    return {**vec_avail, "connectivity": conn_check}
+
+
 def health(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -197,7 +321,12 @@ def health(
         "version": SGME_VERSION,
         "llm": heartbeat["llm"],
         # —— ST-22②：向量可用性（引擎 + 数据规模；永不抛异常）——
-        "vector": check_vector_availability(mem_conn),
+        "vector": _vector_block(mem_conn, cfg),
+        # —— T-53：模型 Key 缺失引导（免费托底新用户；只增不改既有字段）——
+        "model_config": {
+            "missing_keys": detect_missing_model_keys(cfg),
+            "notice": model_keys_notice(cfg),
+        },
         # —— HTTP 历史形态：字段顺序即 v0.6 响应体顺序，勿调整 ——
         "refinement": {
             "watermark_age_sec": watermark_age_sec(last_refined),
@@ -225,6 +354,7 @@ def http_payload(data: dict[str, Any]) -> dict[str, Any]:
         "llm": data["llm"],
         "refinement": data["refinement"],
         "vector": data["vector"],
+        "model_config": data["model_config"],
     }
 
 
