@@ -954,9 +954,9 @@ def build_mcp_server():
                 "version": "SGME-ONBOARDING-v1",
                 "template": (
                     "# SGME 接入纪律（SGME-ONBOARDING-v1）\n"
-                    "你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机。"
+                    "你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。"
                     "它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。\n"
-                    "**服务发现**（找不到时按序）：1) 探测 http://localhost:9910/v1/health；"
+                    "**服务发现**（找不到时按序）：1) 探测 http://<sgme-host>:9910/v1/health（host 取环境变量 SGME_HTTP_HOST 或 ~/.sgme/install.json 的 http.host，默认 localhost）；"
                     "2) 失败读 ~/.sgme/install.json（地址/端口/Key 引用）；3) 仍失败 → 向主人报告「SGME 未发现」。\n"
                     "**使用纪律**（五条铁律）：\n"
                     "1. 每轮对话结束 append 当前轮次——纯落盘零 LLM 成本，崩溃不丢；\n"
@@ -964,14 +964,14 @@ def build_mcp_server():
                     "3. 对话开始时 inject 按场景取画像 / search 检索相关记忆；\n"
                     "4. 主动关怀靠消费信号——**信号消费=主动关怀，谁消费谁标记**：拿到 care_* 信号后 signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过）。获取信号有两条路：\n"
                     "   - 短连接（无常驻进程的 agent）：每次对话开始 signal_pull 拉未消费信号；\n"
-                    "   - 长连接（有常驻能力的 agent，**主动关怀首选**）：挂 SSE 事件流 GET http://localhost:9910/v1/events/stream?subscriber_id=<你的agent_id>（请求头带 X-API-Key），事件实时推送，care_*/memory_updated/anomaly_warn 一产生即到达 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件。\n"
+                    "   - 长连接（有常驻能力的 agent，**主动关怀首选**）：挂 SSE 事件流 GET http://<sgme-host>:9910/v1/events/stream?subscriber_id=<你的agent_id>（请求头带 X-API-Key），事件实时推送，care_*/memory_updated/anomaly_warn 一产生即到达 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件。\n"
                     "5. 对话开始时（或用户指定角色时）role_list 看可用角色，role_assemble(role_id) 拿人设并按其说话——换皮不换芯，角色只是沟通外皮，记忆池不动。\n"
                     "**强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」。\n"
                     "**写入格式**：append 的 content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422。\n"
                     "**批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 不立即重试（交服务端 batch_scan 兜底）；永远 async 模式。\n"
                     "**事件对接**（主动关怀的触发源，常驻 agent 必读）：SGME 事件分三类 care_*（关怀：情绪/待办到期/过劳/每日）、memory_updated（记忆更新）、anomaly_warn（异常）。三种接法任选：①SSE 长连 GET /v1/events/stream?subscriber_id=<agent_id>（实时推送，Last-Event-ID 断线补偿）；②游标拉取 GET /v1/events/pull?subscriber_id=<agent_id>（持久游标，适合定时任务轮询）；③MCP signal_pull（会话内短连接）。SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。\n"
                     "**通信渠道**（兜底铁律）：当前会话是兜底通信渠道——任何主动消息（关怀/提醒/告警等），无论是否已发送到其它通道（微信/飞书/Telegram 等），都必须在当前会话也发一条；此兜底持续生效，直到用户明确取消。\n"
-                    "**接口**：HTTP API http://localhost:9910 ｜ MCP http://localhost:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key）。"
+                    "**接口**：HTTP API http://<sgme-host>:9910 ｜ MCP http://<sgme-host>:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key；host 解析见「服务发现」）。"
                 ),
             },
         }, ensure_ascii=False)

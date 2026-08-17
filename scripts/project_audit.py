@@ -8,11 +8,15 @@
 """
 import json
 import os
+import sys
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # 确保同目录 _sgme_net 可导入
+from _sgme_net import sgme_http_base  # noqa: E402
+
 PROJECTS_ROOT = Path(os.environ.get("SGME_PROJECTS_ROOT") or os.getcwd()).resolve()
-SGME_URL = "http://localhost:9910/v1/search"
+SGME_URL = f"{sgme_http_base()}/v1/search"
 SGME_KEY = os.environ.get("SGME_AGENT_KEY", "") or (
     dict(
         l.strip().split("=", 1)
