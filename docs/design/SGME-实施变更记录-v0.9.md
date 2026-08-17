@@ -1042,3 +1042,20 @@ L1.5 冲突裁决、L2 场景聚合。
 - 主链智谱免费模型高峰期可能 1305 限流 -> 自动降级 deepseek（付费备用）；免费政策随时调整，以官方价格页为准
 
 **文档**：本记录 B79；Backlog T-55；wiki「免费模型托底调研」页（官方口径修正 + 决策）+「免费模型Key申请指南」页（skill/sgme）
+
+---
+
+
+### B80. 内置角色模板丢失修复——entrypoint 首次启动物化 roles（2026-08-18，T-55 后续）
+
+**背景**：生产 WebUI 角色管理页无内置角色模板。排查：内置 4 角色（butler/companion/friend/mentor.json）在镜像 /app/roles（Dockerfile COPY 正常、src/ 齐全、旧镜像 b2 也有），但运行时 ROLES_DIR = SGME_HOME/roles（生产 /data/roles，挂载卷）为空——entrypoint 首次启动只物化 sgme.yaml 不物化 roles，B63 容器化迁移缺陷（本机直跑时 ROLES_DIR 在项目根天然有内置角色；容器化后 SGME_HOME 指向空卷从未初始化；旧备份 backup-20260817 无 /data/roles 佐证）。
+
+**改动**：
+1. docker/entrypoint.sh：首次启动（SGME_HOME/roles 不存在）时物化 /app/roles/*.json 到 SGME_HOME/roles/（与 sgme.yaml 物化同机制）
+2. 生产立即修复：docker cp /app/roles/*.json 到 /data/roles/（挂载卷持久，API 已验证返回 4 角色）
+
+**测试**：entrypoint sh -n 语法 OK；生产 API /v1/admin/roles 返回管家/伴侣/朋友/导师。
+
+**运维影响**：新部署/重建容器自动有内置角色；现有容器已手动物化（/data/roles 持久）。
+
+**文档**：本记录 B80；wiki 操作手册踩坑记录追加。
