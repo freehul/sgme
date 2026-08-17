@@ -986,3 +986,21 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：web profile 的 dsh-sgme 为 link: 方式指向 sgme-bridge，重建 lib 后**重启 Web GUI 生效**（常驻进程模块已缓存）；L1 skill 描述改动立即生效（DSH 技能扫描感知，本会话 available_skills 已更新）。NAS 无改动。
 
 **文档**：本记录 B77
+
+
+### B78. dsh-codegraph 插件迁出 SGME 仓库，独立成仓于 D:/Projects/dsh-codegraph-bridge（2026-08-17）
+
+**背景**：dsh-codegraph（CodeGraph 本地代码知识图谱桥）2026-08-16 被误按「SGME 项目产物随 git 管理」铁律收编进 adapters/dsh/codegraph-bridge/（提交 98d4d3a），实际它是 DSH 生态独立插件、不属于 SGME 项目产物，导致 SGME 仓库混入 4 个无关提交，而平级位置 D:/Projects/dsh-codegraph-bridge 反而成了无 git 的散装副本。用户定：插件与 SGME 平级、独立管理。
+
+**改动**：
+- 复制最新版（含 2026-08-17 通用化：bin 自动探测 + projectPath 跟随启动目录）至 D:/Projects/dsh-codegraph-bridge，git init 独立成仓（66ea9f2 初始提交 + 468d3a7 README 更新，freehul 署名）
+- SGME 仓库 git rm -r adapters/dsh/codegraph-bridge（a5369d5，历史 4 提交保留可追溯）+ 清理残留 node_modules 空壳
+- adapters/dsh/README.md codegraph 章节改写为「2026-08-17 迁出独立仓库」；.gitignore 移除 codegraph-bridge 规则
+- web profile：package.json 的 dsh-codegraph link 改为 link:D:/Projects/dsh-codegraph-bridge；删旧 junction 后 pnpm install 重建（lock 同步更新）
+- 顺带修正：web profile 的 dsh-desktop-safe-market 在用户 20:40 重启时被还原回 bundle，本次一并重新移除
+
+**测试**：dump-config 装配树 577 行正常（codegraph 从新家解析、仅 queryLimit 显式配置；safe-market 不在 bundle）；junction Target 确认指向新家；SGME git status 无 codegraph 残留。
+
+**运维影响**：重启 Web GUI 生效；下次重启前旧 link 已修复，不会再出现 bundle 解析失败。后续 codegraph 插件改动在 D:/Projects/dsh-codegraph-bridge 独立提交。
+
+**文档**：本记录 B78
