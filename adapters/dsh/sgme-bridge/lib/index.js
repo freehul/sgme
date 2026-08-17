@@ -154,6 +154,31 @@ var SgmeClient = class {
 			return [null, `fetch error: ${e instanceof Error ? e.message : String(e)}`];
 		}
 	}
+	/** 统一 PUT 请求（T-86：设置当前角色用），返回 [data, error]。失败时 data=null。 */
+	async put(path, body) {
+		const url = `${this.baseUrl}${path}`;
+		try {
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+			const resp = await fetch(url, {
+				method: "PUT",
+				headers: {
+					"Content-Type": "application/json",
+					"X-API-Key": this.agentKey
+				},
+				body: JSON.stringify(body),
+				signal: ctrl.signal
+			});
+			clearTimeout(timer);
+			if (!resp.ok) {
+				const text = await resp.text().catch(() => "");
+				return [null, `HTTP ${resp.status}: ${text.slice(0, 200)}`];
+			}
+			return [await resp.json(), null];
+		} catch (e) {
+			return [null, `fetch error: ${e instanceof Error ? e.message : String(e)}`];
+		}
+	}
 	/** 拉取未消费关怀信号（GET /v1/admin/care/signals?unconsumed_only=true）。失败返回 null。 */
 	async pullCareSignals(signalType, limit = 20) {
 		const params = new URLSearchParams({
@@ -259,6 +284,90 @@ var SgmeClient = class {
 		}
 		return data?.status === status;
 	}
+	/** 添加创意（POST /v1/admin/ideas，Admin Key；用户主动提出才记录）。失败返回 null。 */
+	async ideaAdd(body) {
+		const [data, err] = await this.post("/v1/admin/ideas", body, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] ideaAdd failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 新建待办（POST /v1/admin/demands，Admin Key；跨项目统一待办池）。失败返回 null。 */
+	async demandCreate(body) {
+		const [data, err] = await this.post("/v1/admin/demands", body, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] demandCreate failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 登记项目（POST /v1/admin/projects，Admin Key；upsert，二次登记=更新）。失败返回 null。 */
+	async projectRegister(body) {
+		const [data, err] = await this.post("/v1/admin/projects", body, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] projectRegister failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 角色列表（GET /v1/admin/roles，Agent Key）。失败返回 null。 */
+	async roleList() {
+		const [data, err] = await this.get("/v1/admin/roles", "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] roleList failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 装配角色沟通提示词（GET /v1/admin/roles/{role_id}/assemble，Agent Key）。失败返回 null。 */
+	async roleAssemble(roleId, injectMode) {
+		const params = new URLSearchParams();
+		if (injectMode) params.set("inject_mode", injectMode);
+		const qs = params.toString();
+		const [data, err] = await this.get(`/v1/admin/roles/${encodeURIComponent(roleId)}/assemble${qs ? `?${qs}` : ""}`, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] roleAssemble failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 读取当前沟通角色（GET /v1/admin/care/active-role，Agent Key）。失败返回 null。 */
+	async roleActiveGet() {
+		const [data, err] = await this.get("/v1/admin/care/active-role", "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] roleActiveGet failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 设置当前沟通角色（PUT /v1/admin/care/active-role，Agent Key）。失败返回 null。 */
+	async roleActiveSet(roleId) {
+		const [data, err] = await this.put("/v1/admin/care/active-role", { role_id: roleId });
+		if (err) {
+			console.warn(`[sgme-bridge] roleActiveSet failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 单条记忆详情（GET /v1/memory/{id}，Agent Key；含溯源 + 归档链）。失败返回 null。 */
+	async memoryGet(memoryId) {
+		const [data, err] = await this.get(`/v1/memory/${encodeURIComponent(memoryId)}`, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] memoryGet failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 标记记忆不采用（POST /v1/memory/{id}/reject，Agent Key；不删除、可恢复）。失败返回 null。 */
+	async memoryReject(memoryId, reason) {
+		const [data, err] = await this.post(`/v1/memory/${encodeURIComponent(memoryId)}/reject`, { reason: reason ?? null }, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] memoryReject failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
 };
 /**
 * 消息列表 → SGME L0 消息块文本。
@@ -317,7 +426,7 @@ function createMemorySearchTool(client, defaultLimit) {
 			},
 			dimensions: {
 				type: "array",
-				description: "维度过滤（注册表 id，如 identity/projects/status/focus/tasks/goals/ideas）"
+				description: "维度过滤（注册表 id，如 identity/status/focus/goals/ideas；projects/tasks 已裁剪不可用）"
 			},
 			match: {
 				type: "string",
@@ -618,7 +727,7 @@ function formatSearchResults(results) {
 	return lines.join("\n\n");
 }
 /**
-* 向 dsh ctx 注册全部工具（检索 + 信号消费）。
+* 向 dsh ctx 注册全部工具（检索 + 信号消费 + 三池登记 + 角色 + 记忆纠错）。
 *
 * 调用方：index.ts apply() 内调用，传入 ctx 和 client。
 */
@@ -632,6 +741,15 @@ function registerTools(ctx, client, defaultLimit) {
 	ctx.tools.register(createSignalPullTool(client));
 	ctx.tools.register(createSignalClaimTool(client));
 	ctx.tools.register(createSignalAckTool(client));
+	ctx.tools.register(createIdeaAddTool(client));
+	ctx.tools.register(createDemandCreateTool(client));
+	ctx.tools.register(createProjectRegisterTool(client));
+	ctx.tools.register(createRoleListTool(client));
+	ctx.tools.register(createRoleAssembleTool(client));
+	ctx.tools.register(createRoleActiveGetTool(client));
+	ctx.tools.register(createRoleActiveSetTool(client));
+	ctx.tools.register(createMemoryGetTool(client));
+	ctx.tools.register(createMemoryRejectTool(client));
 }
 /** 创建 signal_pull 工具（拉取未消费关怀信号）。 */
 function createSignalPullTool(client) {
@@ -739,6 +857,308 @@ function createSignalAckTool(client) {
 		async execute(args, _exec) {
 			const a = args;
 			return await client.ackSignal(a.event_id, a.status, a.result) ? `[signal_ack 已回执：event_id=${a.event_id} status=${a.status}]` : "[signal_ack 失败]";
+		}
+	});
+}
+/** 创建 idea_add 工具（创意池：用户主动提出才记录）。 */
+function createIdeaAddTool(client) {
+	return defineTool({
+		name: "idea_add",
+		description: ["添加创意到 SGME 创意池（仅当用户主动提出创意时才记录——不要自行发散）。", "创意长期保存（无 TTL）；删除/升格由用户在 WebUI 操作。"].join(" "),
+		parameters: {
+			content: {
+				type: "string",
+				required: true,
+				description: "创意内容（一句话概括）"
+			},
+			priority: {
+				type: "number",
+				description: "优先级 0-100（默认 50）"
+			},
+			source_ref: {
+				type: "string",
+				description: "溯源标识（可选，如会话主题）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.ideaAdd({
+				content: a.content,
+				priority: a.priority ?? null,
+				source_ref: a.source_ref ?? null
+			});
+			if (!resp) return "[idea_add 失败：SGME Gateway 不可达或无 Admin Key，稍后重试]";
+			const id = String(resp.idea?.memory_id ?? "");
+			return `[idea_add 已登记${id ? `：memory_id=${id}` : ""}（创意池，长期保存）]`;
+		}
+	});
+}
+/** 创建 demand_create 工具（待办池：跨项目统一待办，agent 主动登记）。 */
+function createDemandCreateTool(client) {
+	return defineTool({
+		name: "demand_create",
+		description: [
+			"登记待办到 SGME 待办池（跨项目统一待办——不管哪个项目的事都收进来）。",
+			"会话中遇到用户要办的事/项目任务/后续跟进事项，主动调用本工具登记，不要只留在对话里。",
+			"project_id 是自由标记（未登记项目也允许）；完成时由用户在 WebUI 或后续操作标 done。"
+		].join(" "),
+		parameters: {
+			title: {
+				type: "string",
+				required: true,
+				description: "待办标题（一句概括）"
+			},
+			content: {
+				type: "string",
+				description: "详情（可选）"
+			},
+			priority: {
+				type: "number",
+				description: "优先级 0-100（默认 50）"
+			},
+			project_id: {
+				type: "string",
+				description: "关联项目 id（自由标记，可选）"
+			},
+			source_ref: {
+				type: "string",
+				description: "溯源标识（可选）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.demandCreate({
+				title: a.title,
+				content: a.content ?? null,
+				priority: a.priority ?? null,
+				project_id: a.project_id ?? null,
+				source_ref: a.source_ref ?? null
+			});
+			if (!resp) return "[demand_create 失败：SGME Gateway 不可达或无 Admin Key，稍后重试]";
+			const warn = resp.warnings && resp.warnings.length > 0 ? `（警告：${resp.warnings.join("；")}）` : "";
+			return `[demand_create 已登记：demand_id=${resp.demand_id} status=${resp.status}${warn}]`;
+		}
+	});
+}
+/** 创建 project_register 工具（项目池：用户主动立项才登记）。 */
+function createProjectRegisterTool(client) {
+	return defineTool({
+		name: "project_register",
+		description: ["登记/创建项目到 SGME 项目池（仅当用户主动提出立项/创建时调用；upsert，二次登记=更新）。", "project_id 用纯英文；新建时 path 必填。"].join(" "),
+		parameters: {
+			project_id: {
+				type: "string",
+				required: true,
+				description: "项目 id（纯英文，如 sgme）"
+			},
+			path: {
+				type: "string",
+				description: "项目本地路径（新建时必填）"
+			},
+			name: {
+				type: "string",
+				description: "项目显示名（可选）"
+			},
+			git_repo: {
+				type: "string",
+				description: "git 仓库地址（可选）"
+			},
+			milestone: {
+				type: "string",
+				description: "当前里程碑（可选）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.projectRegister({
+				project_id: a.project_id,
+				path: a.path ?? null,
+				name: a.name ?? null,
+				git_repo: a.git_repo ?? null,
+				milestone: a.milestone ?? null
+			});
+			if (!resp) return "[project_register 失败：SGME Gateway 不可达或无 Admin Key，稍后重试]";
+			return `[project_register 已登记：project_id=${resp.project_id}]`;
+		}
+	});
+}
+/** 创建 role_list 工具（列出可用角色）。 */
+function createRoleListTool(client) {
+	return defineTool({
+		name: "role_list",
+		description: ["列出 SGME 可用角色模板（管家/伴侣/朋友/导师，含人设摘要）。", "会话开始（或用户指定角色）时调用；选定后调 role_assemble 拿人设——换皮不换芯，记忆池不动。"].join(" "),
+		parameters: {},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(_args, _exec) {
+			const resp = await client.roleList();
+			if (!resp) return "[role_list 失败：SGME Gateway 不可达，稍后重试]";
+			if (resp.roles.length === 0) return "[role_list 无可用角色]";
+			const activeId = (await client.roleActiveGet())?.role_id ?? null;
+			const lines = resp.roles.map((r, i) => {
+				const mark = r.role_id === activeId ? " ←当前" : "";
+				const desc = r.description ? ` — ${r.description}` : "";
+				return `${i + 1}. ${r.name}（${r.role_id}）${mark}${desc}`;
+			});
+			return `共 ${resp.total} 个角色${activeId ? `（当前：${activeId}）` : "（未设置）"}：\n` + lines.join("\n");
+		}
+	});
+}
+/** 创建 role_assemble 工具（装配角色沟通提示词）。 */
+function createRoleAssembleTool(client) {
+	return defineTool({
+		name: "role_assemble",
+		description: ["装配角色沟通提示词（角色卡 system_prompt + persona + 关怀策略 + 可选画像）。", "role_id 来自 role_list；产物直接作为 system prompt 风格指引使用——按角色语气说话，但记忆与事实以记忆池为准。"].join(" "),
+		parameters: {
+			role_id: {
+				type: "string",
+				required: true,
+				description: "角色 id（role_list 返回）"
+			},
+			inject_mode: {
+				type: "string",
+				description: "画像注入模式（可选：daily/full/coding/work；省略不带画像）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.roleAssemble(a.role_id, a.inject_mode ?? null);
+			if (!resp) return `[role_assemble 失败：角色不存在或 Gateway 不可达（role_id="${a.role_id}"，先 role_list 确认）]`;
+			return JSON.stringify(resp, null, 2);
+		}
+	});
+}
+/** 创建 role_active_get 工具（读取当前角色）。 */
+function createRoleActiveGetTool(client) {
+	return defineTool({
+		name: "role_active_get",
+		description: "读取当前沟通角色（未设置返回 role_id=null）。",
+		parameters: {},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(_args, _exec) {
+			const resp = await client.roleActiveGet();
+			if (!resp) return "[role_active_get 失败：SGME Gateway 不可达，稍后重试]";
+			return resp.role_id ? `[当前角色：${resp.role_id}${resp.status ? `（${resp.status}）` : ""}]` : "[未设置沟通角色]";
+		}
+	});
+}
+/** 创建 role_active_set 工具（设置当前角色）。 */
+function createRoleActiveSetTool(client) {
+	return defineTool({
+		name: "role_active_set",
+		description: ["设置当前沟通角色（换皮不换芯：只换沟通外皮，记忆池不动）。", "role_id 必须存在（role_list 可见）；用户要求切换角色时调用。"].join(" "),
+		parameters: { role_id: {
+			type: "string",
+			required: true,
+			description: "角色 id（role_list 返回）"
+		} },
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.roleActiveSet(a.role_id);
+			if (!resp) return `[role_active_set 失败：角色不存在或 Gateway 不可达（role_id="${a.role_id}"）]`;
+			return `[已切换角色：${resp.role_id}]`;
+		}
+	});
+}
+/** 创建 memory_get 工具（单条记忆详情）。 */
+function createMemoryGetTool(client) {
+	return defineTool({
+		name: "memory_get",
+		description: ["查询单条 SGME 记忆详情（内容/维度/状态 + 溯源 + 归档链）。", "memory_id 来自 memory_search 结果；用于核实记忆准确性。"].join(" "),
+		parameters: { memory_id: {
+			type: "string",
+			required: true,
+			description: "记忆 id（memory_search 返回）"
+		} },
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.memoryGet(a.memory_id);
+			if (!resp) return `[memory_get 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`;
+			return JSON.stringify(resp, null, 2);
+		}
+	});
+}
+/** 创建 memory_reject 工具（标记记忆不采用）。 */
+function createMemoryRejectTool(client) {
+	return defineTool({
+		name: "memory_reject",
+		description: ["标记记忆「不采用」（用户发现记忆有误时调用；不删除、可恢复，之后不再注入/检索）。", "需带纠错理由；幂等（重复调用更新理由）。"].join(" "),
+		parameters: {
+			memory_id: {
+				type: "string",
+				required: true,
+				description: "记忆 id（memory_search / memory_get 返回）"
+			},
+			reason: {
+				type: "string",
+				description: "纠错理由（用户说明的错误原因）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.memoryReject(a.memory_id, a.reason ?? null);
+			if (!resp) return `[memory_reject 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`;
+			return `[memory_reject 已标记不采用：memory_id=${resp.memory_id}（理由：${resp.reject_reason ?? "用户纠错"}）]`;
 		}
 	});
 }
@@ -2439,7 +2859,7 @@ function apply(ctx, config) {
 		agentId: config.agentId
 	});
 	registerTools({ tools: ctx.tools }, client, config.searchLimit);
-	logger.info("工具已注册：memory_search, wiki_search");
+	logger.info("工具已注册：memory_search, wiki_search, wiki_pages, wiki_page, wiki_page_update, wiki_page_add, signal_*, idea_add, demand_create, project_register, role_*, memory_get/reject");
 	const contextCtx = {
 		on: ctx.on,
 		logger: {
@@ -2455,7 +2875,7 @@ function apply(ctx, config) {
 	}) : null;
 	if (eventSubscriber) {
 		eventSubscriber.start();
-		ctx.effect(() => {
+		ctx.effect(() => () => {
 			eventSubscriber.stop();
 		}, "sgme-event-subscribe");
 		logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`);

@@ -111,10 +111,10 @@ export function apply(ctx: CordisContext, config: Config): void {
     agentId: config.agentId,
   })
 
-  // 1. 注册工具（memory_search + wiki_search）
+  // 1. 注册工具（检索 + 信号 + 三池 + 角色 + 记忆纠错）
   const toolsCtx = { tools: ctx.tools }
   registerTools(toolsCtx, client, config.searchLimit)
-  logger.info('工具已注册：memory_search, wiki_search')
+  logger.info('工具已注册：memory_search, wiki_search, wiki_pages, wiki_page, wiki_page_update, wiki_page_add, signal_*, idea_add, demand_create, project_register, role_*, memory_get/reject')
 
   // 2. 画像首步注入（turn/start 拦截，对齐 dsh-agent-instructions 的 session/event 用法）
   const contextCtx = {
@@ -135,7 +135,7 @@ export function apply(ctx: CordisContext, config: Config): void {
     : null
   if (eventSubscriber) {
     eventSubscriber.start()
-    ctx.effect(() => {
+    ctx.effect(() => () => {
       eventSubscriber.stop()
     }, 'sgme-event-subscribe')
     logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`)
