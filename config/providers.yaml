@@ -25,19 +25,7 @@ providers:
     health_endpoint: /models
     health_interval_s: 60
     vector_capable: false
-  volc-plan:
-    name: volc-plan
-    display_name: 火山方舟（Agent Plan 套餐额度）
-    base_url: https://ark.cn-beijing.volces.com/api/plan/v3
-    api_key_env: VOLC_API_KEY
-    provider_type: openai_compat
-    default_model: doubao-embedding-vision
-    models:
-    - doubao-embedding-vision
-    - doubao-embedding-large
-    timeout_s: 60
-    max_retries: 3
-    vector_capable: true
+# volc-plan（火山方舟）已移除（2026-08-18 用户定：向量统一走硅基流动免费档）
   siliconflow:
     name: siliconflow
     display_name: 硅基流动（向量，免费模型）
