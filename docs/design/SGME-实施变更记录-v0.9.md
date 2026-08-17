@@ -970,3 +970,19 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：NAS 生产容器镜像 sgme:1.0.0b2-nas-key（Up healthy）；数据卷 bind mount 不动；生产 sgme.yaml 挂载卷保留。后续 NAS 提炼用量在 DeepSeek 平台按 SGME 专用 key 归因。NAS 上 src 目录有杂项文件（构建转义残留），可清理。
 
 **文档**：本记录 B76
+
+### B77. dsh-sgme 桥接补 wiki_page_add 工具 + sgme-operations L1 描述补 wiki 触发词（2026-08-17）
+
+**背景**：SGME 知识库读写是高频操作（建手册/记经验），但链路有三个断点：①L1 skill sgme-operations 描述只含运维触发词（SGME挂了/重启/全量提炼），不含「写wiki/建知识库页面」，agent 遇到建页任务不触发加载；②DSH 桥接（sgme-bridge）只有 wiki_search/pages/page/update 四个工具，缺创建工具，建页只能走 HTTP POST（细节在 L2 手册，须现查）；③会话工具缺 wiki_page_add 与 MCP 契约不一致（MCP 已有）。
+
+**改动**：
+- adapters/dsh/sgme-bridge/src/sgme-client.ts：加 WikiPageCreateRequest / WikiPageCreateResponse 类型 + wikiCreatePage 方法（POST /v1/wiki/pages，Agent Key，幂等 upsert）
+- adapters/dsh/sgme-bridge/src/tools.ts：加 createWikiPageAddTool（name=wiki_page_add，title/content 必填，category/tags(逗号分隔)/description/author 可选）+ registerTools 注册
+- adapters/dsh/sgme-bridge/tests/wiki-tools.test.ts：新增 4 用例（工具名/参数传递含 tags 拆分/缺省 null/失败降级）
+- ~/.agents/skills/sgme-operations/SKILL.md：description 扩为「操作手册——运维 + 知识库 wiki 页面读写 + 记忆查询写入 + 信号 + 提炼全流程」，触发词补「写wiki、建知识库页面、记录经验、写踩坑、查记忆、操作手册」；正文加「知识库 wiki 页面读写（高频操作）」指引节（检索→拉全文→POST 建页/wiki_page_update 追加→验证，指向 L2 手册 sgme操作手册-749c4590）
+
+**测试**：pnpm typecheck 通过；vitest 9 文件 107 用例全绿（wiki-tools 18 用例含新增 4）；tsdown 构建成功（lib/index.js 含 wiki_page_add）
+
+**运维影响**：web profile 的 dsh-sgme 为 link: 方式指向 sgme-bridge，重建 lib 后**重启 Web GUI 生效**（常驻进程模块已缓存）；L1 skill 描述改动立即生效（DSH 技能扫描感知，本会话 available_skills 已更新）。NAS 无改动。
+
+**文档**：本记录 B77
