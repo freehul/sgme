@@ -66,7 +66,7 @@ asyncio.run(main())
 
 ## 3. 连接即发现：agent_onboarding 工具
 
-连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 18 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
+连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 29 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
 
 **自助配置（2026-08-13，接入完成标准）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v1`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
 
@@ -197,13 +197,13 @@ content 格式（首行必须）：
 - `refinement.queue_depth / stalled`：提炼水位是否健康
 - 数据源：`stats()` 看记忆/原始文件是否为空
 
-> **两个模型**：SGME 提炼靠 LLM（`DEEPSEEK_API_KEY`），语义检索靠向量 embedding（`VOLC_API_KEY`）——缺了分别降级为「直存」/「纯 BM25」，`health` 里 `llm.available` / `vector.available` 会如实反映，哪个 false 补哪个。
+> **两个模型**：SGME 提炼靠 LLM（主链智谱 GLM-4.7-Flash，免费，`ZHIPU_API_KEY`；备用 deepseek，付费），语义检索靠向量 embedding（硅基流动 BAAI/bge-m3，`SILICONFLOW_API_KEY`）——缺了分别降级为「直存」/「纯 BM25」，`health` 里 `llm.available` / `vector.available` / `vector.connectivity` 会如实反映，哪个 false 补哪个。**Key 缺失时 `health` 的 `model_config.missing_keys` 会列出缺哪些**，按 [docs/guide/免费模型Key申请指南.md](guide/免费模型Key申请指南.md) 申请免费 Key（两平台各约 10 分钟、零充值）。
 
 **LLM 或数据源缺失时，主动提醒用户，表述提供商无关**（不要报任何品牌）：
 
 > LLM 未配置——请配置你所用提供商的 key（见 `config/providers.yaml`）。
 
-环境清单同理：教用户**配置方法与查找路径**（`providers.yaml` 的 `api_key_env` 字段、`VOLC_API_KEY` 等），品牌由用户自己选。你可以诊断「缺什么」，但不要说「去装某某」。
+环境清单同理：教用户**配置方法与查找路径**（`providers.yaml` 的 `api_key_env` 字段、`ZHIPU_API_KEY` / `SILICONFLOW_API_KEY` 等；免费 Key 申请见 docs/guide/免费模型Key申请指南.md）。你可以诊断「缺什么」（health 的 `model_config.missing_keys` 即诊断结果），免费托底场景可直接建议智谱/硅基流动（免费），付费场景品牌由用户自己选。
 
 ## 8. 日常使用范式（四条主线）
 

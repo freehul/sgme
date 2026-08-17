@@ -1004,3 +1004,41 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：重启 Web GUI 生效；下次重启前旧 link 已修复，不会再出现 bundle 解析失败。后续 codegraph 插件改动在 D:/Projects/dsh-codegraph-bridge 独立提交。
 
 **文档**：本记录 B78
+
+---
+
+
+### B79. 免费模型托底产品化——默认配置 + Key 缺失引导 + 向量健康检查（T-55，2026-08-18）
+
+**背景**：免费模型托底调研（2026-08-17 wiki research 页）落地。用户定（2026-08-18）：
+普通用户默认免费双件套（智谱 GLM-4.7-Flash 提炼 + 硅基流动 bge-m3 向量）；本机向量切硅基 1024 维；
+提炼主链改智谱（deepseek 备）；向量不设备用但需健康检查 + 失效日志 + 信号告警。
+
+**改动**：
+1. config/providers.yaml：新增 zhipu 供应商（GLM-4.7-Flash / open.bigmodel.cn/api/paas/v4 / ZHIPU_API_KEY / 200K / 免费托底注释）
+2. config/llm.yaml：refinement 链 [zhipu(主,免费) -> deepseek(备,付费) -> rule]（用户定主链智谱）
+3. config/sgme.yaml：search.vector 切 siliconflow / BAAI/bge-m3（1024 维）（零费用、实名解锁；volc 保留为可选）
+4. sgme/llm/provider.py：注册 zhipu provider（OpenAI 兼容）——修复「未知 provider: zhipu」降级链崩溃（mock 测试抓到，否则 deepseek 失败走 zhipu 节点会 ValueError）
+5. sgme/operations/llm.py：detect_missing_model_keys + model_keys_notice（Key 缺失检测：提炼链节点 + search.vector，只报实际用到；统一提醒文案含两平台申请地址）
+6. sgme/operations/health.py：
+   - health 响应新增 model_config 字段（missing_keys + notice，Key 缺失引导，只增不改既有字段）
+   - 向量块新增 connectivity 探测（check_vector_model_connectivity：POST embeddings 输入 "."、5s 超时、Bearer key、永不抛异常）
+   - 连通失败 -> logger.warning + signal.engine.publish(anomaly_warn, source=vector)（payload 含 provider/model/error/hint）；未配置不发信号（Key 缺失引导已覆盖，防噪音）
+7. sgme/operations/inject.py：_attach_key_missing_note（Key 缺失时 stats.note 附申请提醒；齐全零噪音）
+8. sgme/mcp_server.py：agent_onboarding self_config 附 Key 缺失提醒（指引 docs/guide/免费模型Key申请指南.md）
+9. docs/guide/免费模型Key申请指南.md（新文档：智谱/硅基注册流程 + 限流说明 + 排障速查 + 时效声明）
+10. tests：test_key_missing_guide.py（10 用例）+ test_vector_connectivity.py（8 用例）+ health 契约字段更新（HTTP_TOP_KEYS + model_config、vector 键集合 + connectivity）
+
+**测试**：相关模块 86 passed / 0 failed。真实冒烟：
+- zhipu GLM-4.7-Flash 真实调用成功（usage 117 tokens）；高峰期观察 1305 平台过载限流（免费模型现实，降级链自动处理）
+- 硅基 bge-m3 真实嵌入 172ms（输入 "."，零费用）
+- 降级链真实链路：deepseek 无 key(401) -> zhipu -> rule 顺序正确
+- health connectivity 真实探测 OK（siliconflow/bge-m3 172ms）
+- 向量全量重灌：场景 222 条全成功（7.9 条/s）；记忆 11,568 条进行中
+
+**运维影响**：
+- 向量切换 2048->1024 必须全量重灌（backfill_vectors.py --force + backfill_scene_vectors.py --force）
+- NAS 生产 docker.env 需补 ZHIPU_API_KEY / SILICONFLOW_API_KEY + 重启 sgme 容器（本机验证通过后执行）
+- 主链智谱免费模型高峰期可能 1305 限流 -> 自动降级 deepseek（付费备用）；免费政策随时调整，以官方价格页为准
+
+**文档**：本记录 B79；Backlog T-55；wiki「免费模型托底调研」页（官方口径修正 + 决策）+「免费模型Key申请指南」页（skill/sgme）

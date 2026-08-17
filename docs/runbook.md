@@ -41,8 +41,8 @@ pip install -e ".[dev]"
 | `SGME_ADMIN_KEY` | 管理员 API Key | `dev-admin-key-change-me` |
 | `SGME_AGENT_KEY` | Agent API Key | `dev-agent-key-change-me` |
 | `SGME_BEARER_TOKEN` | Bearer 令牌（传输层鉴权，不设则旁路） | （空，旁路） |
-| `<PROVIDER>_API_KEY` | OpenAI 兼容提供商 API Key（示例：`DEEPSEEK_API_KEY`；env 引用不落盘，见 `config/providers.yaml`） | （空） |
-| `VOLC_API_KEY` | 火山方舟 API Key（向量 embedding，`search.vector.api_key_env` 引用） | （空） |
+| `<PROVIDER>_API_KEY` | OpenAI 兼容提供商 API Key（示例：`ZHIPU_API_KEY`（智谱主链）/ `DEEPSEEK_API_KEY`（付费备用）；env 引用不落盘，见 `config/providers.yaml`） | （空） |
+| `SILICONFLOW_API_KEY` | 硅基流动 API Key（向量 embedding，`search.vector.api_key_env` 引用；BAAI/bge-m3 免费，实名认证后零费用） | （空） |
 | `SGME_MCP_PORT` | MCP 端口 | `9913` |
 | `SGME_MCP_DISABLED` | 设为 `1` 关闭 MCP | （空） |
 
@@ -96,26 +96,26 @@ INFO:     Uvicorn running on http://127.0.0.1:9910
 ### 4.2 生产模式（接 OpenAI 兼容 LLM）
 
 1. **准备 LLM 提供商**（任选 OpenAI 兼容提供商，连接字段见 `config/providers.yaml`）：
-   - 本地示例：启动 LM Studio（端口 `1014`，模型如 `qwen/qwen3.5-9b`）
-   - 云端示例：任意 OpenAI 兼容云端 API（按 providers.yaml 的 `api_key_env` 配置环境变量）
+   - 主链示例：智谱 GLM-4.7-Flash（永久免费，`ZHIPU_API_KEY`，见 providers.yaml 的 zhipu 条目；申请见 docs/guide/免费模型Key申请指南.md）
+   - 备用示例：任意 OpenAI 兼容付费 API（如 deepseek，`DEEPSEEK_API_KEY`）
    - 模型名禁止含 `pro`/`reasoner`/`thinking`，禁止 `gemma-4-12b-qat`
 
 2. **配置降级链**：编辑 `config/llm.yaml`（只写链结构，连接字段由 providers.yaml 注入——provider 名即 providers.yaml 键名）：
    ```yaml
    chains:
      refinement:
-       - provider: deepseek        # 示例：云端 OpenAI 兼容提供商（可替换为任意 OpenAI 兼容提供商）
+       - provider: zhipu          # 主链（2026-08-18 用户定）：GLM-4.7-Flash 永久免费，限流/故障自动降级
+         model: glm-4.7-flash
+       - provider: deepseek        # 备用（付费）：主链不可用时兜底
          model: deepseek-v4-flash
-       - provider: lm-studio       # 示例：本地 OpenAI 兼容服务（离线兜底）
-         model: qwen/qwen3.5-9b
        - provider: rule
          action: drop_batch
    ```
 
 3. **设置提供商 Key**（按 providers.yaml 的 `api_key_env` 字段，示例）：
    ```bash
-   export DEEPSEEK_API_KEY="sk-..."   # 示例：云端提供商 key
-   export VOLC_API_KEY="..."          # 火山方舟 key（向量 embedding 用，见 §12）
+   export ZHIPU_API_KEY="..."          # 智谱主链 key（GLM-4.7-Flash 免费，申请见 docs/guide/免费模型Key申请指南.md）
+   export SILICONFLOW_API_KEY="..."   # 硅基流动 key（向量 embedding 用，BAAI/bge-m3 免费，见 §12）
    ```
 
 4. **启动 SGME**：
@@ -174,7 +174,18 @@ python -c "import requests; print(requests.get('$SGME_HTTP_BASE/v1/health').json
     "available": true,
     "engine": "sqlite-vec",
     "memory_vectors": 0,
-    "scene_vectors": 0
+    "scene_vectors": 0,
+    "connectivity": {
+      "available": true,
+      "provider": "siliconflow",
+      "model": "BAAI/bge-m3",
+      "latency_ms": 172,
+      "error": null
+    }
+  },
+  "model_config": {
+    "missing_keys": [],
+    "notice": ""
   }
 }
 ```
@@ -365,7 +376,7 @@ A: 摘要文件 `data/tier0_summary.json` 缺失或超 48h 过期。手动触发
 
 ### Q: 向量检索降级为纯 BM25
 
-A: 向量检索依赖 sqlite-vec 扩展 + 向量服务（`config/sgme.yaml` `search.vector`：火山方舟 doubao-embedding-vision，`VOLC_API_KEY`）。任一不可用即降级。查看日志：
+A: 向量检索依赖 sqlite-vec 扩展 + 向量服务（`config/sgme.yaml` `search.vector`：硅基流动 BAAI/bge-m3，`SILICONFLOW_API_KEY`，1024 维）。任一不可用即降级。查看日志（health 的 `vector.connectivity` 字段显示模型连通性，失效会发 anomaly_warn 信号）：
 - `sqlite-vec load_extension 失败` → 走 numpy 余弦降级路径
 - `embed: 连接错误` → 向量服务不可达，走纯 BM25
 
@@ -378,7 +389,7 @@ A: 恢复前系统会自动再备份当前状态（`pre_restore_` 前缀快照�
 SGME Server 同进程提供 MCP 出口（streamable HTTP transport，端口 9913），与 HTTP API（9910）功能等价。
 
 - 端点：`http://<host>:9913/mcp`
-- 工具集（13）：append / inject / search / memory_get / memory_reject / refine_trigger / refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding
+- 工具集（29）：append / inject / search / memory_get / memory_reject / refine_trigger / refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding / wiki_page / wiki_search / wiki_pages / idea_add / demand_create / project_register / role_list / role_assemble / role_active_get / role_active_set / signal_pull / signal_claim / signal_ack / refine_status 等（以 agent_onboarding 返回的 ONBOARDING_TOOLS 为准）
 - 连接即发现：接入后先调 `agent_onboarding` 工具获取版本 / 能力清单 / 快速上手指引（self-serve，无需人工配置）
 - 用途：SCSM 或其他 Agent 经标准 MCP 协议调用 SGME（跨机部署无需改配置文件，配置经 config_update 远程设置）
 - 端口可配：环境变量 `SGME_MCP_PORT`（默认 9913）；`SGME_MCP_DISABLED=1` 可关闭
@@ -531,9 +542,9 @@ cat data/tier0_summary.json
 
 ### 12.2 Embedding 生成
 
-- **模型**：`doubao-embedding-vision`（火山方舟，2048 维；`config/sgme.yaml` `search.vector` 配置）
-- **Key**：`VOLC_API_KEY` 环境变量（Bearer 头；daemon 服务环境需注入）
-- **端点**：火山方舟 plan 通道 `https://ark.cn-beijing.volces.com/api/plan/v3`（必须用 plan 通道端点，标准通道会产生额外费用）
+- **模型**：`BAAI/bge-m3`（硅基流动，1024 维；`config/sgme.yaml` `search.vector` 配置；免费模型需实名认证，调用零费用）
+- **Key**：`SILICONFLOW_API_KEY` 环境变量（Bearer 头；daemon 服务环境需注入）
+- **端点**：硅基流动 `https://api.siliconflow.cn/v1`（OpenAI 兼容 /embeddings）
 - **存储**：`memory_vectors(memory_id, embedding BLOB, model, dims, embedded_at)`
 - **触发时机**：`refine_file` 完成后自动为新记忆生成 embedding
 - **dims 字段**：记录向量维度，模型切换后判断重嵌
@@ -546,9 +557,9 @@ cat data/tier0_summary.json
 search:
   vector:
     enabled: true
-    model: doubao-embedding-vision
-    base_url: https://ark.cn-beijing.volces.com/api/plan/v3
-    api_key_env: VOLC_API_KEY
+    model: BAAI/bge-m3
+    base_url: https://api.siliconflow.cn/v1
+    api_key_env: SILICONFLOW_API_KEY
   rrf:
     k: 60
 ```
@@ -703,7 +714,14 @@ print(f"pre_restore: {r.json()['pre_restore_snapshot']}")
     "engine": "sqlite-vec",
     "memory_vectors": 12,
     "scene_vectors": 3,
-    "reason": null
+    "reason": null,
+    "connectivity": {
+      "available": true,
+      "provider": "siliconflow",
+      "model": "BAAI/bge-m3",
+      "latency_ms": 172,
+      "error": null
+    }
   },
   "refinement": {
     "watermark_age_sec": 120,
@@ -711,6 +729,10 @@ print(f"pre_restore: {r.json()['pre_restore_snapshot']}")
     "last_refined_at": "2024-01-01T10:00:00Z",
     "stalled": false,
     "heartbeat_ok": true
+  },
+  "model_config": {
+    "missing_keys": [],
+    "notice": ""
   }
 }
 ```
@@ -735,7 +757,7 @@ git clone https://gitee.com/freehul/sgme.git SGME
 cd SGME
 
 # 密钥：复制 .env.example 为 docker.env 并填入真实值
-# （DEEPSEEK_API_KEY / VOLC_API_KEY / SGME_ADMIN_KEY / SGME_AGENT_KEY，docker.env 已被 gitignore，勿提交）
+# （ZHIPU_API_KEY / SILICONFLOW_API_KEY / SGME_ADMIN_KEY / SGME_AGENT_KEY，docker.env 已被 gitignore，勿提交）
 cp .env.example docker.env
 ```
 

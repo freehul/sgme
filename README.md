@@ -115,6 +115,11 @@ python -m sgme
 # Without them, built-in default keys are used (first-run local experience only,
 # startup warns; once config/.env is set, default keys return 403)
 #   SGME_BEARER_TOKEN optional: transport-layer token, off by default (localhost bypass)
+# Model keys (optional, free tier supported): refinement uses zhipu GLM-4.7-Flash (free) as primary
+#   and deepseek as backup; vector search uses siliconflow BAAI/bge-m3 (free). When a key is missing,
+#   /v1/health returns model_config.missing_keys — apply free keys per
+#   docs/guide/免费模型Key申请指南.md (智谱 GLM-4.7-Flash 永久免费 / 硅基流动 bge-m3 零费用).
+#   ZHIPU_API_KEY=<zhipu>   SILICONFLOW_API_KEY=<siliconflow>
 
 # 4. Run tests
 pytest tests/ -q
