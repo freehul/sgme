@@ -229,6 +229,11 @@ def call_deepseek(prompt: str, provider_cfg: dict, rules: dict, client: httpx.Cl
     return call_openai_compatible(prompt, provider_cfg, rules, client)
 
 
+def call_zhipu(prompt: str, provider_cfg: dict, rules: dict, client: httpx.Client | None = None) -> tuple[str, dict]:
+    """zhipu provider（免费托底，T-53 2026-08-18）：OpenAI 兼容 /chat/completions。"""
+    return call_openai_compatible(prompt, provider_cfg, rules, client)
+
+
 def call_rule_drop_batch(prompt: str, provider_cfg: dict, rules: dict, client: httpx.Client | None = None) -> tuple[str, dict]:
     """rule 兜底：drop_batch。
 
@@ -243,6 +248,7 @@ _PROVIDERS = {
     "lm-studio": call_lm_studio,
     "lm_studio": call_lm_studio,
     "deepseek": call_deepseek,
+    "zhipu": call_zhipu,
     "rule": call_rule_drop_batch,
 }
 

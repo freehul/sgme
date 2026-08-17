@@ -44,6 +44,64 @@ _PROVIDER_FIELDS = (
     "timeout_s", "health_endpoint", "display_name", "models", "vector_capable",
 )
 
+# ---------- 模型 Key 缺失检测（T-53 2026-08-18：免费托底新用户引导） ----------
+
+# 统一提醒文案（health / inject 共用；{missing} 占位符由调用方填充）
+MODEL_KEY_MISSING_NOTICE = (
+    "SGME 模型配置缺失（{missing}）：LLM 提炼 / 向量检索将降级。"
+    "申请免费 Key：智谱 GLM-4.7-Flash（https://open.bigmodel.cn 手机号注册，永久免费）→ ZHIPU_API_KEY；"
+    "硅基流动 bge-m3（https://cloud.siliconflow.cn 实名后免费）→ SILICONFLOW_API_KEY。"
+    "完整流程见 docs/guide/免费模型Key申请指南.md"
+)
+
+
+def detect_missing_model_keys(cfg: dict[str, Any]) -> list[dict[str, str]]:
+    """检测提炼链与向量端点的模型 Key 缺失（T-53：新用户引导）。
+
+    遍历 refinement 链节点（rule 除外）+ search.vector，检查 api_key_env
+    引用的环境变量是否缺失/为空。**只报告实际会用到**的缺失——未上链的
+    供应商不检测（避免噪音）；rule 节点无 key 语义跳过。
+
+    Returns:
+        [{purpose, provider, model, key_env}, ...]；空列表 = 全部就绪。
+    """
+    missing: list[dict[str, str]] = []
+    llm = cfg.get("llm") or {}
+    chains = llm.get("chains") or cfg.get("chains") or {}
+    for node in chains.get("refinement", []):
+        if node.get("provider") == "rule":
+            continue
+        key_env = node.get("api_key_env") or ""
+        if key_env and not os.environ.get(key_env):
+            missing.append({
+                "purpose": "refinement",
+                "provider": str(node.get("provider", "")),
+                "model": str(node.get("model", "")),
+                "key_env": key_env,
+            })
+    vec = (cfg.get("search") or {}).get("vector") or {}
+    vec_env = vec.get("api_key_env") or ""
+    if vec.get("enabled", True) and vec_env and not os.environ.get(vec_env):
+        missing.append({
+            "purpose": "vector",
+            "provider": str(vec.get("provider", "")),
+            "model": str(vec.get("model", "")),
+            "key_env": vec_env,
+        })
+    return missing
+
+
+def model_keys_notice(cfg: dict[str, Any]) -> str:
+    """缺失 Key 的统一提醒文案；空字符串 = Key 齐全（零噪音，不提示）。"""
+    missing = detect_missing_model_keys(cfg)
+    if not missing:
+        return ""
+    desc = "、".join(
+        f"{m['key_env']}（{'LLM 提炼' if m['purpose'] == 'refinement' else '向量检索'}）"
+        for m in missing
+    )
+    return MODEL_KEY_MISSING_NOTICE.format(missing=desc)
+
 
 def _file_providers_with_flags(providers: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """给 providers.yaml 连接表补充展示字段（vector_capable/models 等）。
