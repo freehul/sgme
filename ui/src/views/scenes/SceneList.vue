@@ -179,6 +179,19 @@ onMounted(load)
             </div>
           </section>
 
+          <section v-if="selected.related_memories?.length" class="detail-block">
+            <h4>关联记忆（{{ selected.memories_count }}）</h4>
+            <ul class="rel-list">
+              <li v-for="rm in selected.related_memories" :key="rm.memory_id" class="rel-item">
+                <p class="rel-content">{{ rm.content }}</p>
+                <div class="meta">
+                  <span v-for="d in rm.dimensions" :key="d" class="dim-tag">{{ d }}</span>
+                  <span v-if="!rm.dimensions.length" class="dim-muted">—</span>
+                </div>
+              </li>
+            </ul>
+          </section>
+
           <section class="detail-block">
             <h4>操作</h4>
             <div class="status-op">

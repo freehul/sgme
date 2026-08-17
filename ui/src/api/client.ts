@@ -59,7 +59,12 @@ const AGENT_KEY_PATHS = ['/v1/wiki/', '/v1/search', '/v1/admin/roles/', '/v1/adm
 function pickKey(path: string, explicit?: string): string {
   if (explicit) return explicit
   const needsAgent = AGENT_KEY_PATHS.some((p) => path.startsWith(p))
-  return needsAgent ? getAgentKey() : getAdminKey()
+  if (needsAgent) {
+    // Agent Key 优先；未填时回退 Admin Key（2026-08-18：后端 is_agent
+    // 接受 admin key，用户只填一个 key 也能用检索/wiki/角色等 agent 端点）
+    return getAgentKey() || getAdminKey()
+  }
+  return getAdminKey()
 }
 
 // 统一错误结构 {error: {code, message, details?}}

@@ -17,6 +17,7 @@ const routes = [
       { path: 'scenes', name: 'scenes', component: () => import('./views/scenes/SceneList.vue'), meta: { title: '场景管理' } },
       { path: 'sessions', name: 'sessions', component: () => import('./views/sessions/SessionView.vue'), meta: { title: '会话原文' } },
       { path: 'search', name: 'search', component: () => import('./views/search/SearchView.vue'), meta: { title: '统一检索' } },
+      { path: 'profile', name: 'profile', component: () => import('./views/profile/ProfileView.vue'), meta: { title: '用户画像' } },
 
       // 创意与需求（次要分组）
       { path: 'ideas', name: 'ideas', component: () => import('./views/ideas/IdeaList.vue'), meta: { title: '创意池' } },

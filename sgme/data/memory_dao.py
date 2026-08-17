@@ -218,6 +218,10 @@ def get_memory(conn: sqlite3.Connection, memory_id: str) -> dict | None:
             (memory_id,),
         ).fetchall()
     ]
+    # dimensions 别名（2026-08-18 修复）：列表 API（list_memories_page）返回
+    # dimensions、详情 API（get_memory）返回 tags——字段名不一致导致 WebUI
+    # 详情页读 detail.memory.dimensions 拿不到维度。加别名统一契约（只增不改）。
+    mem["dimensions"] = mem["tags"]
     mem["sources"] = [
         {"source_ref": r["source_ref"], "source_type": r["source_type"]}
         for r in conn.execute(
