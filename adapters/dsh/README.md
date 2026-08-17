@@ -100,10 +100,11 @@ dsh 对话回合结束 → session/event(turn/end) → sgme-bridge
 - TS 构建链对 SGME 项目（纯 Python）是新增依赖——`sgme-bridge/` 自带 `package.json`，`lib/` 产物提交，运行时不要求宿主装 pnpm
 - 全新 profile 首次 `dsh plugin add` 可能报 `ERR_PNPM_ADDING_TO_ROOT`（pnpm workspace-root 守卫，pnpm 9.x 全局 + fresh profile 无 `ignore-workspace-root-check` 时触发；与插件本身无关，任意插件都会撞）——在 profile 目录 `.npmrc` 加 `ignore-workspace-root-check=true`（或 pnpm-workspace.yaml 同键，pnpm ≥10 生效）后重跑即可；本项目根 `package.json` 为 `dsh-sgme` git 安装包装（2026-08-16 B68），`dsh plugin add github:freehul/sgme` 与 `link:` 同机制
 
-## codegraph-bridge（dsh-codegraph 插件，2026-08-16 纳入）
+## codegraph-bridge（dsh-codegraph 插件，2026-08-17 迁出独立仓库）
 
-- 目录：`codegraph-bridge/` — CodeGraph 本地代码知识图谱桥接（explore/query/node/status 4 工具）
-- 源码随本项目 git 管理（与 sgme-bridge 同构）；web profile link 指向本项目内副本
-- 用户级技能：`C:/Users/LEO/.agents/skills/codegraph/SKILL.md`（可重建源：`codegraph-bridge/skills/codegraph/SKILL.md`）
-- 依赖：npm 全局 `@colbymchenry/codegraph`（npm-shim.js）；项目需 `codegraph index` 建索引（`.codegraph/codegraph.db`）
+- **2026-08-17 起不再随本项目管理**：独立仓库 `D:/Projects/dsh-codegraph-bridge`（git 独立成仓，freehul 署名）
+- 历史：2026-08-16 曾纳入本项目（提交 98d4d3a），因其是独立 DSH 插件而非 SGME 产物，2026-08-17 迁出（提交 a5369d5）；历史提交保留可追溯
+- 功能：CodeGraph 本地代码知识图谱桥接（explore/query/node/status 4 工具）
+- 用户级技能可重建源：`D:/Projects/dsh-codegraph-bridge/skills/codegraph/SKILL.md`
+- 依赖：npm 全局 `@colbymchenry/codegraph`（npm-shim.js 自动探测，DSH_CODEGRAPH_BIN 可覆盖）；项目需 `codegraph index` 建索引（`.codegraph/codegraph.db`）
 - 改动后：`dsh plugin --profile web install` + 重启 web 生效
