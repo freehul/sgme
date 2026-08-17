@@ -205,6 +205,7 @@ onMounted(() => { loadDims(); load() })
                 <th class="col-idx">#</th>
                 <th class="col-dot">状态</th>
                 <th>内容</th>
+                <th>维度</th>
               </tr>
             </thead>
             <tbody>
@@ -223,6 +224,10 @@ onMounted(() => { loadDims(); load() })
                   />
                 </td>
                 <td class="content-cell">{{ m.content }}</td>
+                <td class="dim-cell">
+                  <span v-for="d in m.dimensions || []" :key="d" :class="dimClass(d)">{{ d }}</span>
+                  <span v-if="!(m.dimensions || []).length" class="dim-muted">—</span>
+                </td>
               </tr>
             </tbody>
           </table>

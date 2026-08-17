@@ -122,6 +122,7 @@ onMounted(load)
                 <th class="col-idx">#</th>
                 <th class="col-dot">状态</th>
                 <th>标题</th>
+                <th>关联</th>
               </tr>
             </thead>
             <tbody>
@@ -140,6 +141,10 @@ onMounted(load)
                   />
                 </td>
                 <td class="content-cell">{{ sceneTitle(sc) }}</td>
+                <td class="rel-cell">
+                  <span v-if="sc.memories_count" class="rel-tag">{{ sc.memories_count }} 记忆</span>
+                  <span v-else class="dim-muted">—</span>
+                </td>
               </tr>
             </tbody>
           </table>
