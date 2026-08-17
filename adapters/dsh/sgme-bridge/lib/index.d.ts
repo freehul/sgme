@@ -62,6 +62,7 @@ interface Config {
   turnBatchSize: number;
   evolveEnabled?: boolean;
   evolveMinRounds?: number;
+  eventSubscribe?: boolean;
 }
 declare const Config: Schema<Config>;
 /**

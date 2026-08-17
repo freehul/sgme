@@ -13,6 +13,7 @@
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SgmeClient, InjectResponse } from './sgme-client.js'
+import type { SgmeEvent, SgmeEventSubscriber } from './events.js'
 
 /** 注入模式（对应 templates/{mode}.yaml）。 */
 export type InjectMode = 'daily' | 'full' | 'coding' | 'work'
@@ -23,6 +24,7 @@ export interface ContextConfig {
   injectMaxTokens: number          // 协议接受但不消费，留作 v2 预算控制参考
   searchLimit: number              // 相关记忆检索条数
   projectHint?: string             // 项目名提示（用于相关记忆检索，可空）
+  eventSubscriber?: SgmeEventSubscriber | null  // 2026-08-18：事件订阅器（SSE），有未消费事件时注入提醒
 }
 
 /**
@@ -59,6 +61,23 @@ export interface ContextInjectionCtx {
 
 /** 注入消息源标记（对齐 agent-instructions 的 source.kind=plugin 约定）。 */
 const PLUGIN_NAME = 'dsh-sgme'
+
+/** 拼接事件提醒文本（2026-08-18 SSE 订阅：未消费事件提示 agent 调 signal_pull 消费）。 */
+function buildEventNoticeText(events: SgmeEvent[]): string {
+  const care = events.filter((e) => e.type.startsWith('care_'))
+  const warn = events.filter((e) => e.type === 'anomaly_warn')
+  const other = events.filter((e) => !e.type.startsWith('care_') && e.type !== 'anomaly_warn')
+  const parts: string[] = []
+  if (care.length) parts.push(`关怀信号 ${care.length} 条`)
+  if (warn.length) parts.push(`异常告警 ${warn.length} 条`)
+  if (other.length) parts.push(`其他事件 ${other.length} 条`)
+  return [
+    '【SGME 事件提醒】',
+    `有未处理事件（${parts.join('、')}）。`,
+    '请调 signal_pull 拉取并按信号消费纪律处理：signal_claim 原子认领 → 主动关怀/处理 → signal_ack 回执。',
+    '不阻塞当前任务，处理完即可。',
+  ].join('\n')
+}
 
 /** 相同内容判定（对齐 agent-instructions sameContextPayload：content + source 全等）。 */
 function sameContextPayload(left: unknown, right: unknown): boolean {
@@ -123,9 +142,24 @@ export function registerContextInjection(
 
   const handler = async (payload: PreStepPayload, next: () => Promise<PreStepDecision>): Promise<PreStepDecision> => {
     const decision = await next()
+    if (decision.kind === 'reject') return decision
+
+    // 事件提醒（2026-08-18 SSE 订阅）：画像已注入后，有未消费事件时每轮独立注入
+    const pendingEvents = config.eventSubscriber?.pendingEvents() ?? []
+    if (pendingEvents.length && injected) {
+      const evText = buildEventNoticeText(pendingEvents)
+      const evMsg = createUserMessage({
+        content: [{ type: 'text', text: evText }],
+        source: { kind: 'plugin', plugin: PLUGIN_NAME },
+      })
+      if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
+        ctx.logger.info(`[SGME 事件提醒] 注入 ${pendingEvents.length} 条事件提醒（step ${payload.step}）`)
+        return { kind: 'enter', messages: [evMsg, ...decision.messages] }
+      }
+    }
+
     if (injected) return decision
     if (payload.step !== 1) return decision
-    if (decision.kind === 'reject') return decision
 
     // 项目提示：显式配置 > 环境变量 > 会话 cwd 目录名推断
     const projectHint = config.projectHint
@@ -163,8 +197,14 @@ export function registerContextInjection(
 
     injected = true  // 成功注入后才置位
 
+    // 事件提醒（2026-08-18）：有未消费事件时附加到画像注入文本
+    const pending = config.eventSubscriber?.pendingEvents() ?? []
+    const injectText = pending.length
+      ? profileCache.text + '\n\n' + buildEventNoticeText(pending)
+      : profileCache.text
+
     const desired = createUserMessage({
-      content: [{ type: 'text', text: profileCache.text }],
+      content: [{ type: 'text', text: injectText }],
       source: { kind: 'plugin', plugin: PLUGIN_NAME },
     })
 
