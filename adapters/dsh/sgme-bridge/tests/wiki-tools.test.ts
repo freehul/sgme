@@ -5,7 +5,7 @@
  * 结果格式化与降级路径。
  */
 import { describe, it, expect, vi } from 'vitest'
-import { createWikiSearchTool, createWikiPagesTool, createWikiPageTool, createWikiPageUpdateTool } from '../src/tools.js'
+import { createWikiSearchTool, createWikiPagesTool, createWikiPageTool, createWikiPageUpdateTool, createWikiPageAddTool } from '../src/tools.js'
 import type { SgmeClient, WikiPagesResponse, WikiPage } from '../src/sgme-client.js'
 
 type ToolLike = {
@@ -174,6 +174,61 @@ describe('wiki_page_update tool', () => {
     const client = makeMockClient({ wikiUpdatePage: vi.fn(async () => null) })
     const tool = asToolLike(createWikiPageUpdateTool(client))
     const result = (await tool.execute({ page_id: 'nope', content: 'x' })) as string
+    expect(result).toContain('失败')
+  })
+})
+
+describe('wiki_page_add tool', () => {
+  it('工具名和描述正确', () => {
+    const tool = asToolLike(createWikiPageAddTool(makeMockClient({})))
+    expect(tool.name).toBe('wiki_page_add')
+    expect(tool.description).toContain('幂等 upsert')
+  })
+
+  it('execute 调 wikiCreatePage 并返回含 status 的结果', async () => {
+    const client = makeMockClient({
+      wikiCreatePage: vi.fn(async () => ({ page_id: 'p-new-123', status: 'created' })),
+    })
+    const tool = asToolLike(createWikiPageAddTool(client))
+    const result = (await tool.execute({
+      title: '测试手册', content: '正文', category: 'skill/test',
+      tags: 'sgme,踩坑', author: 'test-agent',
+    })) as string
+
+    expect(client.wikiCreatePage).toHaveBeenCalledWith({
+      title: '测试手册',
+      content: '正文',
+      category: 'skill/test',
+      tags: ['sgme', '踩坑'],
+      description: null,
+      author: 'test-agent',
+    })
+    expect(result).toContain('已写入')
+    expect(result).toContain('page_id=p-new-123')
+    expect(result).toContain('status=created')
+  })
+
+  it('tags 未传时传 null', async () => {
+    const client = makeMockClient({
+      wikiCreatePage: vi.fn(async () => ({ page_id: 'p2', status: 'updated' })),
+    })
+    const tool = asToolLike(createWikiPageAddTool(client))
+    await tool.execute({ title: 'T', content: 'C' })
+
+    expect(client.wikiCreatePage).toHaveBeenCalledWith({
+      title: 'T',
+      content: 'C',
+      category: null,
+      tags: null,
+      description: null,
+      author: null,
+    })
+  })
+
+  it('execute 失败（返回 null）时返回失败提示', async () => {
+    const client = makeMockClient({ wikiCreatePage: vi.fn(async () => null) })
+    const tool = asToolLike(createWikiPageAddTool(client))
+    const result = (await tool.execute({ title: 'T', content: 'C' })) as string
     expect(result).toContain('失败')
   })
 })

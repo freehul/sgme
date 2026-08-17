@@ -286,6 +286,77 @@ export function createWikiPageUpdateTool(client: SgmeClient) {
 }
 
 /**
+ * 创建 wiki_page_add 工具（写入新知识库页面，幂等 upsert）。
+ *
+ * W5（方案 v0.3 §5.5）：L2 写回层——模型直接建手册/经验页，
+ * 同 title+content 重复提交命中同一 page_id 更新（不重复建页）。
+ */
+export function createWikiPageAddTool(client: SgmeClient) {
+  return defineTool({
+    name: 'wiki_page_add',
+    description: [
+      '创建 SGME 知识库页面（直接写入，不走 LLM 提炼；幂等 upsert）。',
+      'title/content 必填；category 用 skill/<domain>（技能/手册）或 design（设计方案）。',
+      '同 title+content 重复提交命中同一 page_id 更新，不重复建页；写入后立即可被 wiki_search 检索。',
+    ].join(' '),
+    parameters: {
+      title: {
+        type: 'string',
+        required: true,
+        description: '页面标题（如 "XXX 操作手册"）',
+      },
+      content: {
+        type: 'string',
+        required: true,
+        description: '页面正文（markdown）',
+      },
+      category: {
+        type: 'string',
+        description: '分类（如 skill/sgme、design；可选）',
+      },
+      tags: {
+        type: 'string',
+        description: '标签，逗号分隔（可选，如 "sgme,运维,踩坑"）',
+      },
+      description: {
+        type: 'string',
+        description: '摘要（索引用，可选）',
+      },
+      author: {
+        type: 'string',
+        description: '作者标识（可选，如 agent 名）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as {
+        title: string
+        content: string
+        category?: string
+        tags?: string
+        description?: string
+        author?: string
+      }
+      const resp = await client.wikiCreatePage({
+        title: a.title,
+        content: a.content,
+        category: a.category ?? null,
+        tags: a.tags ? a.tags.split(',').map((t) => t.trim()).filter(Boolean) : null,
+        description: a.description ?? null,
+        author: a.author ?? null,
+      })
+      if (!resp) {
+        return `[wiki_page_add 失败：Gateway 不可达或写入失败（title="${a.title}"）]`
+      }
+      return `[wiki_page_add 已写入：page_id=${resp.page_id} status=${resp.status}]`
+    },
+  })
+}
+
+/**
  * 格式化检索结果为模型可读文本。
  *
  * 格式（对齐 reasonix fetch_search 输出）：
@@ -329,6 +400,7 @@ export function registerTools(
   ctx.tools.register(createWikiPagesTool(client, defaultLimit))
   ctx.tools.register(createWikiPageTool(client))
   ctx.tools.register(createWikiPageUpdateTool(client))
+  ctx.tools.register(createWikiPageAddTool(client))
   ctx.tools.register(createSignalPullTool(client))
   ctx.tools.register(createSignalClaimTool(client))
   ctx.tools.register(createSignalAckTool(client))

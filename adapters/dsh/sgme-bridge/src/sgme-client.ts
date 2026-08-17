@@ -178,6 +178,27 @@ export interface WikiPageUpdateResponse {
   status: string              // appended / updated / noop
 }
 
+/** /v1/wiki/pages 创建请求体（POST，T-55：原样入库，幂等 upsert）。 */
+export interface WikiPageCreateRequest {
+  title: string
+  content: string
+  category?: string | null
+  tags?: string[] | null
+  source_type?: string | null // text / file / url
+  source_url?: string | null
+  source_file?: string | null
+  description?: string | null // L1 摘要（描述即索引）
+  author?: string | null
+  status?: string | null
+  supersedes?: string | null
+}
+
+/** /v1/wiki/pages 创建响应体。 */
+export interface WikiPageCreateResponse {
+  page_id: string
+  status: string              // created / updated
+}
+
 /** /v1/wiki/search 结果项（执行通道：含 skill 手册，不过滤；FTS5 BM25 + LIKE 兜底）。 */
 export interface WikiSearchResult {
   page_id: string
@@ -459,6 +480,20 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] wikiUpdatePage failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 创建 wiki 页面（POST /v1/wiki/pages，Agent Key；T-55 幂等 upsert）。失败返回 null。 */
+  async wikiCreatePage(body: WikiPageCreateRequest): Promise<WikiPageCreateResponse | null> {
+    const [data, err] = await this.post<WikiPageCreateResponse>(
+      '/v1/wiki/pages',
+      body,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] wikiCreatePage failed: ${err}`)
       return null
     }
     return data
