@@ -34,8 +34,8 @@ cp .env.example docker.env
 # 2. 构建并启动
 docker compose up -d --build
 
-# 3. 验证
-curl http://localhost:9910/v1/health
+# 3. 验证（host 按部署机地址：本机 localhost / NAS IP，或 ~/.sgme/install.json 的 http.host）
+curl http://<sgme-host>:9910/v1/health
 # 期望：{"status":"ok","llm":{"available":true},...}
 ```
 

@@ -46,6 +46,21 @@ pip install -e ".[dev]"
 | `SGME_MCP_PORT` | MCP 端口 | `9913` |
 | `SGME_MCP_DISABLED` | 设为 `1` 关闭 MCP | （空） |
 
+**连接地址约定（客户端访问 SGME 统一用变量，勿硬编码主机）**：SGME 可能跑在本机或 NAS，主机地址唯一真相是 `~/.sgme/install.json`（`http.host` / `http.port` / `mcp.host` / `mcp.port`）或环境变量 `SGME_HTTP_URL` / `SGME_MCP_URL`。**本文所有示例统一引用以下两个变量**，换机器/迁移只需改一处：
+
+```bash
+# bash / curl 示例统一引用（SGME_HTTP_URL 优先，缺省回退本机开发默认）
+export SGME_HTTP_BASE="${SGME_HTTP_URL:-http://localhost:9910}"
+export SGME_MCP_URL="${SGME_MCP_URL:-http://localhost:9913/mcp}"
+```
+
+```python
+# python 示例统一引用
+import os
+SGME_HTTP_BASE = os.environ.get("SGME_HTTP_URL", "http://localhost:9910")  # NAS：export SGME_HTTP_URL=http://192.168.10.10:9910
+SGME_MCP_URL = os.environ.get("SGME_MCP_URL", "http://localhost:9913/mcp")
+```
+
 **默认开发 Key 仅限本机回环来源**：`dev-agent-key-change-me` / `dev-admin-key-change-me` 未设置环境变量时的内置兜底值，只允许 127.0.0.1 / ::1 / localhost 调用，**非本机来源一律 403**（防仓库公开后默认 Key 被远程滥用）。自定义 Key（环境变量设置，或经 `/v1/admin/agents/register` 签发的 `agt_*`）不受限。
 
 **生产部署务必修改默认 Key：**
@@ -135,7 +150,7 @@ sc stop SGME && sc delete SGME
 ### 5.1 健康检查
 
 ```bash
-python -c "import requests; print(requests.get('http://127.0.0.1:9910/v1/health').json())"
+python -c "import requests; print(requests.get('$SGME_HTTP_BASE/v1/health').json())"
 ```
 
 预期输出（新建库首次启动）：
@@ -169,7 +184,7 @@ python -c "import requests; print(requests.get('http://127.0.0.1:9910/v1/health'
 ```python
 import requests
 
-resp = requests.post("http://127.0.0.1:9910/v1/append",
+resp = requests.post(f"{SGME_HTTP_BASE}/v1/append",
     headers={"X-API-Key": "dev-agent-key-change-me"},   # 本机开发默认 key；远程须自定义
     json={
         "session_key": "test-session",
@@ -182,7 +197,7 @@ print(resp.json())
 ### 5.3 触发提炼
 
 ```python
-resp = requests.post("http://127.0.0.1:9910/v1/admin/refine/trigger",
+resp = requests.post(f"{SGME_HTTP_BASE}/v1/admin/refine/trigger",
     headers={"X-API-Key": "dev-admin-key-change-me"},   # 本机开发默认 key
     json={"file_id": "<上一步返回的 file_id>"})
 print(resp.json())
@@ -191,7 +206,7 @@ print(resp.json())
 ### 5.4 注入画像
 
 ```python
-resp = requests.post("http://127.0.0.1:9910/v1/inject",
+resp = requests.post(f"{SGME_HTTP_BASE}/v1/inject",
     headers={"X-API-Key": "dev-agent-key-change-me"},
     json={"mode": "daily"})
 print(resp.json())
@@ -200,7 +215,7 @@ print(resp.json())
 ### 5.5 搜索记忆
 
 ```python
-resp = requests.post("http://127.0.0.1:9910/v1/search",
+resp = requests.post(f"{SGME_HTTP_BASE}/v1/search",
     headers={"X-API-Key": "dev-agent-key-change-me"},
     json={"query": "记忆引擎", "scopes": ["memory"]})
 print(resp.json())
@@ -376,7 +391,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 async def t():
-    async with streamablehttp_client("http://127.0.0.1:9913/mcp") as (read, write, _):
+    async with streamablehttp_client(f"{SGME_MCP_URL}") as (read, write, _):
         async with ClientSession(read, write) as s:
             await s.initialize()
             tools = await s.list_tools()
@@ -417,7 +432,7 @@ SGME 双角色鉴权：`Agent`（读写记忆）与 `Admin`（管理端点）。
 import requests
 admin = {"X-API-Key": "dev-admin-key-change-me"}   # 本机开发默认 key
 
-r = requests.post("http://127.0.0.1:9910/v1/admin/agents/register",
+r = requests.post(f"{SGME_HTTP_BASE}/v1/admin/agents/register",
     headers=admin, json={"agent_id": "my-agent", "scope": ["memory"]})
 print(r.json())
 # {"agent_id": "my-agent", "api_key": "agt_<uuid>", "role": "agent",
@@ -429,7 +444,7 @@ print(r.json())
 **吊销**（Admin 调用；`default` 即 env 主 key 不可吊销，改环境变量）：
 
 ```python
-r = requests.delete("http://127.0.0.1:9910/v1/admin/agents/my-agent", headers=admin)
+r = requests.delete(f"{SGME_HTTP_BASE}/v1/admin/agents/my-agent", headers=admin)
 print(r.json())   # {"status": "ok", "agent_id": "my-agent", "revoked": 1}
 ```
 
@@ -496,7 +511,7 @@ Tier0 是注入画像的第一层（~200 tokens persona 摘要），每日由 LL
 
 ```bash
 # 手动触发摘要生成
-curl -X POST http://127.0.0.1:9910/v1/admin/tier0/refresh \
+curl -X POST $SGME_HTTP_BASE/v1/admin/tier0/refresh \
     -H "X-API-Key: your-admin-key"
 
 # 查看摘要文件
@@ -542,7 +557,7 @@ search:
 
 ```python
 import requests
-resp = requests.post("http://127.0.0.1:9910/v1/search",
+resp = requests.post(f"{SGME_HTTP_BASE}/v1/search",
     headers={"X-API-Key": "dev-agent-key-change-me"},
     json={"query": "记忆引擎", "scopes": ["memory"]})
 body = resp.json()
@@ -599,7 +614,7 @@ SGME 发布侧**不做合并过滤**（§11.1），事件带唯一 id + source �
 
 ```python
 import requests
-resp = requests.get("http://127.0.0.1:9910/v1/events/pull",
+resp = requests.get(f"{SGME_HTTP_BASE}/v1/events/pull",
     headers={"X-API-Key": "dev-agent-key-change-me"},
     params={"subscriber_id": "test-sub", "limit": 50})
 body = resp.json()
@@ -652,18 +667,18 @@ import requests
 admin = {"X-API-Key": "dev-admin-key-change-me"}   # 本机开发默认 key
 
 # 创建全量快照
-r = requests.post("http://127.0.0.1:9910/v1/admin/backup/create",
+r = requests.post(f"{SGME_HTTP_BASE}/v1/admin/backup/create",
     headers=admin, json={"level": "full"})
 snap_id = r.json()["snapshot_id"]
 print(f"created: {snap_id}")
 
 # 列出快照
-r = requests.get("http://127.0.0.1:9910/v1/admin/backup/list", headers=admin)
+r = requests.get(f"{SGME_HTTP_BASE}/v1/admin/backup/list", headers=admin)
 for s in r.json()["snapshots"]:
     print(f"  {s['snapshot_id']} level={s['level']}")
 
 # 恢复
-r = requests.post("http://127.0.0.1:9910/v1/admin/backup/restore",
+r = requests.post(f"{SGME_HTTP_BASE}/v1/admin/backup/restore",
     headers=admin, json={"snapshot_id": snap_id})
 print(f"restored: {r.json()['restored']['snapshot_id']}")
 print(f"pre_restore: {r.json()['pre_restore_snapshot']}")
@@ -729,9 +744,9 @@ cp .env.example docker.env
 ```bash
 docker compose up -d --build
 # 验证
-curl http://localhost:9910/v1/health
-# WebUI（含在镜像内）：打开 http://localhost:9910/
-# MCP：http://localhost:9913/mcp
+curl $SGME_HTTP_BASE/v1/health
+# WebUI（含在镜像内）：打开 $SGME_HTTP_BASE/
+# MCP：$SGME_MCP_URL
 ```
 
 ### 16.3 配置（sgme.yaml）
