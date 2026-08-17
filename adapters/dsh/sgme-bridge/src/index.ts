@@ -21,6 +21,7 @@ import { registerSgmeCommand } from './commands.js'
 import type { CommandResult, CommandInvocation } from './commands.js'
 import { registerSessionSync } from './session-sync.js'
 import { registerRulesSection, defaultRulesPath } from './rules.js'
+import { SgmeEventSubscriber } from './events.js'
 
 export const name = 'dsh-sgme'
 
@@ -64,6 +65,7 @@ export interface Config {
   turnBatchSize: number
   evolveEnabled?: boolean          // W4 自进化自动触发（默认 true）
   evolveMinRounds?: number         // 费用门禁：会话消息块下限（默认 5）
+  eventSubscribe?: boolean          // 2026-08-18：SGME 事件流订阅（SSE 长连，默认 true）
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -80,6 +82,7 @@ export const Config: Schema<Config> = Schema.object({
   turnBatchSize: Schema.number().default(1).description('入库攒批大小（v1=1 即每 turn 即 append）'),
   evolveEnabled: Schema.boolean().default(true).description('自进化自动触发（W4：turn/end 后调 /v1/wiki/evolve/trigger，evolve 侧幂等+费用门禁兜底）'),
   evolveMinRounds: Schema.number().default(5).description('自进化费用门禁：会话消息块下限'),
+  eventSubscribe: Schema.boolean().default(true).description('SGME 事件流订阅（SSE 长连，实时接收 care_*/anomaly_warn，注入提醒）'),
 })
 
 /**
@@ -120,10 +123,29 @@ export function apply(ctx: CordisContext, config: Config): void {
   }
   const projectHint = config.projectHint
     || (process.env.SGME_PROJECT_HINT ?? '')
+
+  // 2.5. SGME 事件流订阅（2026-08-18 SSE 长连）：实时接收 care_*/anomaly_warn，
+  // 缓存到本地队列，context 注入时提醒 agent 调 signal_pull 消费
+  const eventSubscriber = config.eventSubscribe !== false
+    ? new SgmeEventSubscriber({
+        baseUrl: config.baseUrl,
+        agentKey: config.agentKey,
+        agentId: config.agentId,
+      })
+    : null
+  if (eventSubscriber) {
+    eventSubscriber.start()
+    ctx.effect(() => {
+      eventSubscriber.stop()
+    }, 'sgme-event-subscribe')
+    logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`)
+  }
+
   const disposeContext = registerContextInjection(contextCtx, client, {
     injectMode: config.injectMode,
     injectMaxTokens: config.injectMaxTokens,
     searchLimit: config.searchLimit,
+    eventSubscriber,
     ...(projectHint ? { projectHint } : {}),
   })
   ctx.effect(() => disposeContext, 'sgme-context-injection')
