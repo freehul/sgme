@@ -1080,3 +1080,20 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：维度移除后存量 projects/tasks 标签不再注入（历史保留）；生产已跑记忆去重（120 归档）；待办需 agent 按新指引主动登记
 
 **文档**：本记录 B81；AGENTS.md 三池/约束 3/4 更新
+
+### B82. bridge 对齐 MCP 新工具：三池登记 + 角色装配 + 记忆纠错（T-86，2026-08-18）
+
+**背景**：MCP 侧已长出三池（idea_add/demand_create/project_register）+ 角色（role_list/role_assemble/role_active_get/role_active_set）+ 记忆纠错（memory_get/memory_reject）共 9 个工具，dsh 桥接只挂 9 个检索/信号工具——B81 强化的「待办主动登记」在 dsh 会话中无工具可调，角色/纠错能力同样缺席。
+
+**改动**：
+1. **sgme-client.ts**：补 `put` helper + 9 方法（三池走 Admin Key：ideaAdd/demandCreate/projectRegister；角色与纠错走 Agent Key：roleList/roleAssemble/roleActiveGet/roleActiveSet/memoryGet/memoryReject）+ 对应请求/响应类型
+2. **tools.ts**：新增 9 个 dsh 工具并注册（总数 9→18）；memory_search dimensions 描述修正——去 projects/tasks 标注已裁剪（B81 维度裁剪对齐，防模型传废弃维度静默查空）；role_list 附当前角色标注（←当前）
+3. **install.py**：AGENTS.md 模板「可用工具」段补 9 工具说明；升级锚点加 demand_create（旧部署模板整体升级刷新）
+4. **顺手修 e784b80 遗留**：typecheck 3 处错误（index.ts effect 返回 void / events.test.ts 索引访问）+ role_list 不可达时不再多发一次注定失败的 roleActiveGet
+5. **冒烟脚本**：scripts/oneoff/verify_t86_endpoints.py（读端点直测 + 写端点故意触发校验错误——验证路由/鉴权/operations 全链路且不落生产数据）
+
+**测试**：vitest 131 passed / 0 failed（含新增 admin-tools.test.ts 20 用例）；typecheck 0 错误；pytest test_install.py 7 passed；NAS 生产真实冒烟 9/9 passed
+
+**运维影响**：dsh 重启后新工具生效（lib/ 已重编）；三池写操作依赖 Admin Key（install.py 已部署的 .env 含 sgme_admin_*，无需重新安装）；AGENTS.md 在下次 install.py 运行时自动升级
+
+**文档**：本记录 B82；Backlog T-86 ✅
