@@ -12,6 +12,8 @@
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import fs from 'node:fs'
+import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import Schema from 'schemastery'
 
@@ -22,12 +24,34 @@ export const name = 'dsh-codegraph'
 // 依赖声明：dsh 的工具注册能力
 export const inject = ['tools']
 
-const DEFAULT_BIN = 'C:\\Users\\LEO\\AppData\\Roaming\\npm\\node_modules\\@colbymchenry\\codegraph\\npm-shim.js'
+/**
+ * 解析 codegraph npm-shim.js 默认路径（通用，不写死单机路径）：
+ *   1) 环境变量 DSH_CODEGRAPH_BIN 显式覆盖（最优先）
+ *   2) Windows 用户级 npm 全局目录（%APPDATA%/npm/node_modules）
+ *   3) 类 Unix 用户级 npm 全局目录（~/.npm-global/lib/node_modules）
+ *   4) 兜底：PATH 中的 `codegraph` 命令名
+ */
+function resolveDefaultBin() {
+  if (process.env.DSH_CODEGRAPH_BIN) return process.env.DSH_CODEGRAPH_BIN
+  const candidates = []
+  if (process.platform === 'win32' && process.env.APPDATA) {
+    candidates.push(path.join(process.env.APPDATA, 'npm', 'node_modules', '@colbymchenry', 'codegraph', 'npm-shim.js'))
+  }
+  if (process.env.HOME) {
+    candidates.push(path.join(process.env.HOME, '.npm-global', 'lib', 'node_modules', '@colbymchenry', 'codegraph', 'npm-shim.js'))
+  }
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c } catch { /* ignore */ }
+  }
+  return 'codegraph'
+}
+
+const DEFAULT_BIN = resolveDefaultBin()
 
 /** 插件配置（由 cordis.patch.yml 的 config 注入）。 */
 export const Config = Schema.object({
   bin: Schema.string().default(DEFAULT_BIN).description('codegraph npm-shim.js 绝对路径'),
-  projectPath: Schema.string().default('D:\\Projects\\SGME').description('默认项目目录（需已 codegraph init）'),
+  projectPath: Schema.string().default(process.cwd()).description('默认项目目录（跟随 dsh 启动目录，需已 codegraph init；工具参数 path 可覆盖）'),
   queryLimit: Schema.number().default(10).description('codegraph_query 默认返回条数'),
 })
 
