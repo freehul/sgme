@@ -5,8 +5,8 @@
 
 ## TL;DR（30 秒速览）
 
-1. **发现**：探测 `http://localhost:9910/v1/health`；失败读 `~/.sgme/install.json`；仍失败就向用户报告「SGME 未发现」。
-2. **连接**：MCP 端点 `http://localhost:9913/mcp`（HTTP API 为 `:9910`），带 `X-API-Key`。
+1. **发现**：探测 `http://192.168.10.10:9910/v1/health`（SGME 现部署于 NAS）；失败读 `~/.sgme/install.json`；仍失败就向用户报告「SGME 未发现」。
+2. **连接**：MCP 端点 `http://192.168.10.10:9913/mcp`（HTTP API 为 `:9910`），带 `X-API-Key`。
 3. **接入**：先调 `agent_onboarding` 工具（连接即发现，版本/能力/上手一条龙）。
 4. **写入**：每轮对话结束 `append` 当前轮次；会话结束 `refine_trigger(async_mode=true)`。
 5. **提炼**：批量 ≥20 文件必须分批 + 批间 30–60s；429 不立即重试，交 `batch_scan` 兜底。
@@ -19,7 +19,7 @@ SGME 装在哪、端口多少、用什么 Key——三步定位，零人工依�
 
 | 步骤 | 动作 | 成功 → | 失败 → |
 |---|---|---|---|
-| ① | 探测 `GET http://localhost:9910/v1/health` | 拿到了，直接进 §2 | 下一步 |
+| ① | 探测 `GET http://192.168.10.10:9910/v1/health`（NAS） | 拿到了，直接进 §2 | 下一步 |
 | ② | 读安装清单 `~/.sgme/install.json`（地址/端口/Key 引用） | 按清单连接 | 下一步 |
 | ③ | 就绪报告「SGME 未发现」，提醒用户安装/启动 | — | — |
 
@@ -29,8 +29,8 @@ SGME 装在哪、端口多少、用什么 Key——三步定位，零人工依�
 
 | 项 | 值 |
 |---|---|
-| MCP 端点 | `http://localhost:9913/mcp`（streamable HTTP） |
-| HTTP API | `http://localhost:9910`（功能等价，两协议共享同一引擎） |
+| MCP 端点 | `http://192.168.10.10:9913/mcp`（streamable HTTP） |
+| HTTP API | `http://192.168.10.10:9910`（功能等价，两协议共享同一引擎） |
 | Agent Key | 请求头 `X-API-Key`（HTTP）；MCP 按客户端配置注入 |
 | 默认开发 Key | `dev-agent-key-change-me` / `dev-admin-key-change-me`——**仅限本机回环**（127.0.0.1/::1/localhost），远程调用一律 403 |
 
@@ -51,7 +51,7 @@ from mcp.client.streamable_http import streamablehttp_client
 async def main():
     key = os.environ.get("SGME_AGENT_KEY", "dev-agent-key-change-me")
     async with streamablehttp_client(
-        "http://127.0.0.1:9913/mcp", headers={"X-API-Key": key}
+        "http://192.168.10.10:9913/mcp", headers={"X-API-Key": key}
     ) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()

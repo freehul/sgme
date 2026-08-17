@@ -167,10 +167,10 @@
 
 # SGME 接入纪律（SGME-ONBOARDING-v1）
 
-你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
+你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在 NAS（192.168.10.10）。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 **服务发现**（找不到时按序）：
-1) 探测 http://localhost:9910/v1/health；
+1) 探测 http://192.168.10.10:9910/v1/health；
 2) 失败读 ~/.sgme/install.json（地址/端口/Key 引用）；
 3) 仍失败 → 向主人报告「SGME 未发现」。
 
@@ -180,7 +180,7 @@
 3. 对话开始时 inject 按场景取画像 / search 检索相关记忆；
 4. 主动关怀靠消费信号——**信号消费=主动关怀，谁消费谁标记**：拿到 care_* 信号后 signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过即可）。获取信号两条路：
    - 短连接（无常驻进程）：每次对话开始 signal_pull 拉未消费信号；
-   - 长连接（有常驻能力，**主动关怀首选**）：挂 SSE 事件流 `GET http://localhost:9910/v1/events/stream?subscriber_id=<你的agent_id>`（带 X-API-Key），care_*/memory_updated/anomaly_warn 一产生即实时推送 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件；
+   - 长连接（有常驻能力，**主动关怀首选**）：挂 SSE 事件流 `GET http://192.168.10.10:9910/v1/events/stream?subscriber_id=<你的agent_id>`（带 X-API-Key），care_*/memory_updated/anomaly_warn 一产生即实时推送 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件；
 5. 对话开始时（或用户指定角色时）role_list 看可用角色 → role_assemble(role_id) 拿人设并按其说话——**换皮不换芯**，角色只是沟通外皮，记忆池不动。
 
 **事件对接**（主动关怀的触发源，常驻 agent 必读）：SGME 事件三类——care_*（关怀：情绪/待办到期/过劳/每日）、memory_updated（记忆更新）、anomaly_warn（异常）。三种接法任选：
@@ -197,7 +197,7 @@ SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。
 
 **批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 不立即重试（交服务端 batch_scan 兜底）；永远 async 模式。
 
-**接口**：HTTP API http://localhost:9910 ｜ MCP http://localhost:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key；默认 dev key 仅限首次本机体验，配置后即失效 403）。
+**接口**：HTTP API http://192.168.10.10:9910 ｜ MCP http://192.168.10.10:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key；默认 dev key 仅限本机回环，远程调用一律 403）。
 
 **历史会话补导入**：本适配器提供历史会话全量导入方法（把接入前的存量会话补进 SGME）：
    `D:/Projects/SGME/.venv/Scripts/python.exe D:/Projects/SGME/adapters/dsh/import_history.py`
