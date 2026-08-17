@@ -25,8 +25,12 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # 确保同目录 _sgme_net 可导入
+from _sgme_net import sgme_http_base  # noqa: E402
+
 PROJECTS_ROOT = Path(os.environ.get("SGME_PROJECTS_ROOT") or os.getcwd()).resolve()
-SGME_URL = "http://localhost:9910/v1/append"
+SGME_BASE = sgme_http_base()  # 地址统一从环境变量/install.json 解析，勿硬编码
+SGME_URL = f"{SGME_BASE}/v1/append"
 SGME_KEY = os.environ.get("SGME_AGENT_KEY", "") or (
     dict(
         l.strip().split("=", 1)
@@ -112,7 +116,7 @@ def register_sgme(name: str, path: str, desc: str) -> bool:
 # ---------- 0.8 ST-16：项目注册表登记（project_meta） ----------
 #   register_sgme        → /v1/append，进**记忆池**（projects 维度会话记忆，带溯源）
 #   register_project_meta → /v1/admin/projects，进**项目注册表**（结构化元数据，可列表/检索）
-SGME_PROJECTS_URL = "http://localhost:9910/v1/admin/projects"
+SGME_PROJECTS_URL = f"{SGME_BASE}/v1/admin/projects"
 
 
 def register_project_meta(name: str, path: str) -> bool:
@@ -165,7 +169,7 @@ def register_project_meta(name: str, path: str) -> bool:
 # 立项时把「标题含项目名的待办」标为 planned 并绑定项目，闭合"待办→项目"链路。
 # 失败不阻断立项（待办可稍后人工关联）。
 
-SGME_DEMANDS_URL = "http://localhost:9910/v1/admin/demands"
+SGME_DEMANDS_URL = f"{SGME_BASE}/v1/admin/demands"
 
 
 def link_demands(name: str, admin_key: str | None) -> None:
