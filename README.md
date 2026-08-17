@@ -146,11 +146,11 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 
 **Service discovery** (when SGME is not found, in order)
 
-1. Probe http://localhost:9910/v1/health
+1. Probe http://<sgme-host>:9910/v1/health — host resolves from env `SGME_HTTP_HOST` or `~/.sgme/install.json` → `http.host` (default `localhost`)
 2. On failure, read ~/.sgme/install.json (address/port/key references)
 3. Still failing → report "SGME not found" to your owner
 
-**Endpoints**: HTTP API http://localhost:9910 ｜ MCP http://localhost:9913/mcp, header `X-API-Key` (key configured by your owner: `SGME_ADMIN_KEY`/`SGME_AGENT_KEY` from config/.env, or an `agt_*` key issued by the admin; default keys work only for the first local run — once configured they return 403)
+**Endpoints**: HTTP API http://<sgme-host>:9910 ｜ MCP http://<sgme-host>:9913/mcp — address comes from env (`SGME_HTTP_URL`/`SGME_MCP_URL`) or `~/.sgme/install.json`, never hardcode a specific host; header `X-API-Key` (key configured by your owner: `SGME_ADMIN_KEY`/`SGME_AGENT_KEY` from config/.env, or an `agt_*` key issued by the admin; default keys work only for the first local run — once configured they return 403)
 
 **Usage rules** (five iron rules)
 

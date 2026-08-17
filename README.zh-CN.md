@@ -145,11 +145,11 @@ dsh plugin --profile web add github:freehul/sgme
 
 **服务发现**（找不到 SGME 时按序执行）
 
-1. 探测 http://localhost:9910/v1/health
+1. 探测 http://<sgme-host>:9910/v1/health —— host 取自环境变量 `SGME_HTTP_HOST` 或 `~/.sgme/install.json` 的 `http.host`（默认 `localhost`）
 2. 失败读 ~/.sgme/install.json（地址/端口/Key 引用）
 3. 仍失败 → 向主人报告「SGME 未发现」
 
-**接口**：HTTP API http://localhost:9910 ｜ MCP http://localhost:9913/mcp，请求头 `X-API-Key`（key 由主人配置：config/.env 的 `SGME_ADMIN_KEY`/`SGME_AGENT_KEY`，或管理员签发的 `agt_*` key；默认 key 仅限首次本机体验，配置后即失效 403）
+**接口**：HTTP API http://<sgme-host>:9910 ｜ MCP http://<sgme-host>:9913/mcp —— 地址统一从环境变量（`SGME_HTTP_URL`/`SGME_MCP_URL`）或 `~/.sgme/install.json` 解析，禁止硬编码具体主机；请求头 `X-API-Key`（key 由主人配置：config/.env 的 `SGME_ADMIN_KEY`/`SGME_AGENT_KEY`，或管理员签发的 `agt_*` key；默认 key 仅限首次本机体验，配置后即失效 403）
 
 **使用纪律**（五条铁律）
 
