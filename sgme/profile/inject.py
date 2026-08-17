@@ -134,9 +134,11 @@ def build_inject_blocks(
             content = r.get("content", "")
             if mid and mid in seen_ids:
                 continue
-            if content[:50] in seen_prefix:
+            # 前缀归一化：截取前 50 字并去尾部标点（句号/感叹号差异视为同义）
+            prefix = content[:50].rstrip("。！？!?.,，；; ")
+            if prefix in seen_prefix:
                 continue
-            seen_prefix.add(content[:50])
+            seen_prefix.add(prefix)
             if mid:
                 seen_ids.add(mid)
             rel = _relative_time(r.get("updated_at"))
