@@ -19,7 +19,7 @@ chains:
   refinement:
     - provider: zhipu          # 主模型（2026-08-18 用户定）：GLM-4.7-Flash 永久免费无限调用；限流/故障自动降级 deepseek
       model: glm-4.7-flash
-      max_tokens: 8192
+      max_tokens: 16384     # 2026-08-18：8192→16384 防输出截断（截断→JSON 解析失败→降级 deepseek 烧钱）
     - provider: deepseek        # 备用（付费）：主链限流/故障时兜底，思考型模型关思考模式
       model: deepseek-v4-flash
       max_tokens: 16384
@@ -31,15 +31,15 @@ chains:
 
 rules:
   timeout_s: 240
-  max_retries: 2
+  max_retries: 3
   fallback_on: [timeout, 5xx, connection_error, auth_error, context_overflow, rate_limit]
   # 指数退避（ST-23⑥）：fallback_on 错误的重试间隔 =
   #   min(base_s × 2^(attempt-1), max_s) + [0, jitter_s)
   #   429 响应带 Retry-After 头时取 max(退避值, Retry-After)
   backoff:
-    base_s: 1.0     # 首次重试等待 1s（序列 1s/2s/4s）
-    max_s: 8.0      # 退避封顶
-    jitter_s: 0.2   # 抖动防惊群（批量连环撞限流场景）
+    base_s: 3.0     # 首次重试等待 3s（智谱官方建议：避免立即高频重试；序列 3s/6s/12s）
+    max_s: 20.0     # 退避封顶（1305 平台过载恢复通常数十秒级，8s 太早放弃）
+    jitter_s: 0.5   # 抖动防惊群（批量连环撞限流场景）
   # 调用层节流器（ST-23⑥）：批量提炼时平滑请求速率（令牌桶），防连环撞限流
   #   rps：每秒请求数；burst：桶容量（1 = 无突发，严格平滑）
   #   默认 0.5 rps ≈ 30 req/min（取常用云端限流 60 req/min 的一半作安全余量）
