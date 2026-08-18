@@ -327,7 +327,7 @@ def test_health_endpoint_contract_intact_under_seq_stall(client, conns):
     assert body["refinement"]["heartbeat_ok"] is False
     assert body["refinement"]["watermark_age_sec"] is not None  # refined_at 新鲜，仍可算
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.0b2"
+    assert body["version"] == "1.0.0b3"
 
 
 # ---------- 8. check_seq_progression 单元 ----------

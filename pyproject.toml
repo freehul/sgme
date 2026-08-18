@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sgme"
-version = "1.0.0b2"
+version = "1.0.0b3"
 description = "SGME — 拾光记忆引擎：单用户 Agent 记忆引擎 Server"
 readme = "README.md"
 license = { text = "MIT" }
