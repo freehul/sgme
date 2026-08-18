@@ -767,17 +767,34 @@ def resolve_conflicts(
             run_status = "ok"
             run_error = None
         except L15Error as e:
-            logger.warning("L1.5 输出解析失败: %s", e)
-            # 解析失败 → 默认 store（保守，不丢数据）
-            decisions = [
-                ConflictDecision(
-                    i + batch.start_index, [], "store", reason="L1.5 解析失败默认 store",
+            # 2026-08-18（T-53 免费托底）：zhipu 免费档偶发输出截断 → JSON 解析失败。
+            # 同模型重试 1 次（提示只输出纯 JSON 数组）——截断是偶发，重试大概率拿完整输出；
+            # 2 次仍失败才降级默认 store（保守，不丢数据）。
+            logger.warning("L1.5 输出解析失败，重试 1 次: %s", e)
+            try:
+                retry_prompt = prompt + "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
+                text, provider_name, usage = llm_chain.call_with_fallback(
+                    llm_cfg, retry_prompt, chain_name="refinement", client=client,
                 )
-                for i in range(len(batch.new_memories))
-            ]
-            all_decisions.extend(decisions)
-            run_status = "error"
-            run_error = str(e)
+                decisions = parse_l15_output(text)
+                for d in decisions:
+                    d.new_memory_index += batch.start_index
+                all_decisions.extend(decisions)
+                run_status = "ok"
+                run_error = None
+                logger.info("L1.5 解析重试成功 provider=%s", provider_name)
+            except (L15Error, llm_provider.LLMUnavailable) as e2:
+                logger.warning("L1.5 输出解析重试仍失败: %s", e2)
+                # 解析失败 → 默认 store（保守，不丢数据）
+                decisions = [
+                    ConflictDecision(
+                        i + batch.start_index, [], "store", reason="L1.5 解析失败默认 store",
+                    )
+                    for i in range(len(batch.new_memories))
+                ]
+                all_decisions.extend(decisions)
+                run_status = "error"
+                run_error = str(e2)
         # 记录 refine_run（每候选批一条；action 分布 + 版本 + provider；memories_count=本批新记忆数）
         action_counts = dict(Counter(d.action for d in decisions))
         run_id = RefineRunRecorder.start(
