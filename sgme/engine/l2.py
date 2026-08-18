@@ -506,13 +506,27 @@ def aggregate(
             run_status = "ok"
             run_error = None
         except L2Error as e:
-            # 坏 JSON：整批标记 error + anomaly_warn，不重试
-            result.error = str(e)
-            result.anomaly_warn = True
-            logger.warning("L2 输出解析失败，整批跳过: %s", e)
-            actions = []
-            run_status = "error"
-            run_error = str(e)
+            # 2026-08-18（T-53 免费托底）：zhipu 免费档偶发输出截断 → JSON 解析失败。
+            # 同模型重试 1 次（提示只输出纯 JSON 数组）——截断是偶发，重试大概率拿完整输出；
+            # 2 次仍失败才整批 error（原逻辑不重试直接跳过）。
+            logger.warning("L2 输出解析失败，重试 1 次: %s", e)
+            try:
+                retry_prompt = prompt + "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
+                text, provider_name, usage = llm_chain.call_with_fallback(
+                    cfg["llm"], retry_prompt, chain_name="refinement", client=client,
+                )
+                actions = parse_l2_output(text)
+                run_status = "ok"
+                run_error = None
+                logger.info("L2 解析重试成功 provider=%s", provider_name)
+            except (L2Error, llm_provider.LLMUnavailable) as e2:
+                # 坏 JSON：整批标记 error + anomaly_warn
+                result.error = str(e2)
+                result.anomaly_warn = True
+                logger.warning("L2 输出解析重试仍失败，整批跳过: %s", e2)
+                actions = []
+                run_status = "error"
+                run_error = str(e2)
 
         # 记录 refine_run（每记忆批一条；L2 memories_count 记动作数 + action 分布）
         action_counts = dict(Counter(a.get("action", "") for a in actions))
