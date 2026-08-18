@@ -211,6 +211,28 @@ def refine_file(
     result.stats = batch_stats
     result.anomaly_warn = normalize.should_warn(batch_stats)
 
+    # 2026-08-18（T-53 免费托底）：提炼走了付费备用模型（deepseek）→ 记 anomaly_warn，
+    # 供用户发现「免费主链被跳过/降级在烧钱」——降级成功不报错，此前无任何告警
+    # （refine_runs 5279 次 deepseek 消耗无人知晓的根因）。
+    if provider == "deepseek":
+        try:
+            from sgme.signal import engine as signal_engine
+            signal_engine.publish(
+                event_type="anomaly_warn",
+                source="refine_cost",
+                payload={
+                    "message": "提炼使用了付费备用模型 deepseek（预期 zhipu 免费）——"
+                               "检查 llm_override / agent_model 是否被劫持",
+                    "provider": provider,
+                    "file_id": file_id,
+                    "memories_count": len(normalized_memories),
+                },
+                mem_conn=mem_conn,
+            )
+            logger.warning("提炼走 deepseek（付费备用）: file=%s memories=%d", file_id, len(normalized_memories))
+        except Exception as e:
+            logger.warning("deepseek 使用告警发布失败（不阻塞）: %s", e)
+
     # 更新提炼游标（增量段最后一行 seq）+ 同步内容哈希
     new_last_seq = max(m.seq for m in incremental) if incremental else last_seq
     result.new_last_refined_seq = new_last_seq

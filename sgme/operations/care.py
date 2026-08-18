@@ -203,8 +203,12 @@ def consume_signal(mem_conn: sqlite3.Connection, event_id: str, agent_id: str | 
 
     - agent_id 记录认领方（不传则 consumed_by=None，仍原子防重复）
     - 返回 status=consumed（本次认领成功）；已被他人消费 → ERR_CONFLICT（409）
+    - 2026-08-18 修复（兜底铁律）：合成身份（default/None）认领无归属，记 anomaly_warn
+      告警——曾出现「服务端静默消费（consumed_by=default）+ signal_acks 零回执」，
+      关怀永远无法到达当前会话（用户实测零感受），此告警供排障溯源
     """
     from sgme.care import signals as signals_mod
+    from sgme.signal import engine as signal_engine
 
     try:
         ok = signals_mod.consume_signal(mem_conn, event_id, agent_id=agent_id)
@@ -213,6 +217,23 @@ def consume_signal(mem_conn: sqlite3.Connection, event_id: str, agent_id: str | 
     if not ok:
         # 已被他人消费（原子抢失败）→ 409 语义（区别于「不存在」404）
         return OperationResult.fail(ERR_CONFLICT, f"信号已被消费: {event_id}")
+    # 2026-08-18：合成身份（env 主 key → default，或未传 → None）认领无归属 → 告警
+    if agent_id in (None, "default"):
+        try:
+            signal_engine.publish(
+                "anomaly_warn",
+                "care_consume",
+                {
+                    "signal_event_id": event_id,
+                    "agent_id": agent_id,
+                    "message": "关怀信号被合成身份认领（default/None），无 agent 归属——"
+                               "认领方须在会话中呈现关怀并写 signal_ack 回执，否则兜底铁律失效",
+                },
+                mem_conn,
+            )
+            logger.warning("关怀信号 %s 被合成身份认领（agent_id=%s），已记 anomaly_warn", event_id, agent_id)
+        except Exception as e:  # 告警发布失败不阻塞消费（故障隔离）
+            logger.warning("关怀信号合成身份告警发布失败: %s", e)
     return OperationResult.succeed({"event_id": event_id, "status": "consumed", "agent_id": agent_id})
 
 
