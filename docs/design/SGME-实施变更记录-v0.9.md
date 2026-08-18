@@ -1097,3 +1097,28 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：dsh 重启后新工具生效（lib/ 已重编）；三池写操作依赖 Admin Key（install.py 已部署的 .env 含 sgme_admin_*，无需重新安装）；AGENTS.md 在下次 install.py 运行时自动升级
 
 **文档**：本记录 B82；Backlog T-86 ✅
+
+
+### B83. 关怀消费兜底 + LLM 免费托底（兜底铁律 + T-53，2026-08-18）
+
+**背景**：用户实测「信号被消费了但从未在会话中感受到关怀」——违反接入纪律「当前会话是兜底通信渠道，任何主动消息必须在此发一条」。排查发现两处断点：
+1. **关怀链路**：care 信号被本机 DSH 用 env 主 key 静默认领（consumed_by=default/None），signal_acks 表 0 条回执——「认领即丢」；本地订阅队列从不 markConsumed，导致【SGME 事件提醒】每轮对话重复注入「关怀信号 N 条」但 signal_pull 永远返回空（死循环）。
+2. **LLM 免费托底失效**：用户 2026-08-18 配置 zhipu 免费主链，但 dsh agent 注册时声明 agent_model=deepseek/deepseek-v4-flash，动态链解析（resolve.py 策略规则 2）让 deepseek 成为提炼第一节点，llm.yaml 的 zhipu 主链被完全跳过——refine_runs 实证 deepseek 5279 次 vs zhipu 31 次，deepseek 平台持续产生 SGME 提炼 API Key 消费。
+
+**改动**：
+1. **context.ts**（DSH 插件）：buildEventNoticeText 增强——care_* 信号内容直接附在【SGME 事件提醒】里（含 type/ts/event_id/payload），agent 无需依赖 signal_pull 即可在当前会话呈现关怀，兜底铁律落地。
+2. **tools.ts + index.ts**（DSH 插件）：signal_claim / signal_ack 成功后调 eventSubscriber.markConsumed() 同步本地队列——防「提醒反复注入但 pull 为空」死循环；订阅器创建提前到工具注册之前（claim/ack 需引用）。
+3. **care.py**（服务端）：consume_signal 时 agent_id in (None, "default")（env 主 key 合成身份）→ 发布 anomaly_warn（source=care_consume），「认领即丢」可溯源；告警发布失败不阻塞消费。
+4. **refine.py**（服务端）：提炼完成后若 provider == "deepseek"（付费备用）→ 发布 anomaly_warn（source=refine_cost），覆盖「降级成功不报错 = 无人知晓在烧钱」监控盲区。
+5. **sgme.yaml**（配置）：refine.llm_override = {provider: zhipu, model: glm-4.7-flash}——用户显式指定优先于 agent 声明（resolve.py 策略规则 1），强制 zhipu 主链、deepseek 仅降级备用。
+6. **agent_keys.json**（NAS 生产）：dsh agent_model 改为 zhipu/glm-4.7-flash（双保险）。
+
+**测试**：test_signal_consumption 5 passed（三层消费模型）；test_refinery 45 passed；py_compile 0 错误；consume 告警逻辑隔离验证（default/None 记告警、dsh 不记）；TS typecheck 0 错误 + pnpm build 通过。
+
+**运维影响**：
+- NAS 镜像重建为 sgme:1.0.0b3-nas-t56 并重启（/data 卷数据保留：agent_keys.json 更新 + signal_acks 补账 4 条）
+- DSH 宿主重启后新插件生效：提醒携带关怀内容、claim/ack 同步本地队列
+- 历史 4 条 care 已在当前会话呈现 + 服务端 signal_acks 补 4 条 acked 回执（补账）
+- zhipu 免费档高峰偶发 429/JSON 解析失败，重试+降级兜底正常
+
+**文档**：本记录 B83；Backlog T-53 免费托底相关 ✅
