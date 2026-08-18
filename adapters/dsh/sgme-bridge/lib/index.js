@@ -731,7 +731,7 @@ function formatSearchResults(results) {
 *
 * 调用方：index.ts apply() 内调用，传入 ctx 和 client。
 */
-function registerTools(ctx, client, defaultLimit) {
+function registerTools(ctx, client, defaultLimit, eventSubscriber) {
 	ctx.tools.register(createMemorySearchTool(client, defaultLimit));
 	ctx.tools.register(createWikiSearchTool(client, defaultLimit));
 	ctx.tools.register(createWikiPagesTool(client, defaultLimit));
@@ -739,8 +739,8 @@ function registerTools(ctx, client, defaultLimit) {
 	ctx.tools.register(createWikiPageUpdateTool(client));
 	ctx.tools.register(createWikiPageAddTool(client));
 	ctx.tools.register(createSignalPullTool(client));
-	ctx.tools.register(createSignalClaimTool(client));
-	ctx.tools.register(createSignalAckTool(client));
+	ctx.tools.register(createSignalClaimTool(client, eventSubscriber ?? null));
+	ctx.tools.register(createSignalAckTool(client, eventSubscriber ?? null));
 	ctx.tools.register(createIdeaAddTool(client));
 	ctx.tools.register(createDemandCreateTool(client));
 	ctx.tools.register(createProjectRegisterTool(client));
@@ -793,7 +793,7 @@ function createSignalPullTool(client) {
 	});
 }
 /** 创建 signal_claim 工具（原子认领信号）。 */
-function createSignalClaimTool(client) {
+function createSignalClaimTool(client, eventSubscriber) {
 	return defineTool({
 		name: "signal_claim",
 		description: [
@@ -817,12 +817,13 @@ function createSignalClaimTool(client) {
 			const a = args;
 			const claimed = await client.claimSignal(a.event_id);
 			if (claimed === null) return "[signal_claim 失败：SGME Gateway 不可达，稍后重试]";
+			eventSubscriber?.markConsumed([a.event_id]);
 			return claimed ? `[signal_claim 认领成功：event_id=${a.event_id}，请主动关怀用户后调 signal_ack 回执]` : `[signal_claim 已被消费：event_id=${a.event_id}，跳过]`;
 		}
 	});
 }
 /** 创建 signal_ack 工具（写消费回执）。 */
-function createSignalAckTool(client) {
+function createSignalAckTool(client, eventSubscriber) {
 	return defineTool({
 		name: "signal_ack",
 		description: ["写信号消费回执（claimed/acked/failed）。", "认领（signal_claim）并处理完信号后调用，报告处理结果（如「已转告用户」「检查正常」）。"].join(" "),
@@ -856,7 +857,9 @@ function createSignalAckTool(client) {
 		},
 		async execute(args, _exec) {
 			const a = args;
-			return await client.ackSignal(a.event_id, a.status, a.result) ? `[signal_ack 已回执：event_id=${a.event_id} status=${a.status}]` : "[signal_ack 失败]";
+			const ok = await client.ackSignal(a.event_id, a.status, a.result);
+			if (ok) eventSubscriber?.markConsumed([a.event_id]);
+			return ok ? `[signal_ack 已回执：event_id=${a.event_id} status=${a.status}]` : "[signal_ack 失败]";
 		}
 	});
 }
@@ -2135,12 +2138,21 @@ function buildEventNoticeText(events) {
 	if (care.length) parts.push(`关怀信号 ${care.length} 条`);
 	if (warn.length) parts.push(`异常告警 ${warn.length} 条`);
 	if (other.length) parts.push(`其他事件 ${other.length} 条`);
-	return [
+	const head = [
 		"【SGME 事件提醒】",
 		`有未处理事件（${parts.join("、")}）。`,
 		"请调 signal_pull 拉取并按信号消费纪律处理：signal_claim 原子认领 → 主动关怀/处理 → signal_ack 回执。",
 		"不阻塞当前任务，处理完即可。"
 	].join("\n");
+	if (!care.length) return head;
+	const careLines = care.map((e) => {
+		let payload = e.payload;
+		try {
+			payload = typeof e.payload === "string" ? JSON.parse(e.payload) : e.payload;
+		} catch {}
+		return `## ${e.type}（${e.ts}）\nevent_id=${e.event_id}\n${JSON.stringify(payload, null, 1)}`;
+	});
+	return head + "\n\n【关怀信号内容（本地订阅缓存，可直接呈现）】\n" + careLines.join("\n\n");
 }
 /** 相同内容判定（对齐 agent-instructions sameContextPayload：content + source 全等）。 */
 function sameContextPayload(left, right) {
@@ -2858,16 +2870,6 @@ function apply(ctx, config) {
 		adminKey: config.adminKey,
 		agentId: config.agentId
 	});
-	registerTools({ tools: ctx.tools }, client, config.searchLimit);
-	logger.info("工具已注册：memory_search, wiki_search, wiki_pages, wiki_page, wiki_page_update, wiki_page_add, signal_*, idea_add, demand_create, project_register, role_*, memory_get/reject");
-	const contextCtx = {
-		on: ctx.on,
-		logger: {
-			info: logger.info,
-			warn: logger.warn
-		}
-	};
-	const projectHint = config.projectHint || (process.env.SGME_PROJECT_HINT ?? "");
 	const eventSubscriber = config.eventSubscribe !== false ? new SgmeEventSubscriber({
 		baseUrl: config.baseUrl,
 		agentKey: config.agentKey,
@@ -2880,6 +2882,16 @@ function apply(ctx, config) {
 		}, "sgme-event-subscribe");
 		logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`);
 	}
+	registerTools({ tools: ctx.tools }, client, config.searchLimit, eventSubscriber);
+	logger.info("工具已注册：memory_search, wiki_search, wiki_pages, wiki_page, wiki_page_update, wiki_page_add, signal_*, idea_add, demand_create, project_register, role_*, memory_get/reject");
+	const contextCtx = {
+		on: ctx.on,
+		logger: {
+			info: logger.info,
+			warn: logger.warn
+		}
+	};
+	const projectHint = config.projectHint || (process.env.SGME_PROJECT_HINT ?? "");
 	const disposeContext = registerContextInjection(contextCtx, client, {
 		injectMode: config.injectMode,
 		injectMaxTokens: config.injectMaxTokens,

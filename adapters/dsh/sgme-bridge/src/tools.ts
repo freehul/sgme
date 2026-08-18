@@ -15,6 +15,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { SgmeClient } from './sgme-client.js'
+import type { SgmeEventSubscriber } from './events.js'
 
 /** 工具参数：检索查询。 */
 interface SearchArgs {
@@ -394,6 +395,7 @@ export function registerTools(
   ctx: { tools: { register: (tool: ReturnType<typeof defineTool>) => () => void } },
   client: SgmeClient,
   defaultLimit: number,
+  eventSubscriber?: SgmeEventSubscriber | null,
 ): void {
   ctx.tools.register(createMemorySearchTool(client, defaultLimit))
   ctx.tools.register(createWikiSearchTool(client, defaultLimit))
@@ -402,8 +404,8 @@ export function registerTools(
   ctx.tools.register(createWikiPageUpdateTool(client))
   ctx.tools.register(createWikiPageAddTool(client))
   ctx.tools.register(createSignalPullTool(client))
-  ctx.tools.register(createSignalClaimTool(client))
-  ctx.tools.register(createSignalAckTool(client))
+  ctx.tools.register(createSignalClaimTool(client, eventSubscriber ?? null))
+  ctx.tools.register(createSignalAckTool(client, eventSubscriber ?? null))
   // T-86：三池登记 + 角色模板 + 记忆纠错（对齐 MCP 侧同名工具）
   ctx.tools.register(createIdeaAddTool(client))
   ctx.tools.register(createDemandCreateTool(client))
@@ -465,7 +467,7 @@ export function createSignalPullTool(client: SgmeClient) {
 }
 
 /** 创建 signal_claim 工具（原子认领信号）。 */
-export function createSignalClaimTool(client: SgmeClient) {
+export function createSignalClaimTool(client: SgmeClient, eventSubscriber: SgmeEventSubscriber | null) {
   return defineTool({
     name: 'signal_claim',
     description: [
@@ -490,6 +492,9 @@ export function createSignalClaimTool(client: SgmeClient) {
       if (claimed === null) {
         return '[signal_claim 失败：SGME Gateway 不可达，稍后重试]'
       }
+      // 2026-08-18 修复（兜底铁律）：认领或已被消费都同步本地队列，
+      // 防「提醒反复注入但 signal_pull 为空」死循环（此前 care 被静默消费后队列永不标记）
+      eventSubscriber?.markConsumed([a.event_id])
       return claimed
         ? `[signal_claim 认领成功：event_id=${a.event_id}，请主动关怀用户后调 signal_ack 回执]`
         : `[signal_claim 已被消费：event_id=${a.event_id}，跳过]`
@@ -498,7 +503,7 @@ export function createSignalClaimTool(client: SgmeClient) {
 }
 
 /** 创建 signal_ack 工具（写消费回执）。 */
-export function createSignalAckTool(client: SgmeClient) {
+export function createSignalAckTool(client: SgmeClient, eventSubscriber: SgmeEventSubscriber | null) {
   return defineTool({
     name: 'signal_ack',
     description: [
@@ -533,6 +538,8 @@ export function createSignalAckTool(client: SgmeClient) {
         result?: string
       }
       const ok = await client.ackSignal(a.event_id, a.status, a.result)
+      // 2026-08-18 修复：回执成功后同步本地队列，防重复提醒
+      if (ok) eventSubscriber?.markConsumed([a.event_id])
       return ok
         ? `[signal_ack 已回执：event_id=${a.event_id} status=${a.status}]`
         : '[signal_ack 失败]'

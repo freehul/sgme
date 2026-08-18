@@ -111,21 +111,10 @@ export function apply(ctx: CordisContext, config: Config): void {
     agentId: config.agentId,
   })
 
-  // 1. 注册工具（检索 + 信号 + 三池 + 角色 + 记忆纠错）
-  const toolsCtx = { tools: ctx.tools }
-  registerTools(toolsCtx, client, config.searchLimit)
-  logger.info('工具已注册：memory_search, wiki_search, wiki_pages, wiki_page, wiki_page_update, wiki_page_add, signal_*, idea_add, demand_create, project_register, role_*, memory_get/reject')
-
-  // 2. 画像首步注入（turn/start 拦截，对齐 dsh-agent-instructions 的 session/event 用法）
-  const contextCtx = {
-    on: ctx.on,
-    logger: { info: logger.info, warn: logger.warn },
-  }
-  const projectHint = config.projectHint
-    || (process.env.SGME_PROJECT_HINT ?? '')
-
   // 2.5. SGME 事件流订阅（2026-08-18 SSE 长连）：实时接收 care_*/anomaly_warn，
   // 缓存到本地队列，context 注入时提醒 agent 调 signal_pull 消费
+  // 2026-08-18 修复：订阅器创建提前到工具注册之前——signal_claim/signal_ack 需
+  // 同步 markConsumed 本地队列（兜底铁律：防「提醒反复注入但 pull 为空」死循环）
   const eventSubscriber = config.eventSubscribe !== false
     ? new SgmeEventSubscriber({
         baseUrl: config.baseUrl,
@@ -140,6 +129,19 @@ export function apply(ctx: CordisContext, config: Config): void {
     }, 'sgme-event-subscribe')
     logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`)
   }
+
+  // 1. 注册工具（检索 + 信号 + 三池 + 角色 + 记忆纠错）
+  const toolsCtx = { tools: ctx.tools }
+  registerTools(toolsCtx, client, config.searchLimit, eventSubscriber)
+  logger.info('工具已注册：memory_search, wiki_search, wiki_pages, wiki_page, wiki_page_update, wiki_page_add, signal_*, idea_add, demand_create, project_register, role_*, memory_get/reject')
+
+  // 2. 画像首步注入（turn/start 拦截，对齐 dsh-agent-instructions 的 session/event 用法）
+  const contextCtx = {
+    on: ctx.on,
+    logger: { info: logger.info, warn: logger.warn },
+  }
+  const projectHint = config.projectHint
+    || (process.env.SGME_PROJECT_HINT ?? '')
 
   const disposeContext = registerContextInjection(contextCtx, client, {
     injectMode: config.injectMode,

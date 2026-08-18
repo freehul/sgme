@@ -71,12 +71,26 @@ function buildEventNoticeText(events: SgmeEvent[]): string {
   if (care.length) parts.push(`关怀信号 ${care.length} 条`)
   if (warn.length) parts.push(`异常告警 ${warn.length} 条`)
   if (other.length) parts.push(`其他事件 ${other.length} 条`)
-  return [
+  const head = [
     '【SGME 事件提醒】',
     `有未处理事件（${parts.join('、')}）。`,
     '请调 signal_pull 拉取并按信号消费纪律处理：signal_claim 原子认领 → 主动关怀/处理 → signal_ack 回执。',
     '不阻塞当前任务，处理完即可。',
   ].join('\n')
+  // 2026-08-18 修复（兜底铁律）：care_* 信号内容直接附在提醒里，
+  // agent 无需依赖 signal_pull 即可在当前会话呈现关怀——若等 pull 而服务端已被
+  // 静默消费（consumed_by=default/None），关怀将永远无法到达当前会话（用户实测零感受）。
+  if (!care.length) return head
+  const careLines = care.map((e) => {
+    let payload = e.payload
+    try {
+      payload = typeof e.payload === 'string' ? JSON.parse(e.payload) : e.payload
+    } catch {
+      /* 保持原始值 */
+    }
+    return `## ${e.type}（${e.ts}）\nevent_id=${e.event_id}\n${JSON.stringify(payload, null, 1)}`
+  })
+  return head + '\n\n【关怀信号内容（本地订阅缓存，可直接呈现）】\n' + careLines.join('\n\n')
 }
 
 /** 相同内容判定（对齐 agent-instructions sameContextPayload：content + source 全等）。 */
