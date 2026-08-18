@@ -1138,3 +1138,18 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：NAS 镜像 sgme:1.0.0b3-nas-t58；限流重试间隔 3s→6s→12s（封顶 20s）；zhipu 输出截断率应显著下降（max_tokens 翻倍 + 解析重试兜底）
 
 **文档**：本记录 B84
+
+### B85. T-55 收尾：文档同步 + 版本号升 1.0.0b3（2026-08-18）
+
+**背景**：T-55 免费模型托底产品化功能（智谱 GLM-4.7-Flash 主链 + 硅基流动 BAAI/bge-m3 向量托底）已于 B79-B84 落地并完成 NAS 全量重灌，但文档与代码存在不一致——架构 v0.9 §24 仍写 deepseek 主链、§23 向量仍写火山方舟 doubao 2048 维；接口契约/runbook 仍写 VOLC_API_KEY / volc-plan——违反「文档第一公民」。本次补齐文档同步并发布 b3。
+
+**改动**：
+1. 架构 v0.9 §2 核心约束第 9 条、§24 降级链示例与正文改为 zhipu（GLM-4.7-Flash 免费主模型）→ deepseek 备用 → rule
+2. 架构 v0.9 §23 memory_vectors / scene_vectors 向量模型描述改为硅基流动 BAAI/bge-m3 1024 维（免费）
+3. 接口契约 v0.1「两个模型」表向量 embedding Key 由 VOLC_API_KEY 改为 SILICONFLOW_API_KEY
+4. runbook §16.3 配置描述 search.vector 由 volc-plan 兜底改为 siliconflow BAAI/bge-m3 1024 维免费托底
+5. 版本号 1.0.0b2 → 1.0.0b3（pyproject.toml / sgme/__init__.py / sgme/operations/health.py / sgme/server/app.py / 6 个测试版本断言）；新增 docs/release-notes-v1.0.0b3.md
+
+**测试**：pytest health/server 版本断言 6 文件 +1.0.0b3 全绿；config/provider 相关模块绿；启动 `python -m sgme` → /v1/health 报 version 1.0.0b3、向量 available:true
+
+**文档**：本记录 B85；Backlog T-55 ✅（文档同步完成）；README/agent-onboarding 已于 B79 同步免费双件套引导

@@ -14,7 +14,7 @@ SGME 的提炼与检索各依赖一个外部模型，**缺了会静默降级，�
 | 依赖 | 用途 | 配置 | 缺失后果 |
 |---|---|---|---|
 | 提炼 LLM | L1 提取记忆 | `DEEPSEEK_API_KEY`（或 providers.yaml 其它 LLM） | 降级直存（不丢但不出标签） |
-| 向量 embedding | 语义检索 | `VOLC_API_KEY`（`search.vector` 段） | 检索降级纯 BM25（关键词仍可用） |
+| 向量 embedding | 语义检索 | `SILICONFLOW_API_KEY`（`search.vector` 段） | 检索降级纯 BM25（关键词仍可用） |
 
 接入后先调 `health` 看 `llm.available` / `vector.available`，哪个 false 就补哪个的 key。
 

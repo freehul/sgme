@@ -774,7 +774,7 @@ curl $SGME_HTTP_BASE/v1/health
 ### 16.3 配置（sgme.yaml）
 
 - **首次启动**（空数据卷）自动把默认 `config/sgme.yaml` 物化到数据卷 `config/` 下（entrypoint 复制镜像内模板）
-- 默认含生产调优：`l15.prescreen.enabled: true` + `fallback: skip_conflict`（embed 不可达时跳过冲突检测直接 store，防全量召回烧钱）与 `search.vector`（volc-plan 兜底）
+- 默认含生产调优：`l15.prescreen.enabled: true` + `fallback: skip_conflict`（embed 不可达时跳过冲突检测直接 store，防全量召回烧钱）与 `search.vector`（siliconflow BAAI/bge-m3 1024 维免费托底）
 - 改配置：编辑数据卷 `config/sgme.yaml` 后重启容器；程序资源 `llm.yaml` / `providers.yaml` 始终读镜像内版本
 - 找数据卷：`docker volume ls` / `docker volume inspect <volume>`（compose 卷名形如 `sgme_sgme-data`）
 
