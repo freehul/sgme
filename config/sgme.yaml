@@ -12,14 +12,14 @@ refine:
   # 用户指定专用提炼 LLM（2026-08-18，T-53 免费托底）：
   # 显式 override 优先于 agent 声明（resolve.py 策略规则 1）——dsh agent 曾注册
   # agent_model=deepseek/deepseek-v4-flash 劫持提炼链（5279 次 deepseek 消耗），
-  # 此配置强制主链 zhipu 免费、deepseek 仅作降级备用。
+  # 此配置强制主链 zhipu 免费；2026-08-20 起降级链移除 deepseek 备用（省钱），限流整批滞留重试。
   llm_override:
     provider: zhipu
     model: glm-4.7-flash
     max_tokens: 8192
   batch_scan:
     enabled: true
-    interval_min: 10
+    interval_min: 60   # 2026-08-20：10→60min，白天减少撞 zhipu 限流频率（会话结束 refine_trigger 仍即时提炼）
 l2:
   max_scenes: 200
   warn_thresholds:
