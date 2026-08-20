@@ -105,14 +105,14 @@ def _insert_care_event(mem_conn: sqlite3.Connection, signal_type: str,
 # ---------- 各类型推导规则（零 LLM） ----------
 
 def _scan_todo_due(mem_conn: sqlite3.Connection, rules: dict[str, Any]) -> int:
-    """待办到期/无进展：tasks 维度 active 记忆，updated_at 老化 ≥ todo_due_days 天。"""
+    """待办到期/无进展：goals 维度 active 记忆，updated_at 老化 ≥ todo_due_days 天（2026-08-20 修复：原 tasks 维度已随三池重构移除，旧 SQL 永不命中）。"""
     days = int(rules.get("todo_due_days", 7))
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = mem_conn.execute(
         """
         SELECT m.memory_id, m.content, m.updated_at FROM memories m
         JOIN memory_tags t ON t.memory_id = m.memory_id
-        WHERE t.dimension_id = 'tasks' AND m.status = 'active'
+        WHERE t.dimension_id = 'goals' AND m.status = 'active'
           AND m.updated_at < ?
         ORDER BY m.updated_at ASC LIMIT 20
         """,
