@@ -1190,6 +1190,6 @@ L1.5 冲突裁决、L2 场景聚合。
 
 **冒烟**：SGME 真实 `embed()` 调本地 ollama bge-m3 返回 **1024 维**向量成功；config 加载验证 fallbacks 正确解析
 
-**运维影响**：NAS 生产 sgme.yaml 需同步 + SGME 容器重启生效；ollama bge-m3 已就位（1.2GB）；`api_key_env` 留空（本地 Ollama 无需鉴权），SILICONFLOW_API_KEY 仍为云端降级用
+**运维影响（2026-08-20 已部署完成）**：NAS 生产已同步 sgme.yaml + 构建 `sgme:1.0.0b3-nas-vec1` 镜像 + compose 更新 + 容器重启生效；生产实测 ollama 在线 provider=local（277ms）、停 ollama 自动切云端返回 1024 维、恢复回本地。备份：sgme.yaml.bak-20260820-vec1 + docker-compose.yml.bak-20260820-vec1。ollama bge-m3 已就位（1.2GB）；`api_key_env` 留空（本地 Ollama 无需鉴权），SILICONFLOW_API_KEY 仍为云端降级用
 
 **文档**：本记录 B87
