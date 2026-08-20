@@ -150,7 +150,13 @@ def _event_to_message(ev: dict) -> dict | None:
         text = _extract_text(data.get("content"))
         if not text:
             return None
-        return {"role": "user", "content": text, "ts": ts or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        return {
+            "role": "user",
+            "content": text,
+            "ts": ts or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            # 原始毫秒（T-90 统一 key 用：对齐实时链路 session-sync 的 dsh-{首条消息毫秒}）
+            "ms": ev.get("time") if isinstance(ev.get("time"), (int, float)) else None,
+        }
 
     if etype == "assistant/message":
         message = data.get("message") or {}
@@ -221,6 +227,30 @@ def to_l0(messages: list[dict]) -> str:
         else:
             blocks.append(f"## {m['ts']} assistant\n{m['content']}")
     return "\n\n".join(blocks) + "\n"
+
+
+def session_key_for(messages: list[dict], dir_name: str) -> str:
+    """统一 session_key 生成（T-90 双链路对齐）。
+
+    优先 dsh-{首条 user 消息毫秒}——与 sgme-bridge session-sync.ts 实时链路
+    （dsh-{首条 user/message 事件 time}）完全一致，服务端幂等才能真正拦截；
+    无有效 user 消息时兜底目录名（空会话不会导入，兜底仅防御）。
+    """
+    for m in messages:
+        if m.get("role") == "user" and m.get("ms"):
+            return f"dsh-{int(m['ms'])}"
+    return f"dsh-{dir_name}"
+
+
+def is_already_imported(dir_name: str, messages: list[dict], existing: set[str]) -> bool:
+    """双形态查重：目录名形态（历史导入）或首条毫秒形态（实时链路）任一命中即已导入。
+
+    保证：已导入的 130 条（目录名 key）重跑不重导；实时链路已覆盖的（毫秒 key）
+    不重导；新导入统一用毫秒 key，与实时链路未来天然幂等。
+    """
+    if f"dsh-{dir_name}" in existing:
+        return True
+    return session_key_for(messages, dir_name) in existing
 
 
 def _http() -> httpx.Client | None:
@@ -351,11 +381,14 @@ def main() -> int:
     if args.dry_run:
         for f in todo[: args.limit or len(todo)]:
             msgs = parse_session_file(f)
+            if is_already_imported(f.parent.name, msgs, existing):
+                print(f"  [已覆盖跳过] {f.parent.parent.name}/{f.parent.name}（实时链路/历史已导入）")
+                continue
             print(f"  [待导入] {f.parent.parent.name}/{f.parent.name}（消息 {len(msgs)} 条）")
         print("dry-run 结束（未写入）")
         return 0
 
-    ok = fail = 0
+    ok = fail = skip = 0
     t0 = time.time()
     for i, f in enumerate(todo[: args.limit or len(todo)], 1):
         try:
@@ -364,8 +397,13 @@ def main() -> int:
                 fail += 1
                 print(f"[{i}/{len(todo)}] 跳过（无消息）: {f.parent.name}")
                 continue
+            # 双形态查重：目录名（历史导入）或首条毫秒（实时链路）任一命中 → 已导入
+            if is_already_imported(f.parent.name, messages, existing):
+                skip += 1
+                print(f"[{i}/{len(todo)}] 已覆盖跳过: {f.parent.name}")
+                continue
             l0_text = to_l0(messages)
-            session_key = f"dsh-{f.parent.name}"
+            session_key = session_key_for(messages, f.parent.name)
             started_at = messages[0].get("ts", "") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             if append_to_sgme(l0_text, session_key, started_at):
                 ok += 1
@@ -376,7 +414,7 @@ def main() -> int:
             fail += 1
             print(f"[{i}/{len(todo)}] 异常 {f.parent.name}: {e}")
         if i % 10 == 0:
-            print(f"  进度 {i}/{len(todo)} | 成功 {ok} 失败 {fail} | {time.time()-t0:.0f}s")
+            print(f"  进度 {i}/{len(todo)} | 成功 {ok} 失败 {fail} 跳过 {skip} | {time.time()-t0:.0f}s")
 
     print(f"导入完成: 成功 {ok}，失败 {fail}（失败项重跑本脚本即可补漏）")
 
