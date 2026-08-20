@@ -288,7 +288,7 @@ def test_list_endpoint_contract_unchanged(client):
     assert list(body.keys()) == LIST_TOP_KEYS
     assert body["total"] == len(sgme_config.load_config()["dimensions"])
     dims = {d["id"] for d in body["dimensions"]}
-    assert {"identity", "family", "projects", "tech_stack"} <= dims
+    assert {"identity", "family", "goals", "tech_stack"} <= dims
     identity = next(d for d in body["dimensions"] if d["id"] == "identity")
     assert list(identity.keys()) == DIMENSION_FIELD_KEYS
     assert "身份" in identity["aliases"]

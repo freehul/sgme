@@ -329,7 +329,7 @@ def _seed_memories(mem_conn: sqlite3.Connection, cfg: dict, *, stale_tasks: int 
         memory_dao.insert_memory(
             mem_conn, content=f"待办事项 {i}（无进展）", memory_type="task",
             priority=80, time_velocity="dynamic", ttl_days=30,
-            dimension_ids=["tasks"], updated_at=old, occurred_at=old,
+            dimension_ids=["goals"], updated_at=old, occurred_at=old,
         )
     for i in range(mood):
         memory_dao.insert_memory(
