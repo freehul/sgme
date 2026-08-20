@@ -1466,3 +1466,26 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 **运维影响**：重复 L0 归档需 NAS 容器内执行 --apply 输出的命令清单（当前未执行，60 条重复待用户确认后归档）；归档后重复文件不再提炼，恢复 = 移回 raw/ + status 置 new；本次不改动已导入数据。
 
 **文档**：本记录 B98
+### B99. 自动检测新版本并引导更新（ST-34，2026-08-21）
+
+**背景**：SGME 无任何版本检测/更新引导（2026-08-20 盘点确认）——用户需手动看 GitHub release + runbook 升级。普通用户不会主动关注 release，发布节奏加快后版本滞后成为产品缺口。2026-08-21 用户立项 ST-34，决策：检测源 GitHub 优先；执行机制=意图文件+主机侧 cron 更新代理（用户确认后自动完成）；Docker 形态容器无特权（不挂 docker.sock）。
+
+**改动**（T-91~T-94，本轮交付 T-91/92/93 + T-94 脚本，NAS 部署后续）：
+1. `sgme/operations/update_check.py`（新建）：GitHub Releases API（`releases/latest`，公开仓库免 token）解析 tag_name，与当前版本语义化对比（预发布 b4<b5 视为新版；正式版>预发布）；网络/API 失败静默降级（记录 update_error 不抛异常）；模块级缓存 get_cached/refresh（health 高频读不重复请求外网）；config `update_check` 段（enabled/interval_hours/source，默认 github/24h）
+2. `sgme/config.py`：`DEFAULT_UPDATE_CHECK_CONFIG` + `_merge_update_check_config` + load_sgme_config 两处返回（缺文件兜底/有文件合并）
+3. `sgme/operations/health.py`：health operation 读 update_check 缓存，data 增 update_available/latest_version/update_checked_at/update_error；http_payload 投影新增 4 字段（**只增不改**，MCP 契约冻结不动）
+4. `sgme/server/app.py`：`update_check_task` 定时刷新（interval_hours），lifespan 挂载
+5. `sgme/operations/update_request.py`（新建）：意图文件读写 $SGME_HOME/update/request.json（原子写 tmp+os.replace；损坏静默降级；clear 幂等）
+6. `sgme/server/routes_admin.py`：POST/GET `/v1/admin/update/request`（admin 鉴权）——WebUI 确认「立即更新」落意图，主机代理轮询执行
+7. `ui/src/api/dashboard.ts`：HealthStatus 增 4 字段 + requestUpdate/getUpdateRequest；`ui/src/views/dashboard/DashboardView.vue`：发现新版高亮提示条（查看更新说明→release 页 / 立即更新按钮）+ window.confirm 确认弹窗（说明备份/重建/回滚保障）+ 提交后状态反馈（项目既有 confirm 惯例，无自定义弹窗）
+8. `scripts/sgme-host-updater.sh`（新建，T-94）：主机侧 cron 更新代理——轮询意图文件 → 校验 target_version 格式 → git pull → docker build 新镜像（网络抖动重试一次）→ 备份 compose → 换 tag → compose up → 健康验证 → 成功清请求/失败自动回滚旧镜像 + 标记 failed；锁文件防并发；容器无特权由主机执行
+
+**验证**：tests/test_update_check.py 13 用例 + tests/test_update_request.py 6 用例 + test_operations_health.py/test_health_v04.py/test_stall_watch.py 契约更新（HTTP_TOP_KEYS 增 4 字段，含修复 test_stall_watch 历史遗留缺 model_config）→ 全绿；`npm run build` 通过；真实冒烟（scripts/oneoff/smoke_update_st34.py）：health 返回 4 新字段（真实连 GitHub 拿到 v1.0.0b4 无更新）、POST/GET 意图端点 200、request.json 原子落盘；bash -n 脚本语法通过。
+
+**运维影响**：
+- health 响应体新增 4 顶层字段（向后兼容，消费方忽略即可）；MCP health 不变
+- 首次 health 调用会同步请求一次 GitHub API（10s 超时，失败静默）——无网络环境服务不受影响，仅 update_error 有值
+- 自动更新执行链路（T-94 主机代理）**本轮仅交付脚本，未部署 NAS**；部署需用户确认后：拷贝 scripts/sgme-host-updater.sh 到 NAS + 加 root cron（*/5 * * * *）
+- config/sgme.yaml 可加 update_check 段调 enabled/interval_hours/source（可选，默认即可用）
+
+**文档**：本记录 B99
