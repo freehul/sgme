@@ -325,3 +325,71 @@ describe('事件提醒注入（2026-08-20 修复）', () => {
     expect(subscriber.markNotified).toHaveBeenCalledTimes(1)
   })
 })
+
+// ---------- T-88 对话内容驱动（首句选场景，2026-08-20 用户定） ----------
+
+function makeSceneSearchResponse(scenes: number, memories: number) {
+  const results = []
+  for (let i = 1; i <= scenes; i++) {
+    results.push({ rank: i, source: 'wiki', title: `场景${i}`, content: `L2 场景内容${i}：SGME 架构相关` })
+  }
+  for (let i = 1; i <= memories; i++) {
+    results.push({ rank: scenes + i, source: 'memory', content: `相关记忆${i}` })
+  }
+  return { results, meta: { routes: ['bm25'], rrf_k: 60 } }
+}
+
+describe('registerContextInjection (T-88 对话内容驱动)', () => {
+  it('首句命中 L2 场景 → 用首句调 search(memory+wiki) 并注入场景块', async () => {
+    const { ctx, listeners } = makeCtx()
+    const client = makeClient({
+      search: vi.fn(async () => makeSceneSearchResponse(1, 1)),
+    })
+    registerContextInjection(ctx, client, { injectMode: 'daily', injectMaxTokens: 800, searchLimit: 5 })
+    const handler = listeners.get('agent/pre-step')!
+    const next = vi.fn(async () => makeDecision())
+    const firstMsg = { id: 'u1', role: 'user', content: [{ type: 'text', text: '帮我看看 SGME 架构设计' }] }
+    const result = await handler(makePayload(1, [firstMsg]), next)
+
+    // 首句作为 query，双 scope
+    expect(client.search).toHaveBeenCalledWith(expect.objectContaining({
+      query: '帮我看看 SGME 架构设计',
+      scopes: ['memory', 'wiki'],
+    }))
+    // 注入文本含场景块
+    const messages = (result as { messages: any[] }).messages
+    const injected = messages.find((m) => m.source?.plugin === 'dsh-sgme')
+    expect(injected).toBeTruthy()
+    expect(injected.content[0].text).toContain('SGME 相关场景')
+    expect(injected.content[0].text).toContain('场景1')
+    // 命中场景时不再调 inject 模板
+    expect(client.inject).not.toHaveBeenCalled()
+  })
+
+  it('首句无场景命中 → 回退模板注入（inject 被调用）', async () => {
+    const { ctx, listeners } = makeCtx()
+    const client = makeClient({
+      search: vi.fn(async () => ({ results: [{ rank: 1, source: 'memory', content: '普通记忆' }], meta: { routes: ['bm25'], rrf_k: 60 } })),
+    })
+    registerContextInjection(ctx, client, { injectMode: 'daily', injectMaxTokens: 800, searchLimit: 5 })
+    const handler = listeners.get('agent/pre-step')!
+    const next = vi.fn(async () => makeDecision())
+    const firstMsg = { id: 'u1', role: 'user', content: [{ type: 'text', text: '随便聊聊' }] }
+    await handler(makePayload(1, [firstMsg]), next)
+
+    // 回退：inject 模板被调用（mode 来自配置）
+    expect(client.inject).toHaveBeenCalledWith({ mode: 'daily' })
+  })
+
+  it('无首句（消息为空）→ 维持原逻辑（inject + projectHint 检索）', async () => {
+    const { ctx, listeners } = makeCtx()
+    const client = makeClient()
+    registerContextInjection(ctx, client, { injectMode: 'daily', injectMaxTokens: 800, searchLimit: 5 })
+    const handler = listeners.get('agent/pre-step')!
+    const next = vi.fn(async () => makeDecision())
+    await handler(makePayload(1, []), next)
+
+    expect(client.inject).toHaveBeenCalledWith({ mode: 'daily' })
+  })
+})
+
