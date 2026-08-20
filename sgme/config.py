@@ -84,6 +84,13 @@ DEFAULT_SKILLS_HUB_CONFIG = {
     },
 }
 
+# ST-34：自动更新检测配置段默认值（sgme.yaml 缺失时兜底）
+DEFAULT_UPDATE_CHECK_CONFIG = {
+    "enabled": True,
+    "interval_hours": 24,
+    "source": "github",  # github 优先；可换 gitee
+}
+
 
 # ---------- env 覆盖字段（ST-20，2026-08-11：GitHub 发布前脱敏） ----------
 # 键 = 配置点分路径，值 = 环境变量名。
@@ -532,6 +539,7 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
             "server": dict(DEFAULT_SERVER_CONFIG),
             "dream": _merge_dream_config(None),
             "care": _merge_care_config(None),
+            "update_check": dict(DEFAULT_UPDATE_CHECK_CONFIG),
         }
     raw = _read_yaml(cfg_path)
     if not isinstance(raw, dict):
@@ -560,7 +568,17 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
     raw["dream"] = _merge_dream_config(raw.get("dream"))
     # care 段合并默认值（ST-25 角色层）
     raw["care"] = _merge_care_config(raw.get("care"))
+    # update_check 段合并默认值（ST-34 自动更新检测）
+    raw["update_check"] = _merge_update_check_config(raw.get("update_check"))
     return raw
+
+
+def _merge_update_check_config(user_cfg: dict | None) -> dict:
+    """合并 update_check 段默认值与用户配置。"""
+    base = dict(DEFAULT_UPDATE_CHECK_CONFIG)
+    if isinstance(user_cfg, dict):
+        base.update({k: v for k, v in user_cfg.items() if v is not None})
+    return base
 
 
 def _merge_care_config(user_cfg: dict | None) -> dict:
