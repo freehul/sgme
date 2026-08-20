@@ -31,8 +31,6 @@ DATA_DIR=/vol1/1000/Docker/sgme/data
 LOG=/vol1/1000/Docker/sgme/logs/updater.log
 LOCK=/vol1/1000/Docker/sgme/logs/updater.lock
 REQUEST_FILE="$DATA_DIR/update/request.json"
-# 构建镜像 tag 前缀（当前 SGME 主版本；随版本发布更新）
-VER_TAG_PREFIX="1.0.0b"
 UPSTREAM=origin
 BRANCH=main
 
@@ -62,6 +60,7 @@ if [ ! -f "$REQUEST_FILE" ]; then
 fi
 TARGET_VERSION=$(get_json_field "$REQUEST_FILE" target_version)
 STATUS=$(get_json_field "$REQUEST_FILE" status)
+REQUESTED_AT=$(get_json_field "$REQUEST_FILE" requested_at)
 if [ "$STATUS" != "pending" ]; then
   exit 0
 fi
@@ -77,8 +76,9 @@ fi
 
 # 已是最新（当前镜像 tag == 目标版本）则直接完成
 CURRENT_IMAGE=$(docker ps --format '{{.Image}}' --filter name=^/sgme$ 2>/dev/null | head -1)
-if echo "$CURRENT_IMAGE" | grep -q "${VER_TAG_PREFIX}${TARGET_VERSION#v}" ; then
-  log "当前已是 ${TARGET_VERSION}，标记完成"
+TARGET_NO_V="${TARGET_VERSION#v}"
+if echo "$CURRENT_IMAGE" | grep -qE ":${TARGET_NO_V}(-|:|$)" ; then
+  log "当前已是 ${TARGET_VERSION}（$CURRENT_IMAGE），标记完成"
   rm -f "$REQUEST_FILE"
   exit 0
 fi
@@ -87,7 +87,7 @@ fi
 touch "$LOCK"
 log "=== 开始自动更新 → ${TARGET_VERSION}（当前镜像 $CURRENT_IMAGE）==="
 OLD_IMAGE="$CURRENT_IMAGE"
-NEW_TAG="${VER_TAG_PREFIX}${TARGET_VERSION#v}-nas-autoupd"
+NEW_TAG="${TARGET_NO_V}-nas-autoupd"
 NEW_IMAGE="sgme:${NEW_TAG}"
 
 mark_failed() { # $1=原因
@@ -101,7 +101,7 @@ mark_failed() { # $1=原因
   fi
   # 写失败状态（保留请求文件，标记 failed + 原因）
   cat > "$REQUEST_FILE" <<EOF
-{"target_version": "$TARGET_VERSION", "requested_at": "$(get_json_field "$REQUEST_FILE" requested_at)", "status": "failed", "error": "$1"}
+{"target_version": "$TARGET_VERSION", "requested_at": "$REQUESTED_AT", "status": "failed", "error": "$1"}
 EOF
   rm -f "$LOCK"
   exit 1
@@ -148,6 +148,13 @@ done
 if [ "$HEALTHY" != "1" ]; then
   mark_failed "健康验证失败（服务未就绪）"
 fi
+
+# 5.1 版本一致性校验（防止 tag 与代码不符的假更新）
+RUNNING_VERSION=$(curl -s -m 5 http://127.0.0.1:9910/v1/health 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+if [ "$RUNNING_VERSION" != "$TARGET_NO_V" ]; then
+  mark_failed "版本不一致（运行 $RUNNING_VERSION ≠ 目标 $TARGET_NO_V）"
+fi
+log "版本确认：$RUNNING_VERSION"
 
 # 6. 成功：标记 done + 清请求
 log "=== 更新成功 → ${TARGET_VERSION} ==="
