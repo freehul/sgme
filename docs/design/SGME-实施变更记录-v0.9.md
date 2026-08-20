@@ -1227,7 +1227,7 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：1.0 上传 GitHub 无需 filter-repo 重写；若未来引入真实密钥提交需重新评估
 
 **文档**：本记录 B89；Backlog ST-21 ✅
-=======
+
 ### B90. 信号批量清空端点 + MCP signal_clear + WebUI 全部消费（T-87，2026-08-21）
 
 **背景**：signal_events 此前只有 GET /v1/events/pull（持久游标逐批拉取）、
@@ -1271,3 +1271,27 @@ GET /v1/events/stream（SSE）、单条 consume（/v1/admin/care/signals/{id}/co
 即用；无 DB 迁移（复用既有 consumed_at/consumed_by 列），不改变 pull/stream 端点行为。
 
 **文档**：本记录 B88
+=======
+### B91. ST-33 /v1/search 新增 sessions scope（L0 原始层接入）+ T-9 直查 SQL 收口 data 层（2026-08-20）
+
+**背景**：
+1. **ST-33**：/v1/search 已统一 memory（L1.5 记忆池）+ wiki（L2 场景）+ wiki_pages（知识库）三源，L0 原始层（raw_files 索引）未接入——未提炼/未命中提炼的原始会话原文不可检索，多源统一检索缺最后一块拼图。
+2. **T-9**：operations/health.py（``_count_vector_rows`` 向量行数统计）与 signal/engine.py（publish 的 suppress_hint 查询、get_replay_window_events 的重放窗口查询）绕过 data 层直查 SQL，违反「data 是唯一数据库操作层」铁律。
+
+**改动**：
+1. **sgme/data/session_dao.py**：新增 ``search_raw_files(conn, query, limit)``——LIKE 子串匹配 raw_files 元数据列（file_id / session_key / agent_id / path，OR 语义 + ESCAPE 防通配符），按最近会话倒序（与浏览分页同口径），空 query 返回空列表
+2. **sgme/operations/search.py**：新增 scope ``"sessions"``（第 4 层）——检索委托 DAO，结果装饰 source=``"sessions"`` + routes=[``"l0_like"``]；``content`` 为读盘正文摘要（剥 frontmatter → 折叠空白 → 截断 200 字，best-effort：文件缺失/越界/读失败 → 空串，检索不依赖读盘）；容错隔离对称 wiki_pages 层（session_conn 为 None / 检索失败 → 该层空结果 + WARNING）。raw_dir 取自 ``cfg["paths"]["raw_dir"]``，路径解析复用 operations/session.py 的 ``_resolve_raw_path``（越界纵深防御）
+3. **sgme/data/stats_dao.py**：新增 ``count_vector_rows(conn)``——health 向量行数统计迁入（表缺失/异常按 0 计，永不抛）
+4. **sgme/operations/health.py**：删除本地 ``_count_vector_rows``，改调 stats_dao.count_vector_rows（行为逐行等价）
+5. **sgme/data/signal_dao.py**：新增 ``get_recent_event_ts(conn, event_type, source)``（publish 的 suppress_hint 查询）+ ``count_events_before_ts(conn, ts)``（重放超窗摘要计数）；重放窗口内事件复用既有 ``list_events_since(since_ts=...)``
+6. **sgme/signal/engine.py**：publish / get_replay_window_events 的直查 SQL 改调 DAO（等价重构，零行为变化）
+
+**测试**：
+- test_operations_search.py 新增 5 用例：sessions 命中（含读盘摘要）/ 未命中空结果 / 与 memory 合并（顺序 + routes 并集）/ 磁盘缺失 content 空串 / HTTP 端点端到端
+- test_signal.py 新增 2 用例：get_recent_event_ts（最近一条/异源/无记录 None）、count_events_before_ts
+- test_operations_health.py 新增 1 用例：stats_dao.count_vector_rows 直测
+- 相关模块回归全绿（test_operations_search / test_operations_health / test_signal / test_signal_consumption / test_operations_events / test_storage_v04 / test_health_v04，数字见提交信息）
+
+**运维影响**：无——两个任务均为向后兼容增量。sessions 为新 scope，缺省不启用（DEFAULT_SCOPES 仍为 [``"memory"``]），旧请求逐字节不变；sessions 层正文摘要读盘为 best-effort，不改变任何既有响应字段。已知边界：raw_files 为索引表（无正文列），sessions 匹配目标是元数据列（file_id/session_key/agent_id/path），正文全文匹配（FTS5 化 raw 内容）留待后续版本
+
+**文档**：本记录 B89
