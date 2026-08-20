@@ -21,7 +21,8 @@ v0.7 的目标是抽取业务逻辑，**不是**统一 API 契约（用户硬约
 由两个投影函数各自还原，保证改造前后两端输出**逐字节等价**。
 统一为单一形态是 v0.8 的议题，届时删掉 ``refinement_raw`` 与 ``mcp_payload`` 即可。
 
-依赖：只调 ``sgme.engine.health.check_heartbeat``（engine 是禁区，只读不改）。
+依赖：调 ``sgme.engine.health.check_heartbeat``（engine 是禁区，只读不改）
++ ``sgme.data.stats_dao``（向量行数统计，T-9 收口：data 是唯一数据库操作层）。
 副作用：``check_heartbeat`` 在心跳异常时会发布 ``anomaly_warn`` 信号——
 这是既有可观测性行为，抽取后必须保留，不得"优化"掉。
 """
@@ -36,6 +37,7 @@ from typing import Any
 
 import httpx
 
+from sgme.data import stats_dao
 from sgme.engine import health as engine_health
 from sgme.llm.provider import make_client
 from sgme.operations.errors import OperationResult
@@ -192,8 +194,8 @@ def check_vector_availability(mem_conn: sqlite3.Connection) -> dict[str, Any]:
     - reason：仅在有降级 / 异常 / 无向量数据时给出中文说明，一切正常为 None
 
     ⚠️ 本函数**永不抛异常**（健康检查必须健壮）：任何探测失败 → available=False + 原因。
-    ⚠️ 数据层例外：data/ 层无向量计数 DAO，且本任务不允许改 data/；
-    此处仅做只读 COUNT 内省（无副作用），不承担任何查询逻辑。
+    ⚠️ 向量行数统计走 ``data/stats_dao.py::count_vector_rows``（T-9 收口：
+    data 是唯一数据库操作层，operations 层零 SQL）。
 
     Args:
         mem_conn: memory.db 连接（memory_vectors / scene_vectors 所在库）。
@@ -222,7 +224,7 @@ def check_vector_availability(mem_conn: sqlite3.Connection) -> dict[str, Any]:
             engine = "unavailable"
             reason = "向量引擎不可用：sqlite-vec 与 numpy 均加载失败"
 
-        counts = _count_vector_rows(mem_conn)
+        counts = stats_dao.count_vector_rows(mem_conn)
         # 无向量数据 → 附加引导提示（新手可据此判断 /search 向量通路为何不生效）
         if engine != "unavailable" and counts["memory_vectors"] + counts["scene_vectors"] == 0:
             hint = "尚无向量数据：/search 向量通路将回退纯 BM25，可先沉淀记忆并触发提炼/场景生成"
@@ -243,26 +245,6 @@ def check_vector_availability(mem_conn: sqlite3.Connection) -> dict[str, Any]:
             "scene_vectors": 0,
             "reason": f"向量可用性探测失败: {e}",
         }
-
-
-def _count_vector_rows(mem_conn: sqlite3.Connection) -> dict[str, int]:
-    """向量表行数统计（表缺失按 0 计；只读 COUNT，无副作用）。"""
-    counts = {"memory_vectors": 0, "scene_vectors": 0}
-    try:
-        tables = {r["name"] for r in mem_conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()}
-    except Exception:
-        return counts
-    for table in counts:
-        if table not in tables:
-            continue
-        try:
-            row = mem_conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
-            counts[table] = row["c"] if row else 0
-        except Exception:
-            counts[table] = 0
-    return counts
 
 
 def _vector_block(mem_conn: sqlite3.Connection, cfg: dict) -> dict[str, Any]:

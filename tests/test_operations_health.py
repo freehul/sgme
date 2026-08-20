@@ -28,7 +28,7 @@ from sgme.operations.health import SGME_VERSION, _watermark_age_sec, health, htt
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
 from sgme.data import db as db_mod
-from sgme.data import memory_dao
+from sgme.data import memory_dao, stats_dao
 
 # ---------- v0.6 冻结契约（改造前逐字段抄录，任何变动即破坏性变更） ----------
 # ST-22② 有意新增顶层 vector 字段（只增不改既有字段）——列表随之更新。
@@ -411,6 +411,21 @@ def test_vector_available_sqlite_vec(conns, cfg, mock_llm, monkeypatch):
     assert v["memory_vectors"] == 1
     assert v["scene_vectors"] == 0
     assert v["reason"] is None
+
+
+def test_stats_dao_count_vector_rows(conns, cfg, mock_llm):
+    """data/stats_dao.count_vector_rows 直测（T-9 收口）：有向量行 + 缺表按 0。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    _seed_vector(mem_conn)
+
+    # Act
+    counts = stats_dao.count_vector_rows(mem_conn)
+
+    # Assert
+    assert counts == {"memory_vectors": 1, "scene_vectors": 0}
+    # 永不抛异常：不存在的表名也按 0 计
+    assert "memory_vectors" in stats_dao.count_vector_rows(mem_conn)
 
 
 def test_vector_numpy_fallback(conns, cfg, mock_llm, monkeypatch):

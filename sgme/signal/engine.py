@@ -56,16 +56,13 @@ def publish(
     event_id = str(uuid.uuid4())
     ts = _now_iso()
 
+    from sgme.data import signal_dao
+
     # 抑制提示：查同源同类型最近一条事件，30 分钟内则附 suppress_hint
-    cur = mem_conn.execute(
-        "SELECT ts FROM signal_events WHERE type=? AND source=? "
-        "ORDER BY ts DESC LIMIT 1",
-        (event_type, source),
-    )
-    row = cur.fetchone()
-    if row is not None:
-        last_ts = row["ts"] if isinstance(row, sqlite3.Row) else row[0]
-        last_dt = _parse_iso(last_ts) if last_ts else None
+    # （T-9 收口：直查 SQL 迁入 signal_dao.get_recent_event_ts）
+    last_ts = signal_dao.get_recent_event_ts(mem_conn, event_type, source)
+    if last_ts is not None:
+        last_dt = _parse_iso(last_ts)
         now_dt = _parse_iso(ts)
         if last_dt and now_dt:
             delta = (now_dt - last_dt).total_seconds()
@@ -75,7 +72,6 @@ def publish(
 
     payload_json = json.dumps(payload, ensure_ascii=False)
 
-    from sgme.data import signal_dao
     signal_dao.insert_event(
         conn=mem_conn,
         event_id=event_id,
@@ -195,20 +191,15 @@ def get_replay_window_events(
     window_lower = now_dt - timedelta(seconds=REPLAY_WINDOW_SECONDS)
     window_lower_str = window_lower.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # 拉取窗口内全部事件（ts > window_lower）
-    cur = mem_conn.execute(
-        "SELECT * FROM signal_events WHERE ts > ? ORDER BY ts ASC LIMIT ?",
-        (window_lower_str, limit),
-    )
-    in_window = [dict(r) for r in cur.fetchall()]
+    from sgme.data import signal_dao
 
-    # 统计超窗口事件数（ts <= window_lower）
-    cur2 = mem_conn.execute(
-        "SELECT COUNT(*) AS c FROM signal_events WHERE ts <= ?",
-        (window_lower_str,),
+    # 拉取窗口内全部事件（ts > window_lower；T-9 收口：走 DAO，engine 零 SQL）
+    in_window = signal_dao.list_events_since(
+        mem_conn, since_ts=window_lower_str, limit=limit
     )
-    old_count_row = cur2.fetchone()
-    old_count = old_count_row["c"] if old_count_row else 0
+
+    # 统计超窗口事件数（ts <= window_lower；T-9 收口：走 DAO）
+    old_count = signal_dao.count_events_before_ts(mem_conn, window_lower_str)
 
     out: list[dict] = []
     if old_count > 0:
