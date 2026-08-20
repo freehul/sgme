@@ -1195,7 +1195,7 @@ L1.5 冲突裁决、L2 场景聚合。
 **文档**：本记录 B87
 
 
-### B90. dimensions.boundaries 加载保留——YAML→DB→L1 提示词全链路（T-11，2026-08-20）
+### B92. dimensions.boundaries 加载保留——YAML→DB→L1 提示词全链路（T-11，2026-08-20）
 
 **背景**：registry/dimensions.yaml 的 boundaries 字段（维度间 vs 对照消歧说明）在 import 时被静默丢弃——dimension_registry 表无此列、upsert_dimension 不写该字段，运行时 cfg['dimensions'] 只含 id：display_name。审计 D8 实锤：消歧信息从未送达 LLM，维度混淆风险的主要缓解手段等于没做。架构 §28 语义：boundaries = 维度取值边界/枚举约束（此处具体形态为 vs 对照语义消歧），归一化时用于区分相近维度。
 
@@ -1211,7 +1211,7 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：老库首次启动自动补列（幂等）；HTTP /v1/admin/registry 维度对象多 boundaries 字段（新增字段，向后兼容）；L1 提示词维度清单变长（消歧信息，token 略增）
 
 
-### B91. adapters/dsh/install.py 生成 ~/.sgme/install.json（T-23，2026-08-20）
+### B93. adapters/dsh/install.py 生成 ~/.sgme/install.json（T-23，2026-08-20）
 
 **背景**：~/.sgme/install.json 服务发现清单此前只在文档/README 提及（AGENTS.md 服务发现第 2 步、README「连接地址约定」），代码无生成逻辑——本机文件为手动创建。服务端 config.write_install_json（T-23②）已落地，但适配器安装引导（adapters/dsh/install.py）不生成，新装 dsh 适配器仍缺清单。
 
