@@ -508,3 +508,139 @@ def test_pull_operations_data_equals_http_response(client, app, mem_conn):
     # Assert：逐字段一致（事件信封与 next_cursor 全等）
     assert ops_res.ok is True
     assert http_body == ops_res.data
+
+# ---------- 8. 批量清空/全部消费（T-87） ----------
+
+def test_events_consume_all_marks_unconsumed_idempotent(mem_conn):
+    """批量消费：全部未消费事件标记 consumed_at/consumed_by（幂等）。"""
+    from sgme.operations.events import events_consume_all
+
+    # Arrange：两条未消费 + 一条已消费
+    e1 = _publish(mem_conn, {"n": 1})
+    e2 = _publish(mem_conn, {"n": 2})
+    signal_dao.mark_consumed(mem_conn, e1, consumed_by="other-agent")
+
+    # Act：批量清空（consumed_by 记录清空方）
+    res = events_consume_all(mem_conn, consumed_by="test-agent")
+
+    # Assert：只标记未消费的 e2
+    assert res.ok is True
+    assert res.data["consumed"] == 1
+    assert res.data["type"] is None
+    assert res.data["subscriber_id"] is None
+    ev2 = signal_dao.get_event(mem_conn, e2)
+    assert ev2["consumed_at"] is not None
+    assert ev2["consumed_by"] == "test-agent"
+    # 已消费的 e1 不重复标记（consumed_by 保持原值）
+    ev1 = signal_dao.get_event(mem_conn, e1)
+    assert ev1["consumed_by"] == "other-agent"
+    # 幂等：二次调用 consumed=0
+    res2 = events_consume_all(mem_conn, consumed_by="test-agent")
+    assert res2.ok is True
+    assert res2.data["consumed"] == 0
+
+
+def test_events_consume_all_type_filter(mem_conn):
+    """type 过滤：只消费指定类型，其余类型不受影响。"""
+    from sgme.operations.events import events_consume_all
+
+    # Arrange
+    _publish(mem_conn, {"n": 1})  # memory_updated x2
+    _publish(mem_conn, {"n": 2})
+    signal_engine.publish("anomaly_warn", "health", {"m": "x"}, mem_conn)
+
+    # Act：只清空 anomaly_warn
+    res = events_consume_all(mem_conn, event_type="anomaly_warn", consumed_by="a")
+
+    # Assert
+    assert res.ok is True
+    assert res.data["consumed"] == 1
+    assert res.data["type"] == "anomaly_warn"
+    n = mem_conn.execute(
+        "SELECT COUNT(*) FROM signal_events WHERE type='memory_updated' AND consumed_at IS NULL"
+    ).fetchone()[0]
+    assert n == 2  # memory_updated 未被消费
+
+
+def test_events_consume_all_advances_subscriber_cursor(mem_conn):
+    """subscriber_id 提供时同步推进持久游标（pull 视角一并清空）。"""
+    from sgme.operations.events import events_consume_all
+
+    # Arrange：订阅者已有旧游标 + 两条新事件
+    _publish(mem_conn, {"n": 1})
+    signal_dao.upsert_subscriber(mem_conn, "sub-clear", "old-id", "old-ts")
+
+    # Act
+    res = events_consume_all(mem_conn, subscriber_id="sub-clear")
+
+    # Assert：游标被推进到最新
+    assert res.ok is True
+    assert res.data["subscriber_id"] == "sub-clear"
+    sub = signal_dao.get_subscriber(mem_conn, "sub-clear")
+    assert sub["last_signal_id"] != "old-id"
+    assert sub["last_consumed_ts"] != "old-ts"
+    # pull 视角已清空（游标之后无事件）
+    pulled = events_pull(mem_conn, "sub-clear", None, 10)
+    assert pulled.ok is True
+    assert pulled.data["events"] == []
+
+
+def test_consume_all_http_endpoint_admin_auth(client, app):
+    """HTTP 端点：POST /v1/admin/events/consume_all（admin 鉴权 + 幂等）。"""
+    # Arrange
+    _publish(app.state.mem_conn, {"hello": "world"})
+    signal_engine.publish("anomaly_warn", "health", {"m": "x"}, app.state.mem_conn)
+
+    # 无 Key → 403
+    resp = client.post("/v1/admin/events/consume_all")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "ERR_FORBIDDEN"
+
+    # agent key 无 admin 权限 → 403（require_admin_key）
+    resp = client.post("/v1/admin/events/consume_all", headers=AGENT_HEADERS)
+    assert resp.status_code == 403
+
+    # admin key → 200，全部消费
+    resp = client.post(
+        "/v1/admin/events/consume_all", headers={"X-API-Key": "test-admin-key"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["consumed"] == 2
+    assert body["type"] is None
+    assert body["subscriber_id"] is None
+    # 幂等：二次调用 consumed=0
+    resp2 = client.post(
+        "/v1/admin/events/consume_all", headers={"X-API-Key": "test-admin-key"}
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["consumed"] == 0
+
+
+def test_consume_all_http_type_filter_and_subscriber(client, app):
+    """HTTP 端点：type 过滤 + subscriber_id 游标推进（query 参数）。"""
+    # Arrange
+    _publish(app.state.mem_conn, {"hello": "world"})
+    signal_engine.publish("anomaly_warn", "health", {"m": "x"}, app.state.mem_conn)
+
+    # Act：只消费 anomaly_warn + 推进指定订阅者游标
+    resp = client.post(
+        "/v1/admin/events/consume_all",
+        params={"type": "anomaly_warn", "subscriber_id": "http-clear"},
+        headers={"X-API-Key": "test-admin-key"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["consumed"] == 1
+    assert body["type"] == "anomaly_warn"
+    assert body["subscriber_id"] == "http-clear"
+    # memory_updated 未被消费
+    n = app.state.mem_conn.execute(
+        "SELECT COUNT(*) FROM signal_events WHERE type='memory_updated' AND consumed_at IS NULL"
+    ).fetchone()[0]
+    assert n == 1
+    # 订阅者游标已推进
+    sub = signal_dao.get_subscriber(app.state.mem_conn, "http-clear")
+    assert sub is not None
+    assert sub["last_signal_id"] is not None
+

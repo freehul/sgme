@@ -183,6 +183,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "signal_pull", "description": "拉取未消费关怀信号（type=care_*；会话开始主动消费，ST-27）"},
     {"name": "signal_claim", "description": "原子认领信号（谁消费谁标记；已被他人消费返回 claimed=false，ST-27）"},
     {"name": "signal_ack", "description": "写消费回执（claimed/acked/failed；认领后报告处理结果，ST-27）"},
+    {"name": "signal_clear", "description": "批量清空未消费信号（全部标记已消费；可选 type 过滤与订阅者游标推进；幂等，T-87）"},
     {"name": "role_list", "description": "列出可用角色模板（管家/伴侣/朋友/导师，含人设摘要；换皮不换芯，ST-29）"},
     {"name": "role_assemble", "description": "装配角色沟通提示词（角色卡 system_prompt + care_policy + 画像，可选 inject_mode；ST-29）"},
     {"name": "role_active_get", "description": "读取当前沟通角色（未设置返回 role_id=null；ST-29）"},
@@ -838,6 +839,43 @@ def build_mcp_server():
         return json.dumps(
             {"event_id": event_id, "agent_id": agent_id, "status": status}, ensure_ascii=False,
         )
+
+    @mcp.tool()
+    def signal_clear(
+        signal_type: str | None = None,
+        subscriber_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> str:
+        """批量清空未消费信号（T-87）：全部标记已消费（幂等）。
+
+        积压信号清理/WebUI「全部消费」同语义的管理操作：
+        - signal_type 可选类型精确过滤（如 care_daily / anomaly_warn）；None = 全部
+        - subscriber_id 可选：同步推进该订阅者持久游标（pull/SSE 视角一并清空）
+        - 幂等：二次调用 consumed=0；已消费信号不被重复标记
+        - consumed_by 从鉴权 key 反查（MCP 上下文），溯源清空方
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.events import events_consume_all as events_consume_all_operation
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        agent_id = None
+        if ctx is not None:
+            try:
+                req = ctx.request_context.request
+                if req is not None:
+                    key = getattr(req.state, "api_key", None)
+                    key_store = _app_state.get("key_store")
+                    if key_store is not None:
+                        agent_id = key_store.resolve_agent_id(key)
+            except Exception:
+                agent_id = None
+        data = _op_json(
+            events_consume_all_operation, mem_conn,
+            event_type=signal_type, subscriber_id=subscriber_id, consumed_by=agent_id,
+        )
+        return json.dumps(data, ensure_ascii=False)
 
     # ---------- 角色模板（ST-29：agent 发现并调用角色，换皮不换芯） ----------
 
