@@ -62,6 +62,10 @@ All your self-built skills (prompts, workflows, templates) live in one place: di
 
 <img src="assets/selling-point-05-skillhub.png" alt="Skill hub" width="800"/>
 
+### Shared knowledge — a wiki your AIs write together
+
+A shared knowledge base lives next to your memories. Drop in files, URLs, or pasted text — SGME auto-categorizes, tags, and cross-links them, then makes them searchable and citable by every agent you connect. When an agent learns something useful, it can write it back to the wiki (self-evolution), so knowledge compounds across sessions instead of being re-discovered. Every entry keeps its source and author — traceable, never a black box.
+
 ### Chinese-first — a memory engine built for Chinese
 
 Retrieval is tuned for Chinese text — better distillation and recall for Chinese conversations. There are plenty of English memory engines; very few understand Chinese.
@@ -95,7 +99,7 @@ Runs on a single machine with Python + SQLite. No GPU, no external database serv
 - **Hybrid retrieval**: BM25 keyword + vector semantic + label filtering, fused — works even without a vector database
 - **Built-in evaluation framework**: extraction quality proven with data (L1 F1, retrieval ranking tuning), not trust
 - **Automated backup & restore**: daily snapshots, rotation, off-site copies — data never lost
-- **Built-in wiki** (nice-to-have): drop in files, URLs, and images; auto-categorized, tagged, cross-linked, searchable and citable by your AI
+- **Built-in wiki**: a shared, self-evolving knowledge base — drop in files, URLs, or text; auto-categorized, tagged, cross-linked, searchable and citable by your AI; agents can write lessons back so knowledge compounds
 - **Multi-protocol access**: HTTP + MCP dual entry; built-in adapters for mainstream agents, one-click integration; other agents use the MCP protocol, or write their own adapter
 
 ## Quick Start
