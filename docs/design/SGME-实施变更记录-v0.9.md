@@ -1447,3 +1447,22 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 5. 测试：adapters/dsh 31 passed（新增 NAS 查重 3 用例 + 429 重试 2 用例）
 
 **文档**：本记录 B97
+
+### B98. dsh 双链路 session_key 统一 + L0 重复识别（T-90 收尾，2026-08-21）
+
+**背景**：批量导入用 'dsh-{目录名}' 做 session_key，实时链路（sgme-bridge session-sync.ts）用 'dsh-{首条消息毫秒}'——同一逻辑会话两条链路各写一份 raw_files。实测 NAS 209 条 dsh 会话中交叉比对确认 60 条重复 L0（双 key 均在 NAS），重复内容进提炼后虽由 L1.5 冲突检测合并，但浪费提炼 token 且 raw_files 冗余。根因：毫秒精度在 L0 ISO 转换时丢失，无法与实时链路 key 对齐。
+
+**改动**：
+1. adapters/dsh/import_history.py：
+   - _event_to_message user 消息保留原始毫秒（ms 字段，不经 ISO 秒精度）
+   - 新增 session_key_for()：统一 session_key 优先 'dsh-{首条 user 消息毫秒}'（与实时链路完全一致），无有效 user 消息兜底目录名（防御）
+   - 新增 is_already_imported()：双形态查重——目录名形态（历史导入 130 条）或首条毫秒形态（实时链路）任一命中即跳过，重跑不重导、实时已覆盖不重导
+   - main 的 dry-run/正式循环全部接入双形态查重，跳过计入 skip 计数
+2. adapters/dsh/tests/test_import_history.py：+5 用例（毫秒 key/兜底/空 ms 跳过/目录形态命中/毫秒形态命中/未命中），36 passed
+3. scripts/dsh_dedup_l0.py（新建）：重复 L0 识别——拉 NAS 全 key → 扫描本地会话取首条毫秒 → 双 key 都命中判定重复（fork 会话同 ms_key 共享提示人工确认）；dry-run 默认，--apply 输出 NAS 归档命令清单（raw 移 .archive + raw_files 置 archived，原件不删可恢复，archived 不参与提炼）
+
+**验证**：adapters/dsh 36 passed；--dry-run 真实扫描：141 会话目录形态 209 命中全跳过、11 空会话待导入（无写入）；dsh_dedup_l0.py dry-run 识别 60 条重复（含 --D-Projects--/SGME/AIRDT 各工作区）。
+
+**运维影响**：重复 L0 归档需 NAS 容器内执行 --apply 输出的命令清单（当前未执行，60 条重复待用户确认后归档）；归档后重复文件不再提炼，恢复 = 移回 raw/ + status 置 new；本次不改动已导入数据。
+
+**文档**：本记录 B98
