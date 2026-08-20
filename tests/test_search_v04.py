@@ -439,3 +439,58 @@ def test_search_scenes_empty_query(mem_conn):
     """空查询 → 空结果。"""
     from sgme.data.search import search_scenes
     assert search_scenes(mem_conn, "  ", limit=10) == []
+
+# ---------- T-89 内容去重 + limit 截断（2026-08-20） ----------
+
+def test_search_memories_dedup_same_content(mem_conn, session_conn, cfg):
+    """同一内容被重复落库（不同 memory_id）→ 检索只返回 1 条，不稀释注入。
+
+    实测（2026-08-20）：注入显示 10 条相关记忆 4 对重复——L1 提炼把同一事实
+    落库多条，search 全量召回。修复：RRF 融合后按 content 去重。
+    """
+    # Arrange：两条 content 完全相同的记忆（不同 memory_id）
+    mid1 = _insert_memory(mem_conn, content="Python FastAPI 底座")
+    mid2 = _insert_memory(mem_conn, content="Python FastAPI 底座")
+    cli = _mock_embed_client([1.0, 0.0, 0.0, 0.0])
+    for mid in (mid1, mid2):
+        assert vector_mod.upsert_memory_vector(
+            mem_conn, mid, "Python FastAPI 底座", cfg, cli
+        ) is True
+
+    # Act
+    results = do_search(
+        mem_conn, session_conn,
+        query="Python", dimensions=["tech_stack"], limit=10,
+        cfg=cfg, client=cli,
+    )
+
+    # Assert：相同 content 只出现 1 条
+    contents = [r["content"] for r in results]
+    assert contents.count("Python FastAPI 底座") == 1
+    # 且保留的是 rank 更优的一条（content 去重后仍带完整装饰）
+    assert all("memory_id" in r and "rank" in r for r in results)
+
+
+def test_search_memories_limit_respected(mem_conn, session_conn, cfg):
+    """两路召回各满 limit 时，RRF 融合后结果 ≤ limit（不超发）。
+
+    根因：recall_routes 两路各取 limit 条，rrf_merge 按 id 合并不去重不截断
+    → 最多返回 2×limit 条。注入 searchLimit=5 却返回 10 条即此 bug。
+    """
+    # Arrange：插入 12 条记忆（BM25 与向量两路都会命中，各满 limit）
+    contents = [f"Python FastAPI 特性{i}" for i in range(12)]
+    mids = [_insert_memory(mem_conn, content=c) for c in contents]
+    cli = _mock_embed_client([1.0, 0.0, 0.0, 0.0])
+    for mid, c in zip(mids, contents):
+        assert vector_mod.upsert_memory_vector(mem_conn, mid, c, cfg, cli) is True
+
+    # Act：limit=5
+    results = do_search(
+        mem_conn, session_conn,
+        query="Python", dimensions=["tech_stack"], limit=5,
+        cfg=cfg, client=cli,
+    )
+
+    # Assert：不超 limit
+    assert len(results) <= 5
+
