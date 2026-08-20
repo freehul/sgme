@@ -1489,3 +1489,14 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 - config/sgme.yaml 可加 update_check 段调 enabled/interval_hours/source（可选，默认即可用）
 
 **文档**：本记录 B99
+
+**NAS 部署执行补充（2026-08-21）**：
+1. 部署链路：push nas（f0003d4→1bcd167）→ src git pull → docker build sgme:1.0.0b4-nas-upd1（BUILD_EXIT=0）→ 备份 compose → sed 换 tag → compose up -d → 容器 healthy，health 返回 4 个更新字段（update_available=False/latest_version=v1.0.0b4/update_checked_at 填充/update_error=None），真实连 GitHub 检测正常
+2. 主机代理部署：scp scripts/sgme-host-updater.sh → /vol1/1000/Docker/sgme/scripts/（chmod +x）+ root cron `*/5 * * * *`（与 logrotate 并存）
+3. **实测发现并修复 2 个脚本缺陷**（提交 e373d4f）：
+   - **版本号双重拼接 BUG**：`NEW_TAG="${VER_TAG_PREFIX}${TARGET_VERSION#v}"` 在 VER_TAG_PREFIX=1.0.0b + 完整版本 1.0.0b4 时拼成 `1.0.0b1.0.0b4`——WebUI 传完整版本号，前缀冗余。修复：去掉 VER_TAG_PREFIX，直接用 `${TARGET_VERSION#v}-nas-autoupd`
+   - **缺版本一致性校验**：v9.9.9 假版本测试暴露——脚本构建任意 tag 镜像 + health 只查 status=ok 就判成功（代码没变也"成功"）。修复：健康验证后加 `/v1/health` version == 目标版本校验，不符自动回滚旧镜像 + 标记 failed
+   - requested_at 在 mark_failed 重写文件时丢失（heredoc 内命令替换转义问题）→ 提前保存变量
+4. **实测验证矩阵**：无请求静默退出 0；同版本请求→"已是最新"分支清理；假版本 v9.9.9→完整 build+up→版本校验拦截→自动回滚 upd1+failed（error=版本不一致）；cron 最小环境（env -i）执行正常（docker/git/curl 均在 /usr/bin，cron PATH 覆盖）
+5. 清理：删除测试残留镜像（9.9.9-nas-autoupd、1.0.0b1.0.0b4-nas-autoupd）+ request.json
+6. **完整成功更新路径未实测**（当前无更高版本 b5）——下次发布后用户点"立即更新"自然验证；脚本成功分支的 build+up+版本读取代码已随 v9.9.9 测试跑通
