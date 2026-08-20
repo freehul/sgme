@@ -1193,3 +1193,48 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响（2026-08-20 已部署完成）**：NAS 生产已同步 sgme.yaml + 构建 `sgme:1.0.0b3-nas-vec1` 镜像 + compose 更新 + 容器重启生效；生产实测 ollama 在线 provider=local（277ms）、停 ollama 自动切云端返回 1024 维、恢复回本地。备份：sgme.yaml.bak-20260820-vec1 + docker-compose.yml.bak-20260820-vec1。ollama bge-m3 已就位（1.2GB）；`api_key_env` 留空（本地 Ollama 无需鉴权），SILICONFLOW_API_KEY 仍为云端降级用
 
 **文档**：本记录 B87
+
+
+### B88. 信号批量清空端点 + MCP signal_clear + WebUI 全部消费（T-87，2026-08-21）
+
+**背景**：signal_events 此前只有 GET /v1/events/pull（持久游标逐批拉取）、
+GET /v1/events/stream（SSE）、单条 consume（/v1/admin/care/signals/{id}/consume），
+没有批量清空/全部消费端点——积压信号只能逐条认领或等 TTL 清理；WebUI 关怀信号
+面板（SignalsView.vue）只有单条消费按钮；MCP 只有 signal_pull/claim/ack 三工具。
+2026-08-20 用户要求登记 T-87（信号模块功能缺失），本次实施。
+
+**改动**：
+1. **sgme/data/signal_dao.py**：新增 `mark_all_consumed`（批量标记未消费事件为已消费：
+   UPDATE ... WHERE consumed_at IS NULL，可选 `event_type` 精确过滤，幂等——二次调用
+   rowcount=0，已消费事件 consumed_by 不被覆盖）+ `get_latest_event`（(ts, event_id)
+   复合序最大值，与 pull 游标语义一致）
+2. **sgme/operations/events.py**：新增 `events_consume_all`——标记全部未消费事件
+   （可选 type 过滤）；`subscriber_id` 提供时同步把该订阅者持久游标推进到最新，
+   pull/SSE 视角一并清空（与 signal_engine.pull 推进逻辑一致）；consumed_by 记录清空方
+3. **sgme/server/routes_admin.py**：新增 `POST /v1/admin/events/consume_all`（admin 鉴权
+   require_admin_key；query `type` 可选过滤、`subscriber_id` 可选游标推进）。
+   刻意挂 routes_admin 而非 routes_events：管理操作 + 不触碰既有端点行为约束
+   （routes_events 全部端点走 require_agent_key，保持原样）
+4. **sgme/mcp_server.py**：新增 MCP 工具 `signal_clear`（signal_type 可选过滤、
+   subscriber_id 可选游标推进；consumed_by 从鉴权 key 反查）+ ONBOARDING_TOOLS 同步
+   （agent_onboarding 能力清单测试断言清单与工具集一致，防漂移）
+5. **ui/src/api/roles.ts**：新增 `consumeAllCareSignals`；
+   **ui/src/views/care/SignalsView.vue**：新增「全部消费」按钮（confirm 确认 + 幂等提示，
+   禁用条件：列表为空或处理中；按当前类型过滤生效）
+6. **tests/test_operations_events.py**：新增 5 个测试（批量标记+幂等 / type 过滤 /
+   subscriber 游标推进 / HTTP 端点 admin 鉴权+幂等 / HTTP type+subscriber 参数）；
+   **tests/test_mcp_server.py**：新增 signal_clear 测试 + 工具集断言补 signal_clear
+
+**顺带修正（预存在欠账，非本任务引入）**：tests/test_mcp_server.py::test_mcp_memory_reject
+原用 `["projects"]` 维度——projects/tasks 维度已于 2026-08-18 移除（项目池 project_meta /
+待办池 demands 为专用落地点），memory_tags FK 约束导致该测试红；改用仍注册的 `["goals"]`
+维度。注意 tests/test_care.py 仍有 4 个同类预存在失败（`["tasks"]` 维度），未纳入本次范围，
+待后续任务清理。
+
+**测试**：tests/test_operations_events.py + tests/test_mcp_server.py 共 50 passed
+（含 T-87 新增 6 个）；前端 `cd ui && npm run build` 通过（vite 901ms，无类型错误）
+
+**运维影响**：新端点仅 admin key 可调（agent key 403）；MCP `signal_clear` 接入 agent
+即用；无 DB 迁移（复用既有 consumed_at/consumed_by 列），不改变 pull/stream 端点行为。
+
+**文档**：本记录 B88

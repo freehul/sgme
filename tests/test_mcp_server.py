@@ -70,7 +70,7 @@ def test_mcp_tools_available(mcp):
                 "refine_trigger", "refine_batch", "refine_status",
                 "stats", "health", "config_get", "config_update", "agent_onboarding",
                 "idea_add", "demand_create", "project_register",
-                "signal_pull", "signal_claim", "signal_ack",
+                "signal_pull", "signal_claim", "signal_ack", "signal_clear",
                 "role_list", "role_assemble", "role_active_get", "role_active_set"}
     assert expected <= set(names), f"缺工具: {expected - set(names)}"
 
@@ -226,8 +226,10 @@ def test_mcp_memory_reject(mcp):
     """memory_reject：接线 operations.reject_memory——成功标记 + 记忆不存在报错。"""
     from sgme.data import memory_dao
 
+    # 注：projects/tasks 维度已于 2026-08-18 移除（项目池 project_meta / 待办池 demands
+    # 为专用落地点）——本测试改用仍注册的 goals 维度，否则 memory_tags FK 失败（预存在欠账）
     mid = memory_dao.insert_memory(
-        mcp_test_conn(), "测试记忆内容", "fact", 50, "static", None, ["projects"],
+        mcp_test_conn(), "测试记忆内容", "fact", 50, "static", None, ["goals"],
         agent_tag="mcp-test",
     )
     r = _call(mcp, "memory_reject", {"memory_id": mid, "reason": "测试纠错"})
@@ -277,6 +279,39 @@ def test_mcp_refine_batch_and_status(mcp):
     assert "pending" in data4
     assert "completed" in data4
     assert "total" in data4
+
+
+def test_mcp_signal_clear(mcp):
+    """signal_clear：批量清空未消费信号（幂等 + type 过滤，T-87）。"""
+    from sgme.mcp_server import _app_state
+    from sgme.signal import engine as signal_engine
+
+    mem_conn = _app_state["mem_conn"]
+    signal_engine.publish("care_daily", "care", {"date": "2026-08-21"}, mem_conn)
+    signal_engine.publish("anomaly_warn", "health", {"m": "x"}, mem_conn)
+
+    # 全部清空
+    text, _ = _call(mcp, "signal_clear", {})
+    data = json.loads(text)
+    assert "error" not in data, data
+    assert data["consumed"] == 2
+    assert data["type"] is None
+
+    # 幂等：二次调用 consumed=0
+    text2, _ = _call(mcp, "signal_clear", {})
+    assert json.loads(text2)["consumed"] == 0
+
+    # type 过滤：只清空 care_daily，anomaly_warn 保留
+    signal_engine.publish("care_daily", "care", {"date": "2026-08-22"}, mem_conn)
+    signal_engine.publish("anomaly_warn", "health", {"m": "y"}, mem_conn)
+    text3, _ = _call(mcp, "signal_clear", {"signal_type": "care_daily"})
+    data3 = json.loads(text3)
+    assert data3["consumed"] == 1
+    assert data3["type"] == "care_daily"
+    n = mem_conn.execute(
+        "SELECT COUNT(*) FROM signal_events WHERE type='anomaly_warn' AND consumed_at IS NULL"
+    ).fetchone()[0]
+    assert n == 1
 
 
 def test_mcp_agent_onboarding(mcp):

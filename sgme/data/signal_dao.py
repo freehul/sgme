@@ -116,6 +116,46 @@ def mark_consumed(
     return cur.rowcount > 0
 
 
+def mark_all_consumed(
+    conn: sqlite3.Connection,
+    event_type: str | None = None,
+    consumed_at: str | None = None,
+    consumed_by: str | None = None,
+) -> int:
+    """批量标记未消费事件为已消费（T-87 批量清空）。
+
+    - 语义与 mark_consumed 一致：WHERE consumed_at IS NULL 只动未消费事件，
+      幂等——二次调用 rowcount=0；已消费事件的 consumed_by 不被覆盖
+    - event_type：可选类型精确过滤（如 'anomaly_warn' / 'care_daily'）；
+      None = 全部类型
+    - consumed_by 记录清空方（agent_id），配合 signal_acks 回执溯源
+    - 返回本次实际标记条数（rowcount）
+    """
+    c_at = consumed_at or _now_iso()
+    sql = "UPDATE signal_events SET consumed_at=?, consumed_by=? WHERE consumed_at IS NULL"
+    params: list = [c_at, consumed_by]
+    if event_type is not None:
+        sql += " AND type = ?"
+        params.append(event_type)
+    cur = conn.execute(sql, params)
+    conn.commit()
+    return cur.rowcount
+
+
+def get_latest_event(conn: sqlite3.Connection) -> dict | None:
+    """返回 (ts, event_id) 复合序最大的事件（批量清空推进订阅者游标用）。
+
+    - 复合序语义与 signal_engine.pull 一致：先比 ts 后比 event_id
+      （UUIDv4 非时序可排序，同秒事件靠 event_id 区分）
+    - 无事件返回 None
+    """
+    cur = conn.execute(
+        "SELECT * FROM signal_events ORDER BY ts DESC, event_id DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
 def ack_signal(
     conn: sqlite3.Connection,
     event_id: str,
