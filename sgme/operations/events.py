@@ -32,7 +32,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from sgme.data import signal_dao
-from sgme.operations.errors import OperationResult
+from sgme.operations.errors import ERR_INTERNAL, OperationResult
 from sgme.signal import engine as signal_engine
 
 # ---------- 常量 ----------
@@ -182,6 +182,48 @@ def events_stream(
             raise
 
     return _generate()
+
+
+def events_consume_all(
+    mem_conn: sqlite3.Connection,
+    event_type: str | None = None,
+    subscriber_id: str | None = None,
+    consumed_by: str | None = None,
+) -> OperationResult:
+    """批量清空/全部消费信号（T-87）。
+
+    语义与 pull 对齐（标记 + 游标双视角）：
+    - 全部未消费事件标记 consumed_at/consumed_by（幂等，二次调用 consumed=0）
+    - event_type 可选类型精确过滤（如 'anomaly_warn'）；None = 全部类型
+    - subscriber_id 提供时，同步把该订阅者持久游标推进到最新事件
+      （(ts, event_id) 复合序最大值，与 signal_engine.pull 推进逻辑一致），
+      使 pull/SSE 视角一并清空
+    - consumed_by 记录清空方（agent_id）
+
+    Returns:
+        OperationResult(ok=True)，data:
+        {consumed: 本次标记条数, type: 过滤类型或 None, subscriber_id: 或 None}
+    """
+    from sgme.data import signal_dao
+
+    try:
+        consumed = signal_dao.mark_all_consumed(
+            mem_conn, event_type=event_type, consumed_by=consumed_by,
+        )
+        # 可选：推进订阅者持久游标到最新（pull 视角清空）
+        if subscriber_id is not None:
+            latest = signal_dao.get_latest_event(mem_conn)
+            if latest is not None:
+                signal_dao.upsert_subscriber(
+                    mem_conn, subscriber_id, latest["event_id"], latest["ts"],
+                )
+    except Exception as e:
+        return OperationResult.fail(ERR_INTERNAL, f"批量消费失败: {e}")
+    return OperationResult.succeed({
+        "consumed": consumed,
+        "type": event_type,
+        "subscriber_id": subscriber_id,
+    })
 
 
 # ---------- 投影函数 ----------

@@ -145,3 +145,16 @@ export function ackCareSignal(eventId: string, status: 'claimed' | 'acked' | 'fa
     { status, result },
   )
 }
+// 批量清空未消费信号（T-87）：全部标记已消费（幂等，二次调用 consumed=0）
+// 可选 type 过滤（如 anomaly_warn / care_daily）；后端为管理端点（admin key）
+export interface ConsumeAllResp {
+  consumed: number
+  type: string | null
+  subscriber_id: string | null
+}
+export function consumeAllCareSignals(opts: { signalType?: string } = {}) {
+  const qs = new URLSearchParams()
+  if (opts.signalType) qs.set('type', opts.signalType)
+  const suffix = qs.toString() ? `?${qs.toString()}` : ''
+  return api.post<ConsumeAllResp>(`/v1/admin/events/consume_all${suffix}`)
+}
