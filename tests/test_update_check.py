@@ -152,3 +152,51 @@ def test_load_sgme_config_has_update_check():
     assert cfg["update_check"]["enabled"] is True
     assert cfg["update_check"]["interval_hours"] == 24
     assert cfg["update_check"]["source"] == "github"
+
+
+# ---------- 缓存（get_cached / refresh） ----------
+
+def test_get_cached_first_call_checks(monkeypatch):
+    """首次 get_cached → 执行检查；再次调用 → 返回缓存不重复请求。"""
+    import httpx
+
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(200, json={"tag_name": "v1.0.0b5"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
+    monkeypatch.setattr(update_check, "_build_client", lambda: client)
+    monkeypatch.setattr(update_check, "_cached_result", None)
+
+    r1 = update_check.get_cached("v1.0.0b4", cfg={"update_check": {"enabled": True}})
+    r2 = update_check.get_cached("v1.0.0b4", cfg={"update_check": {"enabled": True}})
+    assert r1["update_available"] is True
+    assert r2 == r1  # 缓存命中，结果一致
+    assert calls["n"] == 1  # 只请求了一次外部 API
+
+
+def test_refresh_force_recheck(monkeypatch):
+    """refresh 强制重新检查（后台定时任务用）。"""
+    import httpx
+
+    versions = iter(["v1.0.0b4", "v1.0.0b5"])
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(200, json={"tag_name": next(versions)})
+
+    def make_client():
+        # 每次调用返回新 client（避免 check_latest_version 内 close 后复用）
+        return httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
+
+    monkeypatch.setattr(update_check, "_build_client", make_client)
+    monkeypatch.setattr(update_check, "_cached_result", None)
+
+    r1 = update_check.refresh("v1.0.0b4", cfg={"update_check": {"enabled": True}})
+    r2 = update_check.refresh("v1.0.0b4", cfg={"update_check": {"enabled": True}})
+    assert r1["update_available"] is False
+    assert r2["update_available"] is True  # 第二次 refresh 检测到新版本
+    assert calls["n"] == 2

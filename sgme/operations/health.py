@@ -298,6 +298,11 @@ def health(
     raw_refinement: dict[str, Any] = heartbeat["refinement"]
     last_refined = raw_refinement.get("last_refined_at")
 
+    # —— ST-34：自动更新检测（读缓存，首次同步检查；失败静默降级不抛异常）——
+    from sgme.operations import update_check
+
+    update = update_check.get_cached(SGME_VERSION, cfg)
+
     data: dict[str, Any] = {
         "status": "ok",
         "version": SGME_VERSION,
@@ -309,6 +314,11 @@ def health(
             "missing_keys": detect_missing_model_keys(cfg),
             "notice": model_keys_notice(cfg),
         },
+        # —— ST-34：自动更新检测结果（只增不改既有字段）——
+        "update_available": update["update_available"],
+        "latest_version": update["latest_version"],
+        "update_checked_at": update["update_checked_at"],
+        "update_error": update["update_error"],
         # —— HTTP 历史形态：字段顺序即 v0.6 响应体顺序，勿调整 ——
         "refinement": {
             "watermark_age_sec": watermark_age_sec(last_refined),
@@ -337,6 +347,11 @@ def http_payload(data: dict[str, Any]) -> dict[str, Any]:
         "refinement": data["refinement"],
         "vector": data["vector"],
         "model_config": data["model_config"],
+        # ST-34：自动更新检测（只增不改既有字段）
+        "update_available": data["update_available"],
+        "latest_version": data["latest_version"],
+        "update_checked_at": data["update_checked_at"],
+        "update_error": data["update_error"],
     }
 
 

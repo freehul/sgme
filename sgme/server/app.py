@@ -498,6 +498,29 @@ async def heartbeat_task(app) -> None:
             logger.exception("心跳任务异常: %s", e)
 
 
+async def update_check_task(app) -> None:
+    """ST-34：定时刷新版本检测缓存（间隔 = config update_check.interval_hours）。
+
+    首次检查由 health 首次调用时同步完成（get_cached）；本任务只负责按
+    interval_hours 周期 refresh 缓存，失败静默降级（update_check 内部已吞异常）。
+    """
+    from sgme.operations import update_check as update_check_mod
+    from sgme.operations.health import SGME_VERSION
+
+    while True:
+        uc = (app.state.cfg.get("update_check") or {})
+        interval_hours = uc.get("interval_hours", 24)
+        await asyncio.sleep(interval_hours * 3600)
+        try:
+            result = update_check_mod.refresh(SGME_VERSION, app.state.cfg)
+            logger.info(
+                "版本检测刷新: update_available=%s latest=%s",
+                result.get("update_available"), result.get("latest_version"),
+            )
+        except Exception as e:
+            logger.exception("版本检测任务异常: %s", e)
+
+
 def _start_batch_scan_scheduler(app) -> None:
     """启动 Batch 兜底扫描定时器（ST-23② 保底型；refine.batch_scan.enabled=true 时）。
 
@@ -600,6 +623,7 @@ def create_app(
                 print(f"[SGME install] 安装清单生成失败（不影响启动）: {e}")
             asyncio.create_task(daily_tier0_task(app))
             asyncio.create_task(heartbeat_task(app))
+            asyncio.create_task(update_check_task(app))
             _start_batch_scan_scheduler(app)
         yield
         # Batch 兜底扫描定时器线程（daemon）：置位 stop 并 join（幂等，未启动无副作用）

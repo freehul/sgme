@@ -98,6 +98,31 @@ def _build_client() -> httpx.Client:
     return httpx.Client(timeout=10.0, trust_env=False)
 
 
+# ---------- 检查结果缓存（health 高频读，定时任务低频刷新） ----------
+# 模块级缓存：health 每次调用读缓存（避免每次外部 API 请求）；
+# 后台 update_check_task 按 interval_hours 定时 refresh() 刷新。
+_cached_result: dict[str, Any] | None = None
+
+
+def get_cached(current: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """读取缓存的最新版本检测结果。
+
+    首次调用（无缓存）时同步执行一次检查；之后返回缓存，不重复请求外部 API。
+    ``current`` 仅用于首次初始化（后续缓存自含 latest_version）。
+    """
+    global _cached_result
+    if _cached_result is None:
+        _cached_result = check_latest_version(current, cfg)
+    return dict(_cached_result)
+
+
+def refresh(current: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """主动刷新缓存（后台定时任务调用），返回最新结果。"""
+    global _cached_result
+    _cached_result = check_latest_version(current, cfg)
+    return dict(_cached_result)
+
+
 def check_latest_version(current: str, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """检测 GitHub Releases 是否有新版本。
 
