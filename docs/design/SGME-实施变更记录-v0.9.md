@@ -1271,7 +1271,7 @@ GET /v1/events/stream（SSE）、单条 consume（/v1/admin/care/signals/{id}/co
 即用；无 DB 迁移（复用既有 consumed_at/consumed_by 列），不改变 pull/stream 端点行为。
 
 **文档**：本记录 B88
-=======
+
 ### B91. ST-33 /v1/search 新增 sessions scope（L0 原始层接入）+ T-9 直查 SQL 收口 data 层（2026-08-20）
 
 **背景**：
@@ -1295,3 +1295,33 @@ GET /v1/events/stream（SSE）、单条 consume（/v1/admin/care/signals/{id}/co
 **运维影响**：无——两个任务均为向后兼容增量。sessions 为新 scope，缺省不启用（DEFAULT_SCOPES 仍为 [``"memory"``]），旧请求逐字节不变；sessions 层正文摘要读盘为 best-effort，不改变任何既有响应字段。已知边界：raw_files 为索引表（无正文列），sessions 匹配目标是元数据列（file_id/session_key/agent_id/path），正文全文匹配（FTS5 化 raw 内容）留待后续版本
 
 **文档**：本记录 B89
+=======
+### B92. dimensions.boundaries 加载保留——YAML→DB→L1 提示词全链路（T-11，2026-08-20）
+
+**背景**：registry/dimensions.yaml 的 boundaries 字段（维度间 vs 对照消歧说明）在 import 时被静默丢弃——dimension_registry 表无此列、upsert_dimension 不写该字段，运行时 cfg['dimensions'] 只含 id：display_name。审计 D8 实锤：消歧信息从未送达 LLM，维度混淆风险的主要缓解手段等于没做。架构 §28 语义：boundaries = 维度取值边界/枚举约束（此处具体形态为 vs 对照语义消歧），归一化时用于区分相近维度。
+
+**改动**：
+1. **sgme/data/db.py**：dimension_registry 建表 DDL 加 boundaries TEXT 列；新增 _migrate_dim_boundaries() 老库迁移（ALTER ADD COLUMN 幂等，connect_memory 调用）
+2. **sgme/data/memory_dao.py**：upsert_dimension INSERT + ON CONFLICT UPDATE 均含 boundaries（import 幂等重写时随行更新）
+3. **sgme/operations/registry.py**：DIMENSION_FIELD_KEYS 加 boundaries（随 DB 行暴露，表列序末尾）；_normalize_dimension 保留 boundaries 入参（create 回显含该字段，缺失为 None）
+4. **sgme/engine/l1.py**：_render_l1_text 维度清单行附「（边界：…）」，boundaries 送达 LLM 消歧（审计 D8 痛点闭环）
+5. **测试**：test_storage.py 新增 4 用例（导入保留/缺失为 None/upsert 更新/老库迁移补列）；test_engine.py 新增 render 注入用例；test_operations_registry.py CREATE_DIMENSION_FIELD_KEYS 同步加 boundaries
+
+**测试**：storage+engine+registry 相关 12 用例全绿；全量相关模块 93 passed（4 个既有失败为 B81 projects 维度移除后测试未同步，与本次无关）
+
+**运维影响**：老库首次启动自动补列（幂等）；HTTP /v1/admin/registry 维度对象多 boundaries 字段（新增字段，向后兼容）；L1 提示词维度清单变长（消歧信息，token 略增）
+
+
+### B93. adapters/dsh/install.py 生成 ~/.sgme/install.json（T-23，2026-08-20）
+
+**背景**：~/.sgme/install.json 服务发现清单此前只在文档/README 提及（AGENTS.md 服务发现第 2 步、README「连接地址约定」），代码无生成逻辑——本机文件为手动创建。服务端 config.write_install_json（T-23②）已落地，但适配器安装引导（adapters/dsh/install.py）不生成，新装 dsh 适配器仍缺清单。
+
+**改动**：
+1. **adapters/dsh/install.py**：新增 write_install_json()（+ install_json_path()）——固定写 ~/.sgme/install.json，字段对齐服务端 config.write_install_json 形态：schema_version / http.host+port（从 SGME_BASE_URL 解析）/ mcp.port（SGME_MCP_PORT env 或默认 9913）/ keys（**只写环境变量名引用** SGME_ADMIN_KEY/SGME_AGENT_KEY/SGME_BEARER_TOKEN，不落明文，铁律 #10）/ agent_id；幂等覆盖
+2. **main()**：安装第 1.5 步调用 write_install_json()（注册 agent 后、写 AGENTS.md 前）
+3. **adapters/dsh/README.md**：安装说明补 install.json 生成步骤与用途
+4. **测试**：adapters/dsh/tests/test_install.py 新增 5 用例（生成文件字段完整 / 不落明文 key / 幂等 / MCP 端口 env 覆盖 / 固定路径 ~/.sgme）
+
+**测试**：adapters/dsh/tests/test_install.py 12 passed（含新增 5 用例）
+
+**运维影响**：重跑 install.py 即生成/刷新 ~/.sgme/install.json；agent 服务发现清单可自动重建（不再依赖手动创建）

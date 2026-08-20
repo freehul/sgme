@@ -5,8 +5,9 @@
 
 功能：
 1. 注册 agent_id=dsh（SGME /v1/admin/agents/register），key 存 adapters/dsh/.env
-2. 写入目标项目 AGENTS.md 的 SGME 声明段（让 dsh 模型知悉记忆系统）
-3. 打印 dsh 插件加载命令（本地 link 模式，改代码即生效）
+2. 生成安装清单 ~/.sgme/install.json（http/mcp 地址端口 + Key 环境变量名引用，agent 服务发现）
+3. 写入目标项目 AGENTS.md 的 SGME 声明段（让 dsh 模型知悉记忆系统）
+4. 打印 dsh 插件加载命令（本地 link 模式，改代码即生效）
 
 用法：
   <项目根>/.venv/Scripts/python.exe <项目根>/adapters/dsh/install.py --dir <目标项目>
@@ -15,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -190,6 +192,48 @@ def save_key(key: str, env_file: Path | None = None) -> Path:
     return env_file
 
 
+# ---------- 安装清单 install.json（T-23：适配器安装即生成，agent 服务发现用） ----------
+
+def install_json_path() -> Path:
+    """安装清单路径：固定 ~/.sgme/install.json（与 config.install_json_path 一致）。"""
+    return Path.home() / ".sgme" / "install.json"
+
+
+def write_install_json(install_path: Path | None = None) -> Path:
+    """生成安装清单 ~/.sgme/install.json（agent 服务发现，README 服务发现第 2 步）。
+
+    内容对齐服务端 config.write_install_json 的字段形态：
+    - http.host/http.port：从 SGME_BASE_URL（_BASE_URL）解析
+    - mcp.port：SGME_MCP_PORT env 或默认 9913
+    - keys：**只写环境变量名引用**（SGME_ADMIN_KEY/SGME_AGENT_KEY/SGME_BEARER_TOKEN），
+      绝不落明文密钥（铁律 #10）
+    - agent_id：本适配器注册的 agent（_AGENT_ID）
+
+    幂等：重复调用覆盖为相同内容。
+    """
+    from urllib.parse import urlparse
+
+    u = urlparse(_BASE_URL)
+    host = u.hostname or "127.0.0.1"
+    port = u.port or 9910
+    data = {
+        "schema_version": 1,
+        "http": {"host": host, "port": port},
+        "mcp": {"port": int(os.environ.get("SGME_MCP_PORT", "9913"))},
+        "keys": {
+            "admin": "SGME_ADMIN_KEY",
+            "agent": "SGME_AGENT_KEY",
+            "bearer": "SGME_BEARER_TOKEN",
+        },
+        "agent_id": _AGENT_ID,
+    }
+    target = install_path or install_json_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("安装清单已生成: %s", target)
+    return target
+
+
 # ---------- 入口 ----------
 
 def main(argv: list[str] | None = None) -> int:
@@ -219,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
                   "sgme-bridge 将使用默认 agent key")
     else:
         print("  已跳过 agent 注册")
+
+    print("[1.5/4] 生成安装清单 install.json（~/.sgme/install.json，agent 服务发现）")
+    ij_path = write_install_json()
+    print(f"  {ij_path}（http/mcp 地址端口 + Key 环境变量名引用，不落明文）")
 
     print("[2/3] 写入 AGENTS.md 声明")
     agents_path = write_agents_md(Path(args.dir))

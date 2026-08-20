@@ -121,3 +121,68 @@ def test_save_key_preserves_other_lines(tmp_path, monkeypatch):
     assert "OTHER_VAR=value" in content
     assert "agt_new123" in content
     assert "old_key" not in content  # 旧 key 被替换
+
+
+
+# ---------- T-23：安装清单 install.json 生成 ----------
+
+def test_write_install_json_creates_file(tmp_path, monkeypatch):
+    """write_install_json → ~/.sgme/install.json，字段完整（http/mcp/keys/agent_id）。"""
+    import json
+    target = tmp_path / "install.json"
+    monkeypatch.setattr(install, "_BASE_URL", "http://192.168.10.10:9910")
+    monkeypatch.setattr(install, "_AGENT_ID", "dsh")
+    path = install.write_install_json(target)
+    assert path == target
+    assert target.exists()
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data["schema_version"] == 1
+    assert data["http"] == {"host": "192.168.10.10", "port": 9910}
+    assert data["mcp"]["port"] == 9913
+    assert data["agent_id"] == "dsh"
+    assert data["keys"]["admin"] == "SGME_ADMIN_KEY"
+    assert data["keys"]["agent"] == "SGME_AGENT_KEY"
+    assert data["keys"]["bearer"] == "SGME_BEARER_TOKEN"
+
+
+def test_write_install_json_key_refs_env_names_not_secrets(tmp_path, monkeypatch):
+    """install.json 只写 Key 的环境变量名，绝不落明文（铁律 #10）。"""
+    target = tmp_path / "install.json"
+    monkeypatch.setattr(install, "_BASE_URL", "http://127.0.0.1:9910")
+    monkeypatch.setenv("SGME_ADMIN_KEY", "super-secret-admin-value")
+    monkeypatch.setenv("SGME_AGENT_KEY", "super-secret-agent-value")
+    install.write_install_json(target)
+    content = target.read_text(encoding="utf-8")
+    assert "super-secret" not in content, "install.json 泄露明文密钥！"
+    assert "SGME_ADMIN_KEY" in content
+    assert "SGME_AGENT_KEY" in content
+
+
+def test_write_install_json_idempotent(tmp_path, monkeypatch):
+    """重复生成内容一致（幂等）。"""
+    target = tmp_path / "install.json"
+    monkeypatch.setattr(install, "_BASE_URL", "http://10.0.0.5:9910")
+    monkeypatch.setattr(install, "_AGENT_ID", "dsh")
+    install.write_install_json(target)
+    first = target.read_text(encoding="utf-8")
+    install.write_install_json(target)
+    assert target.read_text(encoding="utf-8") == first
+
+
+def test_write_install_json_mcp_port_env(tmp_path, monkeypatch):
+    """SGME_MCP_PORT env 生效时写入对应 MCP 端口。"""
+    import json
+    target = tmp_path / "install.json"
+    monkeypatch.setattr(install, "_BASE_URL", "http://127.0.0.1:9910")
+    monkeypatch.setenv("SGME_MCP_PORT", "9922")
+    install.write_install_json(target)
+    data = json.loads(target.read_text(encoding="utf-8"))
+    assert data["mcp"]["port"] == 9922
+
+
+def test_install_json_path_fixed_home(monkeypatch):
+    """install_json_path 固定 ~/.sgme/install.json（服务发现约定位置）。"""
+    import json as _json
+    p = install.install_json_path()
+    assert p.name == "install.json"
+    assert p.parent.name == ".sgme"
