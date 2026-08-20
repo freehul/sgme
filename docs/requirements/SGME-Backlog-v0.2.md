@@ -162,6 +162,12 @@
 | T-88 | Task | DSH 注入对话内容驱动改造（首句选场景 + inject 工具） | ST-26 | ✅ 已解决 | v1.0 | 2026-08-20 用户定：注入=对话内容驱动（对齐 Hermes T-42）；DSH 侧 context.ts 首步改为首句 search(memory+wiki) 命中 L2 场景注入、无命中回退模板；tools.ts 加 inject 工具；缓存红线——不做每轮动态注入（DeepSeek 前缀缓存 50 倍价差，动态注入输入成本 ×14） |
 | T-89 | Task | search 召回去重 + limit 截断（重复记忆稀释注入） | ST-5 | ✅ 已解决 | v1.0 | 2026-08-20 实测注入 10 条记忆 4 对重复：search_memories RRF 融合后不截断 limit（两路各 limit 条→2×limit）+ 无内容去重（L1 重复落库全召回）；修复：融合后按 content 去重 + 截断 limit |
 | T-90 | Task | dsh 历史会话导入落地（import_history.py 对齐 rc8 存储格式） | ST-26 | ✅ 已解决 | v1.1 | 2026-08-21 全流程完成（B97）：重写 discover_sessions（递归扫 `<workspace>/*/session.jsonl.zstd`，兼容老 session-<uuid>/ 与新 <uuid>/ 命名，排除 Temp/cli-test）+ parse_session_file（zstd 流式解压 + 事件流解析，字段对齐 session-sync.ts）+ 查重改查 NAS（`/v1/admin/sessions`，修复本地库恒空缺陷）+ append 429 退避重试；pyproject 补 zstandard；31 测试全绿；真实全量导入 141 会话 → 130 成功入库（209 含历史）、11 空会话跳过；提炼 8 error 为 LLM 链降级（drop_batch，非格式问题），batch_scan 兜底 | 背景：T-49 的 import_history.py 是占位骨架（discover_sessions 只扫顶层 *.jsonl，从未对接真实格式）。2026-08-21 实测确认 DSH rc8 真实存储：`~/.dsh/sessions/<workspace>/<会话id>/session.jsonl.zstd`（zstd 多帧压缩，首行 session 头 + 事件流 user/message、assistant/message、tool/result 等，字段对齐 session-sync.ts），老格式 `session-<uuid>/` 与新格式 `<uuid>/` 目录并存需兼容；rc8 release notes 明确存储格式不兼容（SQLite 性能优化 + 体积减小）。目标：重写 discover_sessions（递归扫 `<workspace>/*/session.jsonl.zstd`，兼容老/新命名，排除 Temp 测试目录）+ parse_session_file（zstd 流式解压 + 事件流解析）+ pyproject 补 zstandard 依赖 + 测试更新 + B97 |
+| ST-34 | Story | 自动检测新版本并引导用户更新（检测→提示→确认→自动更新） | 🔴 未解决 | — | 灵感：SGME 无任何版本检测/更新引导（2026-08-20 盘点确认），用户需手动看 GitHub release + runbook 升级。AC：①服务端定时检测 GitHub Releases API（GitHub 优先），与当前版本语义化对比，失败静默降级不拖垮服务 ②health 端点只增字段（update_available/latest_version/update_checked_at/update_error），向后兼容 ③WebUI 检测到新版显示提示条 +「立即更新」确认弹窗（链接 release 页）④Docker 形态：用户确认后经「意图文件 + 主机侧 cron 更新代理」自动完成更新（容器无特权、失败自动回滚旧镜像）⑤测试 + 文档 + 变更记录。决策（2026-08-21）：执行机制=意图文件+主机侧 cron 更新代理（用户确认）；检测源=GitHub 优先；范围=检测+提示+确认后自动更新（MCP 工具/信号后续独立 Task） |
+| T-91 | Task | 服务端版本检测模块（GitHub Releases API + semver 对比 + 静默降级） | ST-34 | 🔴 未解决 | — | 新建 sgme/operations/update_check.py：定时调 GitHub Releases API（https://api.github.com/repos/freehul/sgme/releases/latest，公开仓库免 token）解析 tag_name，与 SGME_VERSION 语义化对比（预发布版本处理：b4 < b5 视为新版本）；网络不可达/API 报错 → 静默跳过（记录 update_error，不抛异常不拖垮启动）；config/sgme.yaml 加 update_check 段（enabled 默认 true / interval_hours 默认 24 / source 默认 github，可换 gitee） |
+| T-92 | Task | health 端点扩展（只增字段，向后兼容） | ST-34 | 🔴 未解决 | — | GET /v1/health 增加 update_available / latest_version / update_checked_at / update_error 字段（只增不改既有字段，符合契约纪律）；MCP health 契约冻结不动；启动（lifespan）+ 定时检查（复用 config update_check.interval_hours） |
+| T-93 | Task | WebUI 提示条 + 确认更新弹窗 + 状态轮询 | ST-34 | 🔴 未解决 | — | DashboardView 健康卡片版本号旁：检测到新版显示高亮提示条（「发现新版本 v1.0.0b5 → 查看更新说明 / 去下载」，链接 GitHub release 页）；「立即更新」按钮 → 确认弹窗（说明将自动备份+重建+回滚保障）→ 确认后写意图文件并轮询状态（更新中/成功/失败） |
+| T-94 | Task | 主机侧更新代理 scripts/sgme-host-updater（含回滚） | ST-34 | 🔴 未解决 | — | NAS 主机 cron 每 N 分钟轮询 SGME_HOME/update/request.json：检测到请求 → 执行 runbook 16.4 链（git pull → docker build 新镜像 → 备份旧 compose/记录旧镜像 → compose up -d → 健康验证）；成功清空请求 + 写 result.json；失败自动回滚旧镜像 + 写失败原因。容器保持无特权（不挂 docker.sock） |
+| T-95 | Task | 测试 + 文档 + 变更记录（B98） | ST-34 | 🔴 未解决 | — | pytest（update_check 单元 + health 契约 + 配置解析）、WebUI vitest、runbook 更新自动升级章节、变更记录 B98 |
 
 ---
 
@@ -175,6 +181,7 @@
 | SGME-评测框架设计-v0.1.md | ST-6（质量评测） | #32 评测框架 |
 | SGME-实施变更记录-v0.9.md | 全部（B 系列） | 实施记录兼运维手册 |
 | SGME-WebUI设计-v0.1.md | ST-7（4 导航 22 视图 + 创意池 UI） | WebUI 技术栈/信息架构/视图明细/升格联动决策（2026-08-12） |
+| （ST-34 设计决策内联于 Backlog 行） | ST-34 | 自动更新=意图文件+主机侧 cron 代理（2026-08-21 决策，容器无特权可回滚） |
 
 ---
 
