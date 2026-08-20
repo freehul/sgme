@@ -241,3 +241,50 @@ def list_raw_files_page(
     ).fetchall()
 
     return [dict(r) for r in rows], int(total)
+
+
+# ---------- L0 检索（ST-33：/v1/search 新增 sessions scope） ----------
+
+def search_raw_files(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 10,
+) -> list[dict]:
+    """L0 会话原文索引检索（ST-33 scope="sessions"）：LIKE 子串匹配元数据列。
+
+    raw_files 是原始层**索引表**——正文在磁盘 ``raw/<subdir>/<file_id>.md``
+    （表内无正文列），故匹配目标是可检索的元数据列：file_id / session_key /
+    agent_id / path（任一命中即召回，OR 语义）。正文摘要由 operations 层
+    按需读盘（best-effort，见 ``operations/search.py::_search_sessions``）。
+
+    命中行按最近会话排序（``COALESCE(ended_at, started_at) DESC``），
+    与 ``list_raw_files_page`` 浏览分页同口径；空 query → 空列表（v0.6
+    空串检索返回空结果的统一语义）。
+
+    Args:
+        conn: session.db 连接（v0.7 拆分后 raw_files 在 session.db，勿查 wiki.db）。
+        query: 检索词（子串匹配；``%`` / ``_`` 按字面处理，防通配符注入）。
+        limit: 返回条数上限。
+
+    Returns:
+        list[dict]：file_id / session_key / agent_id / started_at / ended_at /
+        status / path（按最近会话倒序）。
+    """
+    stripped = (query or "").strip()
+    if not stripped:
+        return []
+    like = _like_contains(stripped)
+    rows = conn.execute(
+        """
+        SELECT file_id, session_key, agent_id, started_at, ended_at, status, path
+        FROM raw_files
+        WHERE file_id LIKE ? ESCAPE '\\'
+           OR session_key LIKE ? ESCAPE '\\'
+           OR agent_id LIKE ? ESCAPE '\\'
+           OR path LIKE ? ESCAPE '\\'
+        ORDER BY COALESCE(ended_at, started_at) DESC, file_id DESC
+        LIMIT ?
+        """,
+        (like, like, like, like, int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
