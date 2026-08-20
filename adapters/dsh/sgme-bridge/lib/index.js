@@ -2129,7 +2129,12 @@ const { version } = createRequire(import.meta.url)("../package.json");
 */
 /** 注入消息源标记（对齐 agent-instructions 的 source.kind=plugin 约定）。 */
 const PLUGIN_NAME = "dsh-sgme";
-/** 拼接事件提醒文本（2026-08-18 SSE 订阅：未消费事件提示 agent 调 signal_pull 消费）。 */
+/** 拼接事件提醒文本（摘要化，2026-08-20 修复）。
+*
+* 此前（44a7b85）把每条 care 信号全文 JSON 附在提醒里 → 每次注入都携带完整
+* payload，上下文重复膨胀。现改为摘要：只给类型+数量+事件 id，
+* agent 需要详情时调 signal_pull（服务端仍是权威源）。
+*/
 function buildEventNoticeText(events) {
 	const care = events.filter((e) => e.type.startsWith("care_"));
 	const warn = events.filter((e) => e.type === "anomaly_warn");
@@ -2141,18 +2146,12 @@ function buildEventNoticeText(events) {
 	const head = [
 		"【SGME 事件提醒】",
 		`有未处理事件（${parts.join("、")}）。`,
-		"请调 signal_pull 拉取并按信号消费纪律处理：signal_claim 原子认领 → 主动关怀/处理 → signal_ack 回执。",
+		"如需处理请调 signal_pull 拉取详情，按信号消费纪律处理：signal_claim 原子认领 → 主动关怀/处理 → signal_ack 回执。",
 		"不阻塞当前任务，处理完即可。"
 	].join("\n");
-	if (!care.length) return head;
-	const careLines = care.map((e) => {
-		let payload = e.payload;
-		try {
-			payload = typeof e.payload === "string" ? JSON.parse(e.payload) : e.payload;
-		} catch {}
-		return `## ${e.type}（${e.ts}）\nevent_id=${e.event_id}\n${JSON.stringify(payload, null, 1)}`;
-	});
-	return head + "\n\n【关怀信号内容（本地订阅缓存，可直接呈现）】\n" + careLines.join("\n\n");
+	const eventIds = events.slice(0, 5).map((e) => `${e.type}#${e.event_id}`);
+	if (!eventIds.length) return head;
+	return head + "\n【事件列表（最多5条，详情请 signal_pull）】\n" + eventIds.join("\n");
 }
 /** 相同内容判定（对齐 agent-instructions sameContextPayload：content + source 全等）。 */
 function sameContextPayload(left, right) {
@@ -2201,12 +2200,12 @@ function registerContextInjection(ctx, client, config) {
 	const handler = async (payload, next) => {
 		const decision = await next();
 		if (decision.kind === "reject") return decision;
-		const pendingEvents = config.eventSubscriber?.pendingEvents() ?? [];
-		if (pendingEvents.length && injected) {
+		const unnotified = config.eventSubscriber?.unnotifiedEvents() ?? [];
+		if (unnotified.length && injected) {
 			const evMsg = createUserMessage({
 				content: [{
 					type: "text",
-					text: buildEventNoticeText(pendingEvents)
+					text: buildEventNoticeText(unnotified)
 				}],
 				source: {
 					kind: "plugin",
@@ -2214,7 +2213,8 @@ function registerContextInjection(ctx, client, config) {
 				}
 			});
 			if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
-				ctx.logger.info(`[SGME 事件提醒] 注入 ${pendingEvents.length} 条事件提醒（step ${payload.step}）`);
+				ctx.logger.info(`[SGME 事件提醒] 注入 ${unnotified.length} 条事件提醒（step ${payload.step}）`);
+				config.eventSubscriber?.markNotified(unnotified.map((e) => e.event_id));
 				return {
 					kind: "enter",
 					messages: [evMsg, ...decision.messages]
@@ -2244,11 +2244,13 @@ function registerContextInjection(ctx, client, config) {
 		}
 		if (!profileCache) return decision;
 		injected = true;
-		const pending = config.eventSubscriber?.pendingEvents() ?? [];
+		const unnotifiedFirstTurn = config.eventSubscriber?.unnotifiedEvents() ?? [];
+		const injectText = unnotifiedFirstTurn.length ? profileCache.text + "\n\n" + buildEventNoticeText(unnotifiedFirstTurn) : profileCache.text;
+		if (unnotifiedFirstTurn.length) config.eventSubscriber?.markNotified(unnotifiedFirstTurn.map((e) => e.event_id));
 		const desired = createUserMessage({
 			content: [{
 				type: "text",
-				text: pending.length ? profileCache.text + "\n\n" + buildEventNoticeText(pending) : profileCache.text
+				text: injectText
 			}],
 			source: {
 				kind: "plugin",
@@ -2695,6 +2697,7 @@ var SgmeEventSubscriber = class {
 	lastEventId = "";
 	queue = [];
 	consumedIds = /* @__PURE__ */ new Set();
+	notifiedIds = /* @__PURE__ */ new Set();
 	queuePath;
 	constructor(config) {
 		this.config = config;
@@ -2720,6 +2723,20 @@ var SgmeEventSubscriber = class {
 	/** 未消费事件（供 context.ts 注入提醒）。 */
 	pendingEvents() {
 		return this.queue.filter((e) => !this.consumedIds.has(e.event_id));
+	}
+	/** 未消费且未提醒过的事件（context.ts 注入提醒的唯一来源）。
+	*
+	* 2026-08-20 修复（上下文爆增根因）：此前 context 用 pendingEvents() 判断，
+	* 未消费事件每轮重复注入 → 上下文持续膨胀。引入 notifiedIds：
+	* 同一事件只提醒一次，之后即使未消费也不再重复注入。
+	*/
+	unnotifiedEvents() {
+		return this.queue.filter((e) => !this.consumedIds.has(e.event_id) && !this.notifiedIds.has(e.event_id));
+	}
+	/** 标记事件已提醒（防重复注入）。 */
+	markNotified(eventIds) {
+		for (const id of eventIds) this.notifiedIds.add(id);
+		this.persistQueue();
 	}
 	/** 标记事件已消费（agent 消费后调用，防重复提醒）。 */
 	markConsumed(eventIds) {
@@ -2791,7 +2808,8 @@ var SgmeEventSubscriber = class {
 			mkdirSync(dir, { recursive: true });
 			writeFileSync(this.queuePath, JSON.stringify({
 				queue: this.queue.slice(-200),
-				consumedIds: [...this.consumedIds].slice(-500)
+				consumedIds: [...this.consumedIds].slice(-500),
+				notifiedIds: [...this.notifiedIds].slice(-500)
 			}), "utf-8");
 		} catch (err) {
 			console.warn("[dsh-sgme] 事件队列持久化失败:", err instanceof Error ? err.message : err);
@@ -2804,6 +2822,7 @@ var SgmeEventSubscriber = class {
 			const data = JSON.parse(readFileSync(this.queuePath, "utf-8"));
 			if (Array.isArray(data.queue)) this.queue = data.queue;
 			if (Array.isArray(data.consumedIds)) this.consumedIds = new Set(data.consumedIds);
+			if (Array.isArray(data.notifiedIds)) this.notifiedIds = new Set(data.notifiedIds);
 		} catch {}
 	}
 };

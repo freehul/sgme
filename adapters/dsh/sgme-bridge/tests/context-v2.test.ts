@@ -248,3 +248,80 @@ describe('registerContextInjection (v2 pre-step middleware)', () => {
     expect(client.inject).toHaveBeenCalledTimes(2)
   })
 })
+
+// ---------- 事件提醒注入行为（2026-08-20 修复回归测试） ----------
+
+function makeEventSubscriber(events: Array<{ event_id: string; type: string }>) {
+  const sseEvents = events.map((e) => ({
+    event_id: e.event_id,
+    type: e.type,
+    source: 'care',
+    payload: { msg: '测试' },
+    ts: '2026-08-20T00:00:00Z',
+  }))
+  return {
+    unnotifiedEvents: vi.fn(() => sseEvents),
+    pendingEvents: vi.fn(() => sseEvents),
+    markNotified: vi.fn(),
+    markConsumed: vi.fn(),
+    start: vi.fn(),
+    stop: vi.fn(),
+  }
+}
+
+describe('事件提醒注入（2026-08-20 修复）', () => {
+  it('有未提醒事件时注入一次摘要提醒并 markNotified', async () => {
+    const { ctx, listeners } = makeCtx()
+    const client = makeClient()
+    const subscriber = makeEventSubscriber([
+      { event_id: 'e1', type: 'care_daily' },
+      { event_id: 'e2', type: 'anomaly_warn' },
+    ])
+    registerContextInjection(ctx, client, {
+      injectMode: 'daily', injectMaxTokens: 800, searchLimit: 5,
+      eventSubscriber: subscriber as any,
+    })
+    const handler = listeners.get('agent/pre-step')!
+    const next = vi.fn(async () => makeDecision())
+    const result = await handler(makePayload(1), next) as { messages: any[] }
+
+    // 注入一条摘要提醒（类型+数量，无全文 JSON）
+    const injected = result.messages.find((m) => m.source?.plugin === 'dsh-sgme')
+    expect(injected).toBeTruthy()
+    const text = injected.content[0].text
+    expect(text).toContain('关怀信号 1 条')
+    expect(text).toContain('异常告警 1 条')
+    // 摘要化：不含 payload 内容 msg
+    expect(text).not.toContain('msg')
+    // 已 markNotified（防下轮重复）
+    expect(subscriber.markNotified).toHaveBeenCalledWith(['e1', 'e2'])
+  })
+
+  it('同一事件不重复注入（markNotified 后 unnotified 为空）', async () => {
+    const { ctx, listeners } = makeCtx()
+    const client = makeClient()
+    // 第一轮内 161 行（injected=false 跳过）和 215 行（首轮注入）各调用一次 unnotifiedEvents；
+    // 第二轮后 markNotified 生效 → 返回空。前 2 次返回 ev1，之后返回空。
+    let calls = 0
+    const subscriber = makeEventSubscriber([{ event_id: 'e1', type: 'care_daily' }])
+    const ev1 = { event_id: 'e1', type: 'care_daily', source: 'care', payload: { msg: '测试' }, ts: 'x' }
+    subscriber.unnotifiedEvents.mockImplementation(() => {
+      calls++
+      return calls <= 2 ? [ev1] : []
+    })
+    registerContextInjection(ctx, client, {
+      injectMode: 'daily', injectMaxTokens: 800, searchLimit: 5,
+      eventSubscriber: subscriber as any,
+    })
+    const handler = listeners.get('agent/pre-step')!
+    const next = vi.fn(async () => makeDecision())
+
+    // 第一轮：注入
+    const r1 = await handler(makePayload(1), next) as { messages: any[] }
+    expect(r1.messages.length).toBe(2)  // 画像 + 事件提醒
+    // 第二轮：unnotified 已空 → 不再注入（只有画像）
+    const r2 = await handler(makePayload(2), next) as { messages: any[] }
+    expect(r2.messages.length).toBe(1)
+    expect(subscriber.markNotified).toHaveBeenCalledTimes(1)
+  })
+})

@@ -51,6 +51,7 @@ export class SgmeEventSubscriber {
   private lastEventId = ''
   private queue: SgmeEvent[] = []
   private consumedIds = new Set<string>()
+  private notifiedIds = new Set<string>()
   private readonly queuePath: string
 
   constructor(config: EventSubscribeConfig) {
@@ -80,6 +81,24 @@ export class SgmeEventSubscriber {
   /** 未消费事件（供 context.ts 注入提醒）。 */
   pendingEvents(): SgmeEvent[] {
     return this.queue.filter((e) => !this.consumedIds.has(e.event_id))
+  }
+
+  /** 未消费且未提醒过的事件（context.ts 注入提醒的唯一来源）。
+   *
+   * 2026-08-20 修复（上下文爆增根因）：此前 context 用 pendingEvents() 判断，
+   * 未消费事件每轮重复注入 → 上下文持续膨胀。引入 notifiedIds：
+   * 同一事件只提醒一次，之后即使未消费也不再重复注入。
+   */
+  unnotifiedEvents(): SgmeEvent[] {
+    return this.queue.filter(
+      (e) => !this.consumedIds.has(e.event_id) && !this.notifiedIds.has(e.event_id),
+    )
+  }
+
+  /** 标记事件已提醒（防重复注入）。 */
+  markNotified(eventIds: string[]): void {
+    for (const id of eventIds) this.notifiedIds.add(id)
+    this.persistQueue()
   }
 
   /** 标记事件已消费（agent 消费后调用，防重复提醒）。 */
@@ -160,6 +179,7 @@ export class SgmeEventSubscriber {
       writeFileSync(this.queuePath, JSON.stringify({
         queue: this.queue.slice(-200),
         consumedIds: [...this.consumedIds].slice(-500),
+        notifiedIds: [...this.notifiedIds].slice(-500),
       }), 'utf-8')
     } catch (err) {
       console.warn('[dsh-sgme] 事件队列持久化失败:', err instanceof Error ? err.message : err)
@@ -173,6 +193,7 @@ export class SgmeEventSubscriber {
       const data = JSON.parse(readFileSync(this.queuePath, 'utf-8'))
       if (Array.isArray(data.queue)) this.queue = data.queue
       if (Array.isArray(data.consumedIds)) this.consumedIds = new Set(data.consumedIds)
+      if (Array.isArray(data.notifiedIds)) this.notifiedIds = new Set(data.notifiedIds)
     } catch {
       // 损坏则丢弃（不阻塞）
     }

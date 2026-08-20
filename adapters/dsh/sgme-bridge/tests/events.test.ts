@@ -113,4 +113,70 @@ describe('SgmeEventSubscriber', () => {
     expect(sub.pendingEvents().some((e) => e.event_id === 'e2')).toBe(true)
     sub.stop()
   })
+
+  it('unnotifiedEvents 只返回未消费且未提醒过的事件', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: sseStream([
+        'data: ' + JSON.stringify(ev1), '',
+        'data: ' + JSON.stringify(ev2), '',
+      ]),
+    }) as unknown as Response))
+
+    const sub = new SgmeEventSubscriber({ baseUrl: 'http://x', agentKey: 'k', agentId: 'd' })
+    sub.start()
+    await new Promise((r) => setTimeout(r, 100))
+
+    // 初始：两个事件都未提醒
+    expect(sub.unnotifiedEvents().map((e) => e.event_id)).toEqual(['e1', 'e2'])
+    // 标记 e1 已提醒 → unnotified 只剩 e2
+    sub.markNotified(['e1'])
+    expect(sub.unnotifiedEvents().map((e) => e.event_id)).toEqual(['e2'])
+    // 消费 e2 → unnotified 空
+    sub.markConsumed(['e2'])
+    expect(sub.unnotifiedEvents().length).toBe(0)
+    sub.stop()
+  })
+
+  it('markNotified 不改变 pendingEvents（未消费仍可见）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: sseStream(['data: ' + JSON.stringify(ev1), '']),
+    }) as unknown as Response))
+
+    const sub = new SgmeEventSubscriber({ baseUrl: 'http://x', agentKey: 'k', agentId: 'd' })
+    sub.start()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(sub.pendingEvents().length).toBe(1)
+    sub.markNotified(['e1'])
+    // 已提醒但仍未消费 → pendingEvents 仍可见（供 signal_pull 消费）
+    expect(sub.pendingEvents().length).toBe(1)
+    // 但 unnotified 已空（不再重复注入）
+    expect(sub.unnotifiedEvents().length).toBe(0)
+    sub.stop()
+  })
+
+  it('notifiedIds 持久化（重启后不重复提醒）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      body: sseStream(['data: ' + JSON.stringify(ev1), '']),
+    }) as unknown as Response))
+
+    const sub1 = new SgmeEventSubscriber({ baseUrl: 'http://x', agentKey: 'k', agentId: 'd' })
+    sub1.start()
+    await new Promise((r) => setTimeout(r, 100))
+    sub1.markNotified(['e1'])
+    sub1.stop()
+
+    // 模拟进程重启：新实例从文件恢复
+    const sub2 = new SgmeEventSubscriber({ baseUrl: 'http://x', agentKey: 'k', agentId: 'd' })
+    sub2.start()
+    await new Promise((r) => setTimeout(r, 100))
+    // e1 已提醒过 → unnotified 为空（不重复注入）
+    expect(sub2.unnotifiedEvents().length).toBe(0)
+    sub2.stop()
+  })
 })
