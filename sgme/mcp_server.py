@@ -943,7 +943,7 @@ def build_mcp_server():
                 "manage": "memory_reject 纠错；stats/health 看引擎状态；config_get/config_update 读写配置",
             },
             "self_config": {
-                "requirement": "接入完成标准：你的身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等，按你的工具机制选择）中必须包含本模板（版本标记 SGME-ONBOARDING-v1）。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 ZHIPU_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 docs/guide/免费模型Key申请指南.md 申请免费 Key（智谱 GLM-4.7-Flash 永久免费 / 硅基流动 bge-m3）。",
+                "requirement": "接入完成标准：你的身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等，按你的工具机制选择）中必须包含本模板（版本标记 SGME-ONBOARDING-v2）。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 ZHIPU_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 docs/guide/免费模型Key申请指南.md 申请免费 Key（智谱 GLM-4.7-Flash 永久免费 / 硅基流动 bge-m3）。",
                 "steps": [
                     "1. 自查：读你的身份文件，grep 标记「SGME-ONBOARDING」；",
                     "2. 已存在且版本 >= v1 → 配置已完成，跳过；",
@@ -951,9 +951,9 @@ def build_mcp_server():
                     "4. 写入后读回验证内容完整，并汇报（写了哪个文件、哪个位置）；",
                     "5. 无法写入（权限/沙箱/审批限制）→ 如实报告主人并给出建议，禁止谎称已完成。",
                 ],
-                "version": "SGME-ONBOARDING-v1",
+                "version": "SGME-ONBOARDING-v2",
                 "template": (
-                    "# SGME 接入纪律（SGME-ONBOARDING-v1）\n"
+                    "# SGME 接入纪律（SGME-ONBOARDING-v2）\n"
                     "你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。"
                     "它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。\n"
                     "**服务发现**（找不到时按序）：1) 探测 http://<sgme-host>:9910/v1/health（host 取环境变量 SGME_HTTP_HOST 或 ~/.sgme/install.json 的 http.host，默认 localhost）；"
@@ -972,6 +972,26 @@ def build_mcp_server():
                     "**待办主动登记**（2026-08-18 强化）：会话中遇到用户要办的事 / 项目要做的任务 / 待跟进事项，主动调 demand_create 登记（title + project_id 关联），不要只留在对话里；完成时标记 done。\n"
                     "**事件对接**（主动关怀的触发源，常驻 agent 必读）：SGME 事件分三类 care_*（关怀：情绪/待办到期/过劳/每日）、memory_updated（记忆更新）、anomaly_warn（异常）。三种接法任选：①SSE 长连 GET /v1/events/stream?subscriber_id=<agent_id>（实时推送，Last-Event-ID 断线补偿）；②游标拉取 GET /v1/events/pull?subscriber_id=<agent_id>（持久游标，适合定时任务轮询）；③MCP signal_pull（会话内短连接）。SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。\n"
                     "**通信渠道**（兜底铁律）：当前会话是兜底通信渠道——任何主动消息（关怀/提醒/告警等），无论是否已发送到其它通道（微信/飞书/Telegram 等），都必须在当前会话也发一条；此兜底持续生效，直到用户明确取消。\n"
+                    "**向量引擎接入**（health() 返回 vector.available=false 或 vector.connectivity=false 时执行；策略：本地优先、云端免费降级——本地 Ollama bge-m3 1024 维，fallback 硅基流动 BAAI/bge-m3 同样 1024 维免费）：\n"
+                    "Step1 诊断：health() 看 vector.available / vector.connectivity / model_config.missing_keys，定位是缺引擎还是缺 Key；\n"
+                    "Step2 探测本机向量引擎（按序）：Ollama `curl http://127.0.0.1:11434/api/tags`；LM Studio `curl http://127.0.0.1:1234/v1/models`——响应里有 bge-m3 即可用；不推荐 llama.cpp（模型状态无人维护，用户清理显存后即失联，麻烦）；\n"
+                    "Step3 引导部署：已装但无 bge-m3 → `ollama pull bge-m3`（或 LM Studio 搜索下载 bge-m3）；都没装 → 推荐安装 Ollama（跨平台一键）或 LM Studio（有 GUI），二选一；\n"
+                    "Step4 配置写入：直接改 config/sgme.yaml 的 search.vector 段（改后需重启 SGME 生效），主 provider 指本地、fallbacks 列表指云端免费降级：\n"
+                    "  search:\n"
+                    "    vector:\n"
+                    "      enabled: true\n"
+                    "      provider: local          # 本地优先\n"
+                    "      model: bge-m3\n"
+                    "      base_url: http://127.0.0.1:11434/v1   # LM Studio 用 http://127.0.0.1:1234/v1\n"
+                    "      # api_key_env 留空——本地 Ollama/LM Studio 无需鉴权\n"
+                    "      fallbacks:\n"
+                    "        - provider: siliconflow   # 云端免费降级备用\n"
+                    "          model: BAAI/bge-m3\n"
+                    "          base_url: https://api.siliconflow.cn/v1\n"
+                    "          api_key_env: SILICONFLOW_API_KEY\n"
+                    "  注意：本地与云端都用 bge-m3（1024 维），切换不重灌索引；\n"
+                    "Step5 验证闭环：再 health() → vector.connectivity=true → 报告「✅ 本地向量引擎已就绪」；失败按端口/模型名/代理劫持排障，仍失败如实上报。\n"
+                    "边界：本流程要求 agent 能操作宿主（curl/装软件/写配置）——宿主机 agent 可执行；云端 agent 无权限时给用户操作建议，禁止谎称已完成。\n"
                     "**接口**：HTTP API http://<sgme-host>:9910 ｜ MCP http://<sgme-host>:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key；host 解析见「服务发现」）。"
                 ),
             },

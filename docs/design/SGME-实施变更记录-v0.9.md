@@ -1171,3 +1171,25 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响**：DSH 侧需重新构建/部署 sgme-bridge（lib/index.js 已更新）；Hermes care-heartbeat 已恢复 30 分钟周期投递飞书
 
 **文档**：本记录 B86
+
+### B87. 向量引擎「本地优先、云端免费降级」——embed 多 provider 降级链 + onboarding 引导升级 v2（2026-08-20）
+
+**背景**：产品化讨论确定向量 embedding 策略为「本地优先、云端免费降级备用」——SGME 部署于 NAS，Docker 已部署 ollama；主 provider=本地 ollama bge-m3（1024 维，零费用、隐私本地），fallback=硅基流动 siliconflow 云端 BAAI/bge-m3（同 1024 维免费）。本地与云端同款模型同维度，**切换不重灌索引**。同时把「向量引擎接入」做成给 agent 的专业流程指引（融入 onboarding 体系，版本 v1→v2）。
+
+**改动**：
+1. **sgme/data/search/vector.py**：`embed()` 支持多 provider 降级链——`search.vector.fallbacks` 列表（`[{base_url, model, api_key_env}]`）；主 provider 失败 → 依次尝试 fallback → 全部失败才返回 None（降级纯 BM25）。向后兼容：无 fallbacks 时行为不变。每个 provider 独立 429 退避重试、Bearer 鉴权、超时
+2. **config/sgme.yaml**（生产配置）：`search.vector` 主=本地 ollama（`http://192.168.10.10:11434/v1` + `bge-m3`），`fallbacks=[siliconflow 云端]`
+3. **NAS 部署**：ollama 容器拉取 `bge-m3`（1.2GB）；SGME 容器经宿主 IP 访问 ollama（两容器不同 docker 网络，已验证连通）
+4. **sgme/mcp_server.py**：`agent_onboarding` self_config 升 **SGME-ONBOARDING-v2**，template 新增「向量引擎接入」章节（诊断→探测→引导部署→配置写入→验证闭环 五步；Ollama/LM Studio 双推荐；明确不推荐 llama.cpp——模型状态无人维护）
+5. **docs/agent-onboarding.md**：新增 §7.5「向量引擎接入流程」（五步闭环 + 边界说明 + 排障顺序）
+6. **README.md / README.zh-CN.md**：agent prompt 段新增「Vector Engine Setup」短指引；Consistency note 版本 v1→v2
+
+**配置路径修正**：初稿指引写「改 providers.yaml embedding 段」，实际 `fallbacks` 降级链只在 `config/sgme.yaml` 的 `search.vector` 段生效（providers.yaml embedding 段是 WebUI 供应商清单，无 fallbacks 语义）——文档/模板/README 统一改为 sgme.yaml search.vector + fallbacks，避免 agent 误操作。
+
+**测试**：新增 tests/test_vector_fallback.py 4 个测试（主失败→fallback 成功 / 主成功跳过 fallback / 全失败→None / 现状兼容），全部通过；test_eval_rrf.py（embed 回归）全绿；onboarding v2 测试全绿
+
+**冒烟**：SGME 真实 `embed()` 调本地 ollama bge-m3 返回 **1024 维**向量成功；config 加载验证 fallbacks 正确解析
+
+**运维影响**：NAS 生产 sgme.yaml 需同步 + SGME 容器重启生效；ollama bge-m3 已就位（1.2GB）；`api_key_env` 留空（本地 Ollama 无需鉴权），SILICONFLOW_API_KEY 仍为云端降级用
+
+**文档**：本记录 B87

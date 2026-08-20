@@ -205,6 +205,63 @@ content 格式（首行必须）：
 
 环境清单同理：教用户**配置方法与查找路径**（`providers.yaml` 的 `api_key_env` 字段、`ZHIPU_API_KEY` / `SILICONFLOW_API_KEY` 等；免费 Key 申请见 docs/guide/免费模型Key申请指南.md）。你可以诊断「缺什么」（health 的 `model_config.missing_keys` 即诊断结果），免费托底场景可直接建议智谱/硅基流动（免费），付费场景品牌由用户自己选。
 
+## 7.5 向量引擎接入流程（本地优先，云端降级）
+
+> **策略（2026-08 定案）**：向量 embedding 采用「本地优先、云端免费降级备用」——主 provider = 本地 Ollama（`bge-m3`，1024 维），fallback = 硅基流动 siliconflow 云端（`BAAI/bge-m3`，同样 1024 维，免费）。本地与云端都用同款 bge-m3（1024 维），**切换不重灌索引**。
+
+**触发条件**：`health()` 返回 `vector.available=false` 或 `vector.connectivity=false` 时，执行本流程。
+
+**Step 1｜诊断**：调 `health()`，看三项字段定位问题：
+
+| 字段 | 含义 |
+|---|---|
+| `vector.available` | 向量检索是否可用（false → 当前纯 BM25） |
+| `vector.connectivity` | embedding provider 连通性（false → 没配上或连不上） |
+| `model_config.missing_keys` | 缺哪些模型 Key（如 `SILICONFLOW_API_KEY`） |
+
+**Step 2｜探测本机向量引擎**（按序执行，任一命中即用）：
+
+```bash
+# Ollama（默认端口 11434）
+curl http://127.0.0.1:11434/api/tags
+# LM Studio（默认端口 1234）
+curl http://127.0.0.1:1234/v1/models
+```
+
+期望输出：JSON 响应中出现 `bge-m3` 即本机引擎可用 → 跳到 Step 4。两个请求都失败 → 本机未装任何向量引擎，进 Step 3。
+
+> **不推荐 llama.cpp**：模型状态无人维护，用户清理显存后即失联，排查麻烦——不在推荐列表。
+
+**Step 3｜引导部署**（二选一分支）：
+
+- 已装 Ollama / LM Studio 但模型列表里没有 `bge-m3`：
+  - Ollama：`ollama pull bge-m3`（一次拉取）
+  - LM Studio：搜索栏输入 `bge-m3` → 下载
+- 都没装：推荐二选一——**Ollama**（跨平台一键安装，命令行友好）或 **LM Studio**（有 GUI，可视化下载模型）。
+
+**Step 4｜配置写入**：直接改 `config/sgme.yaml` 的 `search.vector` 段（agent 可改文件；**改后需重启 SGME 生效**）。主 provider 指本地，`fallbacks` 列表指云端免费降级（**同用 bge-m3 1024 维，切换不重灌索引**）：
+
+```yaml
+search:
+  vector:
+    enabled: true
+    provider: local          # 本地优先
+    model: bge-m3
+    base_url: http://127.0.0.1:11434/v1   # LM Studio 用 http://127.0.0.1:1234/v1
+    # api_key_env 留空——本地 Ollama/LM Studio 无需鉴权
+    fallbacks:
+      - provider: siliconflow   # 云端免费降级备用
+        model: BAAI/bge-m3
+        base_url: https://api.siliconflow.cn/v1
+        api_key_env: SILICONFLOW_API_KEY
+```
+
+> 说明：`fallbacks` 降级链只在 `config/sgme.yaml` 的 `search.vector` 段生效（本地失败自动切云端）。`config/providers.yaml` 的顶层 `embedding` 段是 WebUI 向量模型管理的供应商清单（`vector_capable: true` 声明），**不含 fallbacks 语义**——单供应商配置可放那里，但需要降级链请用 `search.vector.fallbacks`。
+
+**Step 5｜验证闭环**：再次调 `health()` → `vector.connectivity=true` → 报告「✅ 本地向量引擎已就绪」；仍失败按 **端口 / 模型名 / 代理劫持** 顺序排障（SGME 铁律：httpx 调用等价 `trust_env=False`，确认 localhost 未被 Clash 等代理劫持），再失败**如实上报**，不得谎称已完成。
+
+**云端 agent 边界**：本流程要求 agent 能操作宿主（curl / 装软件 / 写配置文件）。宿主机 agent 可直接执行；云端 agent（无宿主权限）应把上述操作建议交给用户执行，**禁止谎称已完成**。
+
 ## 8. 日常使用范式（四条主线）
 
 - **注册**：无独立注册步骤——`append` 写入第一条会话即完成接入（同一 `session_key` 延续会话）。
