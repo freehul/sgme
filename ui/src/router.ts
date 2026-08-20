@@ -15,6 +15,7 @@ const routes = [
       { path: 'memories', name: 'memories', component: () => import('./views/memory/MemoryList.vue'), meta: { title: '记忆浏览' } },
       { path: 'memories/:id', name: 'memory-detail', component: () => import('./views/memory/MemoryDetail.vue'), meta: { title: '记忆详情' } },
       { path: 'scenes', name: 'scenes', component: () => import('./views/scenes/SceneList.vue'), meta: { title: '场景管理' } },
+      { path: 'graph', name: 'graph', component: () => import('./views/graph/GraphView.vue'), meta: { title: '知识图谱' } },
       { path: 'sessions', name: 'sessions', component: () => import('./views/sessions/SessionView.vue'), meta: { title: '会话原文' } },
       { path: 'search', name: 'search', component: () => import('./views/search/SearchView.vue'), meta: { title: '统一检索' } },
       { path: 'profile', name: 'profile', component: () => import('./views/profile/ProfileView.vue'), meta: { title: '用户画像' } },
