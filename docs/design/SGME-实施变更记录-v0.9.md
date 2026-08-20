@@ -1153,3 +1153,21 @@ L1.5 冲突裁决、L2 场景聚合。
 **测试**：pytest health/server 版本断言 6 文件 +1.0.0b3 全绿；config/provider 相关模块绿；启动 `python -m sgme` → /v1/health 报 version 1.0.0b3、向量 available:true
 
 **文档**：本记录 B85；Backlog T-55 ✅（文档同步完成）；README/agent-onboarding 已于 B79 同步免费双件套引导
+
+### B86. DSH 桥关怀事件提醒注入策略修复 + Hermes care-heartbeat cron 漂移修复（2026-08-20）
+
+**背景**：用户实测 DSH 接入 SSE 后「SGME 不停在会话内注入消息，上下文爆增；且 DSH 明确告知已收到信号但无关怀动作」。代码查证定位两个根因：
+1. **上下文爆增**：context.ts 事件提醒用 `pendingEvents()` 判断——未消费事件每轮 pre-step 重复注入完整 payload JSON（44a7b85 兜底后附全文），且无「已提醒」跟踪 → 死循环注入。
+2. **收到但无行动**：提醒文本要求 agent「调 signal_pull 拉取→claim→ack」闭环，但事件异步到达、agent 无执行动机 → 永不消费 → 加剧问题 1。
+另发现 Hermes 侧 `sgme-care-heartbeat` cron（care_consumer.py pull 模式）因 provider 漂移（deepseek→custom:火山方舟）被 drift_skip 跳过，最近 2 次失败。
+
+**改动**：
+1. **adapters/dsh/sgme-bridge/src/events.ts**：新增 `unnotifiedEvents()`（未消费且未提醒）+ `markNotified()`（标记已提醒）；`notifiedIds` 持久化（重启不重复提醒）
+2. **adapters/dsh/sgme-bridge/src/context.ts**：事件提醒改用 `unnotifiedEvents()`——同一事件只提醒一次（注入后 markNotified），不再每轮重复；`buildEventNoticeText` 摘要化——只给类型+数量+event_id，不再附完整 payload（详情由 signal_pull 拉取）
+3. **Hermes cron 修复**：`hermes cron edit 5ec7282a0e6e --provider "custom:火山方舟" --model "deepseek-v4-flash"` 钉住 provider/model，解除 drift_skip
+
+**测试**：DSH 桥 typecheck 通过 + 136 测试全绿（新增 4 个 events 测试 + 2 个 context 事件注入回归）；cron 手动触发 `Ran now: succeeded`，last_status=ok、failure_streak=0
+
+**运维影响**：DSH 侧需重新构建/部署 sgme-bridge（lib/index.js 已更新）；Hermes care-heartbeat 已恢复 30 分钟周期投递飞书
+
+**文档**：本记录 B86
