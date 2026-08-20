@@ -412,6 +412,23 @@ def search_memories(
         rrf_k = _rrf_k(cfg or {})
         results = rrf_mod.rrf_merge(bm25_results, vec_results, k=rrf_k)
 
+    # T-89（2026-08-20）：内容去重 + limit 截断。
+    # 1) 去重：同一事实被 L1 重复落库（不同 memory_id、相同 content）时全量召回
+    #    会稀释注入（实测注入 10 条记忆 4 对重复）——按 content 保留最优者；
+    # 2) 截断：recall_routes 两路各取 limit 条，rrf_merge 按 id 合并不截断
+    #    → 融合后最多 2×limit 条，违反调用方 limit 语义（注入 searchLimit=5
+    #    却返回 10 条即此 bug）。
+    seen_content: set[str] = set()
+    deduped: list[dict] = []
+    for r in results:
+        c = r.get("content")
+        if c is not None:
+            if c in seen_content:
+                continue
+            seen_content.add(c)
+        deduped.append(r)
+    results = deduped[:limit]
+
     # 附加 trace + dimensions
     for i, r in enumerate(results):
         r["rank"] = i + 1
