@@ -19,6 +19,9 @@
   - "wiki" / "scenes" → wiki 场景叙事文档（L2，FTS + LIKE 兜底 + 预留向量路）
   - "wiki_pages" → wiki 知识库页面（wiki_pages 表，T-34 新增；FTS5 BM25 + LIKE 兜底，
     wiki_conn 为 None / 检索失败 → 该层空结果，不影响其他层）
+  - "sessions" → L0 原始层会话（raw_files 索引，ST-33 新增；LIKE 子串匹配
+    元数据列 + 读盘正文摘要 best-effort，session_conn 为 None / 检索失败 →
+    该层空结果，不影响其他层）
   - 未知 scope 值被**忽略**（v0.6 行为，不报错；
     tests/test_server.py::test_search_no_memory_scope_returns_empty）
 - dimensions: 维度标签过滤（可选；match=any 至少命中一个 / match=all 全部命中）
@@ -55,12 +58,15 @@ import json
 import logging
 import re
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from sgme.data import search as search_mod
+from sgme.data import session_dao
 from sgme.operations.errors import ERR_INTERNAL, InvalidArgs, OperationResult
+from sgme.operations.session import _resolve_raw_path as _resolve_l0_raw_path
 from sgme.wiki import fts as wiki_fts
 
 logger = logging.getLogger("sgme.operations.search")
@@ -208,6 +214,84 @@ def _search_wiki_pages(
     ]
 
 
+def _snippet_from_raw_text(text: str, max_len: int = 200) -> str:
+    """从 L0 原文生成正文摘要：剥 frontmatter → 折叠空白 → 截断。
+
+    L0 文件结构为 ``--- frontmatter ---`` + 消息块（见
+    docs/design/SGME-L0文件格式-v0.1.md）。摘要取 frontmatter 之后的正文，
+    连续空白折叠为单空格后截断到 ``max_len`` 字符——单条结果只展示摘要，
+    全文走 ``GET /v1/sessions/{file_id}``（operations/session.py）。
+    """
+    body = text
+    if body.startswith("---"):
+        parts = body.split("\n---", 1)
+        if len(parts) == 2:
+            body = parts[1]
+    return re.sub(r"\s+", " ", body).strip()[:max_len]
+
+
+def _raw_snippet(
+    raw_dir: str | Path | None,
+    file_id: str,
+    stored_path: str | None,
+    max_len: int = 200,
+) -> str:
+    """读取 L0 原文并生成正文摘要（**best-effort**，永不抛异常）。
+
+    - raw_dir 未配置（cfg 无 paths.raw_dir）→ 空串（检索不依赖读盘）；
+    - 路径越界（脏数据 file_id 含穿越片段）/ 文件缺失 / 读失败 → 空串，
+      结果仍返回元数据命中，不拖累检索（对称 wiki_pages 层的容错隔离）。
+    """
+    if not raw_dir:
+        return ""
+    try:
+        path = _resolve_l0_raw_path(Path(raw_dir), file_id, stored_path)
+        if path is None or not path.is_file():
+            return ""
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return _snippet_from_raw_text(text, max_len)
+    except OSError:
+        return ""
+
+
+def _search_sessions(
+    session_conn: sqlite3.Connection | None,
+    query: str,
+    limit: int,
+    raw_dir: str | Path | None,
+) -> list[dict]:
+    """L0 原始层会话检索层（ST-33，scope="sessions"）。
+
+    - 检索委托 ``session_dao.search_raw_files``（LIKE 子串匹配 raw_files
+      元数据列，SQL 只存在于 data 层）；
+    - 结果装饰：source="sessions"，content 为读盘正文摘要（best-effort，
+      缺失/越界/读失败 → 空串）；
+    - **容错隔离**（对称 wiki_pages 层）：session_conn 为 None 或检索
+      抛异常 → 返回空列表 + WARNING，不拖累 memory / wiki 层。
+    """
+    if session_conn is None or not query or not query.strip():
+        return []
+    try:
+        rows = session_dao.search_raw_files(session_conn, query, limit=limit)
+    except Exception as e:
+        logger.warning("sessions 检索失败（该层空结果）: %s", e)
+        return []
+    return [
+        {
+            "rank": i + 1,
+            "source": "sessions",
+            "file_id": r["file_id"],
+            "session_key": r["session_key"],
+            "agent_id": r["agent_id"],
+            "content": _raw_snippet(raw_dir, r["file_id"], r.get("path")),
+            "started_at": r.get("started_at"),
+            "status": r.get("status"),
+            "routes": ["l0_like"],
+        }
+        for i, r in enumerate(rows)
+    ]
+
+
 def search(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -222,7 +306,8 @@ def search(
     client: httpx.Client | None = None,
     wiki_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
-    """混合检索：记忆池（BM25+向量+RRF）+ wiki 场景（L2）+ wiki 知识库页面。
+    """混合检索：记忆池（BM25+向量+RRF）+ wiki 场景（L2）+ wiki 知识库页面
+    + L0 原始层会话（raw_files 索引，ST-33）。
 
     签名刻意**只收业务依赖**（连接 + cfg + 检索参数），operations 层不认识
     ``request.app.state`` 或 mcp 的 ``_app_state``（那是入口层的协议细节），
@@ -246,7 +331,8 @@ def search(
 
     Returns:
         OperationResult(ok=True)，data 为协议无关信息超集：
-        - results: 合并结果列表（memory → wiki 场景 → wiki_pages，按 scopes 顺序）
+        - results: 合并结果列表（memory → wiki 场景 → wiki_pages → sessions，
+          按 scopes 顺序）
         - routes: 各结果 routes 的去重并集（保序；可能为空列表）
         - rrf_k: HTTP meta 用的 RRF k（历史硬编码 60，见模块 docstring）
 
@@ -294,6 +380,13 @@ def search(
         # 不拖累 memory / scenes 层（wiki 扩展不可用≠整体搜索失败）。
         if "wiki_pages" in scopes:
             results.extend(_search_wiki_pages(wiki_conn, query, limit))
+        # 层 4：L0 原始层会话（raw_files 索引，ST-33 新增）
+        # 容错隔离（对称 wiki_pages 层）：session_conn 为 None 或检索失败
+        # → 该层空结果 + WARNING，不拖累 memory / wiki 层。正文摘要读盘
+        # 为 best-effort（_raw_snippet 永不抛异常）。
+        if "sessions" in scopes:
+            raw_dir = (cfg.get("paths") or {}).get("raw_dir")
+            results.extend(_search_sessions(session_conn, query, limit, raw_dir))
     except Exception as e:
         # 检索内部错误 → ERR_INTERNAL（v0.6 由全局异常处理器兜底为 500，
         # 状态码不变；错误码统一收敛到 operations 层）
