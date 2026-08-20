@@ -359,7 +359,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.0b3"
+    assert body["version"] == "1.0.0b4"
     assert "available" in body["llm"]
     assert body["llm"]["available"] is True
     assert "stalled" in body["refinement"]
