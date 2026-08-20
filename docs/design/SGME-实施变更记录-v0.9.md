@@ -1193,3 +1193,28 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响（2026-08-20 已部署完成）**：NAS 生产已同步 sgme.yaml + 构建 `sgme:1.0.0b3-nas-vec1` 镜像 + compose 更新 + 容器重启生效；生产实测 ollama 在线 provider=local（277ms）、停 ollama 自动切云端返回 1024 维、恢复回本地。备份：sgme.yaml.bak-20260820-vec1 + docker-compose.yml.bak-20260820-vec1。ollama bge-m3 已就位（1.2GB）；`api_key_env` 留空（本地 Ollama 无需鉴权），SILICONFLOW_API_KEY 仍为云端降级用
 
 **文档**：本记录 B87
+
+
+### B89. ST-33 /v1/search 新增 sessions scope（L0 原始层接入）+ T-9 直查 SQL 收口 data 层（2026-08-20）
+
+**背景**：
+1. **ST-33**：/v1/search 已统一 memory（L1.5 记忆池）+ wiki（L2 场景）+ wiki_pages（知识库）三源，L0 原始层（raw_files 索引）未接入——未提炼/未命中提炼的原始会话原文不可检索，多源统一检索缺最后一块拼图。
+2. **T-9**：operations/health.py（``_count_vector_rows`` 向量行数统计）与 signal/engine.py（publish 的 suppress_hint 查询、get_replay_window_events 的重放窗口查询）绕过 data 层直查 SQL，违反「data 是唯一数据库操作层」铁律。
+
+**改动**：
+1. **sgme/data/session_dao.py**：新增 ``search_raw_files(conn, query, limit)``——LIKE 子串匹配 raw_files 元数据列（file_id / session_key / agent_id / path，OR 语义 + ESCAPE 防通配符），按最近会话倒序（与浏览分页同口径），空 query 返回空列表
+2. **sgme/operations/search.py**：新增 scope ``"sessions"``（第 4 层）——检索委托 DAO，结果装饰 source=``"sessions"`` + routes=[``"l0_like"``]；``content`` 为读盘正文摘要（剥 frontmatter → 折叠空白 → 截断 200 字，best-effort：文件缺失/越界/读失败 → 空串，检索不依赖读盘）；容错隔离对称 wiki_pages 层（session_conn 为 None / 检索失败 → 该层空结果 + WARNING）。raw_dir 取自 ``cfg["paths"]["raw_dir"]``，路径解析复用 operations/session.py 的 ``_resolve_raw_path``（越界纵深防御）
+3. **sgme/data/stats_dao.py**：新增 ``count_vector_rows(conn)``——health 向量行数统计迁入（表缺失/异常按 0 计，永不抛）
+4. **sgme/operations/health.py**：删除本地 ``_count_vector_rows``，改调 stats_dao.count_vector_rows（行为逐行等价）
+5. **sgme/data/signal_dao.py**：新增 ``get_recent_event_ts(conn, event_type, source)``（publish 的 suppress_hint 查询）+ ``count_events_before_ts(conn, ts)``（重放超窗摘要计数）；重放窗口内事件复用既有 ``list_events_since(since_ts=...)``
+6. **sgme/signal/engine.py**：publish / get_replay_window_events 的直查 SQL 改调 DAO（等价重构，零行为变化）
+
+**测试**：
+- test_operations_search.py 新增 5 用例：sessions 命中（含读盘摘要）/ 未命中空结果 / 与 memory 合并（顺序 + routes 并集）/ 磁盘缺失 content 空串 / HTTP 端点端到端
+- test_signal.py 新增 2 用例：get_recent_event_ts（最近一条/异源/无记录 None）、count_events_before_ts
+- test_operations_health.py 新增 1 用例：stats_dao.count_vector_rows 直测
+- 相关模块回归全绿（test_operations_search / test_operations_health / test_signal / test_signal_consumption / test_operations_events / test_storage_v04 / test_health_v04，数字见提交信息）
+
+**运维影响**：无——两个任务均为向后兼容增量。sessions 为新 scope，缺省不启用（DEFAULT_SCOPES 仍为 [``"memory"``]），旧请求逐字节不变；sessions 层正文摘要读盘为 best-effort，不改变任何既有响应字段。已知边界：raw_files 为索引表（无正文列），sessions 匹配目标是元数据列（file_id/session_key/agent_id/path），正文全文匹配（FTS5 化 raw 内容）留待后续版本
+
+**文档**：本记录 B89

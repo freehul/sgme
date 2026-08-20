@@ -35,7 +35,7 @@ from sgme.data.search import init_fts, init_scenes_fts
 from sgme.data.search import vector as vector_mod
 from sgme.server.app import create_app
 from sgme.data import db as db_mod
-from sgme.data import memory_dao, scene_dao
+from sgme.data import memory_dao, scene_dao, session_dao
 from sgme.wiki import fts as wiki_fts_mod
 from sgme.wiki.fts import init_wiki_fts
 
@@ -507,6 +507,143 @@ def test_http_endpoint_wiki_pages_scope(client, conns, mock_vector):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert any(r["source"] == "wiki_pages" for r in body["results"])
+
+
+# ---------- 5c. sessions scope 行为（ST-33：L0 原始层接入 /v1/search） ----------
+
+#: sessions 结果键（与 memory / wiki_pages 同构：rank/source/标识/内容/routes）。
+SESSIONS_RESULT_KEYS = [
+    "rank", "source", "file_id", "session_key", "agent_id",
+    "content", "started_at", "status", "routes",
+]
+
+
+def _insert_raw_file(session_conn: sqlite3.Connection, file_id: str,
+                     session_key: str, agent_id: str = "hermes",
+                     started_at: str = "2026-08-03T11:18:06Z",
+                     status: str = "new") -> None:
+    """插入 raw_files 索引行（正文在磁盘，索引只存元数据）。"""
+    session_dao.insert_raw_file(
+        session_conn, file_id=file_id, path=f"raw/sessions/{file_id}.md",
+        session_key=session_key, agent_id=agent_id,
+        started_at=started_at, status=status,
+    )
+
+
+def _write_raw_md(raw_dir, file_id: str, body: str) -> None:
+    """写 L0 原文文件（frontmatter + 消息块），供 sessions 层读盘摘要。"""
+    d = raw_dir / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{file_id}.md").write_text(
+        f"---\nfile_id: {file_id}\nsource_type: session\n---\n\n{body}",
+        encoding="utf-8",
+    )
+
+
+def test_search_sessions_scope_returns_raw_files(conns, cfg, mock_vector, raw_dir):
+    """scopes=["sessions"] → 命中 raw_files 元数据 + 读盘正文摘要（ST-33）。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    cfg["paths"]["raw_dir"] = str(raw_dir)
+    _insert_raw_file(session_conn, "sess-1", "hermes-20260803", agent_id="hermes")
+    _write_raw_md(raw_dir, "sess-1",
+                  "# 2026-08-03T11:18:06Z user\n\nSGME 会话正文 Python FastAPI 底座设计")
+
+    # Act
+    res = search(mem_conn, session_conn, cfg, query="hermes", scopes=["sessions"])
+
+    # Assert
+    assert res.ok is True
+    assert len(res.data["results"]) >= 1
+    first = res.data["results"][0]
+    assert set(first.keys()) == set(SESSIONS_RESULT_KEYS)
+    assert first["source"] == "sessions"
+    assert first["file_id"] == "sess-1"
+    assert first["session_key"] == "hermes-20260803"
+    assert first["agent_id"] == "hermes"
+    assert first["routes"] == ["l0_like"]
+    # 正文摘要：frontmatter 已剥除，正文关键词可检索到
+    assert "SGME 会话正文" in first["content"]
+    assert "l0_like" in res.data["routes"]
+
+
+def test_search_sessions_no_match_empty(conns, cfg, mock_vector, raw_dir):
+    """sessions scope 无命中 → ok=True，results 空数组。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    cfg["paths"]["raw_dir"] = str(raw_dir)
+    _insert_raw_file(session_conn, "sess-1", "hermes-20260803")
+
+    # Act
+    res = search(mem_conn, session_conn, cfg, query="zzzzqqqq不存在的词", scopes=["sessions"])
+
+    # Assert
+    assert res.ok is True
+    assert res.data["results"] == []
+    assert res.data["routes"] == []
+
+
+def test_search_sessions_merges_with_memory(conns, cfg, mock_vector, raw_dir):
+    """memory + sessions 双 scope → 结果先 memory 后 sessions，routes 并集。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    cfg["paths"]["raw_dir"] = str(raw_dir)
+    _insert_memory(mem_conn, "量子计算底座 Python 记忆")
+    _insert_raw_file(session_conn, "sess-m", "hermes-量子计算", agent_id="hermes")
+
+    # Act
+    res = search(mem_conn, session_conn, cfg,
+                 query="量子计算", scopes=["memory", "sessions"])
+
+    # Assert
+    assert res.ok is True
+    sources = [r["source"] for r in res.data["results"]]
+    assert "memory" in sources
+    assert "sessions" in sources
+    # 顺序：memory 层在前（按 scopes 顺序拼接）
+    assert sources.index("memory") < sources.index("sessions")
+    # routes 并集：bm25（memory）+ l0_like（sessions）
+    assert "bm25" in res.data["routes"]
+    assert "l0_like" in res.data["routes"]
+
+
+def test_search_sessions_disk_missing_snippet_empty(conns, cfg, mock_vector, raw_dir):
+    """索引命中但磁盘原文缺失 → 元数据仍返回，content 为空串（best-effort）。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    cfg["paths"]["raw_dir"] = str(raw_dir)
+    _insert_raw_file(session_conn, "sess-missing", "hermes-20260805")
+
+    # Act
+    res = search(mem_conn, session_conn, cfg, query="hermes", scopes=["sessions"])
+
+    # Assert
+    assert res.ok is True
+    assert len(res.data["results"]) == 1
+    first = res.data["results"][0]
+    assert first["file_id"] == "sess-missing"
+    assert first["content"] == ""
+
+
+def test_http_endpoint_sessions_scope(client, conns, cfg, mock_vector, raw_dir):
+    """HTTP /v1/search scopes=["sessions"] → 命中 L0 会话（ST-33 端到端）。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    cfg["paths"]["raw_dir"] = str(raw_dir)
+    _insert_raw_file(session_conn, "sess-http", "hermes-http-1", agent_id="hermes")
+    _write_raw_md(raw_dir, "sess-http",
+                  "# 2026-08-03T11:18:06Z user\n\nHTTP 会话正文")
+
+    # Act
+    resp = client.post("/v1/search",
+                       json={"query": "hermes", "scopes": ["sessions"]},
+                       headers=AGENT_HEADERS)
+
+    # Assert
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert any(r["source"] == "sessions" for r in body["results"])
+    assert body["meta"]["routes"] == ["l0_like"]
 
 
 # ---------- 6. HTTP / MCP 投影形态 ----------
