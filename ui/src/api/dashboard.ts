@@ -29,6 +29,11 @@ export interface HealthStatus {
   llm: HealthLLM
   refinement: HealthRefinement
   vector: HealthVector
+  // ST-34：自动更新检测（后端只增不改）
+  update_available?: boolean
+  latest_version?: string
+  update_checked_at?: string | null
+  update_error?: string | null
 }
 export function getHealth() {
   return api.get<HealthStatus>('/v1/health')
@@ -126,4 +131,20 @@ export function getEvents(params: { after?: string; limit?: number } = {}) {
   if (params.limit) qs.set('limit', String(params.limit))
   const suffix = qs.toString() ? `?${qs.toString()}` : ''
   return api.get<Events>(`/v1/events${suffix}`)
+}
+
+// ---------- ST-34：自动更新意图（POST/GET /v1/admin/update/request） ----------
+export interface UpdateRequest {
+  target_version: string
+  requested_at: string
+  status: 'pending' | 'done' | 'failed'
+}
+export function requestUpdate(targetVersion: string) {
+  return api.post<{ path: string; target_version: string; status: string }>(
+    '/v1/admin/update/request',
+    { target_version: targetVersion },
+  )
+}
+export function getUpdateRequest() {
+  return api.get<{ request: UpdateRequest | null }>('/v1/admin/update/request')
 }

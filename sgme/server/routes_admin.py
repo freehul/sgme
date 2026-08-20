@@ -1233,3 +1233,50 @@ def consume_all_events(
         events_consume_all_operation, mem_conn,
         event_type=type, subscriber_id=subscriber_id, consumed_by=agent_id,
     )
+
+
+# ---------- ST-34：自动更新意图文件端点 ----------
+# WebUI「立即更新」确认 → POST 写 request.json（T-94 主机代理轮询执行）；
+# WebUI 轮询更新状态 → GET 读 request.json。
+# 业务实现在 sgme/operations/update_request.py；挂本文件（管理操作，admin 鉴权）。
+
+
+class UpdateRequestModel(BaseModel):
+    target_version: str
+
+
+@router.post("/v1/admin/update/request")
+def write_update_request(
+    request: Request,
+    body: UpdateRequestModel,
+    _: str = Depends(require_admin_key),
+):
+    """写入自动更新意图文件（ST-34 T-93）：WebUI「立即更新」确认后调用。
+
+    落 $SGME_HOME/update/request.json（原子写），供主机侧更新代理（T-94）轮询执行。
+    幂等：重复调用覆盖为最新 target_version（status 重置 pending）。
+    """
+    from sgme.operations.update_request import write_update_request as write_update_request_op
+    from sgme.config import USER_ROOT
+
+    return run_operation(
+        write_update_request_op, USER_ROOT, target_version=body.target_version,
+    )
+
+
+@router.get("/v1/admin/update/request")
+def read_update_request(
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """读取自动更新意图文件（ST-34 T-93）：WebUI 轮询更新状态。
+
+    无待执行请求 → 返回 {}（200）；有 → 返回 {target_version, requested_at, status}。
+    """
+    from sgme.operations.update_request import read_update_request as read_update_request_op
+    from sgme.config import USER_ROOT
+
+    result = read_update_request_op(USER_ROOT)
+    if not result:
+        return {"request": None}
+    return {"request": result}

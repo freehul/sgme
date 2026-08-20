@@ -6,12 +6,15 @@ import {
   getRefineRuns,
   getDreamReports,
   getEvents,
+  requestUpdate,
+  getUpdateRequest,
   type HealthStatus,
   type Stats,
   type RefineRuns,
   type DreamReports,
   type Events,
   type SignalEvent,
+  type UpdateRequest,
 } from '../../api/dashboard'
 import { ApiError } from '../../api/client'
 
@@ -24,6 +27,47 @@ const dreamReports = ref<DreamReports | null>(null)
 const events = ref<Events | null>(null)
 const loading = ref(true)
 const error = ref('')
+
+// —— ST-34：自动更新状态 ——
+const updateStatus = ref<UpdateRequest | null>(null) // 待执行/执行中的更新请求
+const updateMsg = ref('') // 操作反馈
+const RELEASE_BASE = 'https://github.com/freehul/sgme/releases'
+
+async function loadUpdateStatus() {
+  try {
+    const r = await getUpdateRequest()
+    updateStatus.value = r.request
+  } catch {
+    updateStatus.value = null
+  }
+}
+
+async function onRequestUpdate() {
+  const latest = health.value?.latest_version
+  const current = health.value?.version
+  if (!latest || !health.value?.update_available) return
+  const ok = confirm(
+    `发现新版本 ${latest}（当前 ${current}）。\n\n` +
+      `点击确定后将自动完成更新：\n` +
+      `1. 备份当前配置与数据\n` +
+      `2. 拉取最新代码并重建\n` +
+      `3. 失败自动回滚旧版本\n\n` +
+      `确认立即更新？`,
+  )
+  if (!ok) return
+  updateMsg.value = '已提交更新请求，等待主机执行…'
+  try {
+    await requestUpdate(latest)
+    updateMsg.value = `已提交更新请求（${latest}），主机代理将在数分钟内执行。`
+    await loadUpdateStatus()
+  } catch (e) {
+    updateMsg.value = `提交更新请求失败：${e instanceof Error ? e.message : String(e)}`
+  }
+}
+
+function releaseUrl(v: string): string {
+  return `${RELEASE_BASE}/tag/${v}`
+}
 
 // 异常日志筛选
 const logLevel = ref('')
@@ -156,7 +200,10 @@ const filteredAnomalies = computed(() => {
 
 const anomalySources = computed(() => [...new Set(anomalyRows.value.map((r) => r.source))])
 
-onMounted(loadAll)
+onMounted(() => {
+  loadAll()
+  loadUpdateStatus()
+})
 </script>
 
 <template>
@@ -196,6 +243,22 @@ onMounted(loadAll)
       <div class="monitor-grid">
         <section v-if="health" class="panel">
           <h3>系统健康 <span class="ver">v{{ health.version }}</span></h3>
+          <!-- ST-34：发现新版本提示条 -->
+          <div v-if="health.update_available" class="update-banner">
+            <div class="update-info">
+              <span class="update-dot" />
+              <strong>发现新版本 {{ health.latest_version }}</strong>
+              <span class="update-sub">当前 v{{ health.version }}</span>
+            </div>
+            <div class="update-actions">
+              <a :href="releaseUrl(health.latest_version || '')" target="_blank" rel="noopener" class="update-link">查看更新说明</a>
+              <button class="update-btn" :disabled="!!updateStatus" @click="onRequestUpdate">
+                {{ updateStatus ? '更新已提交' : '立即更新' }}
+              </button>
+            </div>
+          </div>
+          <!-- ST-34：更新请求状态反馈 -->
+          <p v-if="updateMsg" class="update-msg" :class="{ err: updateMsg.includes('失败') }">{{ updateMsg }}</p>
           <div class="badge-row">
             <div class="badge" :class="health.llm.available ? 'ok' : 'err'">
               <span class="dot" /> LLM
@@ -337,6 +400,77 @@ onMounted(loadAll)
   gap: 16px;
   margin-bottom: 16px;
   align-items: start;
+}
+/* ST-34：发现新版本提示条 */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(59, 130, 246, .35);
+  border-radius: 8px;
+  background: rgba(59, 130, 246, .08);
+}
+.update-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+.update-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3B82F6;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.update-sub {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.update-link {
+  color: #3B82F6;
+  font-size: 13px;
+  text-decoration: none;
+}
+.update-link:hover {
+  text-decoration: underline;
+}
+.update-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: #3B82F6;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.update-btn:disabled {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+.update-msg {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #3B82F6;
+}
+.update-msg.err {
+  color: #ef4444;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
 }
 .tabs-line {
   display: flex;
