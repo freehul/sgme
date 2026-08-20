@@ -1193,3 +1193,37 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响（2026-08-20 已部署完成）**：NAS 生产已同步 sgme.yaml + 构建 `sgme:1.0.0b3-nas-vec1` 镜像 + compose 更新 + 容器重启生效；生产实测 ollama 在线 provider=local（277ms）、停 ollama 自动切云端返回 1024 维、恢复回本地。备份：sgme.yaml.bak-20260820-vec1 + docker-compose.yml.bak-20260820-vec1。ollama bge-m3 已就位（1.2GB）；`api_key_env` 留空（本地 Ollama 无需鉴权），SILICONFLOW_API_KEY 仍为云端降级用
 
 **文档**：本记录 B87
+
+
+### B88. ST-12 NAS 一键部署脚本 deploy.sh（2026-08-20）
+
+**背景**：ST-24 已交付 Dockerfile/docker-compose（镜像+部署验收），ST-12「NAS 一键部署」缺一键化体验——手动流程（构建→导出→scp→load→up→验证）分散在 deployment-docker.md 多个小节。
+
+**改动**：
+1. 新增项目根 `deploy.sh`（bash）：封装 构建→导出→传输→NAS 导入→启动→验证 全流程；子命令 build/deploy <host>/up/down/logs/verify
+2. NAS 部署路径约定 /vol1/1000/Docker/sgme（bind mount 数据卷，与 deployment-docker.md §4.3 一致）；docker.env 密钥检查守卫（缺失/为空即中止）
+3. deployment-docker.md 新增 §2.5 一键脚本说明
+
+**测试**：脚本语法 bash -n 校验通过；命令分支走查（build/up/down/logs/deploy/verify/非法参数）；NAS 实机部署待用户执行
+
+**运维影响**：Windows 本机用 Git Bash/WSL 执行 deploy.sh；纯本机部署仍可 docker compose up -d --build
+
+**文档**：本记录 B88；Backlog ST-12 ✅
+
+### B89. ST-21 git 历史敏感词清理——审计证明无需执行（2026-08-20）
+
+**背景**：ST-21 ②「git 全历史 filter-repo 敏感词清理（1.0 上传时执行）」原计划重写 116 个提交历史。2026-08-20 只读审计发现实际无需执行。
+
+**审计结论**（git log 全历史扫描，未重写任何提交）：
+1. 无 .env / docker.env / config/.env 文件提交记录（git log --diff-filter=A 扫描）
+2. 无真实 key（sk-/ark- 等模式扫描：唯一命中 dce02f7 是「append 脱敏修复」提交的**标题**含 sk- 字样，非泄漏）
+3. config/ 模板全占位符（无 16+ 位硬编码 key）
+4. .env.example 空值模板（SGME_ADMIN_KEY= 等）
+
+**改动**：仅 Backlog ST-21 状态 🟡 → ✅（追加审计结论）；安装 git-filter-repo（pip）备用但未执行重写
+
+**测试**：审计命令均为只读（git log 扫描），无写入
+
+**运维影响**：1.0 上传 GitHub 无需 filter-repo 重写；若未来引入真实密钥提交需重新评估
+
+**文档**：本记录 B89；Backlog ST-21 ✅
