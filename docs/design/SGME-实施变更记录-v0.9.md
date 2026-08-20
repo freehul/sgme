@@ -1391,3 +1391,29 @@ GET /v1/events/stream（SSE）、单条 consume（/v1/admin/care/signals/{id}/co
 代码部署即生效，无 schema 变更
 
 **文档**：本记录 B93
+
+### B96. LLM 省钱方案：移除 deepseek 付费备用 + 退避加强 + batch_scan 降频（2026-08-20）
+
+**背景**：DeepSeek 平台近 7 天消费 ¥246.88，其中 sgme key ¥90.98（36.9%，仅次于
+dsh 的 ¥117.46）。根因：zhipu glm-4.7-flash 免费主链被平台 1305 限流（8/14 至今
+573 次），重试 3 次（3s/6s/12s）耗尽后按降级链自动切 deepseek-v4-flash 付费兜底，
+refinement 链 deepseek 成功 704 次 vs zhipu 仅 38 次（8/14-8/20 日志）。
+
+**改动**（本机 config/ 与 NAS /vol1/1000/Docker/sgme/data/config/ 同步，均先备份）：
+1. config/llm.yaml：
+   - chains.refinement 移除 deepseek 备用节点 → zhipu → rule drop_batch
+     （1305 限流时整批滞留，下一轮 batch_scan/Dream 重试，记忆不丢只是延迟；
+     zhipu 长期不可用由健康告警兜底）
+   - max_retries: 3 → 5、backoff.max_s: 20.0 → 60.0（1305 恢复数十秒级，
+     多扛两轮退避，序列 3/6/12/24/48s）
+2. config/sgme.yaml：refine.batch_scan.interval_min: 10 → 60
+   （白天扫描降频 6 倍；会话结束 refine_trigger 即时提炼不受影响；Dream 03:00 已错峰）
+
+**验证**：docker restart sgme 后 health ok（provider=zhipu）；容器内配置确认
+链节点 ['zhipu','rule']、max_retries=5、max_s=60、batch_scan=60min；
+日志「Batch 兜底扫描定时器已启动（interval_min=60）」；无新降级直存。
+
+**运维影响**：提炼延迟上限 = 下一轮 batch_scan（60min）/ Dream（03:00）周期；
+预期 sgme key deepseek 消费从 ~91 元/周 降至接近 0（zhipu 免费链正常时）。
+
+**文档**：本记录 B96
