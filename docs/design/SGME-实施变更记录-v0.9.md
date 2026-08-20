@@ -1195,7 +1195,7 @@ L1.5 冲突裁决、L2 场景聚合。
 **文档**：本记录 B87
 
 
-### B88. 信号批量清空端点 + MCP signal_clear + WebUI 全部消费（T-87，2026-08-21）
+### B90. 信号批量清空端点 + MCP signal_clear + WebUI 全部消费（T-87，2026-08-21）
 
 **背景**：signal_events 此前只有 GET /v1/events/pull（持久游标逐批拉取）、
 GET /v1/events/stream（SSE）、单条 consume（/v1/admin/care/signals/{id}/consume），
