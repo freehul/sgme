@@ -303,7 +303,7 @@ def test_mcp_agent_onboarding_self_config(mcp):
     data = json.loads(r[0])
     sc = data.get("self_config")
     assert sc, "agent_onboarding 必须包含 self_config 段"
-    assert sc["version"] == "SGME-ONBOARDING-v1"
+    assert sc["version"] == "SGME-ONBOARDING-v2"
     # 步骤含幂等自查 / 读回验证 / 失败路径
     steps = "\n".join(sc["steps"])
     for keyword in ("自查", "跳过", "读回验证", "报告主人"):
@@ -311,7 +311,7 @@ def test_mcp_agent_onboarding_self_config(mcp):
     # 模板含版本标记与核心纪律（含事件对接双模式，ST-30）
     tmpl = sc["template"]
     for keyword in (
-        "SGME-ONBOARDING-v1",
+        "SGME-ONBOARDING-v2",
         "服务发现",
         "每轮对话结束 append",
         "refine_trigger",
@@ -334,6 +334,18 @@ def test_mcp_agent_onboarding_self_config(mcp):
         "微信",
         "飞书",
         "Telegram",
+        # 向量引擎接入（本地优先、云端降级）
+        "向量引擎接入",
+        "vector.available",
+        "vector.connectivity",
+        "11434",
+        "1234",
+        "ollama pull bge-m3",
+        "sgme.yaml",
+        "search.vector",
+        "fallbacks",
+        "不推荐 llama.cpp",
+        "本地向量引擎已就绪",
     ):
         assert keyword in tmpl, f"template 缺关键内容: {keyword}"
 

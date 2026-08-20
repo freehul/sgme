@@ -29,10 +29,15 @@ l2:
 search:
   vector:
     enabled: true
-    provider: siliconflow   # 免费托底（T-53 2026-08-18）：硅基流动 BAAI/bge-m3 1024 维，调用零费用
-    model: BAAI/bge-m3
-    base_url: https://api.siliconflow.cn/v1
-    api_key_env: SILICONFLOW_API_KEY
+    provider: local   # 本地优先（2026-08-20 生产定案）：NAS ollama bge-m3 1024 维，零费用、隐私本地
+    model: bge-m3
+    base_url: http://192.168.10.10:11434/v1   # NAS ollama OpenAI 兼容端点（SGME 容器经宿主 IP 访问）
+    # api_key_env 留空——本地 Ollama 无需鉴权
+    fallbacks:
+      - provider: siliconflow   # 云端免费降级备用（同 1024 维，切换不重灌索引）
+        model: BAAI/bge-m3
+        base_url: https://api.siliconflow.cn/v1
+        api_key_env: SILICONFLOW_API_KEY
   rrf:
     k: 60
 backup:
