@@ -5,7 +5,7 @@
  * 断言对齐 defineTool() 返回的 ToolDefinition（2026-08-14 T-53 修复后）。
  */
 import { describe, it, expect, vi } from 'vitest'
-import { createMemorySearchTool, createWikiSearchTool } from '../src/tools.js'
+import { createMemorySearchTool, createWikiSearchTool, createInjectTool } from '../src/tools.js'
 import type { SgmeClient, SearchResponse } from '../src/sgme-client.js'
 
 // ---------- mock SgmeClient ----------
@@ -158,3 +158,44 @@ describe('wiki_search tool', () => {
     expect(result).toContain('无结果')
   })
 })
+
+// ---------- inject 工具（T-88：agent 主动按场景注入） ----------
+
+function makeInjectClient(injectImpl: (req: unknown) => unknown | null): SgmeClient {
+  return {
+    inject: vi.fn(injectImpl) as unknown as SgmeClient['inject'],
+  } as unknown as SgmeClient
+}
+
+describe('inject tool', () => {
+  it('工具名和描述正确（含缓存成本提示）', () => {
+    const client = makeInjectClient(() => null)
+    const tool = asToolLike(createInjectTool(client))
+    expect(tool.name).toBe('inject')
+    expect(tool.description).toContain('缓存')
+    expect(tool.description).toContain('coding')
+  })
+
+  it('execute 传 mode 并返回画像文本', async () => {
+    const profile = {
+      blocks: [{ title: '🧩 技术栈', items: [{ content: 'Python FastAPI' }] }],
+      stats: { mode: 'coding', queries: 1, tokens_est: 10, tier0_present: false },
+      tier0: { present: false, content: null },
+    }
+    const client = makeInjectClient(async () => profile)
+    const tool = asToolLike(createInjectTool(client))
+    const result = (await tool.execute({ mode: 'coding' })) as string
+
+    expect(client.inject).toHaveBeenCalledWith({ mode: 'coding' })
+    expect(result).toContain('SGME 用户画像')
+    expect(result).toContain('Python FastAPI')
+  })
+
+  it('inject 返回 null（网关不可达）→ 返回失败提示', async () => {
+    const client = makeInjectClient(async () => null)
+    const tool = asToolLike(createInjectTool(client))
+    const result = (await tool.execute({ mode: 'daily' })) as string
+    expect(result).toContain('inject 失败')
+  })
+})
+
