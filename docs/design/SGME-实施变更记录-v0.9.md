@@ -1209,3 +1209,18 @@ L1.5 冲突裁决、L2 场景聚合。
 **测试**：storage+engine+registry 相关 12 用例全绿；全量相关模块 93 passed（4 个既有失败为 B81 projects 维度移除后测试未同步，与本次无关）
 
 **运维影响**：老库首次启动自动补列（幂等）；HTTP /v1/admin/registry 维度对象多 boundaries 字段（新增字段，向后兼容）；L1 提示词维度清单变长（消歧信息，token 略增）
+
+
+### B91. adapters/dsh/install.py 生成 ~/.sgme/install.json（T-23，2026-08-20）
+
+**背景**：~/.sgme/install.json 服务发现清单此前只在文档/README 提及（AGENTS.md 服务发现第 2 步、README「连接地址约定」），代码无生成逻辑——本机文件为手动创建。服务端 config.write_install_json（T-23②）已落地，但适配器安装引导（adapters/dsh/install.py）不生成，新装 dsh 适配器仍缺清单。
+
+**改动**：
+1. **adapters/dsh/install.py**：新增 write_install_json()（+ install_json_path()）——固定写 ~/.sgme/install.json，字段对齐服务端 config.write_install_json 形态：schema_version / http.host+port（从 SGME_BASE_URL 解析）/ mcp.port（SGME_MCP_PORT env 或默认 9913）/ keys（**只写环境变量名引用** SGME_ADMIN_KEY/SGME_AGENT_KEY/SGME_BEARER_TOKEN，不落明文，铁律 #10）/ agent_id；幂等覆盖
+2. **main()**：安装第 1.5 步调用 write_install_json()（注册 agent 后、写 AGENTS.md 前）
+3. **adapters/dsh/README.md**：安装说明补 install.json 生成步骤与用途
+4. **测试**：adapters/dsh/tests/test_install.py 新增 5 用例（生成文件字段完整 / 不落明文 key / 幂等 / MCP 端口 env 覆盖 / 固定路径 ~/.sgme）
+
+**测试**：adapters/dsh/tests/test_install.py 12 passed（含新增 5 用例）
+
+**运维影响**：重跑 install.py 即生成/刷新 ~/.sgme/install.json；agent 服务发现清单可自动重建（不再依赖手动创建）
