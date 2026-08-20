@@ -139,6 +139,63 @@ def test_get_dimension_unknown_returns_none(mem_with_registry):
     assert memory_dao.get_dimension(mem_with_registry, "nope") is None
 
 
+# ---------- T1.2b boundaries 保留（T-11：YAML→DB 不再静默丢弃） ----------
+
+def test_import_registry_preserves_boundaries(mem_with_registry, cfg):
+    """导入后 DB 行保留 boundaries（vs 对照消歧说明）。"""
+    for dim in cfg["dimensions"]:
+        if "boundaries" not in dim:
+            continue
+        row = memory_dao.get_dimension(mem_with_registry, dim["id"])
+        assert row is not None
+        assert row.get("boundaries") == dim["boundaries"], f"{dim['id']} boundaries 丢失"
+
+
+def test_import_registry_boundaries_none_when_missing(mem_conn, cfg):
+    """无 boundaries 字段的维度 → DB 中为 None（不报错）。"""
+    dims = [dict(cfg["dimensions"][0])]
+    dims[0].pop("boundaries", None)
+    memory_dao.upsert_dimension(mem_conn, dims[0])
+    row = memory_dao.get_dimension(mem_conn, dims[0]["id"])
+    assert row.get("boundaries") is None
+
+
+def test_upsert_dimension_updates_boundaries(mem_with_registry):
+    """重复 upsert 时 boundaries 随行更新（ON CONFLICT UPDATE 含 boundaries）。"""
+    d = memory_dao.get_dimension(mem_with_registry, "identity")
+    d["boundaries"] = "新边界说明"
+    memory_dao.upsert_dimension(mem_with_registry, d)
+    row = memory_dao.get_dimension(mem_with_registry, "identity")
+    assert row["boundaries"] == "新边界说明"
+
+
+def test_migrate_dim_boundaries_legacy_db(tmp_path):
+    """老库（dimension_registry 无 boundaries 列）→ connect_memory 自动补列（T-11 迁移）。"""
+    import sqlite3
+    data_dir = tmp_path / "mig"
+    data_dir.mkdir()
+    # 手工建老结构 memory.db（无 boundaries 列）
+    raw = sqlite3.connect(data_dir / "memory.db")
+    raw.executescript(
+        "CREATE TABLE dimension_registry (id TEXT PRIMARY KEY, display_name TEXT NOT NULL,"
+        " category TEXT NOT NULL, time_velocity TEXT NOT NULL DEFAULT 'static',"
+        " ttl_days INTEGER, description TEXT, active INTEGER NOT NULL DEFAULT 1,"
+        " created_at TEXT NOT NULL);"
+    )
+    raw.commit()
+    raw.close()
+    # 重连触发迁移
+    conn = db_mod.connect_memory(data_dir)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(dimension_registry)").fetchall()]
+        assert "boundaries" in cols, f"缺 boundaries 列: {cols}"
+        # 幂等：再次连接不报错
+        conn2 = db_mod.connect_memory(data_dir)
+        conn2.close()
+    finally:
+        conn.close()
+
+
 # ---------- T1.3 memories CRUD ----------
 
 def test_insert_memory_basic(mem_with_registry):

@@ -56,7 +56,9 @@ _VALID_VELOCITY = {"static", "dynamic"}
 # 维度行 = dimension_registry 全列 + 追加 aliases
 DIMENSION_FIELD_KEYS = [
     "id", "display_name", "category", "time_velocity",
-    "ttl_days", "description", "active", "created_at", "aliases",
+    "ttl_days", "description", "active", "created_at",
+    "boundaries",  # T-11：维度边界（vs 对照），随 DB 行暴露（表列序末尾）
+    "aliases",
 ]
 LIST_TOP_KEYS = ["total", "dimensions"]
 GET_TOP_KEYS = ["dimension"]
@@ -77,7 +79,7 @@ def _normalize_dimension(dim: dict[str, Any]) -> dict[str, Any]:
 
     Args:
         dim: 入口层解析后的原始入参（键：id/display_name/category/
-            time_velocity/ttl_days/description）。
+            time_velocity/ttl_days/description/boundaries——boundaries 可选）。
 
     Returns:
         归一化后的维度字典（键序即 HTTP 响应中 dimension 对象的键序）。
@@ -97,6 +99,8 @@ def _normalize_dimension(dim: dict[str, Any]) -> dict[str, Any]:
         "time_velocity": dim["time_velocity"],
         "ttl_days": dim["ttl_days"],
         "description": dim["description"],
+        # T-11：boundaries 可选入参，保留并落库（缺失时 None，兼容旧入参）
+        "boundaries": dim.get("boundaries"),
     }
 
 
@@ -154,7 +158,7 @@ def registry_create_dim(
     """新增维度（幂等 upsert；重复提交更新字段，active 保留 DB 现值）。
 
     data 形态：{"status": "ok", "dimension": 归一化入参}——
-    dimension 是**入参回显**（id/display_name/category/time_velocity/ttl_days/description），
+    dimension 是**入参回显**（id/display_name/category/time_velocity/ttl_days/description/boundaries），
     非 DB 行（不含 active/created_at），HTTP 历史契约如此，勿改。
 
     Raises:

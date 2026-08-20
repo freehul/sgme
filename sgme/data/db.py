@@ -38,7 +38,8 @@ MEMORY_DDL = """
 CREATE TABLE IF NOT EXISTS dimension_registry (
   id TEXT PRIMARY KEY, display_name TEXT NOT NULL, category TEXT NOT NULL,
   time_velocity TEXT NOT NULL DEFAULT 'static', ttl_days INTEGER,
-  description TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+  description TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+  boundaries TEXT);  -- T-11：维度边界（vs 对照消歧说明），YAML→DB 不再静默丢弃
 CREATE TABLE IF NOT EXISTS dimension_alias (
   alias TEXT PRIMARY KEY, dimension_id TEXT NOT NULL REFERENCES dimension_registry(id));
 CREATE TABLE IF NOT EXISTS memories (
@@ -403,6 +404,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_mem_occurred_at(conn)
     _migrate_refine_runs_tokens(conn)
     _migrate_mem_idea_columns(conn)
+    _migrate_dim_boundaries(conn)
     _migrate_demands_table(conn)
     _migrate_project_meta_table(conn)
     _migrate_dream_reports_table(conn)
@@ -617,6 +619,24 @@ def _migrate_wiki_raw_files(conn: sqlite3.Connection) -> None:
     cols = [r[1] for r in conn.execute("PRAGMA table_info(raw_files)").fetchall()]
     if "content_hash" not in cols:
         conn.execute("ALTER TABLE raw_files ADD COLUMN content_hash TEXT")
+        conn.commit()
+
+
+def _migrate_dim_boundaries(conn: sqlite3.Connection) -> None:
+    """老库迁移：dimension_registry 补 boundaries 列（T-11，维度边界保留）。
+
+    幂等：列已存在则无操作。boundaries = 维度间语义消歧说明（vs 对照），
+    registry/dimensions.yaml 定义、import 时随行写入——此前无列导致静默丢弃，
+    L1 提示词只拿到 id：display_name（审计 D8）。
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dimension_registry'"
+    ).fetchone()
+    if not has_table:
+        return
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(dimension_registry)").fetchall()]
+    if "boundaries" not in cols:
+        conn.execute("ALTER TABLE dimension_registry ADD COLUMN boundaries TEXT")
         conn.commit()
 
 

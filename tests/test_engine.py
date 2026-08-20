@@ -217,6 +217,20 @@ def test_render_l1_only_active_dimensions(cfg):
     assert "- b：乙" not in prompt
 
 
+def test_render_l1_injects_boundaries(cfg):
+    """T-11：维度行附 boundaries（vs 对照消歧说明）——送达 LLM 消歧。"""
+    dims = [
+        {"id": "a", "display_name": "甲", "active": 1,
+         "boundaries": "vs 家庭：家庭=成员与关系"},
+        {"id": "b", "display_name": "乙", "active": 1},  # 无 boundaries
+    ]
+    prompt = l1.render_l1("conv", dims)
+    assert "- a：甲（边界：vs 家庭：家庭=成员与关系）" in prompt
+    # b 无 boundaries → 不带括号
+    assert "- b：乙" in prompt
+    assert "（边界：" not in prompt.split("- a：甲（边界：vs 家庭：家庭=成员与关系）")[1]
+
+
 # ---------- l1.parse_l1_output 测试 ----------
 
 def test_parse_l1_output_valid_json(cfg):
