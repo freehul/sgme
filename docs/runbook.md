@@ -785,6 +785,11 @@ git pull
 docker compose up -d --build
 ```
 
+**自动更新（ST-34，2026-08-21）**：
+- WebUI 检测到新版本（GitHub Releases API，`update_check` 配置段可调 enabled/interval_hours/source）→ 健康卡片显示提示条 → 用户确认「立即更新」→ 写意图文件 `$SGME_HOME/update/request.json`
+- 主机侧代理 `scripts/sgme-host-updater.sh`（NAS root cron 每 5 分钟轮询）执行：git pull → docker build 新镜像 → 备份 compose → 换 tag → compose up → 健康验证 → 成功清请求 / 失败自动回滚旧镜像
+- 容器无特权（不挂 docker.sock），更新由主机脚本执行；NAS 部署自动更新代理前需用户确认
+
 ### 16.5 NAS（群晖）部署
 
 - 部署真相源：`deploy/nas-docker-compose.yml`（模板，`{{IMAGE_TAG}}` 占位），NAS 生产 compose 非 git 仓库（B64 遗留）
