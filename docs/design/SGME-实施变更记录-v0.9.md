@@ -1409,9 +1409,12 @@ refinement 链 deepseek 成功 704 次 vs zhipu 仅 38 次（8/14-8/20 日志）
 2. config/sgme.yaml：refine.batch_scan.interval_min: 10 → 60
    （白天扫描降频 6 倍；会话结束 refine_trigger 即时提炼不受影响；Dream 03:00 已错峰）
 
-**验证**：docker restart sgme 后 health ok（provider=zhipu）；容器内配置确认
-链节点 ['zhipu','rule']、max_retries=5、max_s=60、batch_scan=60min；
-日志「Batch 兜底扫描定时器已启动（interval_min=60）」；无新降级直存。
+**验证**：⚠️ 首次部署踩坑——llm.yaml 属程序资源（config.py: PROJECT_ROOT/config/llm.yaml，
+不跟随 SGME_HOME），只改 /data/config/llm.yaml 未生效（运行时仍加载容器内
+/app/config/llm.yaml，链仍含 deepseek、重试 3 次）。二次修复：docker cp 新配置进
+容器 /app/config/llm.yaml（备份 .bak-20260820）+ 同步 NAS 构建源
+src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时验证：
+链节点 ['zhipu','rule']、max_retries=5、max_s=60、batch_scan=60min，health ok。
 
 **运维影响**：提炼延迟上限 = 下一轮 batch_scan（60min）/ Dream（03:00）周期；
 预期 sgme key deepseek 消费从 ~91 元/周 降至接近 0（zhipu 免费链正常时）。
