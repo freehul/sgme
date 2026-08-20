@@ -24,6 +24,7 @@ from eval.models import (
     EvalCase,
     EvalResult,
     EvalSummary,
+    InjectMetrics,
     L1Metrics,
     L2Metrics,
     RRFMetrics,
@@ -125,6 +126,7 @@ class EvalRunner:
         per_case_results: list[CaseResult] = []
         per_case_l1_metrics: list[L1Metrics] = []
         per_case_l2_metrics: list[L2Metrics] = []
+        per_case_inject_metrics: list[InjectMetrics] = []
 
         for case in cases:
             try:
@@ -165,6 +167,27 @@ class EvalRunner:
                     recall_diagnostics={"error": str(e)},
                 )
 
+        # 注入效果阶段（T-20，PRD §5.4）：GT 落库 → 模板注入 → 度量
+        # 独立于 L1：注入测「模板查询 + 画像组装」的效果，不依赖 L1 提取产物
+        inject_metrics: InjectMetrics | None = None
+        if "inject" in stages:
+            for case in cases:
+                if case.expected_inject is None:
+                    continue
+                try:
+                    im = self._run_inject(case)
+                    per_case_inject_metrics.append(im)
+                    # 回填逐用例字段（供 per_case 明细展示）
+                    for cr in per_case_results:
+                        if cr.case_id == case.case_id:
+                            cr.inject_hit_rate = im.inject_hit_rate
+                            cr.inject_reference_coverage = im.reference_coverage
+                            break
+                except Exception as e:
+                    logger.error("用例 %s 注入评测异常: %s", case.case_id, e)
+            inject_metrics = eval_metrics.aggregate_inject_metrics(per_case_inject_metrics) \
+                if per_case_inject_metrics else InjectMetrics()
+
         # 聚合度量
         aggregated_l1 = eval_metrics.aggregate_l1_metrics(per_case_l1_metrics) \
             if per_case_l1_metrics else L1Metrics()
@@ -203,6 +226,7 @@ class EvalRunner:
             l1=aggregated_l1,
             l2=aggregated_l2,
             rrf=rrf_metrics,
+            inject=inject_metrics,
             per_case=per_case_results,
             summary=summary,
         )
@@ -645,6 +669,70 @@ class EvalRunner:
             metrics.embed_cache = cache.stats_dict()
             cache.close()
         return metrics
+
+    # ── 注入效果评测（T-20，PRD §5.4） ──
+
+    def _run_inject(self, case: EvalCase) -> InjectMetrics:
+        """执行单条用例的注入效果评测。
+
+        链路（框架设计 §1.7.2）：
+        1. GT 记忆落库到 eval DB（确定性 memory_id = {case_id}#{idx}，
+           updated_at 取当前 UTC——模板含 time_window，必须保证记忆在窗口内）
+        2. 按 case.expected_inject.mode 加载模板 + 执行注入（profile.inject，纯 SQL 零 LLM）
+        3. compute_inject_metrics 计算注入命中率 / 引用覆盖率
+
+        返回 InjectMetrics；用例无 expected_inject 时返回空指标（不落库）。
+        """
+        gt_inject = case.expected_inject
+        if gt_inject is None or self.mem_conn is None:
+            return InjectMetrics()
+
+        from datetime import datetime, timezone
+        from sgme.data import memory_dao
+        from sgme.profile import inject as profile_inject
+        from sgme.profile.template import load_template
+
+        # ① GT 记忆落库（updated_at = 当前 UTC，保证 time_window 命中）
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        valid_dims = set()
+        try:
+            rows = self.mem_conn.execute("SELECT id FROM dimension_registry").fetchall()
+            valid_dims = {r[0] for r in rows}
+        except Exception:
+            pass
+        for idx, gt_mem in enumerate(case.expected_l1.memories):
+            dims = [d for d in gt_mem.dimensions if d in valid_dims] or list(gt_mem.dimensions)
+            try:
+                memory_dao.insert_memory(
+                    self.mem_conn,
+                    content=gt_mem.content,
+                    memory_type=gt_mem.memory_type,
+                    priority=gt_mem.priority,
+                    time_velocity=gt_mem.time_velocity,
+                    ttl_days=None,
+                    dimension_ids=dims,
+                    sources=None,
+                    agent_tag="eval-inject",
+                    memory_id=f"{case.case_id}#{idx}",
+                    created_at=now_iso,
+                    updated_at=now_iso,
+                )
+            except Exception as e:
+                logger.warning("注入评测落库失败 %s#%d: %s", case.case_id, idx, e)
+
+        # ② 模板加载 + 注入（零 LLM 纯 SQL）
+        dimensions = self._load_eval_registry()[0] or []
+        template = load_template(gt_inject.mode, dimensions)
+        inject_result = profile_inject.inject(
+            self.mem_conn, template, dimensions,
+            tier0_summary=None,
+        )
+        blocks = inject_result.get("blocks", [])
+
+        # ③ 计算度量
+        return eval_metrics.compute_inject_metrics(
+            blocks, gt_inject, case_id=case.case_id,
+        )
 
     # ── L1 提取 ──
 

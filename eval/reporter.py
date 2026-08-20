@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from eval.models import EvalResult, L1Metrics, L2Metrics, RRFMetrics
+from eval.models import EvalResult, InjectMetrics, L1Metrics, L2Metrics, RRFMetrics
 
 logger = logging.getLogger("eval.reporter")
 
@@ -128,6 +128,18 @@ def _build_json_report(result: EvalResult) -> dict:
             "embed_cache": rrf.embed_cache,
         }
 
+    # 注入效果段（T-20，PRD §5.4）
+    inject = result.inject
+    if inject is not None:
+        report["inject"] = {
+            "inject_hit_rate": inject.inject_hit_rate,
+            "reference_coverage": inject.reference_coverage,
+            "total_blocks": inject.total_blocks,
+            "relevant_blocks": inject.relevant_blocks,
+            "total_referenced": inject.total_referenced,
+            "hit_and_referenced": inject.hit_and_referenced,
+        }
+
     # per_case 明细
     report["per_case"] = []
     for cr in result.per_case:
@@ -140,6 +152,8 @@ def _build_json_report(result: EvalResult) -> dict:
             "unmatched_pred": cr.unmatched_pred,
             "unmatched_gt": cr.unmatched_gt,
             "dimension_details": cr.dimension_details,
+            "inject_hit_rate": cr.inject_hit_rate,
+            "inject_reference_coverage": cr.inject_reference_coverage,
             "error": cr.error,
         }
         report["per_case"].append(entry)
@@ -251,6 +265,20 @@ def _build_markdown_report(result: EvalResult) -> list[str]:
         lines.append(f"| Section 误入率 | {l2.section_misentry_rate:.4f} |")
         lines.append(f"| Section 漏出率 | {l2.section_miss_rate:.4f} |")
         lines.append(f"| 画像质量综合分 | {l2.profile_quality:.4f} |")
+        lines.append("")
+
+    # ── 注入效果（T-20，PRD §5.4） ──
+    if result.inject is not None and result.inject.total_blocks > 0:
+        lines.append("## 💉 模板注入效果")
+        lines.append("")
+        lines.append("| 指标 | 值 |")
+        lines.append("|------|----|")
+        lines.append(f"| 注入命中率 | {result.inject.inject_hit_rate:.4f} |")
+        lines.append(f"| 引用覆盖率 | {result.inject.reference_coverage:.4f} |")
+        lines.append(f"| 注入块总数 | {result.inject.total_blocks} |")
+        lines.append(f"| 相关块数 | {result.inject.relevant_blocks} |")
+        lines.append(f"| 引用记忆数 | {result.inject.total_referenced} |")
+        lines.append(f"| 命中且引用数 | {result.inject.hit_and_referenced} |")
         lines.append("")
 
     # ── RRF 检索调参 ──

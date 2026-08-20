@@ -61,6 +61,20 @@ class L2GroundTruth:
 
 
 @dataclass
+class InjectGroundTruth:
+    """模板注入效果 ground truth（T-20，可选）。
+
+    对应 PRD §5.4：注入效果 = 注入画像块对「用户后续对话」的相关性。
+    - mode: 注入模式（daily/coding/work/full，对应 templates/*.yaml）
+    - subsequent_conversation: 用户注入画像之后的后续对话文本
+    - referenced_memory_indices: 后续对话引用了哪些 GT 记忆（expected_l1.memories 索引）
+    """
+    mode: str = ""
+    subsequent_conversation: str = ""
+    referenced_memory_indices: list[int] = field(default_factory=list)
+
+
+@dataclass
 class EvalCase:
     """单条评测用例。
 
@@ -74,6 +88,7 @@ class EvalCase:
     expected_l1: L1GroundTruth = field(default_factory=L1GroundTruth)
     expected_l15: Optional[L15GroundTruth] = None
     expected_l2: Optional[L2GroundTruth] = None
+    expected_inject: Optional[InjectGroundTruth] = None   # T-20 注入效果评测（可选）
     notes: str = ""
 
 
@@ -192,6 +207,25 @@ class RRFMetrics:
 
 
 @dataclass
+class InjectMetrics:
+    """模板注入效果评测指标（T-20，PRD §5.4）。
+
+    - inject_hit_rate: 注入命中率 = 相关块数 / present=true 的注入块总数
+      （注入的画像里有多大比例是后续对话真正用得上的）
+    - reference_coverage: 引用覆盖率 = 命中且被引用的记忆数 / 被引用记忆总数
+      （该注入的记忆有没有被模板查询捞出来）
+    - total_blocks / relevant_blocks: 注入块总数 / 相关块数
+    - total_referenced / hit_and_referenced: 引用记忆数 / 命中且引用数
+    """
+    inject_hit_rate: float = 0.0
+    reference_coverage: float = 0.0
+    total_blocks: int = 0
+    relevant_blocks: int = 0
+    total_referenced: int = 0
+    hit_and_referenced: int = 0
+
+
+@dataclass
 class CaseResult:
     """逐用例评测结果。"""
     case_id: str = ""
@@ -202,6 +236,8 @@ class CaseResult:
     unmatched_pred: int = 0
     unmatched_gt: int = 0
     dimension_details: list[dict] = field(default_factory=list)
+    inject_hit_rate: float = 0.0          # T-20 注入命中率（逐用例）
+    inject_reference_coverage: float = 0.0  # T-20 引用覆盖率（逐用例）
     error: Optional[str] = None
 
 
@@ -224,6 +260,7 @@ class EvalResult:
     l2: Optional[L2Metrics] = None
     l15: Optional[L15Metrics] = None
     rrf: Optional[RRFMetrics] = None
+    inject: Optional[InjectMetrics] = None   # T-20 注入效果（聚合）
     per_case: list[CaseResult] = field(default_factory=list)
     summary: EvalSummary = field(default_factory=EvalSummary)
 
