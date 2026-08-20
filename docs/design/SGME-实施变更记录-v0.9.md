@@ -1195,7 +1195,7 @@ L1.5 冲突裁决、L2 场景聚合。
 **文档**：本记录 B87
 
 
-### B89. ST-33 /v1/search 新增 sessions scope（L0 原始层接入）+ T-9 直查 SQL 收口 data 层（2026-08-20）
+### B91. ST-33 /v1/search 新增 sessions scope（L0 原始层接入）+ T-9 直查 SQL 收口 data 层（2026-08-20）
 
 **背景**：
 1. **ST-33**：/v1/search 已统一 memory（L1.5 记忆池）+ wiki（L2 场景）+ wiki_pages（知识库）三源，L0 原始层（raw_files 索引）未接入——未提炼/未命中提炼的原始会话原文不可检索，多源统一检索缺最后一块拼图。
