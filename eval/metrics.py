@@ -20,6 +20,8 @@ from eval.models import (
     CaseResult,
     DimensionF1,
     GtMemory,
+    InjectGroundTruth,
+    InjectMetrics,
     L1GroundTruth,
     L1Metrics,
     L2GroundTruth,
@@ -466,4 +468,106 @@ def aggregate_l2_metrics(per_case_l2: list[L2Metrics], l1_f1: float) -> L2Metric
         section_miss_rate=round(miss_rate, 4),
         profile_quality=round(compute_profile_quality(l1_f1, hit_rate), 4),
         total_evaluated=total_evaluated,
+    )
+
+
+# ── 注入效果指标（T-20，PRD §5.4） ──
+
+def _memory_index_from_id(memory_id: str, case_id: str) -> int | None:
+    """从确定性 memory_id（格式 {case_id}#{idx}）解析 GT 记忆索引。
+
+    与 retrieval_gt.memory_id_for 同规则：f"{case_id}#{idx}"。
+    解析失败返回 None（不匹配即忽略，不误判）。
+    """
+    if not memory_id:
+        return None
+    prefix = f"{case_id}#"
+    if not memory_id.startswith(prefix):
+        return None
+    idx_str = memory_id[len(prefix):]
+    try:
+        return int(idx_str)
+    except ValueError:
+        return None
+
+
+def compute_inject_metrics(
+    blocks: list[dict],
+    ground_truth: InjectGroundTruth,
+    case_id: str = "",
+) -> InjectMetrics:
+    """计算注入效果指标（PRD §5.4）。
+
+    blocks: 注入响应（build_inject_blocks 输出），每个 block:
+      - title / items[]（含 content、memory_id）/ present
+    ground_truth: expected_inject（mode / subsequent_conversation / referenced_memory_indices）
+
+    判定（零 LLM，ground truth 驱动）：
+    - 相关块 = present=true 且块内含 ≥1 条 memory_id 索引 ∈ referenced_memory_indices 的记忆
+    - 注入命中率 = 相关块数 / present 块总数
+    - 引用覆盖率 = 命中且被引用的记忆数 / 被引用记忆总数
+    """
+    referenced = set(ground_truth.referenced_memory_indices)
+    total_referenced = len(referenced)
+    if total_referenced == 0:
+        return InjectMetrics()  # 无引用标注 → 全部 0（不除零）
+
+    present_blocks = [b for b in blocks if b.get("present")]
+    total_blocks = len(present_blocks)
+
+    relevant_blocks = 0
+    hit_and_referenced = 0
+    referenced_hit_seen: set[int] = set()
+
+    for block in present_blocks:
+        block_relevant = False
+        for item in block.get("items", []):
+            idx = _memory_index_from_id(item.get("memory_id", ""), case_id)
+            if idx is None or idx not in referenced:
+                continue
+            # 被引用且注入命中
+            if idx not in referenced_hit_seen:
+                referenced_hit_seen.add(idx)
+                hit_and_referenced += 1
+            block_relevant = True
+        if block_relevant:
+            relevant_blocks += 1
+
+    inject_hit_rate = relevant_blocks / total_blocks if total_blocks > 0 else 0.0
+    reference_coverage = hit_and_referenced / total_referenced
+
+    return InjectMetrics(
+        inject_hit_rate=round(inject_hit_rate, 4),
+        reference_coverage=round(reference_coverage, 4),
+        total_blocks=total_blocks,
+        relevant_blocks=relevant_blocks,
+        total_referenced=total_referenced,
+        hit_and_referenced=hit_and_referenced,
+    )
+
+
+def aggregate_inject_metrics(per_case_metrics: list[InjectMetrics]) -> InjectMetrics:
+    """聚合多条用例的注入效果指标（分子/分母分别求和）。
+
+    与 aggregate_l1_metrics 同哲学：不平均各 case 的比率，
+    而是先汇总分子分母再算整体比率（避免小 case 被大 case 稀释）。
+    """
+    if not per_case_metrics:
+        return InjectMetrics()
+
+    total_blocks = sum(m.total_blocks for m in per_case_metrics)
+    relevant_blocks = sum(m.relevant_blocks for m in per_case_metrics)
+    total_referenced = sum(m.total_referenced for m in per_case_metrics)
+    hit_and_referenced = sum(m.hit_and_referenced for m in per_case_metrics)
+
+    inject_hit_rate = relevant_blocks / total_blocks if total_blocks > 0 else 0.0
+    reference_coverage = hit_and_referenced / total_referenced if total_referenced > 0 else 0.0
+
+    return InjectMetrics(
+        inject_hit_rate=round(inject_hit_rate, 4),
+        reference_coverage=round(reference_coverage, 4),
+        total_blocks=total_blocks,
+        relevant_blocks=relevant_blocks,
+        total_referenced=total_referenced,
+        hit_and_referenced=hit_and_referenced,
     )

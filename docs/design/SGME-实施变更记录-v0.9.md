@@ -1295,7 +1295,7 @@ GET /v1/events/stream（SSE）、单条 consume（/v1/admin/care/signals/{id}/co
 **运维影响**：无——两个任务均为向后兼容增量。sessions 为新 scope，缺省不启用（DEFAULT_SCOPES 仍为 [``"memory"``]），旧请求逐字节不变；sessions 层正文摘要读盘为 best-effort，不改变任何既有响应字段。已知边界：raw_files 为索引表（无正文列），sessions 匹配目标是元数据列（file_id/session_key/agent_id/path），正文全文匹配（FTS5 化 raw 内容）留待后续版本
 
 **文档**：本记录 B89
-=======
+
 ### B92. dimensions.boundaries 加载保留——YAML→DB→L1 提示词全链路（T-11，2026-08-20）
 
 **背景**：registry/dimensions.yaml 的 boundaries 字段（维度间 vs 对照消歧说明）在 import 时被静默丢弃——dimension_registry 表无此列、upsert_dimension 不写该字段，运行时 cfg['dimensions'] 只含 id：display_name。审计 D8 实锤：消歧信息从未送达 LLM，维度混淆风险的主要缓解手段等于没做。架构 §28 语义：boundaries = 维度取值边界/枚举约束（此处具体形态为 vs 对照语义消歧），归一化时用于区分相近维度。
@@ -1325,3 +1325,69 @@ GET /v1/events/stream（SSE）、单条 consume（/v1/admin/care/signals/{id}/co
 **测试**：adapters/dsh/tests/test_install.py 12 passed（含新增 5 用例）
 
 **运维影响**：重跑 install.py 即生成/刷新 ~/.sgme/install.json；agent 服务发现清单可自动重建（不再依赖手动创建）
+=======
+---
+
+### B94. 评测框架补模板注入效果检测（T-20，2026-08-21）
+
+**背景**：现状评测框架只测提炼质量（L1 F1）、检索排序（RRF）与 L2 Section 命中率，
+4 个场景模板（daily/coding/work/full）的**注入效果**无检测手段，靠人判断。
+「按场景注入」是 README 核心卖点，缺效果证据。
+
+**方案**（度量定义先入文档，代码严格对齐）：
+- PRD §5.4 新增「模板注入效果度量」：注入命中率 + 引用覆盖率两个主指标
+- 评测框架设计 §1.7 新增「注入效果评测」：数据形态 / 执行链路 / 文件改动
+
+**改动**：
+1. `eval/models.py`：新增 `InjectGroundTruth`（mode/subsequent_conversation/referenced_memory_indices）
+   + `InjectMetrics`（inject_hit_rate/reference_coverage + 分子分母明细）；`EvalCase.expected_inject`、
+   `EvalResult.inject`、`CaseResult` 注入字段
+2. `eval/loader.py`：解析 + 校验 `expected_inject`（mode 合法、引用索引不越界）
+3. `eval/metrics.py`：`compute_inject_metrics`（复用 retrieval_gt 确定性 memory_id
+   `{case_id}#{idx}` 回查 GT 记忆，零 LLM ground-truth 判定）+ `aggregate_inject_metrics`
+4. `eval/runner.py`：新增 inject stage——GT 记忆落库（updated_at 取当前 UTC 保证
+   time_window 命中）→ `profile.inject` 模板注入（纯 SQL）→ 计算度量
+5. `eval/reporter.py`：report.json / report.md 注入段
+6. `eval/run.py`：`--stages` 已支持逗号分隔列表，inject 直接可用
+7. 文档：PRD §5.4 + 框架设计 §1.7
+
+**测试**：新增 `tests/test_eval_inject.py` 16 用例（models/loader/metrics/runner/reporter），
+全绿；`tests/test_eval.py` + `test_eval_rrf.py` 回归全绿（合计 116 通过）
+
+**运维影响**：无（纯评测框架扩展，不动生产链路）。评测命令示例：
+`python -m eval.run --baseline --stages l1,inject --dry-run`
+
+**文档**：本记录 B92
+
+---
+
+### B95. D3 记忆关系图谱可视化（ST-13，2026-08-21）
+
+**背景**：WebUI 无任何 D3/图谱代码；记忆/场景关系靠列表逐个查看，无法直观看到
+场景↔记忆↔wiki 页面的关联网络。目标：记忆/场景关系可视化页。
+
+**改动**：
+1. **后端**：
+   - `sgme/operations/graph.py`（新增）：`get_graph` 组装 nodes（场景/记忆/wiki 页面）
+     + links（scene_memories 场景→记忆边、wiki_links wiki 页面间边）；只取 active、
+     孤记忆不进图、孤儿 wiki 边丢弃、scene_limit/wiki_limit/memory_limit 规模控制
+   - `sgme/server/routes_admin.py`：新增 `GET /v1/admin/graph`（Admin Key 鉴权，
+     查询参数 scene_limit/wiki_limit/memory_limit）
+2. **前端**：
+   - `ui/package.json`：新增依赖 `d3@^7.9.0`（npm install）
+   - `ui/src/api/graph.ts`（新增）：`fetchGraph` 封装
+   - `ui/src/views/graph/GraphView.vue`（新增）：D3 force 布局（forceSimulation +
+     forceLink + forceManyBody + 缩放/拖拽），节点按类型着色（场景橙/记忆蓝/Wiki 绿），
+     记忆节点点击跳详情路由，场景/Wiki 节点点击右侧面板看关联；图例 + 统计条 +
+     规模参数 + ResizeObserver 自适应重绘
+   - `ui/src/router.ts`：新增路由 `/graph`（记忆闭环组）
+   - `ui/src/views/layout/MainLayout.vue`：侧边栏「知识图谱」入口（🕸）
+
+**测试**：新增 `tests/test_graph.py` 10 用例（operations 组装 + API 鉴权/结构/规模/空库），
+全绿；`test_routes_admin.py` / `test_scenes_moved.py` / `test_wiki.py` 回归全绿；
+前端 `npm run build` 通过
+
+**运维影响**：前端需重新构建 `ui/dist`（图谱页随 WebUI 一起部署）；后端新端点随
+代码部署即生效，无 schema 变更
+
+**文档**：本记录 B93

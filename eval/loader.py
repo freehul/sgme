@@ -19,6 +19,7 @@ from eval.models import (
     EvalCase,
     GtConflictAction,
     GtMemory,
+    InjectGroundTruth,
     L15GroundTruth,
     L1GroundTruth,
     L2GroundTruth,
@@ -94,6 +95,7 @@ def _parse_case(item: dict, index: int) -> EvalCase:
     expected_l1 = _parse_l1_ground_truth(item.get("expected_l1"))
     expected_l15 = _parse_l15_ground_truth(item.get("expected_l15"))
     expected_l2 = _parse_l2_ground_truth(item.get("expected_l2"))
+    expected_inject = _parse_inject_ground_truth(item.get("expected_inject"))
 
     return EvalCase(
         case_id=str(item.get("case_id", f"eval-{index:03d}")),
@@ -103,6 +105,7 @@ def _parse_case(item: dict, index: int) -> EvalCase:
         expected_l1=expected_l1,
         expected_l15=expected_l15,
         expected_l2=expected_l2,
+        expected_inject=expected_inject,
         notes=str(item.get("notes", "")),
     )
 
@@ -178,6 +181,37 @@ def _parse_l2_ground_truth(raw: Any) -> L2GroundTruth | None:
     )
 
 
+def _parse_inject_ground_truth(raw: Any) -> InjectGroundTruth | None:
+    """解析 expected_inject 字段（T-20，可选）。
+
+    YAML 形态：
+      expected_inject:
+        mode: coding
+        subsequent_conversation: |
+          [msg#2] 2026-01-02T10:00:00Z user:
+            那个 Rust 项目 CI 挂了，帮我看看怎么办
+        referenced_memory_indices: [1]
+    """
+    if not isinstance(raw, dict):
+        return None
+    if not raw.get("mode") and not raw.get("subsequent_conversation"):
+        return None
+
+    refs_raw = raw.get("referenced_memory_indices", [])
+    refs: list[int] = []
+    if isinstance(refs_raw, list):
+        for v in refs_raw:
+            try:
+                refs.append(int(v))
+            except (TypeError, ValueError):
+                continue
+    return InjectGroundTruth(
+        mode=str(raw.get("mode", "")),
+        subsequent_conversation=str(raw.get("subsequent_conversation", "")),
+        referenced_memory_indices=refs,
+    )
+
+
 def validate_case(case: EvalCase) -> list[str]:
     """校验单条评测用例 schema，返回错误列表（空 = 通过）。
 
@@ -228,6 +262,21 @@ def validate_case(case: EvalCase) -> list[str]:
             errors.append(
                 f"expected_l1.memories[{i}].time_velocity 非法: {mem.time_velocity!r}"
             )
+
+    # T-20：expected_inject 校验（可选字段，出现即必须合法）
+    inj = case.expected_inject
+    if inj is not None:
+        if inj.mode not in VALID_MODES:
+            errors.append(f"expected_inject.mode 非法值 {inj.mode!r}，合法: {VALID_MODES}")
+        if not inj.subsequent_conversation.strip():
+            errors.append("expected_inject.subsequent_conversation 为空")
+        n_gt = len(case.expected_l1.memories)
+        for idx in inj.referenced_memory_indices:
+            if idx < 0 or idx >= n_gt:
+                errors.append(
+                    f"expected_inject.referenced_memory_indices 索引 {idx} 越界"
+                    f"（GT 记忆共 {n_gt} 条）"
+                )
 
     return errors
 

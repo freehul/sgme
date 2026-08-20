@@ -320,6 +320,74 @@ NDCG@10 = DCG@10 / IDCG@10
 
 ---
 
+### 1.7 注入效果评测（T-20）
+
+评测框架在 L1/L2/RRF 之外新增注入效果阶段，度量定义见 PRD §5.4。
+
+#### 1.7.1 数据形态
+
+评测用例在既有 L1/L2 ground truth 之外附加可选字段 `expected_inject`：
+
+```yaml
+expected_inject:
+  mode: coding                          # 注入模式（daily/coding/work/full）
+  subsequent_conversation: |            # 用户后续对话（注入画像之后的对话）
+    [msg#2] 2026-01-02T10:00:00Z user:
+      那个 Rust 项目 CI 挂了，帮我看看怎么办
+  referenced_memory_indices: [1]        # 后续对话引用的 GT 记忆索引（按 expected_l1.memories）
+```
+
+`referenced_memory_indices` 是人工标注的「后续对话引用了哪些 GT 记忆」，
+与 §1.3 的 ground truth 标注同一套人工流程，零 LLM 判定。
+
+#### 1.7.2 执行链路
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ 注入评测阶段（eval/runner.py 的 inject stage）                        │
+│                                                                      │
+│  case.expected_inject                                                 │
+│    │                                                                │
+│    ▼                                                                │
+│  GT 记忆落库（复用 retrieval_gt 的确定性 memory_id 规则）            │
+│    memory_id = {case_id}#{idx}                                      │
+│    updated_at 取当前 UTC（模板含 time_window，必须保证记忆在窗口内）  │
+│    ▼                                                                │
+│  模板加载 + 注入（sgme.profile.inject / build_inject_blocks）        │
+│    零 LLM 纯 SQL：query_section 逐 section 查询                       │
+│    ▼                                                                │
+│  画像块 blocks[]（title / items[memory_id] / present）               │
+│    ▼                                                                │
+│  compute_inject_metrics（eval/metrics.py）                           │
+│    注入命中率 = 相关块数 / 注入块总数                                 │
+│    引用覆盖率 = 命中且引用数 / 引用记忆数                             │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+#### 1.7.3 度量计算（metrics.py 新增）
+
+```
+compute_inject_metrics(blocks, expected_inject) -> InjectMetrics
+  # blocks: build_inject_blocks 输出（含 memory_id，present 标记）
+  # 相关块：块内含 ≥1 条 memory_id 索引 ∈ referenced_memory_indices 的记忆
+  # 注入命中率 = 相关块数 / present=true 的块数
+  # 引用覆盖率 = (被引用且注入命中的记忆数) / len(referenced_memory_indices)
+```
+
+#### 1.7.4 文件改动
+
+| 文件 | 改动 |
+|---|---|
+| `eval/models.py` | 新增 `InjectGroundTruth` / `InjectMetrics` / `CaseResult` 注入字段 |
+| `eval/loader.py` | 解析并校验 `expected_inject` |
+| `eval/metrics.py` | 新增 `compute_inject_metrics` / `aggregate_inject_metrics` |
+| `eval/runner.py` | 新增 inject stage（复用 retrieval_gt 落库 + profile.inject） |
+| `eval/reporter.py` | report.json / report.md 注入段 |
+| `eval/run.py` | `--stages` 支持 inject |
+| `tests/test_eval.py` | 注入度量 + runner inject stage 测试 |
+
+---
+
 ## 2. 文件列表
 
 ### 新增文件
