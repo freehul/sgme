@@ -97,6 +97,7 @@ function goSearch() {
           <RouterLink to="/profile"><span class="nav-ico">🧑</span><span class="lbl">用户画像</span></RouterLink>
           <RouterLink to="/memories"><span class="nav-ico">📖</span><span class="lbl">记忆浏览</span></RouterLink>
           <RouterLink to="/scenes"><span class="nav-ico">🗂</span><span class="lbl">场景管理</span></RouterLink>
+          <RouterLink to="/graph"><span class="nav-ico">🕸</span><span class="lbl">知识图谱</span></RouterLink>
           <RouterLink to="/sessions"><span class="nav-ico">📜</span><span class="lbl">会话原文</span></RouterLink>
         </div>
 
