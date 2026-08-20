@@ -29,7 +29,7 @@ from sgme.data import memory_dao
 
 # ---------- 契约常量（与 test_operations_health.py 冻结值一致） ----------
 
-HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "vector"]
+HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "vector", "model_config", "update_available", "latest_version", "update_checked_at", "update_error"]  # T-53 + ST-34 只增不改，与 test_operations_health.py 冻结值一致
 HTTP_REFINEMENT_KEYS = [
     "watermark_age_sec",
     "queue_depth",
