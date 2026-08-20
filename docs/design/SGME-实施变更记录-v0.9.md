@@ -1420,3 +1420,30 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 预期 sgme key deepseek 消费从 ~91 元/周 降至接近 0（zhipu 免费链正常时）。
 
 **文档**：本记录 B96
+
+### B97. dsh 历史会话导入落地——import_history.py 对齐 rc8 存储格式（T-90，2026-08-21）
+
+**背景**：T-49 的 adapters/dsh/import_history.py 是占位骨架——discover_sessions() 只扫顶层 ~/.dsh/sessions/*.jsonl，从未对接 dsh 真实存储，历史会话补导入实际不可用。2026-08-21 实测确认 DSH rc8 真实存储：~/.dsh/sessions/<workspace>/<会话id>/session.jsonl.zstd（zstd 多帧压缩，首行 session 头 + 事件流），老格式 session-<uuid>/ 与新格式 <uuid>/ 目录并存；rc8 release notes 明确存储格式不兼容（SQLite 性能优化 + 体积减小），历史导入需按新格式实现并兼容两代。
+
+**改动**：
+1. adapters/dsh/import_history.py 重写：
+   - discover_sessions()：递归扫 <workspace>/*/session.jsonl.zstd，兼容老（session-<uuid>/）新（<uuid>/）目录命名，排除 Temp/cli-test 测试工作区（e2e 不污染记忆池）
+   - parse_session_file()：zstandard stream_reader 流式解压（多帧），事件流解析——跳过 session 头/turn/step/chunk 类噪音，提取 user/message（data.content）、assistant/message（data.message.content 忽略 reasoning/tool-call 块）、tool/result（tool-result 内层 text），字段与 sgme-bridge session-sync.ts 对齐（T-53 同款结构）
+   - _ms_to_iso()：事件毫秒时间戳 → ISO 8601
+   - session_key 改用会话 id 目录名（dsh-{f.parent.name}，兼容两代命名）
+   - 幂等/只读/L0 转换/append/提炼触发逻辑保留
+2. pyproject.toml：dependencies 补 zstandard>=0.22
+3. adapters/dsh/tests/test_import_history.py 重写：zstd 夹具（真实事件流同构）覆盖完整解析/噪音过滤/空内容/损坏文件/新老命名发现/Temp 排除/幂等键/append，14 用例
+
+**验证**：adapters/dsh 全量 26 passed；--dry-run --limit 8 真实扫描本机 ~/.dsh/sessions：发现 141 会话、消息解析正常（最大单会话 1722 条）、Temp 测试工作区已排除；零写入零 LLM。
+
+**运维影响**：真实全量导入需用户确认后执行（写入 NAS SGME + 触发提炼，有 LLM 费用）；dry-run 可随时安全试跑；脚本幂等可重跑，失败项补漏。
+
+**执行补充（2026-08-21 真实全量导入）**：
+1. 小批量试路（--limit 3）：3/3 成功，refined 正常 → 全量 141 会话：首批 116 成功 + 15 撞 429 限流 + 10 空会话
+2. 根因：脚本查重查本地库（raw_files 恒空）→ 每次全量重发全部请求撞限流；修复：查重改查 NAS /v1/admin/sessions（Admin Key 分页），append 加 429 退避重试（解析 retry_after_sec，最多 3 次）
+3. 修复后重跑：141 会话 → 130 成功入库（NAS 共 209 条 dsh 会话，含历史）、11 空会话（仅 session 头 + permission/sandbox/approval 环境事件，无对话消息）跳过
+4. 提炼状态：72 refined + 120 new 排队 + 8 error（全为"全链降级失败 drop_batch"——zhipu 免费链限流，非 L0 格式问题，batch_scan/Dream 兜底重试）
+5. 测试：adapters/dsh 31 passed（新增 NAS 查重 3 用例 + 429 重试 2 用例）
+
+**文档**：本记录 B97
