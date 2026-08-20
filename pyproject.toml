@@ -19,6 +19,7 @@ dependencies = [
     "requests>=2.31",
     "mcp>=1.28,<2.0",
     "jieba>=0.42.1",
+    "zstandard>=0.22",
 ]
 
 [project.optional-dependencies]
