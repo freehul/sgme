@@ -530,14 +530,79 @@ class SGMEProvider(MemoryProvider):
             self._client = None
 
 
+def _load_plugin_config() -> dict:
+    """读插件自身 plugin.yaml 的 config 段（不依赖任何 ctx 能力 / yaml 库，CLI/gateway 双环境都可用）。
+
+    优先级：插件 manifest config > 环境变量（SGME_BASE_URL 等）> 代码默认值。
+    用正则提取（瘦桥接原则，不引入 yaml 依赖）：只认 `  key: value` 形式的顶层键。
+    """
+    cfg: dict = {}
+    try:
+        yaml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin.yaml")
+        if not os.path.exists(yaml_path):
+            return cfg
+        with open(yaml_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                # 仅顶层 config 段内的 `key: value`（两个空格缩进，value 不含冒号+空格）
+                if not line.startswith("  ") or line.startswith("    "):
+                    continue
+                if ":" not in line:
+                    continue
+                key, _, val = line.partition(":")
+                key = key.strip()
+                val = val.strip()
+                if not key or not val or val.startswith("#"):
+                    continue
+                # 剥离行内注释（` # ...`）与包裹引号
+                if " #" in val:
+                    val = val.split(" #", 1)[0].strip()
+                val = val.strip('"').strip("'").strip()
+                if not val:
+                    continue
+                cfg[key] = val
+    except Exception:
+        pass
+    return cfg
+
+
 def register(ctx=None) -> "SGMEProvider":
     """Hermes 插件入口。
 
     兼容两种加载方式：
     - 插件式：ctx 是 _ProviderCollector，调 register_memory_provider 捕获
     - 直接式：无 ctx 时返回实例（MemoryProvider 子类扫描兜底）
+
+    配置来源（2026-08-20 修复）：
+    - 优先插件自身 plugin.yaml 的 config.base_url（不依赖 ctx.get_config——
+      _ProviderCollector 只转发 register_*，get_config 会 AttributeError）
+    - 再尝试 ctx.get_config()（真 PluginContext 场景）
+    - 最后回退环境变量/默认值（SGME_BASE_URL 等）
     """
-    provider = SGMEProvider()
+    # ① 插件 manifest config（最可靠，双环境一致）
+    manifest_cfg = _load_plugin_config()
+    base_url = manifest_cfg.get("base_url") or None
+    inject_mode = manifest_cfg.get("inject_mode") or None
+
+    # ② ctx.get_config() 覆盖（真 PluginContext 场景；_ProviderCollector 会 AttributeError）
+    if ctx is not None and hasattr(ctx, "get_config"):
+        try:
+            base_url = ctx.get_config("base_url") or base_url
+            inject_mode = ctx.get_config("inject_mode") or inject_mode
+        except Exception:
+            pass
+
+    # ③ 环境变量优先（用户显式覆盖；密钥只从环境变量读，不落 config）
+    base_url = os.environ.get("SGME_BASE_URL") or base_url
+    agent_key = os.environ.get("SGME_AGENT_KEY") or None
+    admin_key = os.environ.get("SGME_ADMIN_KEY") or None
+
+    provider = SGMEProvider(
+        base_url=base_url,
+        agent_key=agent_key,
+        admin_key=admin_key,
+        inject_mode=inject_mode,
+    )
     if ctx is not None and hasattr(ctx, "register_memory_provider"):
         ctx.register_memory_provider(provider)
         return provider
