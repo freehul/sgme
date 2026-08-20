@@ -3,7 +3,7 @@
 // 数据源：/v1/admin/care/*（SGME-CareEngine设计-v0.1 §关怀信号）
 import { onMounted, ref } from 'vue'
 import {
-  ackCareSignal, claimCareSignal, listCareSignals, scanCareSignals,
+  ackCareSignal, claimCareSignal, consumeAllCareSignals, listCareSignals, scanCareSignals,
   type CareSignal,
 } from '../../api/roles'
 import { ApiError } from '../../api/client'
@@ -101,6 +101,25 @@ async function claim(s: CareSignal) {
   }
 }
 
+// T-87：全部消费（清空未消费信号，幂等；带确认防误操作）
+async function clearAll() {
+  if (!signals.value.length) return
+  const scope = typeFilter.value ? typeInfo(typeFilter.value).label : '全部类型'
+  if (!confirm(`确认全部消费当前列表 ${signals.value.length} 条未消费信号（${scope}）？
+此操作仅标记已消费（consumed_at），数据保留可溯源。`)) return
+  busy.value = true
+  msg.value = ''
+  try {
+    const r = await consumeAllCareSignals({ signalType: typeFilter.value || undefined })
+    msg.value = `已全部消费：${r.consumed} 条信号`
+    await load()
+  } catch (e) {
+    msg.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function ack(s: CareSignal, status: 'acked' | 'failed') {
   busy.value = true
   msg.value = ''
@@ -125,6 +144,9 @@ onMounted(load)
       <div class="filters">
         <button class="btn btn-primary" :disabled="busy" @click="scan">
           {{ busy ? '扫描中…' : '触发扫描' }}
+        </button>
+        <button class="btn btn-danger" :disabled="busy || !signals.length" @click="clearAll">
+          {{ busy ? '处理中…' : '全部消费' }}
         </button>
         <select v-model="typeFilter" @change="load">
           <option value="">全部类型</option>

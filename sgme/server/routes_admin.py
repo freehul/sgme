@@ -1168,3 +1168,40 @@ def dream_report_detail(
     if row is None:
         raise api_error("ERR_NOT_FOUND", f"Dream 日报不存在: {date}")
     return {"report": row}
+
+
+# ---------- POST /v1/admin/events/consume_all（T-87：信号批量清空） ----------
+#
+# 业务实现在 sgme/operations/events.py::events_consume_all（与 pull/stream 同模块），
+# 本节只做协议翻译。挂本文件而非 routes_events.py 的原因：
+#   - 本端点属管理操作（清空未消费信号），沿用 admin 鉴权 require_admin_key；
+#     routes_events.py 全部端点走 require_agent_key（agent 拉取视角），
+#     且任务约束「禁止改动 routes_events.py 现有端点行为」
+#   - 查询参数 type 为可选类型过滤，subscriber_id 可选推进游标（pull 视角一并清空）
+#
+# operations 采用函数内导入（本文件既有惯例：demands/projects/dream 段），
+# 使本次改动是文件尾部纯追加，不触碰顶部 import 块。
+
+
+@router.post("/v1/admin/events/consume_all")
+def consume_all_events(
+    request: Request,
+    type: str | None = Query(None, description="可选类型过滤（如 anomaly_warn）；None=全部类型"),
+    subscriber_id: str | None = Query(None, description="可选订阅者：同步推进其持久游标到最新"),
+    _: str = Depends(require_admin_key),
+):
+    """批量清空/全部消费信号（T-87）。
+
+    - 全部未消费事件标记 consumed_at/consumed_by（幂等，二次调用 consumed=0）
+    - type 过滤：只清空指定类型（如 anomaly_warn / care_daily）
+    - subscriber_id：传则同步推进该订阅者持久游标（pull/SSE 视角一并清空）
+    - consumed_by 从鉴权 key 反查（admin key → default；agent key 无权限）
+    """
+    from sgme.operations.events import events_consume_all as events_consume_all_operation
+
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    agent_id = request.app.state.key_store.resolve_agent_id(request.headers.get("X-API-Key"))
+    return run_operation(
+        events_consume_all_operation, mem_conn,
+        event_type=type, subscriber_id=subscriber_id, consumed_by=agent_id,
+    )
