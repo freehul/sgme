@@ -127,7 +127,7 @@ def test_health_no_api_key_returns_200(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.0b3"
+    assert body["version"] == "1.0.0b4"
     assert "refinement" in body
     assert "watermark_age_sec" in body["refinement"]
 

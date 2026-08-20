@@ -613,7 +613,7 @@ def create_app(
             db_mod.close(session_conn)
             db_mod.close(wiki_conn)
 
-    app = FastAPI(title="SGME", version="1.0.0b3", docs_url="/docs", lifespan=lifespan)
+    app = FastAPI(title="SGME", version="1.0.0b4", docs_url="/docs", lifespan=lifespan)
 
     # 挂载应用状态
     app.state.cfg = cfg
