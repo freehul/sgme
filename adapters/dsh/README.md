@@ -26,7 +26,7 @@ dsh 有完整插件 SDK（工具注册/事件监听/上下文注入/命令注册
 ## 目录
 
 - `sgme-bridge/` — dsh 原生 TS 插件本体（标准 dsh 插件结构，可独立 `pnpm verify` + `dsh plugin add`）
-- `install.py` — 一键安装引导（注册 agent + 写 .env + 打印 dsh plugin add 命令）
+- `install.py` — 一键安装引导（注册 agent + 写 .env + 生成 ~/.sgme/install.json + 打印 dsh plugin add 命令）
 - `import_history.py` — 历史会话补导入（可选，与 reasonix 同款幂等可重跑）
 - `.env` — 适配器侧注册的 agent key（gitignore，不进仓库）；dsh 加载路径另见 <项目根>/.env
 - `tests/` — Python 侧单元测试（install + import_history）
@@ -40,7 +40,9 @@ dsh 有完整插件 SDK（工具注册/事件监听/上下文注入/命令注册
 ## 安装
 
 ```bash
-# 1. 注册 agent + 写 .env + 生成 AGENTS.md + 打印 dsh 加载命令
+# 1. 注册 agent + 写 .env + 生成 ~/.sgme/install.json + 生成 AGENTS.md + 打印 dsh 加载命令
+#    install.json = 服务发现清单（http/mcp 地址端口 + Key 环境变量名引用，不落明文），
+#    agent 找不到 SGME 时按 README 服务发现第 2 步读取
 <项目根>/.venv/Scripts/python.exe <项目根>/adapters/dsh/install.py --dir D:/Projects/<目标项目>
 # key 会写入两处：
 #   - adapters/dsh/.env   （Python 侧：import_history.py 等用）
