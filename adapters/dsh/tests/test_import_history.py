@@ -188,15 +188,51 @@ def test_discover_sessions_returns_empty_when_no_dir(tmp_path, monkeypatch):
     assert import_history.discover_sessions() == []
 
 
-# ---------- 幂等键（main 逻辑） ----------
+# ---------- 幂等键（T-90 统一 key：毫秒对齐实时链路 + 双形态查重） ----------
 
-def test_session_key_uses_parent_dir_name():
-    """session_key 用会话 id 目录名（f.parent.name），与 get_existing_session_keys 的 dsh- 前缀对齐。"""
-    f = Path("sessions") / "--D-Projects--" / "session-abc" / "session.jsonl.zstd"
-    key = f"dsh-{f.parent.name}"
-    assert key == "dsh-session-abc"
-    f2 = Path("sessions") / "--D-Projects--" / "def456" / "session.jsonl.zstd"
-    assert f"dsh-{f2.parent.name}" == "dsh-def456"
+def test_session_key_for_uses_first_user_ms():
+    """session_key 优先 dsh-{首条 user 消息毫秒}（对齐实时链路 session-sync）。"""
+    messages = [
+        {"role": "user", "content": "你好", "ts": "2026-08-20T02:53:36Z", "ms": 1787208816366},
+        {"role": "assistant", "content": "回答", "ts": "2026-08-20T02:53:37Z"},
+    ]
+    assert import_history.session_key_for(messages, "session-abc") == "dsh-1787208816366"
+
+
+def test_session_key_for_fallback_dir_name_without_ms():
+    """无有效 user 毫秒时兜底目录名（防御，正常空会话不会导入）。"""
+    messages = [{"role": "assistant", "content": "回答", "ts": "2026-08-20T02:53:37Z"}]
+    assert import_history.session_key_for(messages, "session-abc") == "dsh-session-abc"
+
+
+def test_session_key_for_skips_empty_ms():
+    """user 消息 ms 为空时继续找下一条有效 user 毫秒。"""
+    messages = [
+        {"role": "user", "content": "无毫秒", "ts": "2026-08-20T02:53:36Z", "ms": None},
+        {"role": "user", "content": "有毫秒", "ts": "2026-08-20T02:53:37Z", "ms": 1787208816370},
+    ]
+    assert import_history.session_key_for(messages, "dir") == "dsh-1787208816370"
+
+
+def test_is_already_imported_dir_form():
+    """目录名形态命中（历史导入的 130 条）→ 已导入。"""
+    msgs = [{"role": "user", "content": "x", "ts": "t", "ms": 1787208816366}]
+    existing = {"dsh-session-abc"}
+    assert import_history.is_already_imported("session-abc", msgs, existing) is True
+
+
+def test_is_already_imported_ms_form():
+    """首条毫秒形态命中（实时链路已覆盖）→ 已导入。"""
+    msgs = [{"role": "user", "content": "x", "ts": "t", "ms": 1787208816366}]
+    existing = {"dsh-1787208816366"}
+    assert import_history.is_already_imported("session-abc", msgs, existing) is True
+
+
+def test_is_already_imported_not_hit():
+    """两种形态都未命中 → 待导入。"""
+    msgs = [{"role": "user", "content": "x", "ts": "t", "ms": 1787208816366}]
+    existing = {"dsh-other"}
+    assert import_history.is_already_imported("session-abc", msgs, existing) is False
 
 
 # ---------- NAS 查重（T-90 修复：查生产真相源） ----------
