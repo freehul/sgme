@@ -43,11 +43,19 @@ def render_l1(conversation: str, dimensions: list[dict], ctx: BucketCtx | None =
 
 
 def _render_l1_text(template: str, conversation: str, dimensions: list[dict]) -> str:
-    """渲染已读出的模板文本（{{dimensions}} + {{conversation}}）。"""
+    """渲染已读出的模板文本（{{dimensions}} + {{conversation}}）。
+
+    T-11：维度行附 boundaries（vs 对照消歧说明）——此前 import 静默丢弃、
+    提示词只拿到 id：display_name，维度混淆风险缓解手段未生效（审计 D8）。
+    """
     dim_lines = []
     for d in dimensions:
         if d.get("active", 1) == 1:
-            dim_lines.append(f"- {d['id']}：{d['display_name']}")
+            line = f"- {d['id']}：{d['display_name']}"
+            b = d.get("boundaries")
+            if b:
+                line += f"（边界：{b}）"
+            dim_lines.append(line)
     dim_text = "\n".join(dim_lines) if dim_lines else "- (无可用维度)"
     return template.replace("{{dimensions}}", dim_text).replace("{{conversation}}", conversation)
 

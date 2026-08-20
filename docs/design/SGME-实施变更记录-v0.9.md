@@ -1193,3 +1193,19 @@ L1.5 冲突裁决、L2 场景聚合。
 **运维影响（2026-08-20 已部署完成）**：NAS 生产已同步 sgme.yaml + 构建 `sgme:1.0.0b3-nas-vec1` 镜像 + compose 更新 + 容器重启生效；生产实测 ollama 在线 provider=local（277ms）、停 ollama 自动切云端返回 1024 维、恢复回本地。备份：sgme.yaml.bak-20260820-vec1 + docker-compose.yml.bak-20260820-vec1。ollama bge-m3 已就位（1.2GB）；`api_key_env` 留空（本地 Ollama 无需鉴权），SILICONFLOW_API_KEY 仍为云端降级用
 
 **文档**：本记录 B87
+
+
+### B90. dimensions.boundaries 加载保留——YAML→DB→L1 提示词全链路（T-11，2026-08-20）
+
+**背景**：registry/dimensions.yaml 的 boundaries 字段（维度间 vs 对照消歧说明）在 import 时被静默丢弃——dimension_registry 表无此列、upsert_dimension 不写该字段，运行时 cfg['dimensions'] 只含 id：display_name。审计 D8 实锤：消歧信息从未送达 LLM，维度混淆风险的主要缓解手段等于没做。架构 §28 语义：boundaries = 维度取值边界/枚举约束（此处具体形态为 vs 对照语义消歧），归一化时用于区分相近维度。
+
+**改动**：
+1. **sgme/data/db.py**：dimension_registry 建表 DDL 加 boundaries TEXT 列；新增 _migrate_dim_boundaries() 老库迁移（ALTER ADD COLUMN 幂等，connect_memory 调用）
+2. **sgme/data/memory_dao.py**：upsert_dimension INSERT + ON CONFLICT UPDATE 均含 boundaries（import 幂等重写时随行更新）
+3. **sgme/operations/registry.py**：DIMENSION_FIELD_KEYS 加 boundaries（随 DB 行暴露，表列序末尾）；_normalize_dimension 保留 boundaries 入参（create 回显含该字段，缺失为 None）
+4. **sgme/engine/l1.py**：_render_l1_text 维度清单行附「（边界：…）」，boundaries 送达 LLM 消歧（审计 D8 痛点闭环）
+5. **测试**：test_storage.py 新增 4 用例（导入保留/缺失为 None/upsert 更新/老库迁移补列）；test_engine.py 新增 render 注入用例；test_operations_registry.py CREATE_DIMENSION_FIELD_KEYS 同步加 boundaries
+
+**测试**：storage+engine+registry 相关 12 用例全绿；全量相关模块 93 passed（4 个既有失败为 B81 projects 维度移除后测试未同步，与本次无关）
+
+**运维影响**：老库首次启动自动补列（幂等）；HTTP /v1/admin/registry 维度对象多 boundaries 字段（新增字段，向后兼容）；L1 提示词维度清单变长（消歧信息，token 略增）

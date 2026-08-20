@@ -43,6 +43,7 @@ DELETE_TOP_KEYS = ["status", "alias", "deleted"]
 # POST /dimensions 回显的 dimension 是归一化入参（不含 active/created_at）
 CREATE_DIMENSION_FIELD_KEYS = [
     "id", "display_name", "category", "time_velocity", "ttl_days", "description",
+    "boundaries",  # T-11：create 回显含 boundaries（入参可选，缺失为 None）
 ]
 
 ADMIN_HEADERS = {"X-API-Key": "test-admin-key"}
