@@ -251,6 +251,40 @@ def test_suppress_hint_not_included_beyond_window(mem_conn):
     assert "suppress_hint" not in body
 
 
+# ---------- 5b. T-9 收口：signal_dao 新函数直测 ----------
+
+def test_get_recent_event_ts_returns_latest(mem_conn):
+    """get_recent_event_ts：同源同类型取最近一条 ts；无事件/异源 → None。"""
+    # Arrange
+    signal_dao.insert_event(mem_conn, "e1", "anomaly_warn", "health",
+                            "{}", "2026-08-20T00:00:00Z")
+    signal_dao.insert_event(mem_conn, "e2", "anomaly_warn", "health",
+                            "{}", "2026-08-20T01:00:00Z")
+    signal_dao.insert_event(mem_conn, "e3", "memory_updated", "refine",
+                            "{}", "2026-08-20T02:00:00Z")
+
+    # Act / Assert
+    assert signal_dao.get_recent_event_ts(mem_conn, "anomaly_warn", "health") \
+        == "2026-08-20T01:00:00Z"
+    # 同类型不同源 / 同源不同类型 / 无记录 → None
+    assert signal_dao.get_recent_event_ts(mem_conn, "anomaly_warn", "nope") is None
+    assert signal_dao.get_recent_event_ts(mem_conn, "memory_updated", "health") is None
+    assert signal_dao.get_recent_event_ts(mem_conn, "nope", "nope") is None
+
+
+def test_count_events_before_ts(mem_conn):
+    """count_events_before_ts：统计 ts <= 给定时间戳的事件数（重放超窗摘要用）。"""
+    # Arrange
+    signal_dao.insert_event(mem_conn, "e1", "t", "s", "{}", "2026-08-20T10:00:00Z")
+    signal_dao.insert_event(mem_conn, "e2", "t", "s", "{}", "2026-08-20T11:00:00Z")
+    signal_dao.insert_event(mem_conn, "e3", "t", "s", "{}", "2026-08-20T12:00:00Z")
+
+    # Act / Assert
+    assert signal_dao.count_events_before_ts(mem_conn, "2026-08-20T11:30:00Z") == 2
+    assert signal_dao.count_events_before_ts(mem_conn, "2026-08-20T10:00:00Z") == 1
+    assert signal_dao.count_events_before_ts(mem_conn, "2026-08-20T00:00:00Z") == 0
+
+
 # ---------- 6. replay window 合并超窗口事件 ----------
 
 def test_replay_window_merges_old_events(mem_conn):

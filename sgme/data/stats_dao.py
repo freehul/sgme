@@ -179,3 +179,34 @@ def refine_detail(
             totals[f] += value
         items.append(item)
     return items, totals
+
+
+def count_vector_rows(conn: sqlite3.Connection) -> dict[str, int]:
+    """向量表行数统计（ST-22② 健康检查向量可用性用，T-9 收口自 operations/health.py）。
+
+    - 表缺失按 0 计（sqlite-vec 未挂载 / 旧库无向量表 → 不抛异常）；
+    - 单表 COUNT 异常按 0 计——只读统计，**绝不向上抛**（健康检查必须健壮，
+      任何探测失败只影响 reason 文案，不拖垮 /v1/health）。
+
+    Args:
+        conn: memory.db 连接（memory_vectors / scene_vectors 所在库）。
+
+    Returns:
+        dict：``{"memory_vectors": int, "scene_vectors": int}``。
+    """
+    counts = {"memory_vectors": 0, "scene_vectors": 0}
+    try:
+        tables = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+    except Exception:
+        return counts
+    for table in counts:
+        if table not in tables:
+            continue
+        try:
+            row = conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
+            counts[table] = row["c"] if row else 0
+        except Exception:
+            counts[table] = 0
+    return counts

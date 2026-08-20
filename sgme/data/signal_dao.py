@@ -257,3 +257,41 @@ def list_unconsumed(
         upsert_subscriber(conn, subscriber_id, last["event_id"], last["ts"])
 
     return events
+
+
+# ---------- T-9 收口：signal/engine.py 直查 SQL 迁入 ----------
+
+def get_recent_event_ts(
+    conn: sqlite3.Connection,
+    event_type: str,
+    source: str,
+) -> str | None:
+    """同源同类型最近一条事件的 ts（publish 的 suppress_hint 用；无则 None）。
+
+    T-9 收口：原 signal/engine.py::publish 的直接 SQL
+    （``SELECT ts ... ORDER BY ts DESC LIMIT 1``）迁入本 DAO，
+    engine 层不再写 SQL。
+    """
+    row = conn.execute(
+        "SELECT ts FROM signal_events WHERE type=? AND source=? "
+        "ORDER BY ts DESC LIMIT 1",
+        (event_type, source),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["ts"] if isinstance(row, sqlite3.Row) else row[0]
+
+
+def count_events_before_ts(
+    conn: sqlite3.Connection,
+    ts: str,
+) -> int:
+    """统计 ``ts <= 给定时间戳`` 的事件数（重放窗口超窗摘要用）。
+
+    T-9 收口：原 signal/engine.py::get_replay_window_events 的
+    ``SELECT COUNT(*) ... WHERE ts <= ?`` 迁入本 DAO。
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM signal_events WHERE ts <= ?", (ts,)
+    ).fetchone()
+    return row["c"] if row else 0
