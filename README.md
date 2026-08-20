@@ -175,11 +175,13 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 
 **Batch refine discipline**: batches of ≥20 files must be split (≤20 per batch) with 30–60s between batches; never retry a 429 immediately (server-side batch_scan will catch up); always use async mode
 
+**Vector Engine Setup** (when `health()` reports `vector.available=false` / `vector.connectivity=false`): local-first, cloud fallback — prefer a local Ollama or LM Studio running `bge-m3` (1024-dim; cloud fallback `BAAI/bge-m3` on siliconflow is free and automatic, same dims → no index rebuild on switch). Probe `curl http://127.0.0.1:11434/api/tags` (Ollama) or `curl http://127.0.0.1:1234/v1/models` (LM Studio) → if no `bge-m3`, run `ollama pull bge-m3` (or download it in LM Studio) → write the `search.vector` block (`base_url`, `model: bge-m3`, `fallbacks`) into `config/sgme.yaml` and restart SGME → re-run `health()` until `vector.connectivity=true`. llama.cpp is NOT recommended (model state unmanaged, lost after VRAM cleanup).
+
 **Full tool list & usage**: see [docs/agent-onboarding.md](docs/agent-onboarding.md), or call the `agent_onboarding` tool once connected via MCP
 
 **Self-check on connect**: first call after connecting — `agent_onboarding()` returns the version, the full tool list and a quick start; no 403/timeout means you are in
 
-> ⚠️ **Consistency note**: if this prompt section drifts from the `self_config.template` returned by `agent_onboarding()` (version tag `SGME-ONBOARDING-v1`), **the template wins** — copy the template when onboarding; this section is only a quick reference.
+> ⚠️ **Consistency note**: if this prompt section drifts from the `self_config.template` returned by `agent_onboarding()` (version tag `SGME-ONBOARDING-v2`), **the template wins** — copy the template when onboarding; this section is only a quick reference.
 
 ### Where to Put It
 
