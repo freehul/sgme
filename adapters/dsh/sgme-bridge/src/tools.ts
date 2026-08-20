@@ -14,6 +14,7 @@
  * - output { schema, render(args, value) } — schema 是 ValueSchemaSpec，render 把 value 转 ContentBlock[]
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { buildInjectionText } from './context.js'
 import type { SgmeClient } from './sgme-client.js'
 import type { SgmeEventSubscriber } from './events.js'
 
@@ -403,6 +404,7 @@ export function registerTools(
   ctx.tools.register(createWikiPageTool(client))
   ctx.tools.register(createWikiPageUpdateTool(client))
   ctx.tools.register(createWikiPageAddTool(client))
+  ctx.tools.register(createInjectTool(client))
   ctx.tools.register(createSignalPullTool(client))
   ctx.tools.register(createSignalClaimTool(client, eventSubscriber ?? null))
   ctx.tools.register(createSignalAckTool(client, eventSubscriber ?? null))
@@ -416,6 +418,40 @@ export function registerTools(
   ctx.tools.register(createRoleActiveSetTool(client))
   ctx.tools.register(createMemoryGetTool(client))
   ctx.tools.register(createMemoryRejectTool(client))
+}
+
+// ---------- 画像注入（T-88：agent 可主动按场景切换注入） ----------
+
+/** 创建 inject 工具（按场景模式拉取 SGME 画像，agent 主动注入）。 */
+export function createInjectTool(client: SgmeClient) {
+  return defineTool({
+    name: 'inject',
+    description: [
+      '按场景模式拉取 SGME 画像注入（POST /v1/inject，Agent Key）。',
+      '场景模式：daily 日常画像 / coding 编码（技术栈/踩坑/工作方式）/ work 工作（目标/关系）/ full 全量。',
+      '低频使用：切换模式会使当轮 DeepSeek 前缀缓存失效（该轮历史输入按未命中计费，约 ¥0.22/次），同一会话内请勿反复切换。',
+    ].join(' '),
+    parameters: {
+      mode: {
+        type: 'string',
+        required: true,
+        enum: ['daily', 'full', 'coding', 'work'],
+        description: '画像注入模式模板名',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { mode: string }
+      const profile = await client.inject({ mode: a.mode })
+      if (!profile) {
+        return '[inject 失败：SGME Gateway 不可达或模式无效，稍后重试]'
+      }
+      return buildInjectionText(profile, null)
+    },
+  })
 }
 
 // ---------- 信号消费（ST-27 T-59：agent 成为消费者，谁消费谁标记） ----------
