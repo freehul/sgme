@@ -42,10 +42,26 @@ Remove-Item ".npmrc" -ErrorAction SilentlyContinue
 2. git 提交 `package.json`（version 变更）并 push gitee + GitHub
 3. 用户侧 `dsh plugin add dsh-sgme` 即拿到新版
 
-## 五、踩坑记录（只增不改）
+## 五、RC 兼容验证（DSH 新 RC 必做，2026-08-20 定）
+
+> DSH 处于 RC 快速迭代期（官方明示 "THERE WILL BE COMPATIBILITY-BREAKING CHANGES"）。
+> peer 声明 `^0.1.0-rc.6` 会自动解析到最新 RC——**新 RC 发布后必须先验证再承诺兼容**。
+
+**验证方法**（实测 rc.7/rc.8 用，零 LLM 成本）：
+1. 临时目录建 package.json：devDependencies 锁目标 RC（`@deepseek-ai/dsh-tools` / `dsh-commands` 精确到 `0.1.0-rc.N`；dsh-llm/dsh-session/dsh-system-prompt 用 `^0.1.0-rc.N` 避免传递冲突）
+2. 拷 `src/` `tests/` `vitest.config.ts` `tsconfig.json` 进临时目录
+3. `npx tsc --noEmit` 必须 exit 0；`npx vitest run` 必须全绿
+4. 通过后更新 README 支持矩阵 + 本插件 peer 声明基线
+
+**已验证矩阵**：rc.6（开发基线）/ rc.7 / rc.8 全部 typecheck + 136 测试通过（2026-08-20）。
+dsh-tools rc.6→rc.8 类型零差异；dsh-commands 仅新增图片附件字段（向后兼容）。
+
+## 六、踩坑记录（只增不改）
 
 - **404 权限不足**：granular token 没给 dsh-sgme 包授权（Read and write），或出口 IP 不在白名单。排查：`npm view dsh-sgme maintainers` 确认 owner 是 freehul；用 Python `httpx.get('/-/whoami', proxy='http://127.0.0.1:7897')` 若 200=token 有效且代理出口对，若 403=IP 不匹配。
 - **403 2FA required**：`npm login`（网页登录）的 session 不吃 granular 的 IP 白名单，发布必强制 OTP（而本机无手机认证器）→ 只能走 granular token 路线。
 - **automation 类型已撤**：npm 收紧 2FA-bypass GAT（GitHub Discussion #201329），生成页不再有类型可选。
 - **.env 没真更新**：网页授权 ≠ 写入本地文件；更新后必须确认 .env 前缀变化、修改时间刷新。
 - **内存不足**：publish 触发 prepublishOnly→verify 时 esbuild 可能 `cannot allocate memory`，用 `--ignore-scripts` 跳过（verify 提前跑过即可）。
+- **NODE_ENV=production 跳过 devDependencies**（2026-08-20 实锤）：用户级环境变量 `NODE_ENV=production` 时 pnpm/npm install 全部跳过 devDependencies（报 "devDependencies: skipped because NODE_ENV is set to production"）——临时校验环境装不上 typescript/vitest 的根因。处理：脚本内 `$env:NODE_ENV = ''` 显式清空（每次 pwsh 新进程都要设）或 install 加 `--include=dev`。长期建议排查该环境变量是否故意设置。
+- **`^0.2.0` 不升 0.3.0**（2026-08-20）：npm 0.x 系列 `^` 锁 minor——profile 依赖 `"dsh-sgme": "^0.2.0"` 时 pnpm install 不会自动升 0.3.x，必须显式改 `^0.3.0` 再 install；升级主版本号后记得同步更新各 profile 的依赖声明。
