@@ -25,6 +25,18 @@
 - 程序资源随镜像更新，用户数据独立于镜像（`docker compose down` 不丢数据，`--build` 升级无损）。
 - 密钥经 `env_file: docker.env` 注入，不落盘进镜像。
 
+## 2.5 一键部署脚本（ST-12，2026-08-20）
+
+项目根提供 `deploy.sh` 一键脚本，封装 构建→导出→传输→NAS 导入→启动→验证 全流程：
+
+```bash
+./deploy.sh build          # 仅本地构建
+./deploy.sh deploy <host>  # 一键部署到 NAS（如 leo@192.168.10.10）
+./deploy.sh up / down / logs / verify [host]
+```
+
+> NAS 部署路径约定：/vol1/1000/Docker/sgme（bind mount 数据卷）。脚本为 bash 编写，Windows 本机可用 Git Bash / WSL 执行；纯本机部署直接 `docker compose up -d --build` 即可。
+
 ## 3. 快速开始（单机）
 
 ```bash
