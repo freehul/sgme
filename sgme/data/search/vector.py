@@ -98,10 +98,13 @@ def embed(
     cfg: dict,
     client: httpx.Client | None = None,
 ) -> list[float] | None:
-    """调 LM Studio embeddings 接口生成向量。
+    """调 embeddings 接口生成向量，支持多 provider 降级链。
 
-    - cfg: 全局配置（取 search.vector.model 和 LLM 链首批 base_url）
-    - embeddings 不可达 → 返回 None + 日志降级
+    - cfg: 全局配置（取 search.vector.model / base_url / api_key_env / fallbacks）
+    - 降级链（2026-08-20 生产定案「本地优先、云端免费降级」）：
+      主 provider 失败 → 依次尝试 search.vector.fallbacks 列表 →
+      全部失败才返回 None（调用方降级纯 BM25）
+    - 每个 provider 语义：base_url + model + api_key_env（可选）；失败不阻塞
     - httpx 必须 trust_env=False
     """
     search_cfg = cfg.get("search", {}) or {}
@@ -120,64 +123,85 @@ def embed(
         if cached:
             return list(cached)
 
-    # base_url 优先级：search.vector.base_url（独立 embedding 端点）→ LLM 链首批（向后兼容）
-    base_url = vec_cfg.get("base_url") or ""
-    if not base_url:
+    # provider 降级链：主 provider + fallbacks（向后兼容：无 fallbacks = 仅主）
+    providers = [{"model": model, "base_url": vec_cfg.get("base_url") or "",
+                  "api_key_env": vec_cfg.get("api_key_env") or ""}]
+    fallbacks = vec_cfg.get("fallbacks") or []
+    if isinstance(fallbacks, list):
+        for fb in fallbacks:
+            if isinstance(fb, dict):
+                providers.append({
+                    "model": fb.get("model") or model,
+                    "base_url": fb.get("base_url") or "",
+                    "api_key_env": fb.get("api_key_env") or "",
+                })
+
+    # 主 provider 缺 base_url → 回退 LLM 链首批（向后兼容）
+    if not providers[0]["base_url"]:
         try:
-            base_url = cfg["llm"]["chains"]["refinement"][0]["base_url"]
+            providers[0]["base_url"] = cfg["llm"]["chains"]["refinement"][0]["base_url"]
         except (KeyError, IndexError, TypeError):
             logger.warning("embed: 无法从 cfg 解析 base_url，跳过向量")
             return None
-    base_url = base_url.rstrip("/")
-    url = f"{base_url}/embeddings"
-    # 鉴权：search.vector.api_key_env 声明 key 环境变量名 → Bearer 头（本地 LM Studio 无需）
-    headers = {}
-    api_key_env = vec_cfg.get("api_key_env") or ""
-    if api_key_env:
-        key = os.environ.get(api_key_env, "")
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        else:
-            logger.warning("embed: api_key_env=%s 未设置，请求将不带鉴权头", api_key_env)
-    own_client = client is None
-    cli = client or llm_provider.make_client(timeout_s=30.0)
-    resp: httpx.Response | None = None
-    try:
-        # 429 限流退避重试（方舟账户级 QPS；最多 3 次，指数退避）
-        for attempt in range(4):
-            try:
-                resp = cli.post(url, json={"model": model, "input": text}, headers=headers)
-            except httpx.HTTPError as e:
-                logger.warning("embed: embeddings 端点不可达 %s: %s", url, e)
-                return None
-            if resp.status_code == 429 and attempt < 3:
-                wait = 1.5 * (2 ** attempt)
-                logger.warning("embed: 429 限流，%.1fs 后重试 (%d/3)", wait, attempt + 1)
-                time.sleep(wait)
-                continue
-            break
-        assert resp is not None
-        if resp.status_code != 200:
-            logger.warning(
-                "embed: embeddings 端点返回 %s: %s",
-                resp.status_code, resp.text[:200],
-            )
-            return None
-        data = resp.json()
-        embedding = data["data"][0]["embedding"]
-        vec = [float(x) for x in embedding]
-        if cache is not None and vec:
-            try:
-                cache.put(text, model, vec)
-            except Exception as e:
-                logger.warning("embed: 缓存写入异常（不影响本次结果）: %s", e)
-        return vec
-    except Exception as e:
-        logger.warning("embed: 解析 embeddings 响应失败: %s", e)
-        return None
-    finally:
-        if own_client:
-            cli.close()
+
+    # 逐 provider 尝试，任一成功即返回
+    last_error: str | None = None
+    for i, prov in enumerate(providers):
+        base_url = prov["base_url"].rstrip("/")
+        if not base_url:
+            continue
+        url = f"{base_url}/embeddings"
+        # 鉴权：api_key_env 声明 key 环境变量名 → Bearer 头（本地 Ollama/LM Studio 无需）
+        headers = {}
+        api_key_env = prov.get("api_key_env") or ""
+        if api_key_env:
+            key = os.environ.get(api_key_env, "")
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            else:
+                logger.warning("embed: api_key_env=%s 未设置，请求将不带鉴权头", api_key_env)
+        own_client = client is None
+        cli = client or llm_provider.make_client(timeout_s=30.0)
+        resp: httpx.Response | None = None
+        try:
+            # 429 限流退避重试（方舟账户级 QPS；最多 3 次，指数退避）
+            for attempt in range(4):
+                try:
+                    resp = cli.post(url, json={"model": prov["model"], "input": text}, headers=headers)
+                except httpx.HTTPError as e:
+                    logger.warning("embed: embeddings 端点不可达 %s: %s", url, e)
+                    last_error = f"unreachable {url}: {e}"
+                    break
+                if resp.status_code == 429 and attempt < 3:
+                    wait = 1.5 * (2 ** attempt)
+                    logger.warning("embed: 429 限流，%.1fs 后重试 (%d/3)", wait, attempt + 1)
+                    time.sleep(wait)
+                    continue
+                break
+            if resp is not None and resp.status_code == 200:
+                data = resp.json()
+                embedding = data["data"][0]["embedding"]
+                vec = [float(x) for x in embedding]
+                if cache is not None and vec:
+                    try:
+                        cache.put(text, prov["model"], vec)
+                    except Exception as e:
+                        logger.warning("embed: 缓存写入异常（不影响本次结果）: %s", e)
+                return vec
+            elif resp is not None:
+                last_error = f"{resp.status_code}: {resp.text[:200]}"
+                logger.warning("embed: embeddings 端点返回 %s: %s", resp.status_code, resp.text[:200])
+            # resp is None → 网络层失败，已记录 last_error
+        except Exception as e:
+            last_error = f"parse error: {e}"
+            logger.warning("embed: 解析 embeddings 响应失败: %s", e)
+        finally:
+            if own_client:
+                cli.close()
+
+    # 全部 provider 失败 → 日志 + 返回 None（降级纯 BM25）
+    logger.warning("embed: 全部 %d 个 provider 失败，最后错误: %s", len(providers), last_error)
+    return None
 
 
 def upsert_memory_vector(
