@@ -33,6 +33,7 @@ from pydantic import BaseModel
 
 from sgme.operations.browse import get_session_raw as get_session_raw_operation
 from sgme.operations.browse import list_memories as list_memories_operation
+from sgme.operations.graph import get_graph as get_graph_operation
 from sgme.operations.browse import list_refine_runs as list_refine_runs_operation
 from sgme.operations.browse import list_sessions as list_sessions_operation
 from sgme.operations.browse import stats_detail as stats_detail_operation
@@ -830,6 +831,33 @@ def admin_list_scenes(
         order=order,
         since=since,
         until=until,
+    )
+
+
+@router.get("/v1/admin/graph")
+def admin_graph(
+    request: Request,
+    scene_limit: int = Query(200, ge=1, le=1000),
+    wiki_limit: int = Query(200, ge=1, le=1000),
+    memory_limit: int = Query(3000, ge=1, le=20000),
+    _: str = Depends(require_admin_key),
+):
+    """知识图谱数据（ST-13）：nodes（场景/记忆/wiki 页面）+ links（关联关系）。
+
+    数据源：scene_memories（场景↔记忆）+ wiki_links（wiki 页面↔页面）。
+    前端 D3 force 布局消费；scene_limit/wiki_limit 控制规模防超大库撑爆。
+    """
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    wiki_conn: sqlite3.Connection | None = getattr(
+        request.app.state, "wiki_conn", None
+    )
+    return run_operation(
+        get_graph_operation,
+        mem_conn,
+        wiki_conn,
+        scene_limit=scene_limit,
+        wiki_limit=wiki_limit,
+        memory_limit=memory_limit,
     )
 
 
