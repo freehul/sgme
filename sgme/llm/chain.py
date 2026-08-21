@@ -135,7 +135,10 @@ def call_with_fallback(
     try:
         for idx, node in enumerate(chain):
             p_name = node["provider"]
-            fn = provider.get_provider(p_name)
+            # 2026-08-22 降级链修复：传 provider_type，让 openai_compat 供应商
+            # 免注册可用（此前 providers.yaml 新增供应商若未在 _PROVIDERS 注册，
+            # get_provider 抛「未知 provider」→ 兜底级联断裂 → 整批 drop）
+            fn = provider.get_provider(p_name, node.get("provider_type"))
             tried_providers.append(p_name)
 
             # rule 兜底：直接执行（不再重试）
