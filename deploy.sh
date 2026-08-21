@@ -17,8 +17,8 @@
 # ============================================================================
 set -euo pipefail
 
-IMAGE_TAG="sgme:1.0.0b3"
-TARBALL="sgme-1.0.0b3.tar"
+IMAGE_TAG="sgme:1.0.0b4-nas-upd2"
+TARBALL="sgme-1.0.0b4-nas-upd2.tar"
 COMPOSE="docker compose"
 
 log()  { echo -e "\033[1;32m[SGME]\033[0m $*"; }
@@ -82,7 +82,7 @@ deploy() {
 
   log "NAS 导入 + 启动 ..."
   ssh "$host" "docker load -i /tmp/sgme-deploy/$TARBALL"
-  ssh "$host" "cd /tmp/sgme-deploy && cp -n docker.env docker-compose.yml /vol1/1000/Docker/sgme/ 2>/dev/null || true; cd /vol1/1000/Docker/sgme && docker compose up -d"
+  ssh "$host" "cd /tmp/sgme-deploy && cp -n docker.env docker-compose.yml /vol1/1000/Docker/sgme/ 2>/dev/null || true; sed -i 's|^\(\s*image:\s*\)sgme:.*|\1${IMAGE_TAG}|' /vol1/1000/Docker/sgme/docker-compose.yml; cd /vol1/1000/Docker/sgme && docker compose up -d"
   ssh "$host" "sleep 8; curl -sf --max-time 10 http://127.0.0.1:9910/v1/health || echo NAS健康检查未通过"
 
   log "✅ 部署完成。验证：curl http://$host:9910/v1/health"
