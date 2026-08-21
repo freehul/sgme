@@ -28,6 +28,12 @@ chains:
     - provider: agnes
       model: agnes-2.5-flash
       max_tokens: 16384
+    # 2026-08-22 用户定：第二免费兜底——硅基流动 deepseek-ai/DeepSeek-V4-Flash。
+    # 实测完整 payload 200、L1 JSON 契约通过、余额 0 可调用（免费）、1-3s。
+    # 3 个免费模型：zhipu(主) → agnes → siliconflow → drop_batch（纯免费，零账单）。
+    - provider: siliconflow
+      model: deepseek-ai/DeepSeek-V4-Flash
+      max_tokens: 16384
     - provider: rule
       rule: drop_batch
 
