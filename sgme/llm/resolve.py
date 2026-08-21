@@ -32,7 +32,9 @@ from typing import Any
 logger = logging.getLogger("sgme.llm.resolve")
 
 # 动态链保留的静态兜底级数（agent 节点之后保留的静态链尾部，含 rule drop_batch）
-FALLBACK_TAIL_KEEP = 2
+# 2026-08-22：2→3——提炼链扩展为 zhipu→agnes→deepseek→drop_batch 三层兜底后，
+# 只保留 2 层会把 agnes 免费层挤掉（agent_model 文件动态链丢失免费兜底）
+FALLBACK_TAIL_KEEP = 3
 
 
 def _parse_agent_model(agent_model: str) -> tuple[str, str] | None:

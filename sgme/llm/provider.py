@@ -253,9 +253,17 @@ _PROVIDERS = {
 }
 
 
-def get_provider(name: str):
-    """按名取 provider 函数。未知 provider 抛 ValueError。"""
+def get_provider(name: str, provider_type: str | None = None):
+    """按名取 provider 函数。未知 provider 抛 ValueError。
+
+    2026-08-22 降级链修复：``provider_type='openai_compat'`` 的供应商
+    （providers.yaml 声明的任意 OpenAI 兼容提供商）**免代码注册**直接可用——
+    此前必须硬编码进 _PROVIDERS，遗漏即「未知 provider」导致兜底级联断裂、
+    整批 drop_batch（实锤：agnes 加入链后 get_provider 抛错）。
+    """
     fn = _PROVIDERS.get(name)
+    if fn is None and provider_type == "openai_compat":
+        return call_openai_compatible
     if fn is None:
         raise ValueError(f"未知 provider: {name}")
     return fn
