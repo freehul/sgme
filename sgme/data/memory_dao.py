@@ -580,6 +580,37 @@ def first_source_by_memory(
     return out
 
 
+def find_active_by_source_ref_content(
+    conn: sqlite3.Connection,
+    source_ref: str,
+    content: str,
+) -> str | None:
+    """幂等去重查询：查是否存在「同源 + 同内容」的 active 记忆（2026-08-22 幂等修复）。
+
+    用于 L1.5 落库前拦截「同一 source_ref 重抽出的重复记忆」：重试提炼时旧记忆
+    已在库，新记忆内容相同 → 直接复用既有 id，不新增重复行。
+
+    - 匹配口径：``memory_sources.source_ref`` 精确 + ``TRIM(memories.content)`` 精确
+      （去除首尾空白后比对，容忍 L1 输出首尾空白差异）+ ``memories.status='active'``
+    - ``source_ref`` 一个文件的所有记忆共享同一值（``file_id:{首个msg seq}``），
+      故「同源 + 同内容」精确等价于「同一文件重试抽出的同一条记忆」
+    - 返回既有 ``memory_id``；无匹配返回 None
+    """
+    norm = (content or "").strip()
+    if not source_ref or not norm:
+        return None
+    row = conn.execute(
+        """
+        SELECT m.memory_id FROM memories m
+        JOIN memory_sources s ON s.memory_id = m.memory_id
+        WHERE s.source_ref = ? AND TRIM(m.content) = ? AND m.status = 'active'
+        LIMIT 1
+        """,
+        (source_ref, norm),
+    ).fetchone()
+    return row["memory_id"] if row else None
+
+
 def list_memories_page(
     conn: sqlite3.Connection,
     *,

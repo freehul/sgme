@@ -697,6 +697,23 @@ def resolve_conflicts(
     if not new_memories:
         return result
 
+    # 0. 幂等预检（2026-08-22 修复）：同一 source_ref 重试抽出的「同源 + 同内容」记忆
+    #    直接跳过落库（复用既有 active 记忆），杜绝重试造重复。确定性守卫，不依赖 LLM。
+    #    source_ref 一个文件所有记忆共享 → 命中即「本文件此前已提炼出同一条记忆」。
+    #    无 source_ref（异常路径）或不命中 → idem_skip 为空，行为完全不变。
+    idem_skip: set[int] = set()
+    if source_ref:
+        for i, nm in enumerate(new_memories):
+            existing = memory_dao.find_active_by_source_ref_content(
+                mem_conn, source_ref, nm.get("content", "")
+            )
+            if existing:
+                idem_skip.add(i)
+                logger.info(
+                    "L1.5 幂等跳过: new_memory#%d content 已存在 %s（source_ref=%s）",
+                    i, existing, source_ref,
+                )
+
     dimensions = cfg["dimensions"]
     llm_cfg = cfg["llm"]
     bucket_key = bucket_ctx.bucket_key if (bucket_ctx and bucket_ctx.bucket_key) else "unknown"
@@ -719,6 +736,9 @@ def resolve_conflicts(
     if not any(g.candidates for g in groups):
         logger.info("L1.5 候选池为空，全部 store（%d 条，短路）", len(new_memories))
         for i, new_mem in enumerate(new_memories):
+            if i in idem_skip:
+                result.skipped.append(i)
+                continue
             new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
             new_mem["memory_id"] = new_id
             result.stored.append(new_id)
@@ -726,16 +746,21 @@ def resolve_conflicts(
 
     # 2. 分批（铁律 #7：按上下文预算分批，同一新记忆只进一批）
     # 无候选的新记忆不进任何批 → 无裁决 → 落库阶段默认 store（无冲突可能，短路到单记忆粒度）
-    batched_groups = [g for g in groups if g.candidates]
+    # 幂等跳过的记忆不进批（已确定 skip，省一次 LLM 调用）
+    batched_groups = [g for g in groups if g.candidates and g.new_memory_index not in idem_skip]
     batches = build_batches(batched_groups, budget)
     if not batches:
-        # 理论上不可达（batched_groups 非空）；兜底：整批送检（宁超不丢）
-        logger.warning("L1.5 build_batches 返回空（防御），退化为单批送检")
-        batches = [Batch(
-            new_memories=[g.new_memory for g in batched_groups],
-            start_index=batched_groups[0].new_memory_index,
-            candidates=_merge_group_candidates(batched_groups),
-        )]
+        if batched_groups:
+            # 理论上不可达（batched_groups 非空）；兜底：整批送检（宁超不丢）
+            logger.warning("L1.5 build_batches 返回空（防御），退化为单批送检")
+            batches = [Batch(
+                new_memories=[g.new_memory for g in batched_groups],
+                start_index=batched_groups[0].new_memory_index,
+                candidates=_merge_group_candidates(batched_groups),
+            )]
+        else:
+            # batched_groups 为空（全部幂等跳过 / 无候选）→ 不送检，落库阶段按 skip 处理
+            batches = []
 
     # 3. 逐批 LLM 裁决（批内 new_memory_index 重映射回全局下标）
     all_decisions: list[ConflictDecision] = []
@@ -820,6 +845,10 @@ def resolve_conflicts(
             by_index[d.new_memory_index] = d
 
     for i, new_mem in enumerate(new_memories):
+        # 幂等跳过：同源同内容已存在 → 不落库（确定性守卫，覆盖 LLM 漏判 skip 的场景）
+        if i in idem_skip:
+            result.skipped.append(i)
+            continue
         decision = by_index.get(i, ConflictDecision(i, [], "store", reason="无裁决默认 store"))
         action = decision.action
         if action == "store":

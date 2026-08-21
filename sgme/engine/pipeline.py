@@ -134,10 +134,23 @@ def _fallback_direct_store(
     src_refs: list[str],
     prompt_version: str | None = None,
 ) -> dict:
-    """L1.5 不可用时直接 store 每条记忆。"""
+    """L1.5 不可用时直接 store 每条记忆。
+
+    2026-08-22 幂等修复：同源同内容已存在 → 跳过（复用既有记忆），
+    防限流降级直存路径在重试时造出重复记忆。
+    """
     dimensions = cfg["dimensions"]
     stored = 0
+    skipped = 0
     for m, src_ref in zip(refine_result.memories, src_refs):
+        # 幂等：同源同内容 active 记忆已存在 → 跳过，不新增重复
+        existing = memory_dao.find_active_by_source_ref_content(
+            mem_conn, src_ref, m.get("content", "")
+        )
+        if existing:
+            logger.info("L1.5 降级直存幂等跳过: content 已存在 %s（source_ref=%s）", existing, src_ref)
+            skipped += 1
+            continue
         ttl = l15_mod._backfill_ttl(
             m.get("ttl_days"),
             m.get("dimension_ids", m.get("dimensions", [])),
@@ -156,7 +169,7 @@ def _fallback_direct_store(
         )
         m["memory_id"] = mid  # 写回，供 L2 场景关联
         stored += 1
-    return {"stored": stored, "skipped": 0, "updated": 0, "merged": 0, "archived": 0,
+    return {"stored": stored, "skipped": skipped, "updated": 0, "merged": 0, "archived": 0,
             "l15_error": "fallback_direct_store", "fallback": True}
 
 
