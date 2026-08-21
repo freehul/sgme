@@ -1,0 +1,7 @@
+# 行尾规范（2026-08-22 部署事故修复）：
+# Windows autocrlf=true 会把工作副本 .sh 转成 CRLF，entrypoint.sh 的
+# shebang 变成 `#!/bin/sh\r` → 容器 exec 报 no such file or directory。
+# shell 脚本一律 LF（Linux 运行时），防止同类问题复发。
+*.sh text eol=lf
+*.bash text eol=lf
+docker/entrypoint.sh text eol=lf
