@@ -1549,3 +1549,17 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 **验证**：test_l2 20 passed（原 16 + 新 4）+ 相关模块 47 passed；l15 4 个失败为预存在问题（projects 维度移除致 FK，stash 验证与本改动无关）。
 
 **运维影响**：L2 场景候选从「固定 50 个最新」变为「30 语义相似 + 20 高热度」；场景超限红警不消除（软策略），但 merge 命中率应提升，观察场景数增速；NAS 生产配置 `data/config/sgme.yaml` 需同步 l2.prescreen 段后重启生效。
+
+### B103. L2 场景超限治理 + 场景向量增量回填（T-97 收尾，2026-08-22）
+
+**背景**：B102 预筛上线后实测暴露两个问题——①**场景向量不回填**：`upsert_scene_vector` 无调用方，8-17 一次性回填后新建/合并场景全部无向量（含 heat=374/238 高热度场景），预筛对它们完全盲区；②**场景数超限**：active 278 > max_scenes 200，红警每轮触发（历史导入期碎片场景多）。
+
+**改动**：
+1. `sgme/engine/l2.py`——`_refresh_scene_vector()`：create/merge/update 三动作落库后自动刷新场景向量（embed 不可达仅告警，热度 Top-N 兜底）；+1 测试（create 后 scene_vectors 有行），test_l2 21 passed
+2. 存量回填：`scripts/oneoff/backfill_scene_vectors_now.py` 对 58 个无向量 active 场景补向量（容器内执行，本地 ollama 零费用），**无向量 active 归零**
+3. 相似场景合并：`scripts/oneoff/merge_similar_scenes*.py` 合并 12 对高相似场景（0.80+ 7 对 + 人工挑选 0.75-0.80 5 对，避免误报），走 `l2._apply_merge`（旧场景 archived 可恢复 + scene_versions 快照 + 新场景自动回填向量）——active 278 → 265
+4. 阈值校准：`max_scenes` 200→300，yellow 250 / orange 275 / red 300——265 是真实主题数（225 个默认标题但内容独立、互相相似度低，非碎片垃圾），200 为早期保守值；NAS 生产配置同步
+
+**验证**：容器 healthy；health ok；active=265 无向量=0；红警消除（265 < 300）；场景间相似度 ≥0.85 仅 2 对证明粒度合理（非重复堆积）。
+
+**运维影响**：场景向量从此增量维护（预筛盲区消除）；场景数 265 在黄线 250 之上，继续观察——预筛让 LLM 能看到相似场景后 merge 收敛应提速，若持续增长逼近 300 再评估批量合并；旧场景全部 archived 可恢复（原件不删）。
