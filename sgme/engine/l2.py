@@ -253,6 +253,71 @@ def _batch_memories(memories: list[dict], budget: int) -> list[list[dict]]:
     return batches
 
 
+def _prescreen_scenes(
+    mem_conn: sqlite3.Connection,
+    memories_batch: list[dict],
+    cfg: dict,
+    prescreen: dict,
+) -> list[dict] | None:
+    """场景级向量预筛（T-97，2026-08-22）：向量 Top-K ∪ 热度 Top-N（heat DESC）。
+
+    背景：L2 场景数超 max_scenes 后，固定 EXISTING_SCENES_LIMIT=50 个摘要
+    （updated_at DESC）覆盖不到与新记忆语义相关的场景，LLM 看不到就 merge
+    不了，场景数只增不减（active 276 > max 200 红警）。本函数让 LLM 只看到
+    「本批记忆语义相似的场景 + 高热度兜底场景」，提升 update/merge 命中率。
+
+    对齐 L1.5 prescreen（l15._build_prescreened_candidates）模式：
+    - 向量 Top-K：本批记忆拼接文本 embed → scene_vector_search（sqlite-vec/numpy 双路径）
+    - 热度 Top-N：active 场景按 heat DESC 取前 N（无向量覆盖的高热度场景不丢）
+    - 并集按 scene_id 去重（向量候选在前，热度补充）
+
+    返回语义：
+    - list[dict]：预筛成功，候选 = 向量 Top-K ∪ 热度 Top-N
+    - None：embed 不可达 / 检索异常 → 调用方回退固定 EXISTING_SCENES_LIMIT
+      摘要（fallback=full_recall，原行为零回归）
+    """
+    from sgme.data.search import vector as vector_mod
+
+    vector_top_k = int(prescreen.get("vector_top_k", 30))
+    heat_top_n = int(prescreen.get("heat_top_n", 20))
+    fallback = prescreen.get("fallback", "full_recall")
+
+    # 1. 向量 Top-K：本批记忆拼接文本 embed → 场景向量检索
+    batch_text = "\n".join((m.get("content") or "") for m in memories_batch)
+    if not batch_text.strip():
+        batch_text = " ".join(str(m.get("memory_id") or "") for m in memories_batch)
+    try:
+        vec = vector_mod.embed(batch_text, cfg)
+        if vec is None:
+            logger.warning(
+                "L2 场景预筛降级：embedding 端点不可达，回退固定摘要（fallback=%s）", fallback)
+            return None
+        vec_cands = vector_mod.scene_vector_search(mem_conn, vec, limit=vector_top_k)
+    except Exception as e:
+        logger.warning("L2 场景预筛异常，回退固定摘要（fallback=%s）: %s", fallback, e)
+        return None
+
+    # 2. 热度 Top-N（heat DESC）兜底
+    heat_cands = scene_dao.list_active_scenes(mem_conn)
+    heat_cands.sort(key=lambda s: int(s.get("heat", 1) or 1), reverse=True)
+    heat_cands = heat_cands[:heat_top_n]
+
+    # 3. 并集去重（向量在前，热度补充）
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for c in vec_cands:
+        if c["scene_id"] not in seen:
+            seen.add(c["scene_id"])
+            merged.append(c)
+    for c in heat_cands:
+        if c["scene_id"] not in seen:
+            seen.add(c["scene_id"])
+            merged.append(c)
+    logger.info("L2 场景预筛：向量 %d ∪ 热度 %d → 候选 %d 个场景",
+                len(vec_cands), len(heat_cands), len(merged))
+    return merged
+
+
 def _resolve_budget(cfg: dict) -> int:
     """从 cfg['llm'] 取 refinement 链首批 provider 的 batch_budget。"""
     llm_cfg = cfg.get("llm", {})
@@ -477,9 +542,17 @@ def aggregate(
 
     budget = _resolve_budget(cfg)
     batches = _batch_memories(memories, budget)
+    # T-97 场景级向量预筛（2026-08-22）：l2.prescreen.enabled=true 时
+    # existing_scenes = 向量 Top-K ∪ 热度 Top-N；未配置/embed 不可达 → 固定 50 摘要（零回归）
+    prescreen_cfg = ((cfg.get("l2") or {}).get("prescreen") or {}) or None
+    prescreen_enabled = bool(prescreen_cfg and prescreen_cfg.get("enabled", False))
     existing_scenes = scene_dao.list_active_scenes(mem_conn, limit=EXISTING_SCENES_LIMIT)
 
     for batch in batches:
+        if prescreen_enabled and prescreen_cfg:
+            ps = _prescreen_scenes(mem_conn, batch, cfg, prescreen_cfg)
+            if ps is not None:
+                existing_scenes = ps
         batch_memory_ids = [m.get("memory_id") for m in batch if m.get("memory_id")]
         pv = PromptStore().get("l2_scene", bucket_ctx)
         prompt = _render_l2_text(pv.text, batch, existing_scenes, cfg)
