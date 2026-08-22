@@ -1515,3 +1515,23 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 **验证**：pytest 版本断言 6 文件 +1.0.0 全绿；提炼链/health/update_check 相关模块绿。
 
 **运维影响**：正式版接口契约稳定，向前兼容 beta 数据（memory.db/wiki.db 无需迁移）；NAS 生产仍为 b4 镜像，升 1.0.0 可走 ST-34 自动更新（WebUI「立即更新」）或手动 deploy.sh。
+
+### B101. v1.0.0 正式版发布 + 自动更新完整路径首次实测（2026-08-22）
+
+**背景**：v1.0.0 正式版发布（B100 版本号/引导/文档齐备），NAS 生产从 b4 升 1.0.0——ST-34 自动更新「完整成功更新路径」首次真实版本实测（B99 遗留缺口：当时无更高版本，只测过假版本 v9.9.9 的回滚路径）。
+
+**执行**：
+1. 打 tag v1.0.0 → 推送 GitHub/Gitee/NAS bare 三远端；GitHub release 已建（gh release，附 release-notes-v1.0.0.md）
+2. NAS src git pull --ff-only（1bcd167 → 7d11bac，含架构文档 rename v0.9→v1.0）
+3. 写意图文件 `data/update/request.json`（target_version=v1.0.0, status=pending）→ 手动执行 `scripts/sgme-host-updater.sh`（不等 cron 5 分钟）
+4. 脚本全链路：git pull → docker build `sgme:1.0.0-nas-autoupd`（BUILD_EXIT=0）→ 备份 compose → 换 tag → compose up -d → 容器 healthy → health 版本一致性校验（1.0.0 == 1.0.0）→ 清请求文件 → exit 0
+
+**验证**：
+- `docker exec sgme python -c 'import sgme; print(sgme.__version__)'` → 1.0.0（容器内代码真身确认）
+- health：version=1.0.0 / llm available（agnes-2.5-flash）/ vector sqlite-vec 14814 向量 / refine 正常（stalled=false）
+- update_check 自查：latest_version=v1.0.0 == 当前 → update_available=false（正确，无更新提示）
+- WebUI :9910 → 200；意图文件已清空；旧镜像保留（1.0.0b4-nas-upd1/upd2 未删，回滚可用）
+
+**运维影响**：NAS 生产 = sgme:1.0.0-nas-autoupd（正式版）；自动更新四段闭环（检测→提示→确认→执行）全部实测可用；后续发版用户 WebUI 点「立即更新」即可，无需人工 SSH。
+
+**遗留**：Gitee release 未建成——GITEE_TOKEN 401（过期），需用户更新 token 后补建；NAS 自动更新策略保持手动触发（用户确认后执行，不自动）。
