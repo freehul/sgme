@@ -168,6 +168,7 @@
 | T-93 | Task | WebUI 提示条 + 确认更新弹窗 + 状态轮询 | ST-34 | ✅ 已解决 | v1.0.0b4+ | 2026-08-21 完成（B99）：后端新增 sgme/operations/update_request.py（意图文件原子写 tmp+os.replace）+ POST/GET /v1/admin/update/request（admin 鉴权）；前端 DashboardView 健康卡片——发现新版高亮提示条（查看更新说明→release 页）+「立即更新」window.confirm 确认弹窗（说明备份/重建/回滚保障）+ 提交后状态反馈（updateStatus/updateMsg）；6 测试全绿 + npm run build 通过 + 真实冒烟 smoke_update_st34.py（health 4 新字段 + 意图端点 200 + request.json 原子落盘） |
 | T-94 | Task | 主机侧更新代理 scripts/sgme-host-updater（含回滚） | ✅ 已解决 | v1.0.0b4+ | 2026-08-21 脚本+文档完成（B99）：scripts/sgme-host-updater.sh——NAS 主机 cron 每 5 分钟轮询 $DATA_DIR/update/request.json → 校验 target_version 格式（防注入）→ 执行 runbook 16.4 链（git pull → docker build 新镜像 → 备份 compose → 换 tag → compose up -d → 健康验证）→ 成功清请求 / 失败自动回滚旧镜像 + 标记 failed；锁文件防并发；bash -n 通过；容器保持无特权（不挂 docker.sock）。**NAS 部署完成（2026-08-22 复验）**：脚本已落位 /vol1/1000/Docker/sgme/scripts/（md5 与本地一致 95ff0317）、root cron 已配（*/5 * * * * → updater.log）、8-20 首跑识别"已是 v1.0.0b4"正常；本次端到端复验：写入 pending 意图文件 → 脚本识别当前镜像已是目标版 → 清请求 + exit 0，链路全通 |
 | T-95 | Task | 测试 + 文档 + 变更记录（B99） | ST-34 | ✅ 已解决 | v1.0.0b4+ | 2026-08-21 完成（B99，注意 B98 被并行会话占用）：pytest 全绿（test_update_check 13 + test_update_request 6 + health 契约 + stall_watch 15，共 40+）+ npm run build 通过 + 真实冒烟 smoke_update_st34.py；runbook 16.4 新增自动更新章节（意图文件 + 主机代理 + cron + 回滚）；变更记录 B99（ST-34 全链路） |
+| T-96 | Task | LLM 提炼免费链重构 + 新用户引导同步（agnes 主位三免费兜底） | ST-6 | ✅ 已解决 | v1.0.0 | 2026-08-22 完成（B100）：①降级链重构——agnes（agnes-2.5-flash，当前 $0/1M token，实测 1-4s）主位 → siliconflow（DeepSeek-V4-Flash 免费 1-3s）第二 → zhipu（glm-4.7-flash 永久免费但慢 38s/次 + 1305 风暴）末位兜底；原 zhipu 主 + deepseek 付费备用移除（降级链全免费化）②参数调优——max_retries 5→2（免费兜底就位快速切换）、退避 3s→60s、jitter 0.5s ③引导同步三处——docs/guide/免费模型Key申请指南.md 重写（三 Key 申请 + 链位表）、MODEL_KEY_MISSING_NOTICE + agent_onboarding requirement（mcp_server.py）文案、README 模型说明；架构 v0.9 §1/§24 + runbook §4.2/§16 对齐 ④版本 1.0.0b4 → 1.0.0 正式版（pyproject/__init__/health/app + 6 测试断言）⑤release-notes-v1.0.0.md 新建 |
 
 ---
 
@@ -175,7 +176,7 @@
 
 | 设计文档 | 解决的需求 | 解决的问题 |
 |---------|-----------|-----------|
-| SGME-架构设计-v0.9.md | ST-1~ST-6 总纲；ST-1,ST-4,ST-5（接口契约）；ST-1~ST-5（数据模型）；ST-2（提示词/归一化）；ST-5（模板）；ST-6（LLM降级链） | T-1~T-4 裁决；专项（Dream/SkillsHub/创意池/模块化/备份）见 §30 |
+| SGME-架构设计-v1.0.md | ST-1~ST-6 总纲；ST-1,ST-4,ST-5（接口契约）；ST-1~ST-5（数据模型）；ST-2（提示词/归一化）；ST-5（模板）；ST-6（LLM降级链） | T-1~T-4 裁决；专项（Dream/SkillsHub/创意池/模块化/备份/自动更新/Care Engine/Docker/三池/WebUI）见 §30 |
 | SGME-L0文件格式-v0.1.md | ST-1 | — |
 | SGME-评测基线-PRD-v0.1.md | ST-6（质量评测） | #32 评测集设计 |
 | SGME-评测框架设计-v0.1.md | ST-6（质量评测） | #32 评测框架 |

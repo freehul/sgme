@@ -1500,3 +1500,18 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 4. **实测验证矩阵**：无请求静默退出 0；同版本请求→"已是最新"分支清理；假版本 v9.9.9→完整 build+up→版本校验拦截→自动回滚 upd1+failed（error=版本不一致）；cron 最小环境（env -i）执行正常（docker/git/curl 均在 /usr/bin，cron PATH 覆盖）
 5. 清理：删除测试残留镜像（9.9.9-nas-autoupd、1.0.0b1.0.0b4-nas-autoupd）+ request.json
 6. **完整成功更新路径未实测**（当前无更高版本 b5）——下次发布后用户点"立即更新"自然验证；脚本成功分支的 build+up+版本读取代码已随 v9.9.9 测试跑通
+
+### B100. LLM 提炼免费链重构 + 版本升 1.0.0 正式版（ST-6 强化 / T-96，2026-08-22）
+
+**背景**：beta 收官发布正式版。实测 zhipu glm-4.7-flash 慢（38s/次）+ 高峰期 1305 限流风暴（连单调用都 429），而 agnes/siliconflow 免费档 1-4s——提炼链把快的放前面、zhipu 作末位兜底；降级链从此全免费化（移除 deepseek 付费备用），新用户零成本启动。
+
+**改动**：
+1. `config/llm.yaml`：提炼链重构——agnes（agnes-2.5-flash，当前 $0/1M token）主位 → siliconflow（deepseek-ai/DeepSeek-V4-Flash 免费）第二 → zhipu（glm-4.7-flash 永久免费）末位兜底 → rule drop_batch；max_retries 5→2（免费兜底就位后快速切换，不再等 5 次退避 ~2min）；退避 base 3s/max 60s/jitter 0.5s（1305 过载恢复数十秒级，多扛两轮减少降级）
+2. 引导同步三处：`docs/guide/免费模型Key申请指南.md` 重写（三 Key 申请流程 + 链位表 + 免费口径，agnes 官方 wiki 交叉验证）；`sgme/operations/llm.py` MODEL_KEY_MISSING_NOTICE 文案（agnes/siliconflow/zhipu 三 Key）；`sgme/mcp_server.py` agent_onboarding requirement 文案；README 模型注释
+3. 文档对齐：架构 v0.9 §1 核心约束 9 + §24 降级链（配置示例/窗口/白名单）更新为三免费链；runbook §4.2（提供商准备/降级链示例/Key 设置）+ env 表
+4. 版本号 1.0.0b4 → **1.0.0 正式版**：pyproject.toml / sgme/__init__.py / sgme/operations/health.py / sgme/server/app.py + 6 个测试断言（test_update_check.py 的 b4 为语义比较样例数据保留）；新增 `docs/release-notes-v1.0.0.md`
+5. Backlog 登记 T-96
+
+**验证**：pytest 版本断言 6 文件 +1.0.0 全绿；提炼链/health/update_check 相关模块绿。
+
+**运维影响**：正式版接口契约稳定，向前兼容 beta 数据（memory.db/wiki.db 无需迁移）；NAS 生产仍为 b4 镜像，升 1.0.0 可走 ST-34 自动更新（WebUI「立即更新」）或手动 deploy.sh。

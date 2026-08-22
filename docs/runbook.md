@@ -41,7 +41,7 @@ pip install -e ".[dev]"
 | `SGME_ADMIN_KEY` | 管理员 API Key | `dev-admin-key-change-me` |
 | `SGME_AGENT_KEY` | Agent API Key | `dev-agent-key-change-me` |
 | `SGME_BEARER_TOKEN` | Bearer 令牌（传输层鉴权，不设则旁路） | （空，旁路） |
-| `<PROVIDER>_API_KEY` | OpenAI 兼容提供商 API Key（示例：`ZHIPU_API_KEY`（智谱主链）/ `DEEPSEEK_API_KEY`（付费备用）；env 引用不落盘，见 `config/providers.yaml`） | （空） |
+| `<PROVIDER>_API_KEY` | OpenAI 兼容提供商 API Key（示例：`AGNESAI_API_KEY`（agnes 主链免费）/ `SILICONFLOW_API_KEY`（硅基流动免费）/ `ZHIPU_API_KEY`（智谱免费兜底）；env 引用不落盘，见 `config/providers.yaml`） | （空） |
 | `SILICONFLOW_API_KEY` | 硅基流动 API Key（向量 embedding，`search.vector.api_key_env` 引用；BAAI/bge-m3 免费，实名认证后零费用） | （空） |
 | `SGME_MCP_PORT` | MCP 端口 | `9913` |
 | `SGME_MCP_DISABLED` | 设为 `1` 关闭 MCP | （空） |
@@ -96,26 +96,28 @@ INFO:     Uvicorn running on http://127.0.0.1:9910
 ### 4.2 生产模式（接 OpenAI 兼容 LLM）
 
 1. **准备 LLM 提供商**（任选 OpenAI 兼容提供商，连接字段见 `config/providers.yaml`）：
-   - 主链示例：智谱 GLM-4.7-Flash（永久免费，`ZHIPU_API_KEY`，见 providers.yaml 的 zhipu 条目；申请见 docs/guide/免费模型Key申请指南.md）
-   - 备用示例：任意 OpenAI 兼容付费 API（如 deepseek，`DEEPSEEK_API_KEY`）
+   - 免费链（2026-08-22 用户定，三免费模型按序兜底）：Agnes agnes-2.5-flash（主，当前 $0/1M token，`AGNESAI_API_KEY`）→ 硅基流动 DeepSeek-V4-Flash（免费，`SILICONFLOW_API_KEY`）→ 智谱 GLM-4.7-Flash（永久免费，`ZHIPU_API_KEY`）；申请见 docs/guide/免费模型Key申请指南.md
    - 模型名禁止含 `pro`/`reasoner`/`thinking`，禁止 `gemma-4-12b-qat`
 
 2. **配置降级链**：编辑 `config/llm.yaml`（只写链结构，连接字段由 providers.yaml 注入——provider 名即 providers.yaml 键名）：
    ```yaml
    chains:
      refinement:
-       - provider: zhipu          # 主链（2026-08-18 用户定）：GLM-4.7-Flash 永久免费，限流/故障自动降级
+       - provider: agnes          # 主链（2026-08-22 用户定）：agnes-2.5-flash 免费，1-4s 快
+         model: agnes-2.5-flash
+       - provider: siliconflow    # 第二优先：DeepSeek-V4-Flash 免费，1-3s
+         model: deepseek-ai/DeepSeek-V4-Flash
+       - provider: zhipu          # 末位兜底：GLM-4.7-Flash 永久免费（实测慢 38s/次 + 高峰限流）
          model: glm-4.7-flash
-       - provider: deepseek        # 备用（付费）：主链不可用时兜底
-         model: deepseek-v4-flash
        - provider: rule
          action: drop_batch
    ```
 
 3. **设置提供商 Key**（按 providers.yaml 的 `api_key_env` 字段，示例）：
    ```bash
-   export ZHIPU_API_KEY="..."          # 智谱主链 key（GLM-4.7-Flash 免费，申请见 docs/guide/免费模型Key申请指南.md）
-   export SILICONFLOW_API_KEY="..."   # 硅基流动 key（向量 embedding 用，BAAI/bge-m3 免费，见 §12）
+   export AGNESAI_API_KEY="..."          # Agnes 主链 key（agnes-2.5-flash 免费，申请见 docs/guide/免费模型Key申请指南.md）
+   export SILICONFLOW_API_KEY="..."      # 硅基流动 key（DeepSeek-V4-Flash LLM 第二优先 + 向量 embedding BAAI/bge-m3 免费，见 §12）
+   export ZHIPU_API_KEY="..."            # 智谱兜底 key（GLM-4.7-Flash 永久免费）
    ```
 
 4. **启动 SGME**：
