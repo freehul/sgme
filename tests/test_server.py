@@ -127,7 +127,7 @@ def test_health_no_api_key_returns_200(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.0b4"
+    assert body["version"] == "1.0.0"
     assert "refinement" in body
     assert "watermark_age_sec" in body["refinement"]
 
@@ -292,10 +292,10 @@ def test_inject_custom_filter(client):
     memory_dao.insert_memory(
         mem_conn, content="测试项目", memory_type="persona",
         priority=80, time_velocity="static", ttl_days=None,
-        dimension_ids=["projects"],
+        dimension_ids=["goals"],
     )
     resp = client.post("/v1/inject", json={
-        "custom_filter": {"dimensions": ["projects"], "match": "any"},
+        "custom_filter": {"dimensions": ["goals"], "match": "any"},
     }, headers=AGENT_HEADERS)
     assert resp.status_code == 200
     body = resp.json()
@@ -337,7 +337,7 @@ def test_search_returns_trace(client, raw_dir):
     memory_dao.insert_memory(
         mem_conn, content="SGME 底座从 Fork 改为 Python 自研",
         memory_type="persona", priority=85, time_velocity="static",
-        ttl_days=None, dimension_ids=["projects", "tech_stack"],
+        ttl_days=None, dimension_ids=["goals", "tech_stack"],
         sources=[(f"{file_id}:1", "session")],
     )
 
@@ -345,7 +345,7 @@ def test_search_returns_trace(client, raw_dir):
     resp = client.post("/v1/search", json={
         "query": "SGME 底座",
         "scopes": ["memory"],
-        "dimensions": ["projects"],
+        "dimensions": ["goals"],
     }, headers=AGENT_HEADERS)
     assert resp.status_code == 200, resp.text
     body = resp.json()

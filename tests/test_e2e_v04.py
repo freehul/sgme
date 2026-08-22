@@ -255,7 +255,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
         {"content": "用户是独立开发者", "dimensions": ["身份"],
          "memory_type": "persona", "priority": 85, "time_velocity": "static",
          "source_message_ids": [1]},
-        {"content": "用户正在开发 SGME 记忆引擎", "dimensions": ["项目"],
+        {"content": "用户正在开发 SGME 记忆引擎", "dimensions": ["目标"],
          "memory_type": "persona", "priority": 80, "time_velocity": "dynamic",
          "source_message_ids": [2]},
     ])
@@ -359,7 +359,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.0b4"
+    assert body["version"] == "1.0.0"
     assert "available" in body["llm"]
     assert body["llm"]["available"] is True
     assert "stalled" in body["refinement"]
