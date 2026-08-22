@@ -316,18 +316,21 @@ def _embed_unavailable(monkeypatch):
 
 
 def test_prescreen_disabled_keeps_legacy(mem_conn, cfg, monkeypatch):
-    """prescreen 未启用（enabled=false）→ 不调 embed，走固定 50 摘要。"""
+    """prescreen 未启用（enabled=false）→ 不调 scene_vector_search（预筛），走固定 50 摘要。
+
+    注意：update 后向量回填（_refresh_scene_vector）仍会调 embed——这是 T-97 补完
+    的正确行为（场景正文变更需保持向量一致），与预筛无关，此处不拦。
+    """
     from sgme.data.search import vector as vector_mod
     cfg.setdefault("l2", {})["prescreen"] = {"enabled": False}
     sid = str(uuid.uuid4())
     scene_dao.insert_scene(mem_conn, scene_id=sid, title="工作", content="# 工作\n旧正文")
-    called = {"embed": 0}
-    orig_embed = vector_mod.embed
+    called = {"svs": 0}
 
-    def spy_embed(text, cfg, client=None):
-        called["embed"] += 1
-        return orig_embed(text, cfg, client=client)
-    monkeypatch.setattr(vector_mod, "embed", spy_embed)
+    def spy_svs(conn, vec, limit=10):
+        called["svs"] += 1
+        return []
+    monkeypatch.setattr(vector_mod, "scene_vector_search", spy_svs)
 
     mem = _make_memory(content="用户换了新项目", dim_ids=["projects"])
     body = json.dumps([
@@ -337,7 +340,7 @@ def test_prescreen_disabled_keeps_legacy(mem_conn, cfg, monkeypatch):
     cli = _mock_llm_client(body)
     result = l2.aggregate([mem], mem_conn, cfg, client=cli)
     assert sid in result.updated
-    assert called["embed"] == 0  # 未启用 → 不碰 embed
+    assert called["svs"] == 0  # 未启用 → 不碰场景向量预筛
 
 
 def test_prescreen_uses_vector_topk(mem_conn, cfg, monkeypatch):
@@ -406,6 +409,33 @@ def test_prescreen_union_dedup(mem_conn, cfg, monkeypatch):
     # 向量（A,C）+ 热度 top2（A,B）并集 → A,B,C 各一次，无重复
     assert len(ids) == len(set(ids)) == 3
     assert set(ids) == {"A", "B", "C"}
+
+
+def test_aggregate_create_backfills_scene_vector(mem_conn, cfg, monkeypatch):
+    """T-97 补完：create 落库后自动生成场景向量（预筛盲区修复）。
+
+    回归保护：upsert_scene_vector 此前无调用方，新建场景无向量 → 预筛不可见。
+    """
+    from sgme.data.search import vector as vector_mod
+    cfg.setdefault("l2", {})["prescreen"] = {"enabled": True}
+    # embed 返回固定向量 → upsert 走真实落库
+    monkeypatch.setattr(vector_mod, "embed", lambda text, cfg, client=None: [0.1, 0.2, 0.3])
+
+    mem = _make_memory(content="用户开始学 Rust", dim_ids=["tech_stack"])
+    body = json.dumps([
+        {"action": "create", "target_scene_id": "s-new",
+         "merged_content": "# Rust 学习\n用户开始学 Rust", "reason": "新主题"},
+    ])
+    cli = _mock_llm_client(body)
+    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    assert len(result.created) == 1
+    created_sid = result.created[0]
+    # scene_vectors 已有该场景的向量行
+    row = mem_conn.execute(
+        "SELECT scene_id, dims FROM scene_vectors WHERE scene_id=?", (created_sid,)
+    ).fetchone()
+    assert row is not None, "create 后必须回填场景向量（预筛盲区修复）"
+    assert row["dims"] == 3
 
 
 # ---------- check_scene_threshold ----------

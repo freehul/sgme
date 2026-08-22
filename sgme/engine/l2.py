@@ -330,6 +330,29 @@ def _resolve_budget(cfg: dict) -> int:
 
 # ---------- 落库 ----------
 
+def _refresh_scene_vector(
+    mem_conn: sqlite3.Connection,
+    scene_id: str,
+    content: str,
+    cfg: dict | None,
+) -> None:
+    """场景正文变更后刷新向量（T-97 补完，2026-08-22）。
+
+    盲区：upsert_scene_vector 此前无调用方，8-17 一次性回填后新建/合并场景
+    全部无向量 → L2 场景级向量预筛对它们不可见。create/merge/update 三动作
+    落库后均刷新，失败不阻塞（embed 不可达仅告警，热度 Top-N 兜底）。
+    """
+    if not cfg:
+        return
+    try:
+        from sgme.data.search import vector as vector_mod
+        ok = vector_mod.upsert_scene_vector(mem_conn, scene_id, content, cfg)
+        if not ok:
+            logger.warning("场景向量刷新失败（embed 不可达），预筛对该场景盲区: %s", scene_id)
+    except Exception as e:
+        logger.warning("场景向量刷新异常（不阻塞）: %s: %s", scene_id, e)
+
+
 def _extract_title(merged_content: str, fallback: str) -> str:
     """从 merged_content 第一行 `# xxx` 提取标题，否则用 fallback。"""
     for line in merged_content.splitlines():
@@ -344,6 +367,7 @@ def _apply_update(
     action: dict,
     batch_memory_ids: list[str],
     result: L2Result,
+    cfg: dict | None = None,
 ) -> None:
     """update：归档旧内容到 scene_versions + 更新正文 heat+1 + 关联记忆。"""
     sid = action["target_scene_id"]
@@ -364,6 +388,8 @@ def _apply_update(
     # 关联本批 memory
     for mid in batch_memory_ids:
         scene_dao.add_memory_link(mem_conn, scene_id=sid, memory_id=mid)
+    # T-97 补完：正文变更 → 刷新场景向量（保持预筛可见）
+    _refresh_scene_vector(mem_conn, sid, action["merged_content"], cfg)
     result.updated.append(sid)
 
 
@@ -372,6 +398,7 @@ def _apply_merge(
     action: dict,
     batch_memory_ids: list[str],
     result: L2Result,
+    cfg: dict | None = None,
 ) -> None:
     """merge：归档所有 merged_from 旧场景 + 新建合并场景 heat=sum+1 + 关联记忆。"""
     merged_from = action.get("merged_from", [])
@@ -413,6 +440,8 @@ def _apply_merge(
     # 关联本批 memory
     for mid in batch_memory_ids:
         scene_dao.add_memory_link(mem_conn, scene_id=new_id, memory_id=mid)
+    # T-97 补完：合并新场景 → 生成向量（保持预筛可见）
+    _refresh_scene_vector(mem_conn, new_id, content, cfg)
     result.merged.append(new_id)
 
 
@@ -421,6 +450,7 @@ def _apply_create(
     action: dict,
     batch_memory_ids: list[str],
     result: L2Result,
+    cfg: dict | None = None,
 ) -> None:
     """create：新建场景 heat=1 + 关联记忆。"""
     # id 由系统生成，不信 LLM 编造的假 uuid（模型会输出递增序列如 a1b2c3d4，重复则覆盖）
@@ -432,6 +462,8 @@ def _apply_create(
     )
     for mid in batch_memory_ids:
         scene_dao.add_memory_link(mem_conn, scene_id=new_id, memory_id=mid)
+    # T-97 补完：新建场景 → 生成向量（保持预筛可见）
+    _refresh_scene_vector(mem_conn, new_id, content, cfg)
     result.created.append(new_id)
 
 
@@ -624,11 +656,11 @@ def aggregate(
                 # 优先用动作指定的 memory_ids（精确关联）；缺失回退本批全部
                 mem_ids: list[str] = [x for x in (action.get("memory_ids") or batch_memory_ids) if x]
                 if action["action"] == "update":
-                    _apply_update(mem_conn, action, mem_ids, result)
+                    _apply_update(mem_conn, action, mem_ids, result, cfg)
                 elif action["action"] == "merge":
-                    _apply_merge(mem_conn, action, mem_ids, result)
+                    _apply_merge(mem_conn, action, mem_ids, result, cfg)
                 elif action["action"] == "create":
-                    _apply_create(mem_conn, action, mem_ids, result)
+                    _apply_create(mem_conn, action, mem_ids, result, cfg)
             except Exception as e:
                 # 单条 action 落库异常不阻塞其他
                 logger.warning("L2 动作落库异常 action=%s: %s", action.get("action"), e)
