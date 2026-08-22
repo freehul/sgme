@@ -32,9 +32,9 @@ from typing import Any
 logger = logging.getLogger("sgme.llm.resolve")
 
 # 动态链保留的静态兜底级数（agent 节点之后保留的静态链尾部，含 rule drop_batch）
-# 2026-08-22：2→3——提炼链扩展为 zhipu→agnes→deepseek→drop_batch 三层兜底后，
-# 只保留 2 层会把 agnes 免费层挤掉（agent_model 文件动态链丢失免费兜底）
-FALLBACK_TAIL_KEEP = 3
+# 2026-08-22：2→4——提炼链 4 层（agnes/siliconflow/zhipu/rule）全保留，
+# agent 前置其他模型时也不丢任何兜底层
+FALLBACK_TAIL_KEEP = 4
 
 
 def _parse_agent_model(agent_model: str) -> tuple[str, str] | None:
@@ -129,6 +129,15 @@ def resolve_refinement_chain(
             agent_node = _build_node(provider, model, providers,
                                      static_node=static_by_provider.get(provider))
 
+    # 静态链末位兜底 provider（rule 之前的最后一个 provider 节点）。
+    # 2026-08-22 用户定：zhipu 放最后——若 agent 声明的正是该末位兜底模型，
+    # **不前置为主**（它已在链尾兜底位，前置会违背「末位兜底」语义）。
+    last_resort_provider: str | None = None
+    for n in reversed(static_chain):
+        if n.get("provider") != "rule":
+            last_resort_provider = n.get("provider")
+            break
+
     # 静态链尾部兜底（保留 lm-studio + rule drop_batch 等既有尾部）
     tail = static_chain[-FALLBACK_TAIL_KEEP:] if len(static_chain) > 1 else static_chain
 
@@ -145,7 +154,12 @@ def resolve_refinement_chain(
         else:
             logger.warning("llm_override provider 不在 providers 表: %s，跳过指定", override.get("provider"))
     if agent_node:
-        dynamic.append(agent_node)
+        if agent_node.get("provider") == last_resort_provider:
+            logger.info(
+                "agent 声明末位兜底模型 %s，不前置（保持链尾兜底位）", last_resort_provider,
+            )
+        else:
+            dynamic.append(agent_node)
     if not dynamic:
         return static_chain  # 无可动态节点 → 原静态链
     # 去重：动态节点与尾部 provider 重复时去掉尾部对应项
