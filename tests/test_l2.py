@@ -303,6 +303,111 @@ def test_aggregate_records_refine_run(mem_conn, cfg):
     assert json.loads(runs[0]["action_counts"]) == {"create": 1}
 
 
+# ---------- T-97 场景级向量预筛 ----------
+
+@pytest.fixture(autouse=True)
+def _embed_unavailable(monkeypatch):
+    """默认 embed 不可达（测试环境无 embed 端点）→ 预筛回退固定摘要。
+
+    现有测试无需改动；预筛测试用显式 monkeypatch 覆盖本 fixture。
+    """
+    from sgme.data.search import vector as vector_mod
+    monkeypatch.setattr(vector_mod, "embed", lambda text, cfg, client=None: None)
+
+
+def test_prescreen_disabled_keeps_legacy(mem_conn, cfg, monkeypatch):
+    """prescreen 未启用（enabled=false）→ 不调 embed，走固定 50 摘要。"""
+    from sgme.data.search import vector as vector_mod
+    cfg.setdefault("l2", {})["prescreen"] = {"enabled": False}
+    sid = str(uuid.uuid4())
+    scene_dao.insert_scene(mem_conn, scene_id=sid, title="工作", content="# 工作\n旧正文")
+    called = {"embed": 0}
+    orig_embed = vector_mod.embed
+
+    def spy_embed(text, cfg, client=None):
+        called["embed"] += 1
+        return orig_embed(text, cfg, client=client)
+    monkeypatch.setattr(vector_mod, "embed", spy_embed)
+
+    mem = _make_memory(content="用户换了新项目", dim_ids=["projects"])
+    body = json.dumps([
+        {"action": "update", "target_scene_id": sid,
+         "merged_content": "# 工作\n新正文", "reason": "补充"},
+    ])
+    cli = _mock_llm_client(body)
+    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    assert sid in result.updated
+    assert called["embed"] == 0  # 未启用 → 不碰 embed
+
+
+def test_prescreen_uses_vector_topk(mem_conn, cfg, monkeypatch):
+    """预筛启用：向量 Top-K 命中的场景被喂给 LLM → update 命中该场景。"""
+    from sgme.data.search import vector as vector_mod
+    cfg.setdefault("l2", {})["prescreen"] = {"enabled": True, "vector_top_k": 5, "heat_top_n": 5}
+    sid = str(uuid.uuid4())
+    scene_dao.insert_scene(mem_conn, scene_id=sid, title="Rust", content="# Rust\n用户学 Rust")
+    other = str(uuid.uuid4())
+    scene_dao.insert_scene(mem_conn, scene_id=other, title="其他", content="# 其他\n无关")
+
+    monkeypatch.setattr(vector_mod, "embed", lambda text, cfg, client=None: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(
+        vector_mod, "scene_vector_search",
+        lambda conn, vec, limit=10: [{"scene_id": sid, "title": "Rust",
+                                      "content": "# Rust\n用户学 Rust", "heat": 1, "score": 0.9}],
+    )
+
+    mem = _make_memory(content="用户学 Rust 进阶", dim_ids=["tech_stack"])
+    body = json.dumps([
+        {"action": "update", "target_scene_id": sid,
+         "merged_content": "# Rust\n用户学 Rust 进阶", "reason": "补充"},
+    ])
+    cli = _mock_llm_client(body)
+    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    assert sid in result.updated
+
+
+def test_prescreen_fallback_when_embed_unavailable(mem_conn, cfg):
+    """预筛启用但 embed 不可达（autouse fixture）→ 回退固定 50 摘要（零回归）。"""
+    cfg.setdefault("l2", {})["prescreen"] = {"enabled": True}
+    sid = str(uuid.uuid4())
+    scene_dao.insert_scene(mem_conn, scene_id=sid, title="工作", content="# 工作\n旧正文")
+    mem = _make_memory(content="用户换了新项目", dim_ids=["projects"])
+    body = json.dumps([
+        {"action": "update", "target_scene_id": sid,
+         "merged_content": "# 工作\n新正文", "reason": "补充"},
+    ])
+    cli = _mock_llm_client(body)
+    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    assert sid in result.updated
+
+
+def test_prescreen_union_dedup(mem_conn, cfg, monkeypatch):
+    """向量 Top-K ∪ 热度 Top-N 并集按 scene_id 去重。"""
+    from sgme.data.search import vector as vector_mod
+    # 场景 A 同时被向量和热度召回 → 只出现一次；C 仅向量召回；B 仅热度召回
+    scene_dao.insert_scene(mem_conn, scene_id="A", title="A", content="# A")
+    scene_dao.update_scene_content(mem_conn, scene_id="A", content="# A", heat_increment=100)  # heat=101
+    scene_dao.insert_scene(mem_conn, scene_id="B", title="B", content="# B")
+    scene_dao.update_scene_content(mem_conn, scene_id="B", content="# B", heat_increment=50)   # heat=51
+    scene_dao.insert_scene(mem_conn, scene_id="C", title="C", content="# C")  # heat=1
+
+    monkeypatch.setattr(vector_mod, "embed", lambda text, cfg, client=None: [0.1, 0.2])
+    monkeypatch.setattr(
+        vector_mod, "scene_vector_search",
+        lambda conn, vec, limit=10: [
+            {"scene_id": "A", "title": "A", "content": "# A", "heat": 101, "score": 0.9},
+            {"scene_id": "C", "title": "C", "content": "# C", "heat": 1, "score": 0.7},
+        ],
+    )
+
+    prescreen = {"enabled": True, "vector_top_k": 10, "heat_top_n": 2}
+    cands = l2._prescreen_scenes(mem_conn, [_make_memory(content="A")], cfg, prescreen)
+    ids = [c["scene_id"] for c in cands]
+    # 向量（A,C）+ 热度 top2（A,B）并集 → A,B,C 各一次，无重复
+    assert len(ids) == len(set(ids)) == 3
+    assert set(ids) == {"A", "B", "C"}
+
+
 # ---------- check_scene_threshold ----------
 
 def test_check_scene_threshold_yellow(mem_conn, cfg):

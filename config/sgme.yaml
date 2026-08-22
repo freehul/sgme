@@ -26,6 +26,11 @@ l2:
     yellow: 150
     orange: 180
     red: 200
+  prescreen:
+    enabled: true          # T-97 场景级向量预筛（2026-08-22）：向量 Top-K ∪ 热度 Top-N
+    vector_top_k: 30       # 语义相似场景召回上限（场景总量 ~276，30 足够 LLM 做 update/merge 判断）
+    heat_top_n: 20         # 高热度兜底（无向量覆盖的活跃场景不丢）
+    fallback: full_recall  # embed 不可达 → 回退固定 50 摘要（原行为，宁多勿漏）
 search:
   vector:
     enabled: true
