@@ -1535,3 +1535,17 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 **运维影响**：NAS 生产 = sgme:1.0.0-nas-autoupd（正式版）；自动更新四段闭环（检测→提示→确认→执行）全部实测可用；后续发版用户 WebUI 点「立即更新」即可，无需人工 SSH。
 
 **遗留**：Gitee release 未建成——GITEE_TOKEN 401（过期），需用户更新 token 后补建；NAS 自动更新策略保持手动触发（用户确认后执行，不自动）。
+
+### B102. L2 场景聚合向量预筛（T-97，2026-08-22）
+
+**背景**：巡检发现 L2 场景 active=276 超配置上限 200（红警每轮触发）。根因=设计天花板——L2 每次只把**最多 50 个场景摘要**（updated_at DESC）喂 LLM，超出部分不可见，merge 收敛跟不上 create 增长。对策：对齐 T-25（l15.prescreen）模式给 L2 加**场景级向量预筛**。
+
+**改动**：
+1. `sgme/engine/l2.py`——新增 `_prescreen_scenes()`：本批记忆拼接文本 embed → `scene_vector_search` 召回向量 Top-K（默认 30）∪ active 场景按 heat DESC 取热度 Top-N（默认 20），按 scene_id 并集去重；`aggregate()` 在 `l2.prescreen.enabled=true` 时用预筛结果替代固定 50 摘要
+2. `config/sgme.yaml`——`l2.prescreen` 段（enabled/vector_top_k=30/heat_top_n=20/fallback=full_recall）
+3. `tests/test_l2.py`——+4 用例（未启用零回归 / 向量 Top-K 命中 update / embed 不可达回退 / 并集去重）；autouse fixture 模拟 embed 不可达，现有测试零改动
+4. 不删旧件：embed 不可达/未配置 → 回退固定 50 摘要（原行为）
+
+**验证**：test_l2 20 passed（原 16 + 新 4）+ 相关模块 47 passed；l15 4 个失败为预存在问题（projects 维度移除致 FK，stash 验证与本改动无关）。
+
+**运维影响**：L2 场景候选从「固定 50 个最新」变为「30 语义相似 + 20 高热度」；场景超限红警不消除（软策略），但 merge 命中率应提升，观察场景数增速；NAS 生产配置 `data/config/sgme.yaml` 需同步 l2.prescreen 段后重启生效。
