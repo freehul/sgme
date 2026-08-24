@@ -35,11 +35,11 @@ export interface PersonaReport {
 const BASE = '/v1/admin/persona'
 
 export function listTraits() {
-  return api.get<{ traits: PersonaTrait[]; count: number }>(`${BASE}/traits`)
+  return api.get<{ traits: PersonaTrait[]; count: number }>(`${BASE}/traits?_t=${Date.now()}`)
 }
 
 export function getMbti() {
-  return api.get<{ history: MbtiRecord[]; latest: MbtiRecord | null }>(`${BASE}/mbti`)
+  return api.get<{ history: MbtiRecord[]; latest: MbtiRecord | null }>(`${BASE}/mbti?_t=${Date.now()}`)
 }
 
 export function addMbti(mbti_type: string, note?: string) {
@@ -48,7 +48,7 @@ export function addMbti(mbti_type: string, note?: string) {
 
 export function listReports(limit = 12) {
   return api.get<{ reports: PersonaReport[]; count: number }>(
-    `${BASE}/reports?limit=${limit}`,
+    `${BASE}/reports?limit=${limit}&_t=${Date.now()}`,
   )
 }
 
