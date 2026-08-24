@@ -1563,3 +1563,19 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 **验证**：容器 healthy；health ok；active=265 无向量=0；红警消除（265 < 300）；场景间相似度 ≥0.85 仅 2 对证明粒度合理（非重复堆积）。
 
 **运维影响**：场景向量从此增量维护（预筛盲区消除）；场景数 265 在黄线 250 之上，继续观察——预筛让 LLM 能看到相似场景后 merge 收敛应提速，若持续增长逼近 300 再评估批量合并；旧场景全部 archived 可恢复（原件不删）。
+
+### B104. 人格洞察引擎三层落地：实时规则抽取 + 月度校准 + 注入消费（ST-35 / T-98~T-101，2026-08-25）
+
+**背景**：2026-08-25 用户定案——SGME 增加「AI 懂用户性格」能力（角色扮演客群卖点）。基于 L1/L2 三轮检索实测产出画像 v0.1 验证可行性后，用户指令「列入 backlog 开发计划，然后开始」。关键决策：①计时放 SGME 内部不放 agent 定时任务（agent 生命周期不可靠）；②MBTI 定位娱乐向展示皮，底层走特质累积模型（MBTI 重测信度低但传播广接受度高）；③零额外 token——实时抽取纯规则、月度校准走免费降级链每月一次。
+
+**改动**：
+1. `sgme/data/db.py`——PERSONA_TRAITS_DDL（persona_traits/user_mbti/persona_reports 三表）+ PERSONA_STATE_DDL（persona_state 计时状态）+ `_migrate_persona_tables` 幂等迁移挂 connect_memory
+2. `sgme/data/persona_dao.py`——upsert_trait 累积式写入（同 dimension+value+scene_context 证据累积、confidence 封顶 1.0）、supersede_trait/reject_trait（软删原件不删）、MBTI 轨迹 CRUD、报告存取、persona_state 读写；14 测试
+3. `sgme/engine/persona_extract.py`——DEFAULT_RULES 四维规则表（decision_style/work_style/quality_standard/responsibility 关键词匹配）+ extract_and_store（persona.rules 可配置覆盖、单次提炼单值最多 3 证据防刷分、溯源 refine:{file_id}）；挂入 refine.finalize_refinement 收尾（失败不阻塞）；8 测试
+4. `sgme/engine/persona_monthly.py`——run_calibration 月度校准（跨月到期判断+先落 last_run 防失败无限重试烧 token；输入 traits+当月记忆摘要截断控 token；复用 refinery.extract 免费链；变化检测连续 2 期同向才推 persona_change_confirmed 信号防 MBTI 式重测误报）+ Dream 同款 daemon 定时器（schedule_day/schedule_time 默认每月 1 日 03:30）；6 测试
+5. `sgme/profile/persona_block.py` + inject 挂载——性格参考块注入（准入门槛 confidence≥0.45 且 evidence≥3、每维度取最高置信一条、最多 6 条控 token、措辞用「倾向」禁标签判决）；inject() 失败不阻塞
+6. `sgme/server/routes_persona.py` 六端点（traits/mbti GET+POST/reports/calibrate 手动触发执行中 409）——app.py 按 persona.enabled 开关挂载 + lifespan 接线定时器启停；5 测试
+
+**验证**：persona 全系 39 用例全绿；test_care/test_dream 回归 96 passed；全量回归中 test_supersession/test_vector_connectivity 的 11 个失败经 git stash 对照确认为预存在环境问题与本改动无关。
+
+**运维影响**：新增 config persona 段（enabled/monthly.schedule_day/monthly.schedule_time/rules 可选覆盖）；老库重启自动补建四表零迁移操作；月度校准消耗约 1 次 LLM 调用/月（免费链内）；定时器随 Gateway 启停。

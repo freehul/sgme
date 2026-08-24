@@ -1352,7 +1352,7 @@ Query：`limit`（默认 50）/ `offset`（默认 0）——对齐 SCSM `list_te
 
 | 存储 | 位置 | 内容 |
 |---|---|---|
-| 记忆库 | `memory.db`（SQLite） | 记忆池：memories / memory_archive / memory_tags / memory_sources / dimension_registry / dimension_alias / refine_runs（提炼审计）/ memories_fts / memory_vectors / memory_stats / signal_events / signal_subscribers / scenes / scene_memories / scene_versions / scenes_fts / scene_vectors / demands / project_meta / dream_reports |
+| 记忆库 | `memory.db`（SQLite） | 记忆池：memories / memory_archive / memory_tags / memory_sources / dimension_registry / dimension_alias / refine_runs（提炼审计）/ memories_fts / memory_vectors / memory_stats / signal_events / signal_subscribers / scenes / scene_memories / scene_versions / scenes_fts / scene_vectors / demands / project_meta / dream_reports / persona_traits / user_mbti / persona_reports / persona_state |
 | 会话库 | `session.db`（SQLite） | raw_files / refine_cursor（原始层索引与提炼游标） |
 | Wiki 库 | `wiki.db`（SQLite） | wiki_pages / wiki_links（wiki 扩展模块） |
 | 原始层 | `raw/` 目录（MD 文件） | 自持会话文件（按会话组织）+ 喂入资料；正文不入 SQLite，raw_files 表只存索引 |
@@ -1526,6 +1526,17 @@ Query：`limit`（默认 50）/ `offset`（默认 0）——对齐 SCSM `list_te
 | archived_count | INTEGER | 冷归档数 |
 | summary | TEXT | 摘要 |
 | created_at | TEXT | 生成时刻 |
+
+**persona_traits / user_mbti / persona_reports / persona_state**（人格洞察四表，ST-35）
+
+| 表 | 关键字段 | 说明 |
+|---|---|---|
+| persona_traits | trait_id TEXT PK / dimension+value+scene_context / confidence REAL（0-1 累积封顶）/ evidence_count / evidence_refs JSON（溯源 memory/refine 来源）/ status（active/rejected/superseded/archived）/ superseded_by / source（rule/llm_monthly/manual） | 特质累积表——同 dimension+value+scene 重复出现则证据数+1、置信度增长；倾向而非判决，注入门槛 confidence≥0.45 且 evidence≥3 |
+| user_mbti | id INTEGER PK AUTOINCREMENT / mbti_type（4字母粗校验）/ source（self_reported/llm_monthly）/ note / recorded_at | 用户自报 MBTI 锚点轨迹（追加式不覆盖），与特质累积互为校验 |
+| persona_reports | report_id TEXT PK / period TEXT（YYYY-MM）/ report TEXT / mbti_result / trait_changes JSON | 月度校准报告（变化检测：连续 2 期同向才推 persona_change_confirmed 信号） |
+| persona_state | key TEXT PK / value / updated_at | 月度校准计时状态（last_run=上次执行月份），SGME 内部定时器防漏跑 |
+
+迁移方式：`_migrate_persona_tables` 幂等补建（不 bump SCHEMA_VERSION，同 ideas 模式）。HTTP 端点 `/v1/admin/persona/*` 六个（traits/mbti GET+POST/reports/calibrate），注入消费见 §22 inject 性格参考块。
 
 #### wiki.db
 
