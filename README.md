@@ -50,6 +50,11 @@ SGME doesn't just wait for you to ask. Your memory updates, mood shifts, upcomin
 
 <img src="assets/selling-point-10-care.png" alt="Proactive care" width="800"/>
 
+### Persona insight — it doesn't just remember facts, it understands who you are
+
+Every conversation quietly contributes to a living personality profile: decision style, work habits, quality standards — accumulated as evidence-weighted tendencies, never snap judgments. A monthly calibration refines the picture (with an entertainment-grade MBTI for fun), and the result is injected into every chat, so your AI doesn't just recall your past — it adapts to your character. All local, all traceable, toggleable anytime.
+
+
 ### Unified search — one query, all memories
 
 A single search endpoint recalls from the memory pool and the knowledge base at once: keyword + semantic + label triple fusion, every result traceable to its source. SGME memories, scenes, and knowledge base in one stop; agent-owned memory files are on the roadmap.
