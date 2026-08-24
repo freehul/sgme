@@ -42,6 +42,10 @@
   --info-soft: var(--brand-soft);
   --info-text: var(--brand-text);
 
+  /* 代码块（markdown pre） */
+  --code-bg: #f6f8fa;
+  --code-text: #1f2328;
+
   /* 语义 → 状态映射（active/ok/refined 等） */
   --st-ok: var(--success);
   --st-ok-soft: var(--success-soft);
@@ -121,6 +125,10 @@
   --warn-soft: #352a12;
   --danger: #f37676;
   --danger-soft: #3a1d1d;
+
+  /* 代码块（markdown pre） */
+  --code-bg: #1f2937;
+  --code-text: #f9fafb;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);

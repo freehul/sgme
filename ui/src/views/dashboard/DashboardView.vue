@@ -17,6 +17,7 @@ import {
   type UpdateRequest,
 } from '../../api/dashboard'
 import { ApiError } from '../../api/client'
+import { fmtTs } from '../../utils/format'
 
 const tab = ref<'overview' | 'anomaly'>('overview')
 
@@ -85,11 +86,6 @@ const RUN_STATUS_LABEL: Record<string, string> = {
   error: '失败',
 }
 
-function fmtTs(ts: string | null | undefined): string {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString()
-}
-
 function watermarkAge(sec: number | null | undefined): string {
   if (sec == null || sec < 0) return '暂无提炼'
   if (sec < 60) return `${sec}s`
@@ -120,7 +116,7 @@ const pipelineStages = computed(() => {
   if (!s) return []
   const max = Math.max(s.raw_files.total, 1)
   return [
-    { label: 'L0 原始待提炼', value: `${s.raw_files.new} 条`, pct: (s.raw_files.new / max) * 100, color: '#3B82F6' },
+    { label: 'L0 原始待提炼', value: `${s.raw_files.new} 条`, pct: (s.raw_files.new / max) * 100, color: 'var(--brand)' },
     { label: 'L1 提炼成功', value: `${s.raw_files.refined} 条`, pct: (s.raw_files.refined / max) * 100, color: '#6366F1' },
     { label: 'L1.5 冲突/失败', value: `${s.raw_files.error} 条`, pct: (s.raw_files.error / max) * 100, color: '#F59E0B' },
     { label: 'L2 场景', value: `${s.dimension_distribution.length} 维度`, pct: 0, color: '#10B981' },
@@ -318,8 +314,8 @@ onMounted(() => {
       <!-- 4. Token 用量 + 提炼记录 -->
       <section v-if="refineRuns" class="panel">
         <h3>
-          Token 用量统计
-          <span class="sub">prompt {{ tokenSummary.prompt }} / completion {{ tokenSummary.completion }} / total {{ tokenSummary.total }} tokens</span>
+          近期 Token 用量
+          <span class="sub">最近100次提炼 · prompt {{ tokenSummary.prompt }} / completion {{ tokenSummary.completion }} / total {{ tokenSummary.total }} tokens</span>
         </h3>
         <table class="tbl">
           <thead>
@@ -425,7 +421,7 @@ onMounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #3B82F6;
+  background: var(--brand);
   animation: pulse 1.6s ease-in-out infinite;
 }
 .update-sub {
@@ -438,7 +434,7 @@ onMounted(() => {
   gap: 10px;
 }
 .update-link {
-  color: #3B82F6;
+  color: var(--brand);
   font-size: 13px;
   text-decoration: none;
 }
@@ -449,7 +445,7 @@ onMounted(() => {
   padding: 6px 14px;
   border: none;
   border-radius: 6px;
-  background: #3B82F6;
+  background: var(--brand);
   color: #fff;
   font-size: 13px;
   font-weight: 500;
@@ -463,10 +459,10 @@ onMounted(() => {
 .update-msg {
   margin: 8px 0 0;
   font-size: 13px;
-  color: #3B82F6;
+  color: var(--brand);
 }
 .update-msg.err {
-  color: #ef4444;
+  color: var(--danger);
 }
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -493,12 +489,12 @@ onMounted(() => {
   gap: 6px;
 }
 .tabs-line button.active {
-  color: #3B82F6;
-  border-bottom-color: #3B82F6;
+  color: var(--brand);
+  border-bottom-color: var(--brand);
 }
 .badge-count {
-  background: rgba(239,68,68,.12);
-  color: #ef4444;
+  background: var(--danger-soft);
+  color: var(--danger);
   border-radius: 999px;
   padding: 1px 8px;
   font-size: 12px;

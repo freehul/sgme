@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { listScenes, setSceneStatus, type Scene } from '../../api/knowledge'
 import { ApiError } from '../../api/client'
+import { fmtTs } from '../../utils/format'
 
 const rows = ref<Scene[]>([])
 const total = ref(0)
@@ -28,11 +30,6 @@ const SORT_OPTIONS = [
   { value: 'updated_at', label: '更新时间' },
   { value: 'created_at', label: '创建时间' },
 ]
-
-function fmtTs(ts: string | null | undefined): string {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString()
-}
 
 // 场景标题提取：content 首行/首段才有可读性，title 是 merged_xxx 无意义
 function sceneTitle(sc: Scene): string {
@@ -90,7 +87,17 @@ async function changeStatus(status: string) {
   }
 }
 
-onMounted(load)
+// 路由带 :id 时（scene-detail）加载后自动选中对应场景；找不到则静默忽略保持列表态
+const route = useRoute()
+
+onMounted(async () => {
+  await load()
+  const id = route.params.id as string | undefined
+  if (id) {
+    const target = rows.value.find((s) => s.scene_id === id)
+    if (target) selected.value = target
+  }
+})
 </script>
 
 <template>

@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { listAgents, registerAgent, revokeAgent, type Agent } from '../../api/admin'
 import { ApiError } from '../../api/client'
+import { fmtTs } from '../../utils/format'
 
 const agents = ref<Agent[]>([])
 const loading = ref(false)
@@ -57,11 +58,6 @@ async function revoke(a: Agent) {
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : String(e)
   }
-}
-
-function fmtTs(ts: string | null): string {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString()
 }
 
 onMounted(load)

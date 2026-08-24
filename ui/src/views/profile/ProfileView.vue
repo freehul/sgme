@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { injectProfile, type InjectResponse } from '../../api/memory'
 import { ApiError } from '../../api/client'
+import PersonaSection from './PersonaSection.vue'
 
 const mode = ref('daily')
 const MODES = [
@@ -66,19 +67,21 @@ onMounted(load)
         </section>
       </div>
     </template>
+
+    <PersonaSection />
   </div>
 </template>
 
 <style scoped>
 .meta-bar { display: flex; gap: 16px; color: var(--muted); font-size: 13px; margin-bottom: 12px; }
-.tier0-ok { color: var(--success, #3fb950); }
-.tier0-miss { color: var(--warn, #d29922); }
+.tier0-ok { color: var(--success); }
+.tier0-miss { color: var(--warn); }
 .blocks { display: flex; flex-direction: column; gap: 14px; }
-.block { border: 1px solid var(--border, #30363d); border-radius: 8px; padding: 12px 14px; background: var(--bg-card, #161b22); }
+.block { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--surface); }
 .block.empty { opacity: 0.6; }
 .block-title { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
-.item { padding: 6px 0; border-bottom: 1px dashed var(--border, #30363d); }
+.item { padding: 6px 0; border-bottom: 1px dashed var(--border); }
 .item:last-child { border-bottom: none; }
 .item .content { margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
-.rel { font-size: 12px; color: var(--muted, #8b949e); }
+.rel { font-size: 12px; color: var(--text-muted); }
 </style>
