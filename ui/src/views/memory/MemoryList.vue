@@ -10,6 +10,7 @@ import {
   type MemoryDetail,
 } from '../../api/memory'
 import { ApiError } from '../../api/client'
+import { fmtTs } from '../../utils/format'
 
 const rows = ref<MemoryItem[]>([])
 const total = ref(0)
@@ -62,11 +63,6 @@ const DIM_COLOR: Record<string, string> = {
 
 function dimClass(d: string): string {
   return `dim-tag dimtag-${DIM_COLOR[d] || 'neutral'}`
-}
-
-function fmtTs(ts: string | null | undefined): string {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString()
 }
 
 async function load() {

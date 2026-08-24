@@ -309,7 +309,7 @@ onMounted(load)
 .markdown-content :deep(h3) { font-size: 16px; }
 .markdown-content :deep(p) { margin: 8px 0; }
 .markdown-content :deep(code) { background: var(--surface-muted); padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: 13px; color: var(--danger); }
-.markdown-content :deep(pre) { background: #1f2937; color: #f9fafb; padding: 14px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
+.markdown-content :deep(pre) { background: var(--code-bg); color: var(--code-text); padding: 14px; border-radius: 8px; overflow-x: auto; margin: 12px 0; }
 .markdown-content :deep(pre code) { background: transparent; color: inherit; padding: 0; }
 .markdown-content :deep(ul), .markdown-content :deep(ol) { padding-left: 22px; margin: 8px 0; }
 .markdown-content :deep(li) { margin: 4px 0; }

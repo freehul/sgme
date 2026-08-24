@@ -3,8 +3,6 @@ import { onMounted, ref } from 'vue'
 import { getConfig, updateConfig } from '../../api/admin'
 import { ApiError } from '../../api/client'
 
-const wiki = ref({ enabled: true })
-const skills = ref<Record<string, unknown>>({})
 const config = ref<Record<string, unknown>>({})
 const loading = ref(true)
 const saving = ref(false)
@@ -14,7 +12,12 @@ const saved = ref('')
 const EXT_MODULES = [
   { key: 'wiki', label: 'Wiki 知识库', desc: '启用后侧栏显示知识库导航项' },
   { key: 'skills', label: 'Skills Hub 技能仓库', desc: '启用后侧栏显示技能仓库导航项' },
+  { key: 'persona', label: 'Persona 用户画像', desc: '启用后画像页可编辑用户画像' },
+  { key: 'care', label: 'Care Engine 关怀引擎', desc: '启用后侧栏显示角色/关怀信号导航项' },
 ]
+
+// 各模块当前开关状态（key → enabled）
+const moduleState = ref<Record<string, boolean>>({})
 
 async function load() {
   loading.value = true
@@ -22,9 +25,14 @@ async function load() {
   try {
     const data = await getConfig()
     config.value = data.config
-    const wikiCfg = data.config.wiki as Record<string, unknown> | undefined
-    wiki.value = { enabled: wikiCfg?.enabled ?? true }
-    skills.value = (data.config.skills_hub as Record<string, unknown>) || {}
+    const next: Record<string, boolean> = {}
+    for (const m of EXT_MODULES) {
+      // skills_hub 在配置里是 skills_hub，其余与 key 同名
+      const cfgKey = m.key === 'skills' ? 'skills_hub' : m.key
+      const cfg = data.config[cfgKey] as Record<string, unknown> | undefined
+      next[m.key] = cfg?.enabled ?? true
+    }
+    moduleState.value = next
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : String(e)
   } finally {
@@ -34,12 +42,8 @@ async function load() {
 
 async function toggle(key: string, v: boolean) {
   try {
-    if (key === 'wiki') {
-      await updateConfig('wiki', { enabled: v })
-      wiki.value.enabled = v
-    } else {
-      await updateConfig('skills_hub', { enabled: v })
-    }
+    await updateConfig(key === 'skills' ? 'skills_hub' : key, { enabled: v })
+    moduleState.value[key] = v
     saved.value = '已保存'
     setTimeout(() => (saved.value = ''), 2000)
   } catch (e) {
@@ -59,19 +63,16 @@ onMounted(load)
       <p v-if="loading" class="empty">加载中…</p>
 
       <div v-else class="ext-list">
-        <div class="ext-row">
+        <div v-for="m in EXT_MODULES" :key="m.key" class="ext-row">
           <div class="ext-info">
-            <div class="ext-name">Wiki 知识库</div>
-            <div class="ext-desc">启用后侧栏显示知识库导航项</div>
+            <div class="ext-name">{{ m.label }}</div>
+            <div class="ext-desc">{{ m.desc }}</div>
           </div>
-          <button class="toggle-switch" :class="{ active: wiki.enabled }" @click="toggle('wiki', !wiki.enabled)" />
-        </div>
-        <div class="ext-row">
-          <div class="ext-info">
-            <div class="ext-name">Skills Hub 技能仓库</div>
-            <div class="ext-desc">启用后侧栏显示技能仓库导航项</div>
-          </div>
-          <button class="toggle-switch" :class="{ active: !!skills.enabled }" @click="toggle('skills', !skills.enabled)" />
+          <button
+            class="toggle-switch"
+            :class="{ active: moduleState[m.key] }"
+            @click="toggle(m.key, !moduleState[m.key])"
+          />
         </div>
       </div>
 

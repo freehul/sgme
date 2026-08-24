@@ -7,6 +7,7 @@ import {
   type CareSignal,
 } from '../../api/roles'
 import { ApiError } from '../../api/client'
+import { fmtTs } from '../../utils/format'
 
 const signals = ref<CareSignal[]>([])
 const loading = ref(false)
@@ -18,20 +19,15 @@ const unconsumedOnly = ref(false)
 const busy = ref(false)
 
 const TYPE_LABEL: Record<string, { label: string; color: string }> = {
-  care_todo_due: { label: '待办提醒', color: '#ff9800' },
-  care_mood: { label: '情绪关怀', color: '#e91e63' },
-  care_overwork: { label: '过劳预警', color: '#f44336' },
-  care_daily: { label: '每日问候', color: '#4caf50' },
-  memory_updated: { label: '记忆更新', color: '#2196f3' },
+  care_todo_due: { label: '待办提醒', color: 'var(--warn)' },
+  care_mood: { label: '情绪关怀', color: '#e91e63' }, // 保留品牌外情感色，无对应语义 token
+  care_overwork: { label: '过劳预警', color: 'var(--danger)' },
+  care_daily: { label: '每日问候', color: 'var(--success)' },
+  memory_updated: { label: '记忆更新', color: 'var(--brand)' },
 }
 
 function typeInfo(t: string) {
-  return TYPE_LABEL[t] || { label: t, color: '#9e9e9e' }
-}
-
-function fmtTs(ts: string | null): string {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString()
+  return TYPE_LABEL[t] || { label: t, color: 'var(--text-faint)' }
 }
 
 function parsePayload(p: string): Record<string, unknown> {
@@ -219,7 +215,7 @@ onMounted(load)
   padding: 3px 10px;
   border-radius: 12px;
   font-size: 12px;
-  background: color-mix(in srgb, var(--accent, #4a9eff) 12%, transparent);
+  background: color-mix(in srgb, var(--brand) 12%, transparent);
 }
 .type-tag {
   padding: 2px 8px;
@@ -232,7 +228,7 @@ onMounted(load)
 .sig-content { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sig-id { font-size: 11px; opacity: 0.5; }
 .ts-cell { font-size: 12px; opacity: 0.7; white-space: nowrap; }
-.consumed { color: var(--ok, #4caf50); font-size: 12px; }
-.pending { color: var(--warn, #ff9800); font-size: 12px; }
+.consumed { color: var(--success); font-size: 12px; }
+.pending { color: var(--warn); font-size: 12px; }
 .hint { margin-top: 12px; font-size: 12px; opacity: 0.55; }
 </style>

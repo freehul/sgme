@@ -3,6 +3,7 @@ import { ref, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getMemory, rejectMemory, unrejectMemory, type MemoryDetail, type MemorySource } from '../../api/memory'
 import { ApiError } from '../../api/client'
+import { fmtTs } from '../../utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -56,11 +57,6 @@ async function unreject() {
   } finally {
     busy.value = false
   }
-}
-
-function fmtTs(ts: string | null | undefined): string {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString()
 }
 
 watch(id, () => load(), { immediate: true })

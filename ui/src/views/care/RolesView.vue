@@ -8,6 +8,7 @@ import {
   type AssembleResp, type RoleCardData, type RoleItem,
 } from '../../api/roles'
 import { ApiError } from '../../api/client'
+import { fmtTs } from '../../utils/format'
 
 const roles = ref<RoleItem[]>([])
 const loading = ref(false)
@@ -57,11 +58,6 @@ function careSummary(r: RoleItem): string {
   return Object.keys(c.trigger_rules)
     .map((k) => TRIGGER_HINTS[k] || k)
     .join(' · ')
-}
-
-function fmtTs(ts: string | null | undefined): string {
-  if (!ts) return '—'
-  return new Date(ts).toLocaleString()
 }
 
 async function load() {
@@ -413,20 +409,20 @@ onMounted(load)
   gap: 8px;
 }
 .role-card {
-  border: 1px solid var(--border, #444);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
   cursor: pointer;
   transition: border-color 0.15s;
 }
-.role-card:hover { border-color: var(--accent, #4a9eff); }
-.role-card.active { border-color: var(--accent, #4a9eff); background: color-mix(in srgb, var(--accent, #4a9eff) 8%, transparent); }
+.role-card:hover { border-color: var(--brand); }
+.role-card.active { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 8%, transparent); }
 .role-card-head { display: flex; justify-content: space-between; align-items: baseline; }
 .role-name { font-weight: 600; font-size: 15px; }
 .role-id { font-size: 12px; opacity: 0.6; }
 .role-desc { font-size: 13px; opacity: 0.85; margin: 4px 0; }
 .role-meta { display: flex; justify-content: space-between; font-size: 12px; opacity: 0.6; }
-.care-summary { color: var(--accent, #4a9eff); }
+.care-summary { color: var(--brand); }
 .role-id-tag { font-size: 12px; opacity: 0.6; }
 .active-badge {
   display: inline-block;
@@ -434,16 +430,16 @@ onMounted(load)
   padding: 2px 8px;
   border-radius: 10px;
   font-size: 12px;
-  color: var(--ok, #4caf50);
-  border: 1px solid var(--ok, #4caf50);
+  color: var(--success);
+  border: 1px solid var(--success);
 }
 .asm-title { margin: 8px 0 4px; font-size: 13px; opacity: 0.8; }
 .trigger-list { list-style: none; padding: 0; margin: 6px 0; }
 .trigger-list li { display: flex; gap: 8px; font-size: 13px; padding: 2px 0; }
-.trigger-key { color: var(--accent, #4a9eff); white-space: nowrap; }
+.trigger-key { color: var(--brand); white-space: nowrap; }
 .trigger-desc { opacity: 0.85; }
 .persona-text {
-  background: var(--bg2, #1a1a1f);
+  background: var(--surface-muted);
   border-radius: 6px;
   padding: 10px;
   font-size: 13px;

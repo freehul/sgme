@@ -54,7 +54,7 @@ export async function autoFillKeys(): Promise<{ filledAdmin: boolean; filledAgen
 
 // 需要 Agent Key 的端点路径前缀（后端 require_agent_key 的端点走 agent key：
 // /v1/search、/v1/wiki/*、/v1/admin/roles/*、/v1/admin/care/*）
-const AGENT_KEY_PATHS = ['/v1/wiki/', '/v1/search', '/v1/admin/roles/', '/v1/admin/care/']
+const AGENT_KEY_PATHS = ['/v1/wiki/', '/v1/search', '/v1/admin/roles/', '/v1/admin/care/', '/v1/admin/persona/']
 
 function pickKey(path: string, explicit?: string): string {
   if (explicit) return explicit
