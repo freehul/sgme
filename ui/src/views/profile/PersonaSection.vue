@@ -92,6 +92,9 @@ async function runCalibrate() {
     busy.value = false
   }
 }
+
+// 挂载即拉取数据（修复：此前 load() 未绑定 onMounted，区块永远显示空态）
+onMounted(load)
 </script>
 
 <template>
