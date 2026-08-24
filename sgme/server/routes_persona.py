@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from sgme.data import persona_dao
@@ -41,11 +41,13 @@ def _mem(request: Request) -> sqlite3.Connection:
 @router.get("/v1/admin/persona/traits")
 def list_traits(
     request: Request,
+    response: Response,
     dimension: str | None = None,
     status: str = "active",
     min_confidence: float | None = None,
     _: str = Depends(require_agent_key),
 ):
+    response.headers["Cache-Control"] = "no-store"
     traits = persona_dao.list_traits(
         _mem(request),
         dimension=dimension,
@@ -61,9 +63,11 @@ def list_traits(
 @router.get("/v1/admin/persona/mbti")
 def mbti_history(
     request: Request,
+    response: Response,
     _: str = Depends(require_agent_key),
 ):
     mem = _mem(request)
+    response.headers["Cache-Control"] = "no-store"
     return {
         "history": persona_dao.get_mbti_history(mem),
         "latest": persona_dao.get_latest_mbti(mem),
@@ -90,9 +94,11 @@ def add_mbti(
 @router.get("/v1/admin/persona/reports")
 def list_reports(
     request: Request,
+    response: Response,
     limit: int = 12,
     _: str = Depends(require_agent_key),
 ):
+    response.headers["Cache-Control"] = "no-store"
     reports = persona_dao.list_reports(_mem(request), limit=limit)
     return {"reports": reports, "count": len(reports)}
 
