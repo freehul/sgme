@@ -17,6 +17,7 @@ const loading = ref(true)
 const error = ref('')
 const msg = ref('')
 const busy = ref(false)
+const originDebug = ref(window.location.origin)
 
 // 自报 MBTI 表单
 const mbtiDraft = ref('')
@@ -96,7 +97,7 @@ async function runCalibrate() {
 <template>
   <div class="persona-block">
     <div class="pb-head">
-      <h3>性格参考 <span class="pb-sub">人格洞察引擎 · 倾向而非判决</span></h3>
+      <h3>性格参考 <span class="pb-sub">{{ originDebug }} · 倾向而非判决</span></h3>
       <div class="pb-actions">
         <button class="btn btn-sm" :disabled="busy" @click="showMbtiForm = !showMbtiForm">
           {{ showMbtiForm ? '取消' : '自报 MBTI' }}
