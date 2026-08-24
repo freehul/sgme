@@ -20,6 +20,7 @@ const keySaved = ref(!!getAdminKey())
 const keyVisible = ref(false)
 const agentDraft = ref(getAgentKey())
 const agentSaved = ref(!!getAgentKey())
+const agentVisible = ref(false)
 const searchQ = ref('')
 // 密钥输入区可折叠（默认收起，减少侧栏占用）
 const keyCollapsed = ref(true)
@@ -131,8 +132,8 @@ function goSearch() {
               placeholder="Admin Key"
               @keyup.enter="saveKey"
             />
-            <button class="btn btn-ico" :title="keyVisible ? '隐藏' : '显示'" @click="keyVisible = !keyVisible">
-              {{ keyVisible ? '🙈' : '🙉' }}
+            <button class="btn btn-ico" :title="keyVisible ? '隐藏' : '显示'" :aria-label="keyVisible ? '隐藏 Admin Key' : '显示 Admin Key'" @click="keyVisible = !keyVisible">
+              {{ keyVisible ? '👁' : '👁‍🗨' }}
             </button>
           </div>
           <div class="key-row">
@@ -142,10 +143,13 @@ function goSearch() {
           <div class="key-row">
             <input
               v-model="agentDraft"
-              type="password"
-              placeholder="Agent Key（Wiki/检索）"
+              :type="agentVisible ? 'text' : 'password'"
+              placeholder="Agent Key（检索/Wiki/画像）"
               @keyup.enter="saveAgent"
             />
+            <button class="btn btn-ico" :title="agentVisible ? '隐藏' : '显示'" :aria-label="agentVisible ? '隐藏 Agent Key' : '显示 Agent Key'" @click="agentVisible = !agentVisible">
+              {{ agentVisible ? '👁' : '👁‍🗨' }}
+            </button>
           </div>
           <div class="key-row">
             <button class="btn btn-sm" style="flex: 1" @click="saveAgent">{{ agentSaved ? '更新' : '保存' }} Agent</button>

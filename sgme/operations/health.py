@@ -48,7 +48,7 @@ logger = logging.getLogger("sgme.operations.health")
 # 版本号：原先硬编码在 routes_memory.health_check 与 mcp_server.health 两处，
 # v0.7 收敛到此单点常量。取值与 sgme.__version__ 一致（两者的统一属 v0.8 清理项，
 # 此处不直接引用 __version__，避免版本号变更静默改动 API 契约字段）。
-SGME_VERSION: str = "1.0.0"
+SGME_VERSION: str = "1.0.1"
 
 
 def watermark_age_sec(last_refined_at: str | None) -> int | None:
