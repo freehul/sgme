@@ -327,6 +327,13 @@ def finalize_refinement(
     except Exception as e:
         logger.warning("信号发布失败（不阻塞）: %s", e)
 
+    # ST-35 T-99：人格特质实时抽取（零 LLM 规则，失败不阻塞）
+    try:
+        from sgme.engine import persona_extract
+        persona_extract.extract_and_store(result, mem_conn, cfg)
+    except Exception as e:
+        logger.warning("特质抽取异常（不阻塞）: %s", e)
+
 
 def refine_batch(
     mem_conn: sqlite3.Connection,

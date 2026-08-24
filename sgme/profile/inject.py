@@ -187,4 +187,17 @@ def inject(
         query_section(mem_conn, s, dimensions)
         for s in template.get("sections", [])
     ]
-    return build_inject_blocks(template, section_results, tier0_summary=tier0_summary)
+    result = build_inject_blocks(template, section_results, tier0_summary=tier0_summary)
+    # ST-35 T-101：性格参考块（失败不阻塞注入）
+    try:
+        from sgme.profile.persona_block import build_persona_block
+        block = build_persona_block(mem_conn)
+        if block is not None:
+            result["blocks"].append(block["block"])
+            result["stats"]["persona_present"] = True
+            result["stats"]["tokens_est"] += block["tokens"]
+        else:
+            result["stats"]["persona_present"] = False
+    except Exception:
+        result["stats"]["persona_present"] = False
+    return result

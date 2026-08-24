@@ -625,11 +625,22 @@ def create_app(
             asyncio.create_task(heartbeat_task(app))
             asyncio.create_task(update_check_task(app))
             _start_batch_scan_scheduler(app)
+            # ST-35 T-101：人格月度校准定时器（失败不阻断启动）
+            try:
+                from sgme.engine import persona_monthly
+                persona_monthly.ensure_scheduler(cfg, data_dir=d)
+            except Exception as e:
+                print(f"[SGME persona] 月度校准定时器启动失败（不影响启动）: {e}")
         yield
         # Batch 兜底扫描定时器线程（daemon）：置位 stop 并 join（幂等，未启动无副作用）
         try:
             from sgme.engine import batch_scan as batch_scan_mod
             batch_scan_mod.stop_scheduler(timeout=2.0)
+        except Exception:
+            pass
+        try:
+            from sgme.engine import persona_monthly
+            persona_monthly.stop_scheduler(timeout=2.0)
         except Exception:
             pass
         if own_conns:
@@ -682,6 +693,10 @@ def create_app(
     if cfg.get("care", {}).get("enabled", True):
         from sgme.server.routes_care import router as care_router
         app.include_router(care_router)
+    # persona 扩展模块（ST-35 人格洞察；persona.enabled=false 时不挂载）
+    if cfg.get("persona", {}).get("enabled", True):
+        from sgme.server.routes_persona import router as persona_router
+        app.include_router(persona_router)
 
     # ---- WebUI 自动填充密钥端点（2026-08-13 用户需求）----
     # 仅限**本机回环来源**可用（不要求 key 鉴权——前端首次打开无 key 无法鉴权，
