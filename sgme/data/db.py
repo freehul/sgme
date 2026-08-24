@@ -25,8 +25,8 @@ db.py 保持零 FTS、零 search 依赖。
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC
 from pathlib import Path
-from typing import Any
 
 from sgme import config
 
@@ -359,16 +359,17 @@ CREATE TABLE IF NOT EXISTS dream_reports (
 
 def _now_iso() -> str:
     """UTC ISO 8601 时间戳。"""
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    from datetime import datetime
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     """打开 SQLite 连接：启用 WAL、外键、row_factory。
 
-    check_same_thread=False：FastAPI 把同步端点丢到 threadpool 执行，
-    连接需跨线程复用。SQLite WAL 模式 + 单用户 Server 场景下安全
-   （读不阻塞、写由 SQLite 文件锁串行）。
+     check_same_thread=False：FastAPI 把同步端点丢到 threadpool 执行，
+     连接需跨线程复用。SQLite WAL 模式 + 单用户 Server 场景下安全
+    （读不阻塞、写由 SQLite 文件锁串行）。
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -411,6 +412,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_ideas_table(conn)
     _migrate_signal_consumed_by(conn)
     _migrate_signal_acks_table(conn)
+    _migrate_persona_tables(conn)
     return conn
 
 
@@ -479,8 +481,7 @@ def _migrate_wiki_evolve_table(conn: sqlite3.Connection) -> None:
     照 _migrate_ingest_tasks_table 先例：CREATE TABLE IF NOT EXISTS 幂等；
     与 memory 提炼的 refine_cursor 完全分离（P0-2 修正：不复用同一水位）。
     """
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS wiki_evolve (
           session_key TEXT PRIMARY KEY,
           status TEXT NOT NULL DEFAULT 'queued',
@@ -490,8 +491,7 @@ def _migrate_wiki_evolve_table(conn: sqlite3.Connection) -> None:
           error TEXT,
           created_at TEXT,
           processed_at TEXT)
-        """
-    )
+        """)
     conn.commit()
 
 
@@ -554,7 +554,9 @@ def _migrate_mem_status(conn: sqlite3.Connection) -> None:
     """
     cols = [r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()]
     if "status" not in cols:
-        conn.execute("ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        conn.execute(
+            "ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+        )
         conn.execute("ALTER TABLE memories ADD COLUMN rejected_at TEXT")
         conn.execute("ALTER TABLE memories ADD COLUMN reject_reason TEXT")
         conn.commit()
@@ -634,7 +636,9 @@ def _migrate_dim_boundaries(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if not has_table:
         return
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(dimension_registry)").fetchall()]
+    cols = [
+        r[1] for r in conn.execute("PRAGMA table_info(dimension_registry)").fetchall()
+    ]
     if "boundaries" not in cols:
         conn.execute("ALTER TABLE dimension_registry ADD COLUMN boundaries TEXT")
         conn.commit()
@@ -664,6 +668,66 @@ def _migrate_dream_reports_table(conn: sqlite3.Connection) -> None:
     幂等性：CREATE TABLE IF NOT EXISTS，重复调用无副作用。
     """
     conn.executescript(DREAM_REPORTS_DDL)
+    conn.commit()
+
+
+# ---------- ST-35 T-98：人格洞察（memory.db，独立 DDL 常量） ----------
+# persona_traits：特质累积表——dimension/value/confidence/evidence_refs/scene_context。
+# 设计原则（2026-08-25 用户定案）：产出是「倾向」不是标签判决；单条记忆不改写
+# 整体画像（confidence 随证据数累积）；Supersession 复用画像 v2 规则（非累积覆盖）。
+# user_mbti：用户自报 MBTI 锚点（娱乐向展示皮），记录轨迹（INTJ→INFJ 变化可视化），
+# 与 traits 累积模型互为校验，不强制换算。
+PERSONA_TRAITS_DDL = """
+CREATE TABLE IF NOT EXISTS persona_traits (
+  trait_id TEXT PRIMARY KEY,
+  dimension TEXT NOT NULL,
+  value TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.0,
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  evidence_refs TEXT,
+  scene_context TEXT NOT NULL DEFAULT 'general',
+  status TEXT NOT NULL DEFAULT 'active',
+  superseded_by TEXT,
+  source TEXT NOT NULL DEFAULT 'rule',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_persona_traits_dim ON persona_traits(dimension, status, confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_persona_traits_updated ON persona_traits(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_mbti (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mbti_type TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'self_reported',
+  note TEXT,
+  recorded_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_user_mbti_time ON user_mbti(recorded_at DESC);
+
+CREATE TABLE IF NOT EXISTS persona_reports (
+  report_id TEXT PRIMARY KEY,
+  period TEXT NOT NULL,
+  report TEXT NOT NULL,
+  mbti_result TEXT,
+  trait_changes TEXT,
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_persona_reports_period ON persona_reports(period DESC);
+"""
+
+PERSONA_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS persona_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL);
+"""
+
+
+def _migrate_persona_tables(conn: sqlite3.Connection) -> None:
+    """ST-35 人格洞察三表（persona_traits/user_mbti/persona_reports）+ 计时状态表。
+
+    与 _migrate_ideas_table 同模式：不进 MEMORY_DDL、不 bump SCHEMA_VERSION，
+    CREATE TABLE IF NOT EXISTS 幂等，老库重启自动补建。
+    """
+    conn.executescript(PERSONA_TRAITS_DDL)
+    conn.executescript(PERSONA_STATE_DDL)
     conn.commit()
 
 
@@ -742,6 +806,7 @@ def init_databases(
 
 # ---------- D1：三库连接的对外统一命名（connect_* 保留为等价别名） ----------
 
+
 def get_memory_conn(data_dir: str | Path | None = None) -> sqlite3.Connection:
     """memory.db：记忆池 + L2 场景系列 + 向量 + 信号 + 提炼审计 + memory_stats。"""
     return connect_memory(data_dir)
@@ -763,6 +828,7 @@ def get_wiki_conn(data_dir: str | Path | None = None) -> sqlite3.Connection:
 
 # ---------- 0.8 ST-16：project_meta 迁移 ----------
 
+
 def _migrate_project_meta_table(conn: sqlite3.Connection) -> None:
     """新库/老库迁移：memory.db 建 project_meta 项目注册表（0.8 ST-16，2026-08-09）。
 
@@ -779,6 +845,7 @@ def _migrate_project_meta_table(conn: sqlite3.Connection) -> None:
 
 
 # ---------- 0.8 T-13：ingest_tasks 迁移 ----------
+
 
 def _migrate_ingest_tasks_table(conn: sqlite3.Connection) -> None:
     """新库/老库迁移：wiki.db 建 ingest_tasks 任务表（0.8 T-13，2026-08-10）。
