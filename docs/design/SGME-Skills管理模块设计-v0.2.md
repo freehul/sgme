@@ -22,7 +22,7 @@
 |---|---|---|---|
 | 真源 | skills-hub.git（NAS裸仓） | 技能字节+完整历史 | 不可接受（多clone容灾） |
 | 索引 | **skills.db**（新建，可重建派生物） | name/tags/description/pattern/category/embedding/content_hash/revision/usage统计 | 无所谓，从git全量重建 |
-| 检索 | SGME 联邦层 | 记忆/wiki/技能统一语义搜索入口 | — |
+| 检索 | SGME 统一搜索（ST-24 多源统一检索） | 记忆/wiki/技能统一语义搜索入口 | — |
 | 运行时 | agent 本地 | 索引文件 + 读缓存 | 可随时丢弃 |
 
 **与 wiki.db 的关系：分立，不共享。** 判据=生命周期相同才同居：
