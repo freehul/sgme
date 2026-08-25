@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("sgme.server")
@@ -649,6 +650,15 @@ def create_app(
             db_mod.close(wiki_conn)
 
     app = FastAPI(title="SGME", version="1.0.1", docs_url="/docs", lifespan=lifespan)
+
+    # CORS：允许局域网来源（TackMark 等 HTML 工具需 fetch 页面内容做标注；
+    # 鉴权仍由 X-API-Key 承担，开放 CORS 不降低安全性）
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # 挂载应用状态
     app.state.cfg = cfg
