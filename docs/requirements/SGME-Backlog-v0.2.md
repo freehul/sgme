@@ -178,6 +178,7 @@
 | T-101 | Task | 注入消费：inject 画像段加性格参考块 | ST-35 | ✅ 已解决 | — | **已完成（2026-08-25）**：①sgme/profile/persona_block.py——build_persona_block（准入门槛 confidence≥0.45 且 evidence_count≥3、每维度只取最高置信一条、最多 6 条控 token、措辞「倾向X（高/中/初步置信）」）②profile/inject.py inject() 末尾追加性格参考块（失败不阻塞注入，stats.persona_present 标注）③sgme/server/routes_persona.py 六端点（traits 列表 / mbti 轨迹+追加 / reports 列表+详情 / calibrate 手动触发，执行中 409；persona.enabled 开关挂载同 care 模式）④app.py lifespan 接线 persona_monthly.ensure_scheduler/stop_scheduler⑤测试 test_routes_persona.py 5 用例全绿；persona 全系 39 用例绿 |
 | T-102 | Task | WebUI 性格区块：六维雷达图 + MBTI 轨迹时间线 + 证据链溯源 + 月报查看 | ST-35 | ✅ 已解决 | — | **已完成（2026-08-25）**：①ui/src/api/persona.ts——traits/mbti(GET+POST)/reports/calibrate 五封装②ui/src/views/profile/PersonaSection.vue——用户画像页新增「性格参考」区块：MBTI 轨迹时间线（自报+月度来源标注）+ 特质倾向列表（置信度进度条、证据数、高/中/初步分级，替代雷达图的朴素实现——数据量小阶段条形比雷达更易读）+ 月度洞察报告（近3期）+ 自报 MBTI 表单 + 手动校准按钮；全 token 变量无硬编码色③ProfileView 挂载④npm run build 通过（1.30s）；措辞遵守 AC「倾向而非判决」 |
 | T-103 | Task | 文档收尾：架构 §数据模型/§24 + 变更记录 B 系列 + README 卖点段 | ST-35 | ✅ 已解决 | — | **已完成（2026-08-25）**：①变更记录 B104（背景/六项改动/验证/运维影响）②架构 v1.0 §23 数据模型——memory.db 表清单补 persona 四表 + 新增 persona_traits/user_mbti/persona_reports/persona_state 表结构说明（含注入门槛/变化检测/迁移方式）③README 中英双语「人格洞察」卖点段插主动关怀之后（倾向非判决/月度校准+娱乐级MBTI/本地可溯源可关闭）；§24 降级链无改动（月度校准复用 refinement 链，无新链） |
+| ST-36 | 🔴 Skills管理模块（吸收/调用/回写/新增四闭环+skills.db+四级披露）——设计v0.2送审待批；progressive-skill v3.2.0收官，上线后卸载 | 2026-08-26 会话定案（存储四层/运行时契约/写侧治理/自进化闭环含蒸馏新增分支/纳管迁移两不变量/冷启动包）；M1建库索引器→M2披露端点→M3写回门禁→M4纳管迁移→M5冷启动+卸载插件 | `docs/design/SGME-Skills管理模块设计-v0.2.md` |
 | T-104 | Task | WebUI 体检修复：P1 逻辑五项 + P0/P1 视觉 token 化 | ST-7 | ✅ 已解决 | — | **已完成（2026-08-25，双子代理并行修复+主代理终验）**。逻辑组：①router.ts 补 scenes/:id 详情路由（复用 SceneList）②client.ts AGENT_KEY_PATHS 补 `/v1/admin/persona/`③DashboardView 标题改「近期 Token 用量」④SettingsExtensions 补 persona/care 开关 + EXT_MODULES v-for 复用⑤ModulesView/ConfigTab 确认零引用后删除。视觉组：RolesView 幽灵变量清零（--bg2/--accent/--ok fallback 全换 token）、ProfileView GitHub-dark fallback 6 处、Dashboard 升级横幅 #3B82F6→var(--brand) 系、SignalsView TYPE_LABEL 改语义 token、style.css 新增 --code-bg/--code-text 双主题变量（Wiki/Skills pre 块接入）、fmtTs×7 抽 ui/src/utils/format.ts。**验证**：grep 幽灵变量全库归零；npm run build 通过（1.16s）；persona+care 后端回归 75 passed |
 
 ---
@@ -192,6 +193,7 @@
 | SGME-评测框架设计-v0.1.md | ST-6（质量评测） | #32 评测框架 |
 | SGME-实施变更记录-v0.9.md | 全部（B 系列） | 实施记录兼运维手册 |
 | SGME-WebUI设计-v0.1.md | ST-7（4 导航 22 视图 + 创意池 UI） | WebUI 技术栈/信息架构/视图明细/升格联动决策（2026-08-12） |
+| SGME-Skills管理模块设计-v0.2.md | ST-36（Skills管理：吸收/调用/回写/新增闭环、skills.db、四级披露、纳管迁移） | 技能治理全流程规则与路线图（2026-08-26） |
 | （ST-34 设计决策内联于 Backlog 行） | ST-34 | 自动更新=意图文件+主机侧 cron 代理（2026-08-21 决策，容器无特权可回滚） |
 
 ---
