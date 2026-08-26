@@ -231,35 +231,61 @@ def load_pages_from_db(db_path: Path) -> list[WikiPage]:
 
 
 def load_pages_from_api(base_url: str, api_key: str) -> list[WikiPage]:
-    """走 API 列表端点拉全量页（X-API-Key 头）。失败抛 RuntimeError。"""
-    url = base_url.rstrip("/") + "/v1/wiki/pages"
-    resp = requests.get(url, headers={"X-API-Key": api_key}, timeout=30)
-    if resp.status_code != 200:
-        raise RuntimeError(f"GET /v1/wiki/pages 失败: HTTP {resp.status_code}: {resp.text[:200]}")
-    data = resp.json()
-    items = data.get("pages") if isinstance(data, dict) else data
-    if not isinstance(items, list):
-        raise RuntimeError("GET /v1/wiki/pages 响应格式异常：既非列表也无 pages 键")
+    """走 API 列表端点分页拉全量页（limit≤200 + offset 循环直到取空）。
+
+    服务端默认 limit=50 且按 updated_at 降序——不分页会静默漏掉旧页
+    （2026-08-26 实测：NAS 200+ 页只回前 50 条近期研究页，skill 页全漏）。
+    失败抛 RuntimeError。
+    """
+    base = base_url.rstrip("/")
+    headers = {"X-API-Key": api_key}
     pages: list[WikiPage] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        tags = item.get("tags")
-        if isinstance(tags, str):
-            try:
-                tags = json.loads(tags)
-            except json.JSONDecodeError:
-                tags = [tags]
-        pages.append(
-            WikiPage(
-                page_id=str(item.get("page_id", "")),
-                title=item.get("title", "") or "",
-                content=item.get("content", "") or "",
-                category=item.get("category", "") or "",
-                tags=[str(t) for t in tags] if isinstance(tags, list) else [],
-                status=item.get("status", "active") or "active",
-            )
+    seen_ids: set[str] = set()
+    offset = 0
+    while True:
+        resp = requests.get(
+            f"{base}/v1/wiki/pages",
+            params={"limit": 200, "offset": offset},
+            headers=headers,
+            timeout=30,
         )
+        if resp.status_code != 200:
+            raise RuntimeError(f"GET /v1/wiki/pages 失败: HTTP {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        items = data.get("pages") if isinstance(data, dict) else data
+        if not isinstance(items, list):
+            raise RuntimeError("GET /v1/wiki/pages 响应格式异常：既非列表也无 pages 键")
+        batch_new = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            pid = str(item.get("page_id", ""))
+            if pid in seen_ids:  # 防御：服务端异常时死循环保护
+                continue
+            seen_ids.add(pid)
+            batch_new += 1
+            tags = item.get("tags")
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except json.JSONDecodeError:
+                    tags = [tags]
+            pages.append(
+                WikiPage(
+                    page_id=pid,
+                    title=item.get("title", "") or "",
+                    content=item.get("content", "") or "",
+                    category=item.get("category", "") or "",
+                    tags=[str(t) for t in tags] if isinstance(tags, list) else [],
+                    status=item.get("status", "active") or "active",
+                )
+            )
+        # 本批无新条目（取空或翻页越界）→ 结束
+        if batch_new == 0 or len(items) < 1:
+            break
+        offset += len(items)
+        if len(pages) > 10000:  # 绝对上限防失控
+            break
     return pages
 
 
