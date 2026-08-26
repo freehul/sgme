@@ -1579,3 +1579,18 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 **验证**：persona 全系 39 用例全绿；test_care/test_dream 回归 96 passed；全量回归中 test_supersession/test_vector_connectivity 的 11 个失败经 git stash 对照确认为预存在环境问题与本改动无关。
 
 **运维影响**：新增 config persona 段（enabled/monthly.schedule_day/monthly.schedule_time/rules 可选覆盖）；老库重启自动补建四表零迁移操作；月度校准消耗约 1 次 LLM 调用/月（免费链内）；定时器随 Gateway 启停。
+
+### B105. Skills管理模块核心落地：索引器+四级披露+写侧门禁+迁移工具（ST-36 M1-M3+M4工具，2026-08-26）
+
+**背景**：设计 v0.2.1 二轮评审六修订后用户令「把ST-36完成，走开发流程」。并行开发：主代理 M1 + 三子代理（读侧/写侧/脚本）git worktree 隔离并行。
+
+**改动**：
+- 新包 sgme/skills/（与旧 skills_hub 分立防巨无霸）：indexer 双源索引（git工作区∪wiki skill标记页，同名 git 优先）、bm25 内存 BM25(jieba)、vectors 向量可弃缓存（data/cache/skill_vectors.json，SHA256 失效，复用统一搜索提供商 bge-m3）、gates 六规则门禁（57字触发窗/8K原子/kebab唯一/scripts声明/uses合法）、dedupe 三层查重、writesync 进程内写锁单点串行、store 写编排（软删deprecated→硬删/改名墓碑tombstones.json原子写/入向引用两级信号）
+- 读侧：operations/skills.py 五操作（L0索引/L1 digest/L2 get/L3 materialize字节保真+遥测/BM25向量融合0.6:0.4降级）；routes_skills 四端点（agent key）；统一搜索 scopes+=skills（容错隔离镜像 wiki_pages）；MCP 四工具 skill_search/digest/get/materialize（ONBOARDING_TOOLS 同步）
+- 写侧：routes_skills_admin PUT/DELETE/rename（admin key，治理版先于 routes_admin 注册接管同路径，source_dirs 未配置回退旧 hub 直写零破坏）
+- 工具：scripts/migrate_wiki_skills.py（db/api双源+分页修复——服务端limit=50默认静默漏旧页，实测NAS全量385页；dry-run默认/--apply推远端+原页superseded/误挂标签摘除清单4页）、scripts/find_atomic_candidates.py（纯规则段落聚类 ratio≥0.85 跨≥2技能才算候选）
+- config：skills 段装配（enabled 默认 false，禁用时核心零影响）
+
+**测试**：ST-36 九套件 206 passed 全绿；全量回归 1920/1966（46 失败经三方 stash 基线对照确认为预存在环境问题——维度种子漂移14≠16/supersession环境依赖等，与本改动零相关）。集成接缝修复：SPA catch-all 使未注册路径 POST 返回 405 非 404（两用例放宽为环境无关断言）。
+
+**运维影响**：skills.enabled 默认关，生产启用需 config 加 skills 段；M4a 生产迁移未执行（385 页 diff 报告已产出待主人过目后 --apply）；M5 冷启动包/WebUI 改造/progressive-skill 卸载交接未做（Backlog 登记 T-105/T-106 跟进）。
