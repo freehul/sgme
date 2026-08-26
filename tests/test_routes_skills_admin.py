@@ -33,7 +33,7 @@ VALID_CONTENT = (
     "---\n"
     "description: 合法技能描述\n"
     "version: 1.0.0\n"
-    "pattern: flow\n"
+    "pattern: manual\n"
     "category: testing\n"
     "triggers:\n"
     "  - 合法\n"
@@ -137,7 +137,7 @@ class TestPutSkill:
             "meta": {
                 "description": "字段式写入",
                 "version": "1.0.0",
-                "pattern": "flow",
+                "pattern": "manual",
                 "category": "testing",
             },
             "body": "# 字段式\n正文",
@@ -191,7 +191,7 @@ class TestDeleteSkill:
             "---\n"
             "description: 依赖方技能\n"
             "version: 1.0.0\n"
-            "pattern: flow\n"
+            "pattern: manual\n"
             "category: testing\n"
             "uses:\n"
             "  - alpha-del\n"
@@ -249,7 +249,7 @@ class TestRenameSkill:
         for n, body in (("r-a", "# 甲\n内容甲"), ("r-b", "# 乙\n内容乙")):
             payload = {
                 "meta": {"description": "改名冲突用", "version": "1.0.0",
-                         "pattern": "flow", "category": "testing"},
+                         "pattern": "manual", "category": "testing"},
                 "body": body,
             }
             assert client.put(
