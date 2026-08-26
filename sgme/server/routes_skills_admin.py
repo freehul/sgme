@@ -110,6 +110,8 @@ def put_skill(
         return {"name": name, "path": str(path)}
 
     meta, body_text = _parse_body(body)
+    # skip_limits（PR-7）：历史存量整体入库——超 8K 从拒绝降为警告；语义违规仍拒
+    skip_limits = bool((body or {}).get("skip_limits"))
 
     # 名称白名单前置校验（路径穿越等直接 400，不进编排层）
     try:
@@ -118,7 +120,8 @@ def put_skill(
         raise api_error("ERR_INVALID_ARGS", f"非法技能名: {e}") from e
 
     try:
-        result = skills_store.write_skill(name, meta, body_text, dirs)
+        result = skills_store.write_skill(name, meta, body_text, dirs,
+                                          skip_limits=skip_limits)
     except skills_store.StoreError as e:
         raise api_error("ERR_INTERNAL", f"技能写入失败: {e.message}") from e
     if not result.get("ok"):

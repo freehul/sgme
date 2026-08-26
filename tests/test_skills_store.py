@@ -47,7 +47,7 @@ def repo(tmp_path: Path) -> Path:
 VALID_META = {
     "description": "合法技能描述",
     "version": "1.0.0",
-    "pattern": "flow",
+    "pattern": "manual",  # PR-7：pattern 枚举化（auto/manual）
     "category": "testing",
 }
 

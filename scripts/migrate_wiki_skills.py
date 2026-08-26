@@ -178,6 +178,7 @@ def render_skill_md(draft: SkillDraft) -> str:
         "---",
         f"name: {draft.name}",
         f"version: {draft.version}",
+        "pattern: manual",  # PR-7：迁移件默认按需检索（热集甄选后升 auto）
     ]
     if draft.category:
         fm_lines.append(f"category: {draft.category}")
@@ -404,7 +405,8 @@ def push_and_supersede(base_url: str, api_key: str, draft: SkillDraft, page_id: 
     resp = requests.put(
         put_url,
         headers={"X-API-Key": api_key},
-        json={"content": render_skill_md(draft)},
+        # skip_limits：历史存量整体入库（2026-08-26 用户裁决），超 8K 大件放行为警告
+        json={"content": render_skill_md(draft), "skip_limits": True},
         timeout=30,
     )
     if resp.status_code >= 400:
