@@ -81,6 +81,24 @@ def list_skills(
                         offset=offset, limit=limit)
 
 
+# ---------- GET /v1/skills/coldstart （冷启动包，须先于 /{name} 注册） ----------
+
+@router.get("/v1/skills/coldstart")
+def skills_coldstart(
+    request: Request,
+    _: str = Depends(require_agent_key),
+):
+    """冷启动包：索引全量 + 热集（pattern=auto）全文 + SGME 操作手册。
+
+    新 agent 一次拉取即刻可用（设计 §三「冷启动包」）；须注册在 ``/{name}``
+    动态路由之前，否则 ``coldstart`` 会被当成技能名命中 L2 端点。
+    """
+    from sgme.operations.skills import cold_start as cold_start_operation
+
+    cfg = request.app.state.cfg
+    wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
+    return run_operation(cold_start_operation, cfg, wiki_conn)
+
 # ---------- GET /v1/skills/{name}/digest （L1 摘要） ----------
 
 @router.get("/v1/skills/{name}/digest")

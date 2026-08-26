@@ -2386,3 +2386,33 @@ L1 输出 dimensions（自然语言，如"技术栈"）
 - **导航**：总览（DashboardView 健康卡片/版本检测提示条/提炼水位）/ 记忆闭环（记忆浏览/场景/wiki/图谱 GraphView D3 force）/ 创意与需求（ideas/demands 管理）/ 系统管理（设置 9 标签页 + 降级链编辑等）；27 路由 + 29 视图文件 + 12 api client
 - **后端支撑**：`GET /v1/admin/graph`（记忆关系图谱，ST-13）、模板管理 API（`/v1/admin/templates*`）、`/v1/admin/update/request`（自动更新确认）、三池管理端点
 - 验收：2026-08-20 无头验收 27/27 路由 ✓（见 SGME-WebUI验收报告-v0.1.md）
+### 30.11 Skills 管理模块（ST-36，2026-08-26 落地）
+
+技能治理四闭环（吸收/调用/回写/新增）的 SGME 侧实现；设计真相见
+`docs/design/SGME-Skills管理模块设计-v0.2.md`（v0.2.1）。代码 `sgme/skills/` 包。
+
+**存储两步门（v0.2.1 定稿）**：git 真源（skills-hub.git 裸仓挂载 /git/skills-hub.git，
+工作区 /app/cache/skills）+ 可重建派生索引——BM25 内存索引（jieba 分词，镜像 wiki/fts）
+∪ 向量可弃缓存（data/cache/skill_vectors.json，内容 SHA 失效，复用统一搜索提供商）。
+skills.db 暂缓建库：三条及格线达标即永不建库。
+
+**四级披露**：L0 索引常驻（budget=40 截断，支持 offset/limit 分页全量）→ L1 digest
+（frontmatter+骨架+uses，审核媒介）→ L2 全文（section 节选省 token）→ L3 materialize
+（字节保真落盘+使用遥测）。端点 `/v1/skills*`（agent key）；MCP 四工具 skill_search/
+skill_digest/skill_get/skill_materialize。
+
+**冷启动包**（M5）：`GET /v1/skills/coldstart` 一次返回索引全量 + 热集全文
+（pattern=auto）+ SGME 操作手册页。新 agent 一次拉取即刻可用，其余按需检索。
+
+**写侧治理**：六规则门禁（必填/pattern 枚举 auto|manual/触发词 57 字窗口/原子≤8K/
+kebab-case 唯一/scripts 目录实体判据声明）→ 三层查重（同名拒/同 SHA 异名拒/语义近亲
+警告）→ 进程内写锁单点串行（落盘+commit 同临界区）。删除两级入向引用信号（uses 拦/
+正文提及列清单）；改名墓碑制 + tombstones.json 登记。管理 API PUT/DELETE/rename
+`/v1/admin/skills/{name}`（admin key；source_dirs 未配置回退旧 hub 直写零破坏）。
+skip_limits=true 时超 8K 从拒绝降为警告（历史存量整体入库裁决，2026-08-26 用户定）。
+
+**纳管迁移**：wiki 的 385 个 skill:* 页已机械迁出为正式技能（M4a，2026-08-26），原页
+全部置 superseded 不删（supersedes 自指标记）；4 页误挂标签知识页留 wiki 待摘标签。
+后续优化：158 条超 8K 大件拆分外置化（references/*.md）+ M4b 原子化扫描
+（scripts/find_atomic_candidates.py 纯规则候选清单，用户拍板后逐个重组）。
+
