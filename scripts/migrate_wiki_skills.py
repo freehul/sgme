@@ -409,6 +409,22 @@ def push_and_supersede(base_url: str, api_key: str, draft: SkillDraft, page_id: 
         json={"content": render_skill_md(draft), "skip_limits": True},
         timeout=30,
     )
+    # 429 限流退避重试（最多 4 次，读 Retry-After 头；2026-08-26 批量迁移实测必需）
+    attempt = 0
+    while resp.status_code == 429 and attempt < 4:
+        retry_after = int(resp.headers.get("Retry-After", "30")) + 2
+        import sys as _sys
+        print(f"  wait {draft.name}: rate-limited, backoff {retry_after}s (retry {attempt+1}/4)",
+              file=_sys.stderr)
+        import time as _time
+        _time.sleep(retry_after)
+        resp = requests.put(
+            put_url,
+            headers={"X-API-Key": api_key},
+            json={"content": render_skill_md(draft), "skip_limits": True},
+            timeout=30,
+        )
+        attempt += 1
     if resp.status_code >= 400:
         raise RuntimeError(f"PUT {put_url} 失败: HTTP {resp.status_code}: {resp.text[:200]}")
     patch_url = f"{base_url.rstrip('/')}/v1/wiki/pages/{page_id}"
