@@ -426,5 +426,10 @@ class TestSkillsReadDisabled:
         assert client.get("/v1/skills", headers=AGENT_HEADERS).status_code == 404
         assert client.get("/v1/skills/alpha/digest", headers=AGENT_HEADERS).status_code == 404
         assert client.get("/v1/skills/alpha", headers=AGENT_HEADERS).status_code == 404
-        assert client.post("/v1/skills/alpha/materialize",
-                           json={"dest_dir": "x"}, headers=AGENT_HEADERS).status_code == 404
+        # POST materialize：SPA catch-all（GET /{full_path:path}，ui/dist 存在时注册）
+        # 会通配命中该路径但方法不符 → Starlette 返回 405 而非 404。
+        # 语义上「禁用=不可用」已由 GET 三连 404 验证；POST 接受 404/405 两种形态
+        # （主仓有 ui/dist 构建产物 → 405；干净 checkout 无 dist → 404）。
+        st = client.post("/v1/skills/alpha/materialize",
+                         json={"dest_dir": "x"}, headers=AGENT_HEADERS).status_code
+        assert st in (404, 405)
