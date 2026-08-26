@@ -93,9 +93,36 @@ HuggingFace 直连不通）。
 MOSS 不支持保存档案，每次请求都要附参考音频（管线里固定带上即可）。
 默认模型已恢复 kokoro（日常零成本播报），做视频时再切 moss。
 
+### 更强引擎实测（2026-08-26 下午，PC RTX 4080 SUPER）
+
+Nano 版不像后，主人批准放开 PC 显卡。下载前查本地发现现成资源：`D:\GitHubDownloads\MOSS-TTS`
+（旗舰 8B 完整权重 32G）、`D:\AI\models\tts\CosyVoice2-0.5B/300M/CosyVoice3-5B`（注意：
+CosyVoice3-5B 目录实为 Fun-CosyVoice3-**0.5B**）、MiniCPM-o venv（torch cu128）。
+
+| 引擎 | 合成耗时 | 时长 | 转写 | 响度检测 |
+|---|---|---|---|---|
+| MOSS-TTS 8B bf16+CPU卸载 | 弃用（1.4s/token，预计 90min） | — | — | — |
+| MOSS-TTS 8B 4bit(NF4) 贪心 | 238s | 9.36s | ✅ 全对 | mean -20.1dB |
+| MOSS-TTS 8B 4bit 推荐采样参数(1.7/0.8/25) | 185s | 10.72s | ✅ 全对 | mean -20.6dB |
+| Fun-CosyVoice3 0.5B（fp32 cuda） | **7s（rtf 0.54）** | 9.48s | ✅ 全对 | mean -23.8dB |
+
+主人初判：MOSS-8B 贪心版「有点像」；三版 A/B 待最终定夺。
+
+关键经验：
+1. MOSS-TTS 8B 的 generate 签名自带 audio_temperature/top_p/top_k（官方推荐值即默认值），
+   不要传 do_sample（会 TypeError）；bf16 需 16G 显存放不下，4bit NF4 后占 ~13.6G 可全进卡；
+2. 处理器联网拉 Audio-Tokenizer 的解法：`AutoProcessor.from_pretrained(..., codec_path=<本地目录>)`，
+   分词器权重(7G)已归档 D:\AI\models\tts\MOSS-Audio-Tokenizer；
+3. ⚠️ 大模型加载前必须显存预检（桌面应用常驻占用 6G+），脚本已内置检查（空闲<7G 拒跑）；
+4. CosyVoice3 环境：FunSpeech services/cosyvoice 用 uv 管理（venv 无 pip，装包走
+   `uv pip install --python .venv/Scripts/python.exe`），torch 换 2.3.1+cu121；
+   Matcha-TTS 子模块缺失从 voice-pro 复制补齐；旧记忆「torch≥2.2 输出静音」在新代码库不成立
+   （响度/转写双验证通过）。
+
 ### 待办余项
 
 1. 客户端 v1.0.6-lite 已装（C:\Program Files\Duix.Avatar），GUI 流程未走通验证；
 2. 底板视频需重录主人本人出镜说话素材（现冒烟用的是抖音分析视频片段）；
-3. ~~克隆声音对比~~ ✅ 已完成：MOSS 胜出为主力；
-4. 模型社区许可协议 PDF 在仓库根目录，商用前过一眼条款。
+3. ~~克隆声音对比~~ ✅ MOSS-Nano vs ZipVoice：MOSS 胜出；~~更强引擎~~ ✅ MOSS-8B / CosyVoice3 已实测，待主人三版 A/B 定胜者；
+4. 胜者引擎接入数字人管线出完整口播小样；建议重录 30-60s 干净参考音频再提相似度；
+5. 模型社区许可协议 PDF 在仓库根目录，商用前过一眼条款。
