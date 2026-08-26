@@ -79,6 +79,7 @@ class WikiPageUpdateRequest(BaseModel):
     tags: list[str] | None = None
     description: str | None = None
     author: str | None = None
+    status: str | None = None  # PR-7：显式置 superseded（M4a 迁移原页归档；仅 active/superseded 两值）
 
 
 class WikiEvolveRequest(BaseModel):
@@ -300,10 +301,16 @@ def update_wiki_page(
 
     append=true（默认）：content 追加到现有正文末尾，带「来源+hash」标记，
     entry hash 已存在则 noop（幂等）；description 默认不动。
+    PR-7：status="superseded" 显式置原页归档（M4a 迁移收尾），优先于 content 更新执行。
     """
+    from sgme.data import wiki_dao
     from sgme.operations.wiki import update_page as update_page_operation
 
     conn: sqlite3.Connection = request.app.state.wiki_conn
+    # PR-7：显式 superseded 归档（M4a）——在内容更新前执行，独立生效
+    if payload.status == "superseded":
+        wiki_dao.mark_superseded(conn, page_id, supersedes_by=page_id)
+        return {"page_id": page_id, "status": "superseded"}
     result = update_page_operation(
         conn, page_id,
         content=payload.content, append=payload.append,
