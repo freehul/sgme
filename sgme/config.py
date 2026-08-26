@@ -163,6 +163,30 @@ def _apply_skills_hub_env_overrides(cfg: dict) -> dict:
         cfg["remote"]["source"] = env_source
     return cfg
 
+# ST-36 M1：skills 管理模块段解析（缺失兜底全默认；取值非法降级告警不阻断启动）
+def _parse_skills_section(user_cfg) -> dict:
+    """解析 skills 段（委托 parse_skills_config，转回 dict 并透传写侧扩展键）。"""
+    import logging
+
+    from sgme.skills.config import DEFAULT_SKILLS_CONFIG, parse_skills_config
+
+    try:
+        sc = parse_skills_config({"skills": user_cfg} if isinstance(user_cfg, dict) else {})
+        parsed = {
+            "enabled": sc.enabled,
+            "source_dirs": list(sc.source_dirs),
+            "budget": sc.budget,
+            "vector_cache_policy": sc.vector_cache_policy,
+        }
+        if isinstance(user_cfg, dict):
+            for k, v in user_cfg.items():
+                parsed.setdefault(k, v)
+        return parsed
+    except ValueError as e:
+        logging.getLogger("sgme.config").warning("skills 配置非法，已兜底默认: %s", e)
+        return dict(DEFAULT_SKILLS_CONFIG)
+
+
 DEFAULT_LOGGING_CONFIG = {
     "level": "INFO",
     "format": "console",
@@ -813,6 +837,8 @@ def load_config(
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
         "wiki": sgme_cfg.get("wiki", dict(DEFAULT_WIKI_CONFIG)),
         "skills_hub": _merge_skills_hub_config(sgme_cfg.get("skills_hub")),
+        # ST-36 M1：skills 管理模块配置（parse_skills_config 缺失/类型错误兜底全默认）
+        "skills": _parse_skills_section(sgme_cfg.get("skills")),
         "logging": sgme_cfg.get("logging", dict(DEFAULT_LOGGING_CONFIG)),
         "paths": {
             "project_root": str(PROJECT_ROOT),
