@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -759,3 +760,107 @@ def test_http_and_mcp_agree_on_shared_fields(client, mcp, conns, mock_vector):
     assert "meta" not in mcp_body
     assert http_body["results"][0]["memory_id"] == mcp_body["results"][0]["memory_id"]
     assert http_body["results"][0]["content"] == mcp_body["results"][0]["content"]
+
+
+# ---------- 8. skills scope 行为（ST-36 M2：四级披露读侧接入统一搜索） ----------
+
+SKILLS_RESULT_KEYS = ["rank", "name", "score", "source", "description", "category", "routes"]
+
+
+def _insert_skill_md(tmp_path: Path, name: str, text: str) -> str:
+    """造一个 git 源技能目录（<dir>/<name>/SKILL.md），返回目录路径。"""
+    d = tmp_path / "skills_tree"
+    (d / name).mkdir(parents=True, exist_ok=True)
+    (d / name / "SKILL.md").write_text(text, encoding="utf-8")
+    return str(d)
+
+
+def _skills_cfg(source_dir: str) -> dict:
+    return {"skills": {"enabled": True, "source_dirs": [source_dir], "budget": 40}}
+
+
+NAS_SKILL_MD = (
+    "---\nname: nas-deploy\ndescription: 飞牛 NAS 部署技能\nversion: 1.0.0\n---\n"
+    "# NAS 部署\n docker compose 用法"
+)
+DOUYIN_SKILL_MD = (
+    "---\nname: douyin-pipeline\ndescription: 抖音视频分析入口\nversion: 1.0.0\n---\n"
+    "# 抖音采集\n yt-dlp cookies 流水线"
+)
+
+
+def test_search_skills_scope_hits_bm25(conns, cfg, mock_vector, tmp_path):
+    """scopes=["skills"] → 命中 git 源技能（source=skills，routes=skills_bm25）。"""
+    # Arrange：cfg 注入 skills 段（指向 tmp 技能树）
+    mem_conn, session_conn, wiki_conn = conns
+    cfg["skills"] = {"enabled": True,
+                     "source_dirs": [_insert_skill_md(tmp_path, "nas-deploy", NAS_SKILL_MD)],
+                     "budget": 40}
+
+    # Act
+    res = search(mem_conn, session_conn, cfg,
+                 query="NAS 部署", scopes=["skills"], wiki_conn=wiki_conn)
+
+    # Assert
+    assert res.ok is True
+    hits = [r for r in res.data["results"] if r["source"] == "skills"]
+    assert hits and hits[0]["name"] == "nas-deploy"
+    first = hits[0]
+    assert set(first.keys()) >= set(SKILLS_RESULT_KEYS)
+    assert first["routes"] == ["skills_bm25"]
+    assert "skills_bm25" in res.data["routes"]
+
+
+def test_search_skills_scope_no_cfg_empty_layer(conns, cfg, mock_vector):
+    """/v1/search 无 skills 配置段（未配置 source_dirs）→ 该层空结果不报错。"""
+    # Arrange
+    mem_conn, session_conn, wiki_conn = conns
+
+    # Act
+    res = search(mem_conn, session_conn, cfg, query="NAS", scopes=["skills"], wiki_conn=wiki_conn)
+
+    # Assert
+    assert res.ok is True
+    assert [r for r in res.data["results"] if r["source"] == "skills"] == []
+
+
+def test_search_skills_scope_failure_isolated(conns, cfg, mock_vector, tmp_path, monkeypatch):
+    """skills 层检索失败 → 空结果，memory 层正常（容错隔离镜像 wiki_pages 层）。"""
+    # Arrange
+    from sgme.operations import skills as ops_skills
+
+    mem_conn, session_conn, wiki_conn = conns
+    _insert_memory(mem_conn, "Python FastAPI 底座设计")
+    cfg["skills"] = {"enabled": True,
+                     "source_dirs": [_insert_skill_md(tmp_path, "nas-deploy", NAS_SKILL_MD)],
+                     "budget": 40}
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("skills 层故障")
+
+    monkeypatch.setattr(ops_skills, "search_skills", _boom)
+
+    # Act
+    res = search(mem_conn, session_conn, cfg,
+                 query="Python", scopes=["memory", "skills"], wiki_conn=wiki_conn)
+
+    # Assert
+    assert res.ok is True
+    sources = [r["source"] for r in res.data["results"]]
+    assert "memory" in sources
+    assert "skills" not in sources
+
+
+def test_search_skills_scope_absent_does_not_affect_memory(conns, cfg, mock_vector):
+    """scopes 不含 skills（既有行为不变）→ memory 层照常，无 skills 结果。"""
+    # Arrange
+    mem_conn, session_conn, wiki_conn = conns
+    _insert_memory(mem_conn, "Python FastAPI 底座设计")
+
+    # Act
+    res = search(mem_conn, session_conn, cfg, query="Python", scopes=["memory"], wiki_conn=wiki_conn)
+
+    # Assert
+    assert res.ok is True
+    sources = [r["source"] for r in res.data["results"]]
+    assert "memory" in sources and "skills" not in sources
