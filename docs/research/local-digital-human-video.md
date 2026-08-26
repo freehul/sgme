@@ -108,6 +108,9 @@ CosyVoice3-5B 目录实为 Fun-CosyVoice3-**0.5B**）、MiniCPM-o venv（torch c
 
 主人初判：MOSS-8B 贪心版「有点像」；三版 A/B 待最终定夺。
 
+**✅ 终局裁决（2026-08-26 主人定）：三版效果都可接受，以效率定输赢——Fun-CosyVoice3 胜出，
+为宣传片配音主力引擎**（7 秒出片 vs MOSS-8B 的 185 秒，快约 26 倍；MOSS-8B 作为高表现力备选保留）。
+
 关键经验：
 1. MOSS-TTS 8B 的 generate 签名自带 audio_temperature/top_p/top_k（官方推荐值即默认值），
    不要传 do_sample（会 TypeError）；bf16 需 16G 显存放不下，4bit NF4 后占 ~13.6G 可全进卡；
