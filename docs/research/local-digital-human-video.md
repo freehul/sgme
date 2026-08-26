@@ -55,8 +55,28 @@ Windows 原生支持、中文生态最好、开源免费，叙事上还能对标
 1. 脚本举例一律中性虚构内容，禁家人健康/私人项目细节入镜；
 2. 云端服务零预算；模型权重下载前先查 D:\AI\ 本地库。
 
-## 下一步（待主人确认后执行）
+## 端到端验证记录（2026-08-26 实测通过）
 
-1. 装 Duix.Avatar Windows 版（C 盘镜像 + D 盘数据），录 10s 底板视频实测一段中文口播；
-2. 同批重录克隆声音样本，MOSS vs ZipVoice 出对比小样选优;
-3. 效果验收过主人眼后再谈批量生产和脚本定稿。
+环境：RTX 4080 SUPER 16G / 内存 31.7G / Docker Desktop(WSL2, 引擎 29.7.2)
+
+| 环节 | 结果 |
+|---|---|
+| GPU 容器穿透 | ✅ `nvidia/cuda:12.4` 容器内 nvidia-smi 正常识别 |
+| 镜像拉取 | ✅ guiji2025/duix.avatar 15.1GB（Docker Hub 直连卡死，给 Docker Desktop 挂本地代理 127.0.0.1:7897 后约 3 分钟拉完；settings-store.json 已备份 .bak-20260826） |
+| Lite 服务 | ✅ `docker compose -f docker-compose-lite.yml up -d`，容器 duix-avatar-gen-video 监听 8383，数据盘 D:\duix_avatar_data\face2face |
+| 配音链路 | ✅ NAS AngeVoice(Kokoro, 男声 zm_009) → 16k 单声道 WAV（服务端未开 FFmpeg 转码只能要 wav） |
+| 合成 | ✅ 10 秒底板视频 + 9.9 秒配音 → 成片 720p H.264+AAC，耗时 **27 秒**（约 0.37× 实时） |
+
+### 关键坑位（必读）
+
+1. **audio_url/video_url 必须传容器内绝对路径**（如 `/code/data/tts_std.wav`）。官方 http_api.http 示例里的裸文件名是坑——代码用 ffprobe 直接探测传入路径，裸名按进程 cwd=/code 解析会报「三次获取音频时长失败」。
+2. 成品不在 result/ 在 **temp/**：`/code/data/temp/<code>-r.mp4`。
+3. 任务接口：POST `/easy/submit {code, audio_url, video_url}` 异步 → GET `/easy/query?code=`，status 2=成 3=败。
+4. Lite 版无 ASR/TTS 容器——声音必须外部生成后以 WAV 喂入（正好契合 AngeVoice 自有链路）。
+
+### 待办余项
+
+1. 客户端 v1.0.6-lite 已装（C:\Program Files\Duix.Avatar），GUI 流程未走通验证；
+2. 底板视频需重录主人本人出镜说话素材（现冒烟用的是抖音分析视频片段）；
+3. 克隆声音待重录干净样本（MOSS vs ZipVoice 对比）；
+4. 模型社区许可协议 PDF 在仓库根目录，商用前过一眼条款。
