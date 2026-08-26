@@ -1,21 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { deleteSkill, getSkill, listSkills, putSkill, type SkillsList } from '../../api/skills'
+import {
+  deleteSkill, getSkillDigest, listSkillsIndex, putSkill,
+  type SkillDigest, type SkillIndexItem,
+} from '../../api/skills'
 import { ApiError } from '../../api/client'
 import { renderMarkdown } from '../../utils/markdown'
 
-// 技能类型（分类/状态/描述）元数据映射
+// 技能条目（L0 索引 + L1 摘要混合视图，T-106：改吃四级披露读侧端点）
 interface SkillMeta {
   name: string
   description: string
   category: string
   tags: string[]
-  enabled: boolean
-  content: string
+  pattern: string
+  version: string
+  source: string
 }
 
-const base = ref<SkillsList | null>(null)
 const metas = ref<SkillMeta[]>([])
+const total = ref(0)
 const loading = ref(false)
 const error = ref('')
 
@@ -23,62 +27,35 @@ const searchQ = ref('')
 const activeCat = ref('全部')
 
 const detail = ref<SkillMeta | null>(null)
+const detailBody = ref('')
 const detailOpen = ref(false)
 const editOpen = ref(false)
 const editContent = ref('')
 const editName = ref('')
 
-// 解析 SKILL.md 头部 frontmatter（约定同 Hermes skills：--- name/description/tags ---）
-function parseSkill(name: string, content: string): SkillMeta {
-  let description = ''
-  let category = ''
-  let tags: string[] = []
-  const m = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/)
-  if (m) {
-    const fm = m[1]
-    const desc = fm.match(/^description:\s*(.+)$/m)
-    if (desc) description = desc[1].trim()
-    const cat = fm.match(/^category:\s*(.+)$/m)
-    if (cat) category = cat[1].trim()
-    const tg = fm.match(/^tags:\s*\[([^\]]*)\]/m)
-    if (tg) tags = tg[1].split(',').map((t) => t.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
-  }
-  if (!description) {
-    // 回退：取正文首个非标题段落第一行
-    const body = content.replace(/^---[\s\S]*?---\s*\n?/, '')
-    const par = body.split('\n').find((l) => l.trim() && !l.trim().startsWith('#'))
-    if (par) description = par.trim().slice(0, 120)
-  }
-  if (!category) {
-    const cats = tags.length ? tags : []
-    category = cats[0] || '未分类'
-  }
-  return { name, description, category, tags, enabled: true, content }
-}
-
 const categories = computed(() => {
   const set = new Set<string>(['全部'])
-  metas.value.forEach((s) => set.add(s.category))
+  metas.value.forEach((s) => set.add(s.category || '未分类'))
   return [...set]
 })
 
 const statCards = computed(() => {
-  const total = metas.value.length
+  const t = total.value || metas.value.length
   const cats = new Set(metas.value.map((s) => s.category)).size
   const described = metas.value.filter((s) => s.description).length
-  const chars = metas.value.reduce((a, s) => a + s.content.length, 0)
+  const hot = metas.value.filter((s) => s.pattern === 'auto').length
   return [
-    { label: '总技能数', value: String(total), icon: '🧰', bg: 'rgba(59,130,246,.1)', color: '#3B82F6' },
+    { label: '总技能数', value: String(t), icon: '🧰', bg: 'rgba(59,130,246,.1)', color: '#3B82F6' },
     { label: '分类数', value: String(cats), icon: '🏷', bg: 'rgba(16,185,129,.12)', color: '#0f9d72' },
-    { label: '含描述', value: String(described), icon: '✅', bg: 'rgba(245,158,11,.13)', color: '#b45309' },
-    { label: '内容(KB)', value: (chars / 1024).toFixed(1), icon: '📄', bg: 'rgba(99,102,241,.1)', color: '#6366F1' },
+    { label: '热集(auto)', value: String(hot), icon: '🔥', bg: 'rgba(245,158,11,.13)', color: '#b45309' },
+    { label: '含描述', value: String(described), icon: '✅', bg: 'rgba(99,102,241,.1)', color: '#6366F1' },
   ]
 })
 
 const filtered = computed(() => {
   const q = searchQ.value.trim().toLowerCase()
   return metas.value.filter((s) => {
-    if (activeCat.value !== '全部' && s.category !== activeCat.value) return false
+    if (activeCat.value !== '全部' && (s.category || '未分类') !== activeCat.value) return false
     if (!q) return true
     return (
       s.name.toLowerCase().includes(q) ||
@@ -92,9 +69,18 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    base.value = await listSkills()
-    const contents = await Promise.all(base.value.skills.map((n) => getSkill(n)))
-    metas.value = contents.map((c) => parseSkill(c.name, c.content))
+    // T-106：一次拉全量索引（limit=500 覆盖当前规模），不再逐个 getSkill 拉 content
+    const idx = await listSkillsIndex()
+    metas.value = idx.skills.map((s: SkillIndexItem) => ({
+      name: s.name,
+      description: s.description || '',
+      category: s.category || '',
+      tags: s.tags || [],
+      pattern: (s as Record<string, unknown>).pattern as string || 'manual',
+      version: s.version || '',
+      source: s.source || '',
+    }))
+    total.value = idx.total
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : String(e)
   } finally {
@@ -104,8 +90,14 @@ async function load() {
 
 async function openDetail(m: SkillMeta) {
   try {
-    const g = await getSkill(m.name)
-    detail.value = parseSkill(g.name, g.content)
+    // 详情抽屉改吃 L1 摘要（frontmatter+骨架）；编辑时再拉全文
+    const d: SkillDigest = await getSkillDigest(m.name)
+    detail.value = { ...m }
+    const sections = (d.sections || []) as Array<{ level?: number; text?: string; title?: string }>
+    const outline = sections
+      .map((s) => `${'#'.repeat(Math.max(2, Number(s.level) || 2))} ${s.text || s.title || ''}`)
+      .join('\n')
+    detailBody.value = `> 来源: ${d.source}${d.origin_path ? `（${d.origin_path}）` : ''} · sha256: ${d.sha256.slice(0, 12)}…\n\n${outline}`
     detailOpen.value = true
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : String(e)
@@ -114,20 +106,32 @@ async function openDetail(m: SkillMeta) {
 function closeDetail() {
   detailOpen.value = false
   detail.value = null
+  detailBody.value = ''
 }
 
-function openEdit(m?: SkillMeta) {
+async function openEdit(m?: SkillMeta) {
   const target = m || detail.value
   if (!target) return
-  editName.value = target.name
-  editContent.value = target.content
-  editOpen.value = true
-  detailOpen.value = false
+  try {
+    const g = await getSkillFull(target.name)
+    editName.value = target.name
+    editContent.value = g.content
+    editOpen.value = true
+    detailOpen.value = false
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : String(e)
+  }
 }
 function closeEdit() {
   editOpen.value = false
   editContent.value = ''
   editName.value = ''
+}
+
+// 编辑需要字节级全文——走旧 admin GET（治理版写侧 PUT 兼容）
+async function getSkillFull(name: string): Promise<{ name: string; content: string }> {
+  const mod = await import('../../api/skills')
+  return mod.getSkill(name)
 }
 
 async function saveEdit() {
@@ -142,7 +146,7 @@ async function saveEdit() {
 }
 
 async function removeSkill(m: SkillMeta) {
-  if (!confirm(`确定删除技能「${m.name}」吗？此操作不可撤销。`)) return
+  if (!confirm(`确定删除技能「${m.name}」吗？将先软删（deprecated 标记）。`)) return
   try {
     await deleteSkill(m.name)
     closeDetail()
@@ -153,7 +157,7 @@ async function removeSkill(m: SkillMeta) {
 }
 
 function copyCallCode(m: SkillMeta) {
-  const code = `from sgme import use_skill\nresult = use_skill(${JSON.stringify(m.name)}, {...})`
+  const code = `from sgme.operations.skills import skill_get\nresult = skill_get(${JSON.stringify(m.name)})`
   navigator.clipboard?.writeText(code).catch(() => {})
 }
 
@@ -164,7 +168,7 @@ onMounted(load)
   <div class="skills">
     <div class="head">
       <h2>技能仓库</h2>
-      <span class="sub">{{ base?.mode }} 模式 · {{ base?.total }} 个技能</span>
+      <span class="sub">SGME Skills · {{ total }} 个技能（索引常驻 / 全文按需）</span>
     </div>
 
     <p v-if="error" class="error">{{ error }}</p>
@@ -204,12 +208,12 @@ onMounted(load)
       </div>
 
       <!-- 技能卡片网格 -->
-      <p v-if="!filtered.length" class="empty">暂无技能。写入 SKILL.md 到仓库目录后刷新可见。</p>
+      <p v-if="!filtered.length" class="empty">暂无技能。wiki 的 skill:* 页已迁移为正式技能；新技能经 PUT /v1/admin/skills/{name} 写入。</p>
       <div v-else class="grid">
         <div v-for="s in filtered" :key="s.name" class="skill-card panel" @click="openDetail(s)">
           <div class="card-top">
             <div class="skill-ico">🧰</div>
-            <span class="tag-capsule" :class="s.enabled ? 'cap-green' : 'cap-red'">{{ s.enabled ? '已启用' : '已禁用' }}</span>
+            <span class="tag-capsule" :class="s.pattern === 'auto' ? 'cap-hot' : 'cap-pill'">{{ s.pattern === 'auto' ? '🔥 热集' : '按需' }}</span>
           </div>
           <h3 class="skill-name">{{ s.name }}</h3>
           <p class="skill-desc">{{ s.description || '（无描述）' }}</p>
@@ -221,7 +225,7 @@ onMounted(load)
       </div>
     </template>
 
-    <!-- 详情抽屉 -->
+    <!-- 详情抽屉（L1 摘要：骨架+溯源） -->
     <div v-if="detailOpen && detail" class="overlay" @click.self="closeDetail">
       <div class="drawer">
         <div class="drawer-head">
@@ -230,15 +234,16 @@ onMounted(load)
         </div>
         <div class="drawer-body">
           <div class="detail-meta">
-            <span class="tag-capsule" :class="detail.enabled ? 'cap-green' : 'cap-red'">{{ detail.enabled ? '已启用' : '已禁用' }}</span>
+            <span class="tag-capsule" :class="detail.pattern === 'auto' ? 'cap-hot' : 'cap-pill'">{{ detail.pattern === 'auto' ? '🔥 热集' : '按需' }}</span>
+            <span v-if="detail.version" class="tag-pill">v{{ detail.version }}</span>
             <span v-if="detail.category" class="tag-pill">{{ detail.category }}</span>
             <span v-for="t in detail.tags" :key="t" class="tag-pill">{{ t }}</span>
           </div>
-          <div class="markdown-content" v-html="renderMarkdown(detail.content)" />
+          <div class="markdown-content" v-html="renderMarkdown(detailBody)" />
         </div>
         <div class="drawer-foot">
           <button class="btn" @click="copyCallCode(detail)">复制调用代码</button>
-          <button class="btn" @click="openEdit(detail)">编辑</button>
+          <button class="btn" @click="openEdit(detail)">查看/编辑全文</button>
           <button class="btn btn-danger" @click="removeSkill(detail)">删除</button>
         </div>
       </div>
@@ -277,6 +282,7 @@ onMounted(load)
 .cap-active { background: rgba(59,130,246,.12); color: #3B82F6; }
 .cap-green { background: rgba(16,185,129,.12); color: #0f9d72; }
 .cap-red { background: rgba(239,68,68,.12); color: #ef4444; }
+.cap-hot { background: rgba(245,158,11,.15); color: #b45309; }
 .cap-pill { background: var(--surface-muted); color: var(--text-muted); }
 .tag-row .tag-pill { padding: 2px 10px; border-radius: 999px; background: var(--surface-muted); color: var(--text-muted); font-size: 11px; }
 
