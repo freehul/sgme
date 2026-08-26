@@ -1,0 +1,153 @@
+"""sgme/skills/vectors.py：技能向量缓存与余弦检索（ST-36 M1——可弃缓存文件方案）。
+
+向量存 data/cache/skill_vectors.json（1024 维 × N 条 ≈ 数百 KB），丢了就重建：
+启动读缓存 → 内容 SHA 一致直接用 → miss 才调 embedding → 全量后落盘。
+embedding 复用 SGME 统一搜索提供商配置（v0.2.1 裁决：bge-m3 / siliconflow）。
+"""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import httpx
+
+from sgme.skills.indexer import SkillRecord
+
+logger = logging.getLogger("sgme.skills.vectors")
+
+# 缓存文件格式版本（字段不兼容时整档作废重建）
+CACHE_FORMAT = 1
+
+
+def _cache_path(cache_dir: str | Path) -> Path:
+    return Path(cache_dir) / "skill_vectors.json"
+
+
+def load_cache(cache_dir: str | Path) -> dict:
+    """读取向量缓存；损坏/缺档返回空结构（自愈）。"""
+    p = _cache_path(cache_dir)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"format": CACHE_FORMAT, "items": {}}
+    if not isinstance(data, dict) or data.get("format") != CACHE_FORMAT:
+        return {"format": CACHE_FORMAT, "items": {}}
+    items = data.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    return {"format": CACHE_FORMAT, "items": items}
+
+
+def save_cache(cache_dir: str | Path, cache: dict) -> Path:
+    """原子落盘（tmp + os.replace，镜像项目备份/意图文件惯例）。"""
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    p = _cache_path(cache_dir)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)
+    return p
+
+
+def _embed_config(cfg: dict) -> tuple[str, str, str, str]:
+    """从 providers.yaml/search.vector 配置取 embedding 提供商（provider/model/base_url+key）。
+
+    解析顺序（镜像 T-43/T-47 的统一供应商裁决）：providers 中 vector_capable=true 的当前
+    active 向量提供商 → search.vector 兜底段。找不到返回 ("", "", "")。
+    """
+    prov_name = model = ""
+    base_url = api_key = ""
+    try:
+        from sgme.config import load_providers_config
+
+        providers = (load_providers_config() or {}).get("providers", {}) or {}
+    except Exception:
+        providers = {}
+    # 当前激活的向量提供商：search.vector.provider 记录的名字优先
+    search_cfg = ((cfg or {}).get("search") or {}).get("vector") or {}
+    active = str(search_cfg.get("provider") or "").strip()
+    candidates = []
+    if active:
+        candidates.append(active)
+    candidates += [n for n, p in providers.items()
+                   if isinstance(p, dict) and p.get("vector_capable")]
+    for name in candidates:
+        p = providers.get(name) or {}
+        if isinstance(p, dict) and (p.get("api_key_env") or p.get("base_url")):
+            prov_name = name
+            model = p.get("default_model") or ""
+            base_url = str(p.get("base_url") or "")
+            env_name = str(p.get("api_key_env") or "")
+            import os
+
+            api_key = os.environ.get(env_name, "") if env_name else ""
+            break
+    return prov_name, model, base_url, api_key
+
+
+def embed_texts(texts: list[str], cfg: dict) -> dict[str, list[float]]:
+    """批量调 embedding API（OpenAI 兼容 /embeddings）；失败抛异常由调用方决定降级。"""
+    provider, model, base_url, api_key = _embed_config(cfg)
+    if not (provider and model and base_url):
+        raise RuntimeError("向量模型未配置（providers 无 vector_capable 且 search.vector 无兜底）")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    r = httpx.post(
+        base_url.rstrip("/") + "/embeddings",
+        json={"model": model, "input": texts},
+        headers=headers,
+        timeout=30,
+        trust_env=False,  # 项目铁律：防代理劫持
+    )
+    r.raise_for_status()
+    data = r.json().get("data", [])
+    return {str(d["index"]): d["embedding"] for d in data}
+
+
+def build_vectors(records, cfg: dict, cache_dir: str | Path,
+                  policy: str = "lazy") -> dict[str, list[float]]:
+    """按需补齐全部记录向量并落盘；返回 {name: vec}。
+
+    policy=lazy（默认）：SHA 命中缓存的直接复用，只嵌 miss 部分；
+    policy=refresh：全量重嵌（测试/强制刷新用）。
+    embedding 失败：已命中部分照常可用，miss 部分跳过（WARNING，检索降级 BM25 单路）。
+    """
+    cache = load_cache(cache_dir)
+    items = cache["items"]
+    need: list[SkillRecord] = []
+    result: dict[str, list[float]] = {}
+    for rec in records:
+        hit = items.get(rec.sha256)
+        if isinstance(hit, list) and hit and policy != "refresh":
+            result[rec.name] = hit
+        else:
+            need.append(rec)
+    if need:
+        try:
+            embs = embed_texts([r.content[:2000] for r in need], cfg)
+            for i, rec in enumerate(need):
+                vec = embs.get(str(i))
+                if vec:
+                    result[rec.name] = vec
+                    items[rec.sha256] = vec
+            save_cache(cache_dir, cache)
+        except Exception as e:  # 容错：向量路降级不影响 BM25 主路
+            logger.warning("skills 向量嵌入失败（BM25 单路降级）: %s", e)
+    return result
+
+
+def cosine_topk(query_vec: list[float], vectors: dict[str, list[float]],
+                top_k: int = 10) -> dict[str, float]:
+    """余弦相似度 top-k（纯 Python，百条规模微秒级，无 numpy 依赖）。"""
+    def _norm(v):
+        return sum(x * x for x in v) ** 0.5 or 1.0
+
+    qn = _norm(query_vec)
+    out: dict[str, float] = {}
+    for name, v in vectors.items():
+        if len(v) != len(query_vec):
+            continue  # 维度不符（换模型残留）：跳过待重嵌
+        dot = sum(a * b for a, b in zip(query_vec, v))
+        out[name] = dot / (qn * _norm(v))
+    ranked = sorted(out.items(), key=lambda kv: -kv[1])[:top_k]
+    return dict(ranked)
