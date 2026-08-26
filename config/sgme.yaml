@@ -55,6 +55,13 @@ backup:
   raw_cold_days: 90
 wiki:
   enabled: true
+# ST-36 Skills 管理模块（PR-7）：source_dirs=治理版写侧的 git 工作区（迁移件落盘处）
+# pattern: auto=热集自动加载 / manual=按需检索；budget=L0 常驻列表预算
+skills:
+  enabled: true
+  source_dirs:
+    - /app/cache/skills/
+  budget: 40
 skills_hub:
   enabled: true
   path: ''
