@@ -123,7 +123,7 @@
 
 ## 开发流程
 
-需求与任务以 Backlog 锚文档为锚（见「文档索引」），动手前读架构文档 `docs/design/SGME-架构设计-v0.9.md` 对应章节。项目由多 AI 工具协作（Hermes/Trae/WorkBuddy/笔记本会话），所有协作者遵守以下规范：
+需求与任务以 Backlog 锚文档为锚（见「文档索引」），动手前读架构文档 `docs/design/SGME-架构设计-v1.0.md` 对应章节。项目由多 AI 工具协作（Hermes/Trae/WorkBuddy/笔记本会话），所有协作者遵守以下规范：
 
 ### 任务锚定（Backlog 协作）
 
