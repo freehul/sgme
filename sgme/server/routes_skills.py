@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
 from sgme.server.app import api_error, require_agent_key, run_operation
@@ -64,6 +64,8 @@ def _ensure_index(request: Request):
 @router.get("/v1/skills")
 def list_skills(
     request: Request,
+    offset: int = Query(default=0, ge=0),
+    limit: int | None = Query(default=None, ge=1),
     _: str = Depends(require_agent_key),
 ):
     """L0 索引列表：name/description/category/tags（受 budget 截断）。
@@ -75,7 +77,8 @@ def list_skills(
     cfg = request.app.state.cfg
     _ensure_index(request)  # 惰性建/复用 BM25 索引缓存（app.state.skills_bm25）
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
-    return run_operation(list_skills_operation, cfg, wiki_conn)
+    return run_operation(list_skills_operation, cfg, wiki_conn,
+                        offset=offset, limit=limit)
 
 
 # ---------- GET /v1/skills/{name}/digest （L1 摘要） ----------

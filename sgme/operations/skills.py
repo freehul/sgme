@@ -153,6 +153,8 @@ def _query_embedding_safe(query: str, records: list[SkillRecord], cfg: dict) -> 
 def list_skills(
     cfg: dict[str, Any],
     wiki_conn: sqlite3.Connection | None,
+    offset: int = 0,
+    limit: int | None = None,
 ) -> OperationResult:
     """L0 索引列表：name/description/category/tags（受 budget 截断，按名排序）。
 
@@ -164,7 +166,10 @@ def list_skills(
     sc = parse_skills_config(cfg)
     if not sc.enabled:
         raise InvalidArgs("skills 模块未启用（skills.enabled=false）")
-    records = index_all(sc.source_dirs, wiki_conn)[: sc.budget]
+    all_records = index_all(sc.source_dirs, wiki_conn)
+    # budget=L0 常驻预算；支持分页（offset/limit）浏览全量，limit 缺省=budget（PR-7：385 件迁移后全量列表需求）
+    effective_limit = limit if limit is not None else sc.budget
+    records = all_records[offset : offset + effective_limit]
     items = [
         {
             "name": r.name,
@@ -176,7 +181,7 @@ def list_skills(
         }
         for r in records
     ]
-    return OperationResult.succeed({"skills": items, "total": len(items), "budget": sc.budget})
+    return OperationResult.succeed({"skills": items, "total": len(all_records), "returned": len(items), "offset": offset, "budget": sc.budget})
 
 
 def skill_digest(
