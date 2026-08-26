@@ -1,6 +1,8 @@
 # SGME-Skills管理模块设计-v0.2
 
-> 状态：定稿（2026-08-26 送审同日裁决，三项待决已闭合）｜前置：本会话全部讨论决策
+> 状态：定稿 **v0.2.1**（2026-08-26 三项裁决闭合＋同日二轮评审六项修订并入：
+> 索引两步门 / SHA 缓存失效 / 写侧单点串行 / uses 入向引用 / hub 降级内部模块 /
+> M4 拆分——见 §二§四§七§八）｜前置：本会话全部讨论决策
 > 定位：SGME 把 skill 管理纳入自身体系（吸收/调用/回写/新增全闭环），上线后 progressive-skill 插件卸载退场
 > 命名纪律：索引库定名 **skills.db**（不再改名）；progressive-skill 本次 v3.2.0 为收官版，此后仅修 bug
 
@@ -16,12 +18,16 @@
     上线后 → progressive-skill 直接卸载（不做自动探测休眠等花活）
 ```
 
+**hub 终局（v0.2.1）**：skills-hub 作为独立系统退役——降级为 SGME 内部模块
+（新包 `sgme/skills/`，git 同步层按需复用现有 `sgme/skills_hub` 代码；新旧接口同名重叠
+不混居，防巨无霸回归）。NAS 裸仓 skills-hub.git 继续充当真源载体，但读写全部收口 SGME API。
+
 ## 二、存储四层定稿（含实证修正）
 
 | 层 | 载体 | 内容 | 丢失后果 |
 |---|---|---|---|
 | 真源 | skills-hub.git（NAS裸仓） | 技能字节+完整历史 | 不可接受（多clone容灾） |
-| 索引 | **skills.db**（新建，可重建派生物） | name/tags/description/pattern/category/embedding/content_hash/revision/usage统计 | 无所谓，从git全量重建 |
+| 索引 | **暂缓建库**（v0.2.1 两步门）：BM25（tags 过滤）+ 内存向量索引（可弃缓存 data/cache/skill_vectors.json） | name/tags/description/pattern/category/embedding/content_hash/usage统计 | 无所谓，从git全量重建 |
 | 检索 | SGME 统一搜索（ST-24 多源统一检索） | 记忆/wiki/技能统一语义搜索入口 | — |
 | 运行时 | agent 本地 | 索引文件 + 读缓存 | 可随时丢弃 |
 
@@ -34,6 +40,13 @@ skills.db 是可弃缓存（真身在 git）。备份语义、清理权限完全
 落地代码是全文入库（NAS data/ 下无 wiki/skills 目录，只有 raw/ 会话原件目录）。
 
 **经验归属口诀**：跟着技能走的坑进技能本体；跟人走的偏好进 memory.db；世界知识进 wiki.db。
+
+**skills.db 两步门（v0.2.1）**：M1 不建库——索引层 = BM25（wiki_pages tags 含 "skill"
+过滤）∪ 内存向量（numpy 余弦 top-k；embedding 复用统一搜索提供商 bge-m3 1024 维）。
+及格线三条：①统一搜索命中技能率可统计提升；②全量重建 ≤ 数分钟；③对账 cron 自动自愈零人工。
+达标 → skills.db 永不建；不达标且缺口 = 结构化混合查询 → 届时再建（有存在证据才建）。
+**缓存失效一律 commit SHA**（弃 revision 计数器——同步链含 force-push 与历史重写，计数器
+必然脱节；SHA 零维护、旁路直推 git 也自动生效，「不同即刷」对缓存语义足够）。
 
 ## 三、运行时契约（读侧）
 
@@ -65,7 +78,7 @@ L3 物化         skill_materialize(name) → 字节精确落盘工作区（脚�
 ### 准入规格（lint 门禁，复用 audit 引擎 R1-R5 + 新增）
 
 frontmatter 完整（name=目录名/version/pattern/category）、触发词在 description 前57字符窗口、
-无断链、原子≤8K、名称 kebab-case 全库唯一、scripts/ 资产须在正文声明用途。
+无断链、原子≤8K、名称 kebab-case 全库唯一、scripts/ 资产须在正文声明用途、uses 显式声明依赖的技能名（v0.2.1：入向引用一级信号的数据源）。
 
 ### 三层查重
 
@@ -81,15 +94,20 @@ frontmatter 完整（name=目录名/version/pattern/category）、触发词在 d
 
 - 修改：直接改+commit；**结构性手术前必须先打快照 commit**（2026-08-26 基线快照救场实证）
 - 合并：git 不管合并——它是重构式操作，走清单流程（职责对比→新结构→迁移→零丢失校验→登记更新）
+- 入向引用定义（v0.2.1）：一级信号 = frontmatter `uses:` 显式声明依赖技能（准入强制，
+  机械扫描可拦）；二级信号 = 其他技能正文自然语言提及名字（只列人工确认清单不自动拦，防同名巧合误伤）
 - 删除：单向门走 remove_skill API（先扫入向引用，有引用列清单拒绝/--force 清理后删）；
   先软删（deprecated 标记+宽限期）再硬删；git 历史永存兜底
 - 改名：永不原地改名，旧名留墓碑别名指向新名
 
 ### 索引联动
 
-同步路径：所有变更走 API → 同一操作内完成 落盘+commit+skills.db刷新+引用图重算。
-异步兜底：pre-receive 钩子 + cron 对账（git树 vs skills.db vs 登记清单三方比对，漂移即报）。
-缓存失效：全局递增 revision / commit SHA 比对，落后即刷。
+同步路径：所有变更走 API → 同一操作内完成 落盘+commit+索引刷新+引用图重算；
+**并发策略（v0.2.1）= 单点串行**——NAS 上 Server 进程是唯一合法写入方，进程内写锁保证
+临界区原子，多机 agent 并发请求在入口自然排队（无需分布式锁）。
+异步兜底：pre-receive 钩子（上线即转执法：拒绝绕过 API 的直推）+ cron 对账
+（git树 vs 索引 vs 登记清单三方比对，漂移即报）。
+缓存失效：commit SHA 比对（v0.2.1 定稿），不同即刷。
 
 ## 五、自进化闭环（含新增分支）
 
@@ -137,11 +155,12 @@ frontmatter 触发词57字窗口 / 步骤含精确命令 / 踩坑节填本次真
 
 | 阶段 | 内容 | 依赖 |
 |---|---|---|
-| M1 skills.db 建库 + 索引器 | audit 引擎扩展为 indexer（扫描→建表→embedding） | 无 |
+| M1 索引层（暂缓建库） | BM25(tags 过滤) + 内存向量索引器 + 可弃缓存文件；三条及格线验收（§二两步门） | 无 |
 | M2 四级披露端点 | digest/get/materialize + 读缓存协议 | M1 |
 | M3 写回API + 门禁前移 | patch/remove/rename/merge + lint 内联 | M2 |
-| M4 纳管迁移 | 两不变量流程跑通，本地瘦身 | M3 |
-| M5 冷启动包 + progressive-skill 卸载 | 收官交接 | M4 |
+| M4a 机械迁移 | wiki skill:* 页批量迁出：读全文→补 frontmatter（57字窗口触发词）→lint→吸收入库→原页置 superseded 指向新技能（不删)；误挂标签的知识页摘标签留 wiki；产出 diff 报告人工过目 | M3 |
+| M4b 原子化重构 | 判据=一段内容出现在 ≥2 个技能里才抽原子技能（原位改一行 uses 引用）；反向红线=无独立触发场景的内容不拆（防碎渣化伤检索）；搭 M4a 迁移顺风车由 LLM 顺带产出疑似重复段落候选清单，用户拍板后才重组（成本纪律） | M4a |
+| M5 冷启动包 + progressive-skill 卸载 | 收官交接 | M4b |
 | （远期）wiki 双轨收敛 | category=skill/* 页面迁出，知识页摘标签 | M4 后择机 |
 
 ## 八、评审裁决（2026-08-26 全部闭合）
@@ -151,6 +170,12 @@ frontmatter 触发词57字窗口 / 步骤含精确命令 / 踩坑节填本次真
 | 沉淀触发默认值 | **阈值=3**：≥3次工具调用且成功且搜无归属 → 自动提议 |
 | 高频热集名单 | **agent 推荐候选 → 用户决定**（两步制） |
 | embedding 选型 | **复用 SGME 模型提供商配置**（不单独选型，随统一搜索走） |
+| 二轮·skills.db 是否建 | 两步门：M1 内存索引先行，及格线达标则永不建（§二） |
+| 二轮·缓存失效选型 | commit SHA（revision 弃用：force-push/历史重写下计数器必脱节） |
+| 二轮·写侧并发 | 单点串行（Server 唯一写入方+进程内锁）；pre-receive 转执法拒绕行直推 |
+| 二轮·入向引用语法 | 一级=uses 显式声明（可机械拦）；二级=正文提及（仅人工确认清单） |
+| 二轮·hub 归宿 | 降级为 SGME 内部模块 sgme/skills/；NAS 裸仓保留为真源载体 |
+| 二轮·向量存放 | data/cache/skill_vectors.json 可弃缓存 + 内存 numpy 余弦（无库自活） |
 
 ## 九、优先级与排期（2026-08-26）
 
