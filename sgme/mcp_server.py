@@ -188,6 +188,10 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "role_assemble", "description": "装配角色沟通提示词（角色卡 system_prompt + care_policy + 画像，可选 inject_mode；ST-29）"},
     {"name": "role_active_get", "description": "读取当前沟通角色（未设置返回 role_id=null；ST-29）"},
     {"name": "role_active_set", "description": "设置当前沟通角色（换皮不换芯，只换角色不换记忆池；ST-29）"},
+    {"name": "skill_search", "description": "技能检索（ST-36 M2 四级披露）：BM25+向量融合，先搜后取——先 skill_digest 审核再 skill_get 全文"},
+    {"name": "skill_digest", "description": "技能摘要 L1：frontmatter 字段+正文骨架+uses 依赖清单——审核媒介层"},
+    {"name": "skill_get", "description": "技能全文 L2：显式注入上下文；section 参数只取该标题节省 token"},
+    {"name": "skill_materialize", "description": "技能物化 L3：字节保真落盘 dest_dir/<name>/SKILL.md（脚本执行用），返回 path+sha256"},
 )
 
 
@@ -950,6 +954,84 @@ def build_mcp_server():
         from sgme.operations.care import set_active_role as set_active_operation
 
         data = _op_json(set_active_operation, role_id)
+        return json.dumps(data, ensure_ascii=False)
+
+    # ---------- 技能四级披露（ST-36 M2：L1/L2/L3 + 检索） ----------
+
+    def _skills_disabled(cfg: dict | None) -> bool:
+        """skills 模块是否禁用（未配置段视为禁用——读侧不猜默认源）。"""
+        section = (cfg or {}).get("skills")
+        if not isinstance(section, dict):
+            return True
+        return not section.get("enabled", True)
+
+    @mcp.tool()
+    def skill_search(query: str, limit: int = 5) -> str:
+        """技能检索（ST-36 M2）：BM25+向量融合 → [{name,score,source}]，先搜后取。"""
+        import json
+        import sqlite3
+
+        from sgme.operations.skills import search_skills as search_skills_impl
+
+        cfg = _app_state["cfg"]
+        if _skills_disabled(cfg):
+            return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
+        wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        try:
+            hits = search_skills_impl(query, cfg, wiki_conn, limit=min(limit, 20))
+        except Exception as e:
+            return json.dumps({"error": f"技能检索失败: {e}"}, ensure_ascii=False)
+        return json.dumps(hits, ensure_ascii=False)
+
+    @mcp.tool()
+    def skill_digest(name: str) -> str:
+        """技能摘要 L1（ST-36 M2）：frontmatter+骨架+uses 清单——审核媒介，先看再取全文。"""
+        import json
+        import sqlite3
+
+        from sgme.operations.skills import skill_digest as digest_operation
+
+        cfg = _app_state["cfg"]
+        if _skills_disabled(cfg):
+            return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
+        wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        data = _op_json(digest_operation, cfg, wiki_conn, name=name)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def skill_get(name: str, section: str | None = None) -> str:
+        """技能全文 L2（ST-36 M2）：显式注入正文；section 给定时只回该节（省 token）。"""
+        import json
+        import sqlite3
+
+        from sgme.operations.skills import skill_get as get_operation
+
+        cfg = _app_state["cfg"]
+        if _skills_disabled(cfg):
+            return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
+        wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        data = _op_json(get_operation, cfg, wiki_conn, name=name, section=section)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def skill_materialize(name: str, dest_dir: str) -> str:
+        """技能物化 L3（ST-36 M2）：字节保真落盘 dest_dir/<name>/SKILL.md，返回 path+sha256。
+
+        脚本执行用——不走 LLM 转写；dest_dir 为你的工作区目录（必填）。
+        """
+        import json
+        import sqlite3
+
+        from sgme.operations.skills import materialize as materialize_operation
+
+        cfg = _app_state["cfg"]
+        if _skills_disabled(cfg):
+            return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
+        wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        data = _op_json(
+            materialize_operation, cfg, wiki_conn,
+            name=name, dest_dir=dest_dir,
+        )
         return json.dumps(data, ensure_ascii=False)
 
     # ---------- 连接即发现（ST-23①） ----------

@@ -812,6 +812,7 @@ def load_config(
         "server": sgme_cfg.get("server", dict(DEFAULT_SERVER_CONFIG)),
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
         "wiki": sgme_cfg.get("wiki", dict(DEFAULT_WIKI_CONFIG)),
+        "skills": sgme_cfg.get("skills", {"enabled": False}),
         "skills_hub": _merge_skills_hub_config(sgme_cfg.get("skills_hub")),
         "logging": sgme_cfg.get("logging", dict(DEFAULT_LOGGING_CONFIG)),
         "paths": {

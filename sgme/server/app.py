@@ -707,6 +707,10 @@ def create_app(
     if cfg.get("persona", {}).get("enabled", True):
         from sgme.server.routes_persona import router as persona_router
         app.include_router(persona_router)
+    # skills 读侧披露模块（ST-36 M2 四级披露；skills.enabled=false 时不挂载）
+    if cfg.get("skills", {}).get("enabled", True):
+        from sgme.server.routes_skills import router as skills_router
+        app.include_router(skills_router)
 
     # ---- WebUI 自动填充密钥端点（2026-08-13 用户需求）----
     # 仅限**本机回环来源**可用（不要求 key 鉴权——前端首次打开无 key 无法鉴权，
