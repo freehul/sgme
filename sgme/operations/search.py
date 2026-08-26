@@ -292,6 +292,51 @@ def _search_sessions(
     ]
 
 
+def _search_skills_layer(
+    cfg: dict[str, Any],
+    query: str,
+    limit: int,
+) -> list[dict]:
+    """技能检索层（ST-36 M2，scope="skills"）：四级披露读侧接入统一搜索。
+
+    - 委托 ``operations.skills.search_skills``（BM25 + 向量余弦融合 0.6/0.4，
+      向量不可达自动降级纯 BM25——业务层已内建容错）；
+    - **容错隔离**（镜像 wiki_pages / sessions 层）：skills 未配置、模块禁用
+      或该层抛异常 → 返回空列表 + WARNING，不拖累其他层；
+    - 结果形状对齐各层惯例：rank/name/score/description/category/source/routes；
+      source 固定 ``"skills"``；routes 按融合路径标记 ``skills_bm25``（纯 BM25
+      或向量路空贡献）／ ``skills_rrf``（两路融合生效）。
+    """
+    if not query or not query.strip():
+        return []
+    # 模块未配置/禁用 → 该层直接空结果（不算故障，不刷 WARNING）
+    sc_section = (cfg or {}).get("skills")
+    if not isinstance(sc_section, dict) or not sc_section.get("enabled", True):
+        return []
+    try:
+        from sgme.operations.skills import search_skills as skills_search
+
+        hits = skills_search(query, cfg, None, limit=limit)
+    except Exception as e:
+        logger.warning("skills 层检索失败（该层空结果）: %s", e)
+        return []
+    out: list[dict] = []
+    for i, h in enumerate(hits):
+        out.append(
+            {
+                "rank": i + 1,
+                "name": h["name"],
+                "score": h.get("score"),
+                "description": h.get("description") or "",
+                "category": h.get("category") or None,
+                "source": "skills",
+                # 每条自带 routes（业务层判定融合路径：两路生效=skills_rrf）
+                "routes": h.get("_routes") or ["skills_bm25"],
+            }
+        )
+    return out
+
+
 def search(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -387,6 +432,11 @@ def search(
         if "sessions" in scopes:
             raw_dir = (cfg.get("paths") or {}).get("raw_dir")
             results.extend(_search_sessions(session_conn, query, limit, raw_dir))
+        # 层 5：技能（ST-36 M2 四级披露读侧，scope="skills" 新增）
+        # 容错隔离（镜像 wiki_pages / sessions 层）：skills 未配置/禁用或
+        # 该层失败 → 空结果 + WARNING，不拖累其他层。
+        if "skills" in scopes:
+            results.extend(_search_skills_layer(cfg, query, limit))
     except Exception as e:
         # 检索内部错误 → ERR_INTERNAL（v0.6 由全局异常处理器兜底为 500，
         # 状态码不变；错误码统一收敛到 operations 层）

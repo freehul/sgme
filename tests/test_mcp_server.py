@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pathlib
 import sqlite3
 
 import pytest
@@ -63,7 +64,7 @@ def mcp(tmp_path, monkeypatch, raw_dir):
 
 
 def test_mcp_tools_available(mcp):
-    """工具集完整性（2026-08-14：+signal 三工具 + role 四工具）。"""
+    """工具集完整性（2026-08-14：+signal 三工具 + role 四工具；ST-36 M2：+skills 四工具）。"""
     tools = asyncio.run(mcp.list_tools())
     names = [t.name for t in tools]
     expected = {"append", "inject", "search", "memory_get", "memory_reject",
@@ -71,8 +72,106 @@ def test_mcp_tools_available(mcp):
                 "stats", "health", "config_get", "config_update", "agent_onboarding",
                 "idea_add", "demand_create", "project_register",
                 "signal_pull", "signal_claim", "signal_ack", "signal_clear",
-                "role_list", "role_assemble", "role_active_get", "role_active_set"}
+                "role_list", "role_assemble", "role_active_get", "role_active_set",
+                "skill_search", "skill_digest", "skill_get", "skill_materialize"}
     assert expected <= set(names), f"缺工具: {expected - set(names)}"
+
+
+# ---------- ST-36 M2：技能四级披露四工具 ----------
+
+ALPHA_MCP_MD = (
+    "---\n"
+    "name: alpha\n"
+    "description: 技能A简介——NAS 部署流水线\n"
+    "version: 1.2.0\n"
+    "category: deploy\n"
+    "uses:\n"
+    "  - beta\n"
+    "---\n"
+    "# Alpha 总纲\n"
+    "docker compose up -d\n"
+    "\n"
+    "## 踩坑\n"
+    "端口冲突先查 netstat\n"
+)
+
+
+@pytest.fixture
+def mcp_skills_env(mcp, tmp_path, monkeypatch):
+    """给已绑定的 _app_state.cfg 注入 skills 段 + 造 tmp 技能树。"""
+    from sgme.mcp_server import _app_state
+
+    d = tmp_path / "skills_tree_mcp"
+    (d / "alpha").mkdir(parents=True)
+    (d / "alpha" / "SKILL.md").write_text(ALPHA_MCP_MD, encoding="utf-8")
+    cfg = _app_state["cfg"]
+    monkeypatch.setitem(cfg, "skills", {
+        "enabled": True, "source_dirs": [str(d)], "budget": 40,
+    })
+    return tmp_path
+
+
+def test_mcp_skill_search(mcp, mcp_skills_env):
+    """skill_search：BM25 命中 → [{name,score,source}]。"""
+    text, _ = _call(mcp, "skill_search", {"query": "NAS 部署"})
+    data = json.loads(text)
+    assert isinstance(data, list) and data
+    top = data[0]
+    assert top["name"] == "alpha"
+    assert "score" in top and top["source"] == "git"
+
+
+def test_mcp_skill_digest_and_get_section(mcp, mcp_skills_env):
+    """skill_digest（L1 frontmatter+骨架+uses）→ skill_get（L2 全文/节选）闭环。"""
+    text, _ = _call(mcp, "skill_digest", {"name": "alpha"})
+    d = json.loads(text)
+    assert "error" not in d, d
+    assert d["version"] == "1.2.0" and d["uses"] == ["beta"]
+    assert any("踩坑" in s for s in d["sections"])
+
+    text2, _ = _call(mcp, "skill_get", {"name": "alpha"})
+    d2 = json.loads(text2)
+    assert "netstat" in d2["content"]
+
+    # section 截取
+    text3, _ = _call(mcp, "skill_get", {"name": "alpha", "section": "踩坑"})
+    d3 = json.loads(text3)
+    assert "netstat" in d3["content"]
+    assert "docker compose" not in d3["content"]
+
+    # 不存在 → error（MCP 扁平错误约定）
+    text4, _ = _call(mcp, "skill_get", {"name": "ghost"})
+    assert "error" in json.loads(text4)
+
+
+def test_mcp_skill_materialize_roundtrip(mcp, mcp_skills_env, tmp_path):
+    """skill_materialize：字节保真落盘 + sha 返回；再 skill_get 校验一致。"""
+    dest = tmp_path / "mcp_ws"
+    text, _ = _call(mcp, "skill_materialize", {
+        "name": "alpha", "dest_dir": str(dest),
+    })
+    d = json.loads(text)
+    assert "error" not in d, d
+    out = pathlib.Path(d["path"])
+    src = None
+    from sgme.mcp_server import _app_state
+
+    tree = _app_state["cfg"]["skills"]["source_dirs"][0]
+    src = (pathlib.Path(tree) / "alpha" / "SKILL.md").read_bytes()
+    assert out.read_bytes() == src  # 字节保真
+    import hashlib
+
+    assert d["sha256"] == hashlib.sha256(src).hexdigest()
+
+
+def test_mcp_skill_disabled_module_errors(mcp, monkeypatch):
+    """skills.enabled=false → skill 工具回 error JSON（模块禁用不崩）。"""
+    from sgme.mcp_server import _app_state
+
+    cfg = _app_state["cfg"]
+    monkeypatch.setitem(cfg, "skills", {"enabled": False})
+    text, _ = _call(mcp, "skill_search", {"query": "NAS"})
+    assert "error" in json.loads(text)
 
 
 def test_mcp_stats(mcp):
