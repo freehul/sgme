@@ -1593,20 +1593,20 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 
 **测试**：ST-36 九套件 206 passed 全绿；全量回归 1920/1966（46 失败经三方 stash 基线对照确认为预存在环境问题——维度种子漂移14≠16/supersession环境依赖等，与本改动零相关）。集成接缝修复：SPA catch-all 使未注册路径 POST 返回 405 非 404（两用例放宽为环境无关断言）。
 
-**运维影响**：skills.enabled 默认关，生产启用需 config 加 skills 段；M4a 生产迁移未执行（385 页 diff 报告已产出待主人过目后 --apply）；M5 冷启动包/WebUI 改造/progressive-skill 卸载交接未做（Backlog 登记 T-105/T-106 跟进）。
-## B106：ST-36 M4a 生产迁移执行 + M5 收官（2026-08-26）
-
-**背景**：ST-36 开发阶段（B105）落地后，按用户裁决「先整体入库再优化」执行 385 个
-wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸载交接）。
-
-**改动**：
-1. **迁移执行**：migrate_wiki_skills.py --apply 三轮完成——第一轮全败（58×403 agent key 无写权 + 327×429 限流）；修复①脚本加 429 退避重试（读 Retry-After 头）②换 admin key。第二轮 39 成功；第三轮 **385/385 全部入库**。
-2. **原页归档**：PATCH /v1/wiki/pages/{id} 原不支持置 superseded（WikiPageUpdateRequest 无 status 字段，422）→ 加 status='superseded' 显式归档支持（优先于内容更新执行）；archive_migrated_pages.py 批量归档剩余 384 页，0 失败。原页保留不删（supersedes 自指标记）。
-3. **生产配置**：NAS config 加 skills 段（enabled=true，source_dirs=/app/cache/skills）；工作区接 skills-hub.git 裸仓 main 分支（402 件 SKILL.md）。容器内 git init+fetch+checkout 由运维执行（source_dirs 要求 git 仓库，store 层校验 .git 存在）。
-4. **M5 冷启动包**：GET /v1/skills/coldstart——索引全量（不受 budget 截断）+ 热集全文（pattern=auto）+ SGME 操作手册页一次拉取；路由注册在 /{name} 动态路由之前防抢注。
-5. **WebUI SkillsView**：改吃四级披露读侧端点——L0 索引一次拉全量（limit=500）替代逐个 getSkill；详情抽屉改 L1 摘要（骨架+溯源 sha256）；热集徽标（🔥 auto/按需）；统计卡加「热集(auto)」；client.ts AGENT_KEY_PATHS 补 /v1/skills。
-6. **门禁演进**（PR-7 迁移就绪）：pattern 枚举化（auto=热集自动加载/manual=按需检索，语义=调用模式）；scripts 规则收紧为「scripts/ 子目录实际存在才查声明一致性」（385 页正文的 scripts/ 引用全是文档性提及，目录实体判据零误伤）；skip_limits 超限降警告（语义违规仍拒）。
-
-**验证**：冷启动 3 用例 + 读侧回归 127 passed；npm run build 通过（1.26s）；生产实测 L0 列表 total=402、搜索 skills 层命中、digest 抽查 aixm 完整；wiki 残留 active skill:* 页 = 0。
-
-**运维影响**：①新端点 /v1/skills/coldstart（agent key）；②批量脚本撞限流属正常（退避重试自动恢复）；③热集管理=把技能 pattern 改 auto 即进冷启动包与热集徽标；④误挂标签 4 页清单见 exports/ST36-M4a-apply报告3.md（SGME操作手册/生产验证页/DSH提示词拼接/wiki成为hub可行性分析）。
+**运维影响**：skills.enabled 默认关，生产启用需 config 加 skills 段；M4a 生产迁移未执行（385 页 diff 报告已产出待主人过目后 --apply）；M5 冷启动包/WebUI 改造/progressive-skill 卸载交接未做（Backlog 登记 T-105/T-106 跟进）。
+## B106：ST-36 M4a 生产迁移执行 + M5 收官（2026-08-26）
+
+**背景**：ST-36 开发阶段（B105）落地后，按用户裁决「先整体入库再优化」执行 385 个
+wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸载交接）。
+
+**改动**：
+1. **迁移执行**：migrate_wiki_skills.py --apply 三轮完成——第一轮全败（58×403 agent key 无写权 + 327×429 限流）；修复①脚本加 429 退避重试（读 Retry-After 头）②换 admin key。第二轮 39 成功；第三轮 **385/385 全部入库**。
+2. **原页归档**：PATCH /v1/wiki/pages/{id} 原不支持置 superseded（WikiPageUpdateRequest 无 status 字段，422）→ 加 status='superseded' 显式归档支持（优先于内容更新执行）；archive_migrated_pages.py 批量归档剩余 384 页，0 失败。原页保留不删（supersedes 自指标记）。
+3. **生产配置**：NAS config 加 skills 段（enabled=true，source_dirs=/app/cache/skills）；工作区接 skills-hub.git 裸仓 main 分支（402 件 SKILL.md）。容器内 git init+fetch+checkout 由运维执行（source_dirs 要求 git 仓库，store 层校验 .git 存在）。
+4. **M5 冷启动包**：GET /v1/skills/coldstart——索引全量（不受 budget 截断）+ 热集全文（pattern=auto）+ SGME 操作手册页一次拉取；路由注册在 /{name} 动态路由之前防抢注。
+5. **WebUI SkillsView**：改吃四级披露读侧端点——L0 索引一次拉全量（limit=500）替代逐个 getSkill；详情抽屉改 L1 摘要（骨架+溯源 sha256）；热集徽标（🔥 auto/按需）；统计卡加「热集(auto)」；client.ts AGENT_KEY_PATHS 补 /v1/skills。
+6. **门禁演进**（PR-7 迁移就绪）：pattern 枚举化（auto=热集自动加载/manual=按需检索，语义=调用模式）；scripts 规则收紧为「scripts/ 子目录实际存在才查声明一致性」（385 页正文的 scripts/ 引用全是文档性提及，目录实体判据零误伤）；skip_limits 超限降警告（语义违规仍拒）。
+
+**验证**：冷启动 3 用例 + 读侧回归 127 passed；npm run build 通过（1.26s）；生产实测 L0 列表 total=402、搜索 skills 层命中、digest 抽查 aixm 完整；wiki 残留 active skill:* 页 = 0。
+
+**运维影响**：①新端点 /v1/skills/coldstart（agent key）；②批量脚本撞限流属正常（退避重试自动恢复）；③热集管理=把技能 pattern 改 auto 即进冷启动包与热集徽标；④误挂标签 4 页清单见 exports/ST36-M4a-apply报告3.md（SGME操作手册/生产验证页/DSH提示词拼接/wiki成为hub可行性分析）。
