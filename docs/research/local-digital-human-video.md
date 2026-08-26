@@ -74,9 +74,28 @@ Windows 原生支持、中文生态最好、开源免费，叙事上还能对标
 3. 任务接口：POST `/easy/submit {code, audio_url, video_url}` 异步 → GET `/easy/query?code=`，status 2=成 3=败。
 4. Lite 版无 ASR/TTS 容器——声音必须外部生成后以 WAV 喂入（正好契合 AngeVoice 自有链路）。
 
+### 克隆声音对比实测（2026-08-26，小何参考音频 casual 版）
+
+前置改造：飞牛 AngeVoice 容器按商店模板重建（原容器是旧版装的，`ANGEVOICE_ENABLED_MODELS`
+只生效了 kokoro；重建后 moss+zipvoice 启用，编排文件备份 `.bak-20260826`）；ZipVoice 权重
+6 个文件经 PC 代理中转补齐至 `@appdata/AngeVoice/models/zipvoice/`（NAS 本机代理失效，
+HuggingFace 直连不通）。
+
+| 指标 | MOSS-TTS-Nano | ZipVoice |
+|---|---|---|
+| 合成耗时（热身） | **14.8s** | 91.5s |
+| 成品时长 | 10.2s（正常语速） | 39.1s（异常拖长） |
+| Whisper 回转写 | 全文正确（仅同音字「和/何」） | 大量乱码复读+幻觉，不可懂 |
+| 接入姿势 | `/api/tts` multipart 带 `prompt_audio` | `voice=xiaohe` 档案模式 |
+| 结论 | ✅ **主力方案** | ❌ NAS CPU 跑不动，弃用 |
+
+注意点：ZipVoice 引擎优先匹配 `voice` 字段的保存档案，带临时参考音频时必须显式传空 voice；
+MOSS 不支持保存档案，每次请求都要附参考音频（管线里固定带上即可）。
+默认模型已恢复 kokoro（日常零成本播报），做视频时再切 moss。
+
 ### 待办余项
 
 1. 客户端 v1.0.6-lite 已装（C:\Program Files\Duix.Avatar），GUI 流程未走通验证；
 2. 底板视频需重录主人本人出镜说话素材（现冒烟用的是抖音分析视频片段）；
-3. 克隆声音待重录干净样本（MOSS vs ZipVoice 对比）；
+3. ~~克隆声音对比~~ ✅ 已完成：MOSS 胜出为主力；
 4. 模型社区许可协议 PDF 在仓库根目录，商用前过一眼条款。
