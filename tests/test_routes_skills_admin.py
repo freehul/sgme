@@ -159,11 +159,12 @@ class TestPutSkill:
         assert r.status_code == 400
 
     def test_put_invalid_name_400(self, client):
-        # httpx 会把路径中的 .. 归一化掉（../escape → /escape）→ 路由不匹配 404；
-        # 穿越形态经 URL 编码后到达路由层 → 名称白名单 400
+        # httpx 会把路径中的 .. 归一化掉（../escape → /escape）→ 路由不匹配；
+        # 穿越形态经 URL 编码后到达路由层：无 SPA catch-all 时=白名单 400，
+        # 有 catch-all（ui/dist 存在）时路径通配命中但方法不符 → 405。
         r = client.put(f"{BASE}/%2e%2e/escape", json={"content": VALID_CONTENT},
                        headers=ADMIN_HEADERS)
-        assert r.status_code in (400, 404)  # 400=白名单拦截；404=httpx 层已拒绝
+        assert r.status_code in (400, 404, 405)
         r2 = client.put(f"{BASE}/Bad%5FName", json={"content": VALID_CONTENT},
                         headers=ADMIN_HEADERS)
         assert r2.status_code == 400
