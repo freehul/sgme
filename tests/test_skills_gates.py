@@ -23,7 +23,7 @@ import pytest
 GOOD_META = {
     "description": "测试用合法技能描述",
     "version": "1.0.0",
-    "pattern": "unit-test",
+    "pattern": "manual",  # PR-7：pattern 枚举化（auto=热集自动加载 / manual=按需检索）
     "category": "testing",
 }
 GOOD_BODY = "# 标题\n\n正文内容"
@@ -139,6 +139,8 @@ class TestNameRule:
 
 
 class TestScriptsDeclared:
+    """PR-7 收紧后：仅 skill_dir/scripts/ 实际存在时才检查声明一致性。"""
+
     def test_pass_declared_and_covered(self):
         from sgme.skills.gates import lint_skill
 
@@ -146,19 +148,26 @@ class TestScriptsDeclared:
         meta = dict(GOOD_META, scripts=["run_check.sh", "lint.py"])
         assert lint_skill(meta, body, "good-skill", set()) == []
 
-    def test_reject_reference_without_scripts_meta(self):
+    def test_reject_reference_without_scripts_meta(self, tmp_path):
         from sgme.skills.gates import lint_skill
 
+        sd = tmp_path / "good-skill"
+        (sd / "scripts").mkdir(parents=True)
+        (sd / "scripts" / "deploy.sh").write_text("#!/bin/sh\n", encoding="utf-8")
         body = "执行 scripts/deploy.sh 完成部署"
-        violations = lint_skill(dict(GOOD_META), body, "good-skill", set())
+        violations = lint_skill(dict(GOOD_META), body, "good-skill", set(), skill_dir=sd)
         assert any("scripts" in v for v in violations), violations
 
-    def test_reject_partial_coverage(self):
+    def test_reject_partial_coverage(self, tmp_path):
         from sgme.skills.gates import lint_skill
 
+        sd = tmp_path / "good-skill"
+        (sd / "scripts").mkdir(parents=True)
+        (sd / "scripts" / "deploy.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        (sd / "scripts" / "verify.sh").write_text("#!/bin/sh\n", encoding="utf-8")
         body = "执行 scripts/deploy.sh 与 scripts/verify.sh"
         meta = dict(GOOD_META, scripts=["deploy.sh"])  # 缺 verify.sh
-        violations = lint_skill(meta, body, "good-skill", set())
+        violations = lint_skill(meta, body, "good-skill", set(), skill_dir=sd)
         assert any("verify.sh" in v for v in violations), violations
 
 

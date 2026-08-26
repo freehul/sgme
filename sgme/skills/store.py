@@ -180,6 +180,7 @@ def write_skill(
     source_dirs: list[str],
     query_vec=None,
     existing_vectors: dict[str, list[float]] | None = None,
+    skip_limits: bool = False,
 ) -> dict:
     """写入技能（新建或覆盖更新）：lint → 查重 → 落盘 → commit。
 
@@ -189,6 +190,9 @@ def write_skill(
         body: 正文（不含围栏）。
         source_dirs: 目标 git 工作区列表（写入第一个目录；其余参与查重）。
         query_vec / existing_vectors: 可选向量，透传 dedupe 第三层（宁缺勿误报）。
+        skip_limits: 放宽大小类限制（PR-7「先整体入库」裁决）——超 8K 原子上限
+            从拒绝降为警告放行；必填/pattern 枚举等语义违规仍拒绝。仅迁移批量
+            入库场景使用，日常写入保持默认严格。
 
     Returns:
         成功 ``{"ok": True, "warnings": [...], "committed": bool, "path": str}``；
@@ -196,11 +200,24 @@ def write_skill(
     """
     warnings: list[str] = []
     with write_critical():
-        # 1) 准入门禁（违规即拒绝，不落盘）
-        violations = lint_skill(meta, body, name, set())
+        # 1) 准入门禁（违规即拒绝，不落盘）；skip_limits 时大小超限降为警告
+        target_dir = Path(source_dirs[0]) / name
+        violations = lint_skill(meta, body, name, set(), skill_dir=target_dir)
+        if skip_limits and violations:
+            kept, relaxed = [], []
+            for v in violations:
+                if "原子超限" in v:
+                    relaxed.append(v)
+                else:
+                    kept.append(v)
+            warnings.extend(
+                f"skip_limits 放行：{v}（历史存量整体入库，后续优化阶段拆分外置化）"
+                for v in relaxed
+            )
+            violations = kept
         if violations:
             return _reject("lint_failed",
-                           [f"准入门禁拦截"] + violations)
+                           ["准入门禁拦截"] + violations)
 
         # 2) 全库现状（跨名查重排除自身；同名记录单独取用于重复提交判定）
         all_records = _collect_records(source_dirs)
