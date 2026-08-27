@@ -1,8 +1,11 @@
-"""sgme/skills/indexer.py：技能双源收集 + 记录模型（ST-36 M1，可重建派生索引）。
+"""sgme/skills/indexer.py：技能记录收集 + 记录模型（ST-36 M1，可重建派生索引）。
 
-双源（迁移期并存，按名去重，git 目录优先）：
-1. 本地 git 工作区目录（<root>/<name>/SKILL.md，frontmatter 为准）
-2. wiki_pages 中 tags 含 "skill" 且 status='active' 的页面（title 约定 ``skill:<name>``）
+技能**唯一来源** = 本地 git 工作区目录（<root>/<name>/SKILL.md，frontmatter 为准），
+由配置 ``skills.source_dirs`` 指定；``index_all`` 仅扫该目录树。
+
+⚠️ wiki 桥接已移除（2026-08-28）：此前技能曾通过 wiki_pages 的 ``skill`` 标签识别并
+寄居在 wiki 库，现技能由 skills 模块自有 SKILL.md 管理。``collect_from_wiki`` 保留为
+独立函数（测试 / 历史回滚用），**不再**被 ``index_all`` 调用——wiki 不再是技能来源。
 
 索引器只做「扫描→结构化」，检索排序在 bm25.py / vectors.py；
 全部纯函数无全局状态，测试与调用方自由组合。
@@ -174,17 +177,14 @@ def _wiki_skill_name(title: str, category: str, page_id: str) -> str:
 
 
 def collect_from_wiki(conn: sqlite3.Connection | None) -> list[SkillRecord]:
-    """从 wiki_pages 收集 skill 标记活跃页（双条件任一命中即视为技能页）。
+    """【已弃用 / 不再接入 index_all】从 wiki_pages 收集 skill 标记活跃页。
 
-    判定条件（2026-08-27 修复：生产数据 skill 页多为 category='skill/xxx' 标记，
-    tags 不含 'skill'，旧过滤 ``tags LIKE '%"skill"%'`` 仅命中 3/7；且中文 title
-    过不了 validate_name 白名单被静默跳过 → 技能仓库长期为空）：
-    - tags 含 'skill'（设计原约定，兼容 JSON 双/单引号存储），或
-    - category 以 'skill' 开头（'skill' / 'skill/vps' 等）
+    ⚠️ 2026-08-28 起 **wiki 不再是技能来源**：``index_all`` 已不再调用本函数，
+    技能统一由 ``source_dirs`` 的 SKILL.md 管理。本函数仅保留供历史回滚与
+    单测使用（``tests/test_skills_indexer.py`` 直接调用验证其逻辑）。
 
-    命名：经 ``_wiki_skill_name`` 推导合法 ASCII 名（中文 title 自动规整为 ASCII
-    片段或 page_id 哈希残段），同名追加 page_id 哈希前缀消歧。
-    连接为 None 或查询异常时返回空列表（容错隔离，不影响 git 源）。
+    历史判定条件（仅作留存参考）：tags 含 'skill' 或 category 以 'skill' 开头。
+    连接为 None 或查询异常时返回空列表（容错隔离）。
     """
     if conn is None:
         return []
@@ -240,7 +240,10 @@ def merge_records(*groups: list[SkillRecord]) -> list[SkillRecord]:
 
 
 def index_all(source_dirs: list[str], wiki_conn=None) -> list[SkillRecord]:
-    """双源索引入口：git 工作区组在前（同名优先），wiki 组在后；按名排序返回。"""
+    """技能索引入口：仅扫描 git 工作区 ``source_dirs``（按名排序返回）。
+
+    2026-08-28 起 wiki 桥接已移除——技能唯一来源为 source_dirs 的 SKILL.md；
+    ``wiki_conn`` 形参保留仅为兼容旧调用签名，不再参与索引。
+    """
     groups = [collect_from_dir(d) for d in (source_dirs or [])]
-    groups.append(collect_from_wiki(wiki_conn))
     return merge_records(*groups)

@@ -271,7 +271,8 @@ def read_app(tmp_path, monkeypatch, raw_dir):
     }
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
-    # 插入一条 wiki skill 标记页（读侧双源之一：git ∪ wiki）
+    # 注：2026-08-28 起 wiki 桥接已移除，技能仅来自 source_dirs（git）；
+    # 此处 wiki 页不再贡献技能索引（下方断言 wiki-skill 不应出现）。
     from sgme.data import wiki_dao
 
     wiki_dao.insert_page(wiki_conn, page_id="w1", title="skill:wiki-skill",
@@ -309,7 +310,9 @@ class TestSkillsReadEndpoints:
         assert resp.status_code == 200, resp.text
         data = resp.json()
         names = {s["name"] for s in data["skills"]}
-        assert {"alpha", "beta", "wiki-skill"} <= names
+        assert {"alpha", "beta"} <= names
+        # 2026-08-28：wiki 桥接已移除，wiki 页不应出现在技能索引
+        assert "wiki-skill" not in names
         alpha = next(s for s in data["skills"] if s["name"] == "alpha")
         assert alpha["description"].startswith("技能A简介")
         assert alpha["category"] == "deploy"

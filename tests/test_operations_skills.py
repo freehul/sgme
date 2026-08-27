@@ -106,7 +106,9 @@ class TestListSkills:
         assert isinstance(res, OperationResult) and res.ok is True
         items = res.data["skills"]
         names = {s["name"] for s in items}
-        assert {"alpha", "beta", "wiki-skill"} <= names
+        assert {"alpha", "beta"} <= names
+        # 2026-08-28：wiki 桥接已移除，wiki 页不再被视为技能
+        assert "wiki-skill" not in names
         alpha = next(s for s in items if s["name"] == "alpha")
         assert alpha["description"] == "技能A简介——NAS 部署流水线"
         assert alpha["category"] == "deploy"

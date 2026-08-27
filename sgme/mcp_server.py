@@ -192,6 +192,11 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "skill_digest", "description": "技能摘要 L1：frontmatter 字段+正文骨架+uses 依赖清单——审核媒介层"},
     {"name": "skill_get", "description": "技能全文 L2：显式注入上下文；section 参数只取该标题节省 token"},
     {"name": "skill_materialize", "description": "技能物化 L3：字节保真落盘 dest_dir/<name>/SKILL.md（脚本执行用），返回 path+sha256"},
+    {"name": "skill_list", "description": "技能 L0 索引列表（ST-36）：name/description/category/tags，支持分页浏览全量"},
+    {"name": "skill_coldstart", "description": "技能冷启动包（ST-36 M5）：索引全量+热集全文+SGME操作手册，新 agent 一次拉取即刻可用"},
+    {"name": "skill_put", "description": "写入/覆盖技能（ST-36 M3 写侧）：content 为 SKILL.md 全文（自动解析 frontmatter）；需管理员 Key"},
+    {"name": "skill_delete", "description": "删除技能（ST-36 M3 写侧）：默认软删；hard=True 物理删；有入向 uses 引用需 force=True"},
+    {"name": "skill_rename", "description": "改名（ST-36 M3 写侧，墓碑制）：写新名副本+旧位置留 superseded_by 墓碑+登记"},
 )
 
 
@@ -1033,6 +1038,132 @@ def build_mcp_server():
             name=name, dest_dir=dest_dir,
         )
         return json.dumps(data, ensure_ascii=False)
+
+    # ---------- 技能：L0 列表 / 冷启动 / 写侧管理（ST-36，补全 MCP 缺口） ----------
+
+    @mcp.tool()
+    def skill_list(offset: int = 0, limit: int | None = None) -> str:
+        """技能 L0 索引列表（ST-36）：name/description/category/tags，支持分页浏览全量。"""
+        import json
+
+        from sgme.operations.skills import list_skills as list_operation
+
+        cfg = _app_state["cfg"]
+        if _skills_disabled(cfg):
+            return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
+        wiki_conn = _app_state.get("wiki_conn")
+        data = _op_json(list_operation, cfg, wiki_conn, offset=offset, limit=limit)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def skill_coldstart() -> str:
+        """技能冷启动包（ST-36 M5）：索引全量+热集全文+SGME操作手册，新 agent 一次拉取即刻可用。"""
+        import json
+
+        from sgme.operations.skills import cold_start as coldstart_operation
+
+        cfg = _app_state["cfg"]
+        if _skills_disabled(cfg):
+            return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
+        wiki_conn = _app_state.get("wiki_conn")
+        data = _op_json(coldstart_operation, cfg, wiki_conn)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    def skill_put(name: str, content: str) -> str:
+        """写入/覆盖技能（ST-36 M3 写侧）：content 为 SKILL.md 全文（自动解析 frontmatter）。
+
+        需以管理员 Key 连接 MCP（与仓库 MCP 鉴权姿态一致，由部署侧管控）；
+        skills.source_dirs 未配置 → 报错。
+        """
+        import json
+
+        from sgme.skills import store as skills_store
+        from sgme.skills.indexer import parse_skill_md, validate_name
+
+        _require_admin()  # 管理员意图声明（与仓库 MCP 鉴权姿态一致）
+        cfg = _app_state["cfg"]
+        source_dirs = (cfg.get("skills") or {}).get("source_dirs") or []
+        if not source_dirs:
+            return json.dumps({"error": "skills.source_dirs 未配置，无法写入技能"}, ensure_ascii=False)
+        try:
+            validate_name(name)
+        except ValueError as e:
+            return json.dumps({"error": f"非法技能名: {e}"}, ensure_ascii=False)
+        if not isinstance(content, str) or not content.strip():
+            return json.dumps({"error": "content（SKILL.md 全文）不能为空"}, ensure_ascii=False)
+        parsed = parse_skill_md(content)
+        meta = dict(parsed["meta"])
+        try:
+            result = skills_store.write_skill(name, meta, parsed["body"], source_dirs)
+        except skills_store.StoreError as e:
+            return json.dumps({"error": f"技能写入失败: {e.message}"}, ensure_ascii=False)
+        if not result.get("ok"):
+            return json.dumps(
+                {"error": result.get("code"), "violations": result.get("violations", [])},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    def skill_delete(name: str, hard: bool = False, force: bool = False) -> str:
+        """删除技能（ST-36 M3 写侧）：默认软删（deprecated 标记）；hard=True 物理删；有入向 uses 引用需 force=True。"""
+        import json
+
+        from sgme.skills import store as skills_store
+
+        _require_admin()
+        cfg = _app_state["cfg"]
+        source_dirs = (cfg.get("skills") or {}).get("source_dirs") or []
+        if not source_dirs:
+            return json.dumps({"error": "skills.source_dirs 未配置，无法删除技能"}, ensure_ascii=False)
+        try:
+            result = skills_store.remove_skill(name, hard=hard, force=force, source_dirs=source_dirs)
+        except skills_store.StoreError as e:
+            return json.dumps({"error": f"技能删除失败: {e.message}"}, ensure_ascii=False)
+        if not result.get("ok"):
+            return json.dumps(
+                {
+                    "error": result.get("code"),
+                    "referenced_by": result.get("referenced_by", []),
+                    "violations": result.get("violations", []),
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    def skill_rename(name: str, new_name: str) -> str:
+        """改名（ST-36 M3 写侧，墓碑制）：写新名副本 + 旧位置留 superseded_by 墓碑 + 登记。"""
+        import json
+
+        from sgme.skills import store as skills_store
+
+        _require_admin()
+        cfg = _app_state["cfg"]
+        source_dirs = (cfg.get("skills") or {}).get("source_dirs") or []
+        registry_path = (cfg.get("skills") or {}).get("tombstone_registry")
+        if not source_dirs:
+            return json.dumps({"error": "skills.source_dirs 未配置，无法改名"}, ensure_ascii=False)
+        try:
+            result = skills_store.rename_skill(name, new_name, source_dirs, registry_path=registry_path)
+        except skills_store.StoreError as e:
+            return json.dumps({"error": f"技能改名失败: {e.message}"}, ensure_ascii=False)
+        if not result.get("ok"):
+            return json.dumps(
+                {"error": result.get("code"), "violations": result.get("violations", [])},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
+            ensure_ascii=False,
+        )
 
     # ---------- 连接即发现（ST-23①） ----------
 
