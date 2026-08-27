@@ -771,7 +771,7 @@ CREATE TABLE refine_cursor (
 }
 ```
 
-> scope 枚举：`memory`（记忆池）/ `wiki`（或 `scenes`，L2 场景叙事文档）/ `wiki_pages`（wiki 知识库页面，T-34 新增；wiki 扩展不可用时该层空结果不影响整体）。
+> scope 枚举：`memory`（记忆池）/ `wiki`（或 `scenes`，L2 场景叙事文档）/ `wiki_pages`（wiki 知识库页面，T-34 新增）/ `skills`（git 源技能，ST-36 M2，B114 起不再经 wiki 桥接；wiki 扩展不可用时该层空结果不影响整体）。
 
 响应 200：
 
@@ -798,6 +798,7 @@ CREATE TABLE refine_cursor (
 
 - **memory scope**：BM25（FTS5，jieba）+ 向量（sqlite-vec）+ 标签预过滤 → RRF(k=60) 融合（routes：`bm25 / vector / label / rrf`）。
 - **wiki scope**：场景检索为 **FTS5 BM25（scenes_fts，jieba 分词）+ 向量（scene_vectors）+ RRF(k=60) 融合**；降级链：FTS 不可用/空召回 → LIKE。响应 routes：`wiki_bm25 / wiki_vector / wiki_rrf`（或 `wiki_like` 降级）；`source: "wiki_scene"`；字段 scene_id/title/content/heat/updated_at（updated_at 向量纯命中时可能为 null）。
+- **skills scope**（ST-36 M2，B114 起不再经 wiki 桥接）：技能检索层 = git 源 `source_dirs` 的 SKILL.md，BM25（jieba）+ 向量余弦融合（0.6/0.4，向量不可达自动降级纯 BM25）；`source: "skills"`；routes：`skills_bm25` / `skills_rrf`（两路融合生效）。模块未配置/禁用/该层失败 → 空结果，不影响其他层。
 - **术语别名归一化（查询扩展）**：查询先经 `registry/term_aliases.yaml` 归一化（`operations/search.py normalize_query_terms`）——命中别名的旧术语**保留原文并追加标准术语**（如 `daemon` → `daemon gateway`），大小写/空格容忍、词边界整体匹配（派生词不触发）；新老术语双向可召回，不含别名的查询逐字符不变。与 `registry/aliases.yaml`（维度别名表）语义不同，勿混用
 - 模板查询不经过此端点。
 
@@ -2401,8 +2402,8 @@ skills.db 暂缓建库：三条及格线达标即永不建库。
 
 **四级披露**：L0 索引常驻（budget=40 截断，支持 offset/limit 分页全量）→ L1 digest
 （frontmatter+骨架+uses，审核媒介）→ L2 全文（section 节选省 token）→ L3 materialize
-（字节保真落盘+使用遥测）。端点 `/v1/skills*`（agent key）；MCP 四工具 skill_search/
-skill_digest/skill_get/skill_materialize。
+（字节保真落盘+使用遥测）。端点 `/v1/skills*`（agent key）；MCP 九工具 skill_list/
+skill_coldstart/skill_search/skill_digest/skill_get/skill_materialize/skill_put/skill_delete/skill_rename（B114 新增 list/coldstart/put/delete/rename）。
 
 **冷启动包**（M5）：`GET /v1/skills/coldstart` 一次返回索引全量 + 热集全文
 （pattern=auto）+ SGME 操作手册页。新 agent 一次拉取即刻可用，其余按需检索。
@@ -2415,7 +2416,7 @@ kebab-case 唯一/scripts 目录实体判据声明）→ 三层查重（同名�
 skip_limits=true 时超 8K 从拒绝降为警告（历史存量整体入库裁决，2026-08-26 用户定）。
 
 **纳管迁移**：wiki 的 385 个 skill:* 页已机械迁出为正式技能（M4a，2026-08-26），原页
-全部置 superseded 不删（supersedes 自指标记）；4 页误挂标签知识页留 wiki 待摘标签。
+全部置 superseded 不删（supersedes 自指标记）；4 页误挂标签知识页已由 B114（2026-08-28）剥离 skill 标签，wiki 现零技能页。
 后续优化：158 条超 8K 大件拆分外置化（references/*.md）+ M4b 原子化扫描
 （scripts/find_atomic_candidates.py 纯规则候选清单，用户拍板后逐个重组）。
 

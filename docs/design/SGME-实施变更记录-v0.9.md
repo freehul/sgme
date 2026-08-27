@@ -1765,3 +1765,24 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 - 写侧工具链路：MCP `skill_put` 经 `store.write_skill` 落盘 `<source_dir>/<name>/SKILL.md` + git commit（容器内 `cache/skills` 已 `git init`）。
 
 **运维影响**：① 技能现由镜像内 `/app/cache/skills`（git 仓）真正拥有，重建镜像即随带出；② wiki 与技能彻底解耦——wiki 回归纯知识库，技能仓库=源目录 SKILL.md 视图；③ MCP agent 现可完整管理技能（搜/取/物化/枚举/冷启动/写）；④ 写侧 MCP 的 admin 门禁目前与仓库既有 MCP 姿态一致（中间件仅校验 agent-key，`_require_admin` 为意图声明桩），后续若要严格管理员隔离需补请求级 key 校验（待办）。
+
+### B115. 统一搜索与说明文档对齐「技能去 wiki 化」架构（2026-08-28）
+
+**背景**：B114 已让技能检索 100% 走 `source_dirs` 的 SKILL.md（`index_all` 移除 wiki 桥接），但**代码层之外**的全部说明文档与注释仍停留在「技能经 wiki 标签识别」旧模型：模块 docstring 的 scope 清单漏列 `skills`、Skills 设计 v0.2 仍写「索引层=BM25（wiki_pages tags 含 'skill' 过滤）」、架构 v1.0 的 scope 枚举与检索层说明缺 skills 与 §30.11「MCP 四工具」、接口契约 v0.1 称「三层检索」且 scopes 缺 skills、agent-onboarding 工具表无 `skill_*`、两份 README 模块树无 `sgme/skills/`。用户要求统一搜索功能与全部说明文档（含 README）对齐修正。
+
+**改动**：
+1. **默认检索纳入 skills（功能变更）**：`sgme/server/routes_memory.py` 的 `SearchRequest.scopes` 缺省 `["memory"]` → `["memory","skills"]`；`sgme/operations/search.py` 的 `DEFAULT_SCOPES` 同步。MCP `search` 工具显式传 `scopes=["memory"]`（mcp_server.py:341），不受共享默认值影响，行为不变。
+2. **`sgme/operations/search.py` 注释修正**：模块 docstring scope 清单补 `skills` bullet，并把「HTTP 缺省 ["memory"]」更正为 `["memory","skills"]`；`search()` docstring 补 skills 层说明；删除 `_search_wiki_pages` 中「排除 skill 标记页（回忆通道不见手册）」的失效注释（技能已不在 wiki，过滤器理由过时）。
+3. **`docs/design/SGME-Skills管理模块设计-v0.2.md`**：索引来源由「wiki_pages tags 含 'skill' 过滤」改为「`source_dirs` 的 SKILL.md（B114 已移除 wiki 桥接）」。
+4. **`docs/design/SGME-架构设计-v1.0.md`**：① scope 枚举补 `skills`；② 检索层说明补 skills 层 bullet（BM25+向量融合 0.6/0.4，source=skills_repo）；③ §30.11「MCP 四工具」→ 九工具（skill_search/digest/get/materialize/list/coldstart/put/delete/rename），「4 页误挂标签留 wiki 待摘」→ B114 已剥离。
+5. **`docs/design/SGME-接口契约-v0.1.md`**：4.3 标题「三层检索」→「多源检索」；scopes 补 `skills`；scope 说明补 skills 段。
+6. **`docs/agent-onboarding.md`**：`search` 描述补 skills scope；工具表补 `skill_*` 九工具行。
+7. **`README.md` / `README.zh-CN.md`**：统一检索卖点补「技能（skills）亦为可检索源」；模块树补 `sgme/skills/`（自有 SKILL.md，B114 起与 wiki 解耦）。
+8. **`tests/test_operations_search.py`**：`test_search_scopes_none_defaults_to_memory` 注释与默认预期对齐 `["memory","skills"]`。
+
+**验证**：
+- `tests/test_operations_search.py` **37 passed**；`tests/test_routes_skills.py` + `tests/test_server.py -k "search or skills or skill"` **22 passed**。
+- 全部 9 个改动文件 UTF-8 解码校验 BAD=0。
+- 部署后线上 `POST /v1/search {"query":"…"}`（不传 scopes）默认含 skills 层；`/v1/health status=ok version=1.0.1`。
+
+**运维影响**：① 统一搜索默认同时召回记忆与技能，技能召回不再需 agent 显式传 `scopes=["skills"]`；② 全量说明文档与代码现状一致，消除「说明书滞后于架构」误导；③ MCP `search` 行为不变（仍 memory-only），避免破坏既有 agent 调用；④ 其余未触碰项——写侧 admin 门禁桩、LLM 降级链 agnes 描述不同步——仍属待办。

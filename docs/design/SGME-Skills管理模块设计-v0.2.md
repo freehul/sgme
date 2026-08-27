@@ -41,8 +41,9 @@ skills.db 是可弃缓存（真身在 git）。备份语义、清理权限完全
 
 **经验归属口诀**：跟着技能走的坑进技能本体；跟人走的偏好进 memory.db；世界知识进 wiki.db。
 
-**skills.db 两步门（v0.2.1）**：M1 不建库——索引层 = BM25（wiki_pages tags 含 "skill"
-过滤）∪ 内存向量（numpy 余弦 top-k；embedding 复用统一搜索提供商 bge-m3 1024 维）。
+**skills.db 两步门（v0.2.1）**：M1 不建库——索引层 = BM25（git 源 `source_dirs` 的
+SKILL.md 全量扫描，name/description/tags；**B114 已移除 wiki 桥接，技能不再由
+wiki_pages tags 识别**）∪ 内存向量（numpy 余弦 top-k；embedding 复用统一搜索提供商 bge-m3 1024 维）。
 及格线三条：①统一搜索命中技能率可统计提升；②全量重建 ≤ 数分钟；③对账 cron 自动自愈零人工。
 达标 → skills.db 永不建；不达标且缺口 = 结构化混合查询 → 届时再建（有存在证据才建）。
 **缓存失效一律 commit SHA**（弃 revision 计数器——同步链含 force-push 与历史重写，计数器

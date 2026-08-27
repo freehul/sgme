@@ -84,7 +84,7 @@ asyncio.run(main())
 | `agent_onboarding` | 连接即发现：版本/能力清单/快速上手 | 接入后第一个调它 |
 | `append` | L0 捕获：写入原始会话（幂等） | `append(session_key, started_at, content)`，content 首行须 `# {ISO时间戳} {role}` |
 | `inject` | 记忆注入：按模式模板返回画像块 | `inject(mode='daily')` 拿当日画像 |
-| `search` | 混合检索：BM25 + 向量 + RRF，带溯源（记忆池） | `search(query, limit)` |
+| `search` | 混合检索：BM25 + 向量 + RRF，带溯源（记忆池 + 技能，默认 scopes=["memory","skills"]） | `search(query, limit)` |
 | `wiki_search` | 检索 wiki 知识库（wiki_pages 知识文档，FTS5 BM25 + 兜底） | `wiki_search(query, limit)` |
 | `wiki_pages` | wiki 页面列表（category 过滤；不含正文） | `wiki_pages(category='ops')` 先列表定位 |
 | `wiki_page` | wiki 页面详情（标题/正文全文/分类/来源） | `wiki_page(page_id)` 按 id 取正文 |
@@ -100,6 +100,7 @@ asyncio.run(main())
 | `health` | 健康检查：LLM 可用性/提炼水位/心跳/向量 | 就绪检查必调 |
 | `config_get` | 读取运行时配置（l1/l2/refine/search/backup） | `config_get(section='refine')` |
 | `config_update` | 更新配置段（热生效 + 落盘） | 跨机部署远程设配置 |
+| `skill_*` | 技能管理九工具：skill_list/skill_coldstart/skill_search/skill_digest/skill_get/skill_materialize/skill_put/skill_delete/skill_rename（B114 补齐 list/coldstart/写侧） | `skill_search(query)` / `skill_get(name)` / `skill_materialize(name, dest_dir)` |
 
 **自进化（W4，2026-08-16）**：会话自动触发经验回写——踩坑/新流程由 LLM 提炼后追加到知识库手册「踩坑记录」章节（category=skill/<domain>），多 agent 共享；手册内容以 wiki 为准，本地不缓存副本。
 

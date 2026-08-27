@@ -98,11 +98,11 @@ SGME 的提炼与检索各依赖一个外部模型，**缺了会静默降级，�
 - 纯结构化 SQL 查询，零 LLM 成本
 - 空结果时 `stats.note` 会附可行动提示（"暂无相关记忆…请先 append"），**空不等于故障**
 
-### 4.3 POST /v1/search — 三层检索（Agent Key）
+### 4.3 POST /v1/search — 多源检索（Agent Key）
 
-请求：`{"query": "…", "scopes": ["memory","wiki","wiki_pages"], "limit": 10, "include_sources": true}`
+请求：`{"query": "…", "scopes": ["memory","wiki","wiki_pages","skills"], "limit": 10, "include_sources": true}`
 
-- scope：`memory`（记忆池）/ `wiki`（或 `scenes`，L2 场景）/ `wiki_pages`（知识库页面）
+- scope：`memory`（记忆池）/ `wiki`（或 `scenes`，L2 场景）/ `wiki_pages`（知识库页面）/ `skills`（git 源技能，ST-36 M2，B114 起不再经 wiki 桥接）
 - 响应结果带 `trace[]` 溯源链（记忆 → 场景 → 原始文件）
 - 混合检索 BM25 + 向量 + RRF，`meta.routes` 显示实际命中的检索通道
 

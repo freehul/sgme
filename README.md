@@ -57,7 +57,7 @@ Every conversation quietly contributes to a living personality profile: decision
 
 ### Unified search — one query, all memories
 
-A single search endpoint recalls from the memory pool and the knowledge base at once: keyword + semantic + label triple fusion, every result traceable to its source. SGME memories, scenes, and knowledge base in one stop; agent-owned memory files are on the roadmap.
+A single search endpoint recalls from the memory pool, the knowledge base, and your self-managed skills at once: keyword + semantic + label triple fusion, every result traceable to its source. SGME memories, scenes, knowledge base, and skills in one stop.
 
 <img src="assets/selling-point-03-unified-search.png" alt="Unified search" width="800"/>
 
@@ -238,6 +238,7 @@ sgme/
 ├── profile/         # template engine (template / inject / tier0 summary)
 ├── log/             # unified logging (get_logger is the sole entry; console + JSON dual format)
 ├── refinery/        # knowledge refinement engine (ingest/extract/validate/output; serves wiki)
+├── skills/          # skills management module (index source_dirs SKILL.md; skills.enabled)
 ├── skills_hub/      # skill-hub extension (map/copy dual mode; skills_hub.enabled)
 ├── wiki/            # wiki knowledge-base extension (/v1/wiki/* endpoints; wiki.enabled)
 ├── signal/          # signal engine (event publishing / SSE / pull cursor)
