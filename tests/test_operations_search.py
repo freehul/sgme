@@ -302,7 +302,7 @@ def test_search_invalid_scopes_raises_invalid_args(conns, cfg, mock_vector, bad_
 
 
 def test_search_scopes_none_defaults_to_memory(conns, cfg, mock_vector):
-    """scopes=None → 缺省 ["memory"]（v0.6 SearchRequest pydantic 缺省语义）。"""
+    """scopes=None → 缺省 ["memory","skills"]（v0.6 SearchRequest pydantic 缺省语义扩展）。"""
     # Arrange
     mem_conn, session_conn, _ = conns
     _insert_memory(mem_conn, "Python FastAPI 底座设计")
@@ -313,6 +313,8 @@ def test_search_scopes_none_defaults_to_memory(conns, cfg, mock_vector):
     # Assert
     assert res.ok is True
     assert len(res.data["results"]) >= 1
+    # 新缺省含 skills，但本测试 cfg 未配置 skills 源 → 该层隔离为空
+    assert all(r["source"] != "skills" for r in res.data["results"])
 
 
 def test_search_unknown_scope_ignored(conns, cfg, mock_vector):

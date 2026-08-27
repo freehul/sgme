@@ -64,7 +64,7 @@ class InjectRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     query: str
-    scopes: list[str] = Field(default_factory=lambda: ["memory"])
+    scopes: list[str] = Field(default_factory=lambda: ["memory", "skills"])
     dimensions: list[str] | None = None
     match: str = "any"
     limit: int = 10

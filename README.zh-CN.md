@@ -57,7 +57,7 @@ SGME 不只会被动等你来问。你的记忆更新、情绪波动、待办到
 
 ### 多源统一检索——一个入口，全部记忆
 
-一个检索入口同时召回记忆池与知识库：关键词 + 语义 + 标签三重融合排序，每条结果都能追回源头。SGME 记忆、场景、知识库一站式召回；agent 自带记忆文件的统一接入已在规划中。
+一个检索入口同时召回记忆池、知识库与你自管的技能：关键词 + 语义 + 标签三重融合排序，每条结果都能追回源头。SGME 记忆、场景、知识库、技能一站式召回。
 
 <img src="assets/selling-point-03-unified-search.png" alt="多源统一检索" width="800"/>
 
@@ -234,6 +234,7 @@ sgme/
 ├── profile/         # 模板引擎（template / inject / tier0 摘要）
 ├── log/             # 统一日志（get_logger 唯一入口，控制台+JSON 双格式）
 ├── refinery/        # 知识提炼引擎（ingest/extract/validate/output，服务 wiki）
+├── skills/          # 技能管理模块（索引 source_dirs 的 SKILL.md，skills.enabled）
 ├── skills_hub/      # 技能仓库扩展（map/copy 双模式，skills_hub.enabled）
 ├── wiki/            # wiki 知识库扩展（/v1/wiki/* 端点，wiki.enabled）
 ├── signal/          # 信号引擎（事件发布 / SSE / pull 游标）

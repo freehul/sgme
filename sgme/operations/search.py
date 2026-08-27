@@ -14,7 +14,7 @@
 --------------------------------------------------
 - query: 检索词（HTTP 必填 str；MCP 必填 str）。**空串不报错**——
   v0.6 行为是返回空结果（tests/test_server.py::test_search_empty_query_returns_empty）
-- scopes: 检索层列表，HTTP 缺省 ["memory"]；MCP 固定 memory-only（无 scopes 参数）
+- scopes: 检索层列表，HTTP 缺省 ["memory","skills"]；MCP 固定 memory-only（无 scopes 参数）
   - "memory" → 记忆池（FTS5 BM25 + 维度标签过滤 + 向量 + RRF + 溯源 trace）
   - "wiki" / "scenes" → wiki 场景叙事文档（L2，FTS + LIKE 兜底 + 预留向量路）
   - "wiki_pages" → wiki 知识库页面（wiki_pages 表，T-34 新增；FTS5 BM25 + LIKE 兜底，
@@ -22,6 +22,9 @@
   - "sessions" → L0 原始层会话（raw_files 索引，ST-33 新增；LIKE 子串匹配
     元数据列 + 读盘正文摘要 best-effort，session_conn 为 None / 检索失败 →
     该层空结果，不影响其他层）
+  - "skills" → 技能检索层（ST-36 M2，scope="skills"）：git 源 SKILL.md
+    （source_dirs；B114 起移除 wiki 桥接，技能不再经 wiki 索引）BM25 + 向量余弦
+    融合 0.6/0.4；模块未配置/禁用/该层失败 → 空结果，不影响其他层
   - 未知 scope 值被**忽略**（v0.6 行为，不报错；
     tests/test_server.py::test_search_no_memory_scope_returns_empty）
 - dimensions: 维度标签过滤（可选；match=any 至少命中一个 / match=all 全部命中）
@@ -76,7 +79,7 @@ logger = logging.getLogger("sgme.operations.search")
 META_RRF_K: int = 60
 
 # scopes 缺省值：与 v0.6 SearchRequest 的 pydantic 缺省一致（HTTP 侧）。
-DEFAULT_SCOPES: list[str] = ["memory"]
+DEFAULT_SCOPES: list[str] = ["memory", "skills"]
 
 # 词边界守卫（ASCII 字母数字）：防别名替换误伤派生词（daemons 不触发 daemon）
 _WORD_BOUNDARY = r"(?<![A-Za-z0-9]){alias}(?![A-Za-z0-9])"
@@ -190,9 +193,10 @@ def _search_wiki_pages(
     if wiki_conn is None:
         return []
     try:
-        # W2（方案 v0.3 §5.2）：统一搜索默认排除 skill 标记页（回忆通道不见手册）。
-        # SQL 层下沉过滤（exclude_skill=True）——防 skill 页挤占 top-N 窗口
-        # （2026-08-16 批量入库 370 skill 页暴露：过滤在 LIMIT 后，知识页被挤出）。
+        # 排除 skill 标记页：B114（2026-08-28）已将技能从 wiki 迁出为
+        # source_dirs 的 SKILL.md，wiki 现零技能页；此过滤保留作防御（脏数据/
+        # 未来回写），不影响技能召回（技能走独立 skills scope，不经 wiki）。
+        # SQL 层下沉过滤（exclude_skill=True）。
         rows = wiki_fts.search_wiki_fts(wiki_conn, query, limit=limit, exclude_skill=True)
     except Exception as e:
         logger.warning("wiki_pages 检索失败（该层空结果）: %s", e)
@@ -352,7 +356,8 @@ def search(
     wiki_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
     """混合检索：记忆池（BM25+向量+RRF）+ wiki 场景（L2）+ wiki 知识库页面
-    + L0 原始层会话（raw_files 索引，ST-33）。
+    + L0 原始层会话（raw_files 索引，ST-33）+ 技能（git 源 SKILL.md，ST-36 M2，
+    B114 起不再经 wiki 桥接）。
 
     签名刻意**只收业务依赖**（连接 + cfg + 检索参数），operations 层不认识
     ``request.app.state`` 或 mcp 的 ``_app_state``（那是入口层的协议细节），
