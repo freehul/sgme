@@ -148,21 +148,28 @@ def collect_from_wiki(conn: sqlite3.Connection | None) -> list[SkillRecord]:
         return []
     out: list[SkillRecord] = []
     for r in rows:
-        title = r["title"] or ""
+        # ⚠️ 不依赖外部 row_factory（2026-08-27 实锤：裸 sqlite3.connect 调用
+        #    collect_from_wiki 时 r 是元组，r["title"] 直接 TypeError——生产 FastAPI
+        #    wiki_conn 设了 row_factory 所以未暴露；此处按位置取列 + Row 兼容）
+        if isinstance(r, sqlite3.Row):
+            title, content, category, tags = (r["title"], r["content"], r["category"], r["tags"])
+        else:
+            title, content, category, tags = (r[0], r[1], r[2], r[3])
+        title = title or ""
         name_raw = title[len(WIKI_TITLE_PREFIX):].strip() if title.startswith(WIKI_TITLE_PREFIX) else title.strip()
         try:
             name = validate_name(name_raw.replace("/", "-"))
         except ValueError:
             continue
-        cat = (r["category"] or "").strip()
+        cat = (category or "").strip()
         cat = cat.removeprefix("skill/")
         rec = SkillRecord(
             name=name,
             description="",
             tags=["skill"],
             category=cat,
-            content=(r["content"] or "").strip(),
-            sha256=hashlib.sha256((r["content"] or "").encode("utf-8")).hexdigest(),
+            content=(content or "").strip(),
+            sha256=hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
             source="wiki",
             origin_path=title,
         )
