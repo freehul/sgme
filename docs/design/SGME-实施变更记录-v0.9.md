@@ -1706,3 +1706,26 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 - #1 限制：沙箱浏览器走代理无法连 LAN 的 NAS（`net::ERR_NO_SUPPORTED_PROXIES`），未能真机 console 验证渲染；改以静态时序分析 + 编译验证定位，需用户在本地浏览器或 NAS 部署后实测确认。
 
 **运维影响**：①#1 #4 代码改动需 NAS 重新 build + 重启 SGME 服务生效（WebUI 资产随镜像重建）；②#4 放宽后 wiki skill 页将正常纳入技能仓库索引（此前 total:0 全空）；③#2 #3 无需运维动作。
+
+### B112. autoupd 自动更新链路根治（cron safe.directory 修复）+ B111 部署验证（2026-08-27）
+
+**背景**：B111 四项修复（#1 图谱时序 / #4 技能索引）已本地提交并 push 到 NAS 裸仓、重建镜像、force-recreate 上线（见下「部署验证」）。但「立即更新」自动链路仍坏：① `sgme-host-updater.sh` 根本未进 cron（只有 `nas_watchdog.sh`）；② 即便进 cron 也会因 **root 跑 git 撞 `fatal: detected dubious ownership`**（`src` 属主 `LEO:Users`，cron 以 root 跑）。**根因 = 自动更新代理以非仓库属主（root）身份操作 LEO 所有的 git 仓库**。
+
+**改动（scripts/sgme-host-updater.sh + NAS 部署配置）**：
+1. **updater 改以仓库属主 LEO 运行**（根治，非给 root 加 `safe.directory`——后者会致 root 写入 src 造成属主漂移）：`/etc/cron.d/sgme-watchdog` 新增 `*/5 * * * * LEO /vol1/1000/Docker/sgme/scripts/sgme-host-updater.sh >> .../logs/updater.log 2>&1`（watchdog 保持 root，因其需 `systemctl start docker.service`）。
+2. **data/update 目录属主归还 LEO**：该目录原为 `root:root`（容器 root 写 request.json 留下），LEO 身份的 updater 无法 rm/重写。经容器 root `docker exec sgme chown -R 1000:1001 /data/update` 改回 `LEO:Users`。
+3. **mark_failed 写回健壮性**：原 `cat > "$REQUEST_FILE"` 在 request.json 为容器 root 创建的 `root-owned 644` 时，非 root 身份无法 truncate。改为先 `rm -f "$REQUEST_FILE"` 再 `cat >`，任何属主下均可重写失败状态。
+4. **补 cron 调度缺失**：原 cron 仅 watchdog，updater 缺失；现已补齐（见上）。
+
+**B111 部署验证（NAS 192.168.10.10:9910，已上线）**：
+- `git push nas main`：`9ce9991..3613bde`（B111 4 文件，快进）。
+- 备份旧镜像 `sgme:1.0.1-nas-autoupd.bak-pre-b111`（rollback 点）。
+- NAS `src` `git pull` → tip `3613bde`；`docker build -t sgme:1.0.1-nas-autoupd .`（含 UI 重编译，产物 GraphView chunk 68KB）→ `docker compose up -d --force-recreate`。
+- 验证：`/v1/health` `status=ok version=1.0.1`；新 `GraphView-DqCOUNOG.js` 对外 HTTP 200（#1 修复确凿上线）；旧镜像留 rollback 点。
+
+**验证（autoupd 链路）**：
+- LEO 身份 `git -C /vol1/1000/Docker/sgme/src pull` → `Already up to date.`，**无 dubious ownership**（根因消除的直接证据）。
+- 造 `request.json`(target 1.0.1, pending) 后以 LEO 手动跑 updater → exit 0、request.json 被清除、日志 `当前已是 1.0.1 ... 标记完成`，无 safe.directory 报错。（注：updater.log 中 21:55 的 `dubious ownership` 为历史旧记录，本次 LEO 运行 23:47 干净通过。）
+- 说明：当前运行即 1.0.1，故走「已是最新」短路（不重建）；要真触发完整 `git pull→build→compose up` 链，仍需 GitHub 发 >1.0.1 的 Release tag + bump `SGME_VERSION`（用户既定 1.1.0 计划），此为前提条件、非本次缺陷。
+
+**运维影响**：①「立即更新」自动链路现已可用（每 5 分钟 cron 以 LEO 轮询 request.json）；② 根治了 root 操作 LEO 仓库的属主漂移风险；③ 仍需用户发版到 1.1.0 + bump 版本号，按钮才能端到端完成一次真实更新（版本一致性校验 gate）。

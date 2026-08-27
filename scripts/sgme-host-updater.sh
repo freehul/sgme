@@ -8,8 +8,12 @@
 #      git pull → docker build 新镜像 → 备份 compose → 换 tag → compose up -d → 健康验证
 #   3. 成功 → status=done + 清空请求；失败 → 回滚旧镜像 + status=failed + 写失败原因
 #
-# 部署：NAS 主机 root cron 每 5 分钟执行（与 nas_watchdog.sh 同模式）：
-#   */5 * * * * /vol1/1000/Docker/sgme/scripts/sgme-host-updater.sh >> /vol1/1000/Docker/sgme/logs/updater.log 2>&1
+# 部署：NAS 主机 cron 每 5 分钟执行（与 nas_watchdog.sh 同模式）。
+#   ⚠️ 必须以「src 仓库属主」(LEO) 身份运行，不可用 root——否则 git pull 撞
+#      `fatal: detected dubious ownership`，且 root 写入会导致 src 属主漂移。
+#   */5 * * * * LEO /vol1/1000/Docker/sgme/scripts/sgme-host-updater.sh >> /vol1/1000/Docker/sgme/logs/updater.log 2>&1
+#   前置：data/update 目录须属主为 LEO（容器 root 写 request.json 后需 chown 回去），
+#        否则 mark_failed 重写失败状态 / 成功时 rm 会权限拒绝。
 #
 # 依赖：
 #   - NAS 主机：git / docker / docker compose
@@ -100,6 +104,9 @@ mark_failed() { # $1=原因
     log "已回滚到旧镜像 $OLD_IMAGE"
   fi
   # 写失败状态（保留请求文件，标记 failed + 原因）
+  # 先 rm 再写：request.json 可能由容器 root 创建（root-owned 644），
+  # 非 root 身份（LEO）无法直接 truncate，rm 后重建即可由当前用户持有。
+  rm -f "$REQUEST_FILE"
   cat > "$REQUEST_FILE" <<EOF
 {"target_version": "$TARGET_VERSION", "requested_at": "$REQUESTED_AT", "status": "failed", "error": "$1"}
 EOF
