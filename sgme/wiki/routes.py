@@ -184,18 +184,25 @@ def build_page_html(page: dict) -> str:
 def list_wiki_pages(
     request: Request,
     category: str | None = Query(default=None),
+    status: str = Query(default="active", pattern="^(active|all|superseded)$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     _: str = Depends(require_agent_key),
 ):
-    """wiki 页面列表（updated_at 降序；category 可选过滤）。"""
+    """wiki 页面列表（updated_at 降序；category/status 可选过滤）。
+
+    status: active（默认，只返 active）/ all（含 superseded 历史）/ superseded。
+    total 跟随 status 过滤，与返回集一致——修复此前 total 报全表 579、
+    而 active 仅 160 导致「翻不到尾页」的误导（B113）。
+    """
     conn: sqlite3.Connection = request.app.state.wiki_conn
-    pages = wiki_dao.list_pages(conn, category=category, limit=limit, offset=offset)
+    pages = wiki_dao.list_pages(conn, category=category, status=status, limit=limit, offset=offset)
     return {
         "pages": pages,
-        "total": wiki_dao.count_pages(conn),
+        "total": wiki_dao.count_pages(conn, status=status),
         "limit": limit,
         "offset": offset,
+        "status": status,
     }
 
 

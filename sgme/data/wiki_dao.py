@@ -125,20 +125,26 @@ def list_pages(
     category: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    status: str = "active",
 ) -> list[dict]:
-    """页面列表（按 updated_at 降序；category 可选过滤）。"""
+    """页面列表（按 updated_at 降序；category 可选过滤；status 过滤）。
+
+    status: 'active'（默认）只返 active；'all' 返全部（含 superseded 历史）；
+    其余值按 status 列等值过滤（如 'superseded'）。status 过滤口径与
+    count_pages 一致，避免 total 与返回集分裂。
+    """
+    clauses: list[str] = []
+    params: list = []
     if category:
-        rows = conn.execute(
-            "SELECT * FROM wiki_pages WHERE category=? AND status='active'"
-            " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-            (category, limit, offset),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM wiki_pages WHERE status='active'"
-            " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+        clauses.append("category=?")
+        params.append(category)
+    if status and status != "all":
+        clauses.append("status=?")
+        params.append(status)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = f"SELECT * FROM wiki_pages{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    rows = conn.execute(sql, params).fetchall()
     return [_parse_tags(dict(r)) for r in rows]
 
 
@@ -240,8 +246,12 @@ def delete_page(conn: sqlite3.Connection, page_id: str) -> bool:
     return True
 
 
-def count_pages(conn: sqlite3.Connection) -> int:
-    """页面总数。"""
+def count_pages(conn: sqlite3.Connection, status: str | None = None) -> int:
+    """页面总数（status=None 全表；否则按 status 等值计数，与 list_pages 口径一致）。"""
+    if status and status != "all":
+        return conn.execute(
+            "SELECT COUNT(*) FROM wiki_pages WHERE status=?", (status,)
+        ).fetchone()[0]
     return conn.execute("SELECT COUNT(*) FROM wiki_pages").fetchone()[0]
 
 

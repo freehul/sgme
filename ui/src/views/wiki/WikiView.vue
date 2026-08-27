@@ -10,6 +10,7 @@ const pages = ref<WikiPage[]>([])
 const total = ref(0)
 const limit = 20
 const offset = ref(0)
+const statusFilter = ref('active')
 const loading = ref(false)
 const error = ref('')
 
@@ -49,7 +50,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const data = await listWikiPages({ limit, offset: offset.value })
+    const data = await listWikiPages({ limit, offset: offset.value, status: statusFilter.value })
     pages.value = data.pages
     total.value = data.total
   } catch (e) {
@@ -137,6 +138,14 @@ watch(() => route.query.page_id, (pid) => {
     <div class="head">
       <h2>Wiki 知识库</h2>
       <div class="filters">
+        <label class="status-filter">
+          状态
+          <select v-model="statusFilter" @change="offset = 0; load()">
+            <option value="active">active（当前）</option>
+            <option value="all">全部（含历史）</option>
+            <option value="superseded">superseded（旧版）</option>
+          </select>
+        </label>
         <span class="sub">共 {{ total }} 页</span>
         <button class="btn btn-primary btn-sm" @click="showNew = true">＋ 新建</button>
       </div>
