@@ -1688,3 +1688,21 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 - `tests/test_update_check_endpoint.py` UTF-8 校验 OK（bad=0）
 
 **运维影响**：①更新入口从「Dashboard 隐藏条」扩展为「设置页常驻 Tab + 主动检查」，可见性与可测性提升；②「检查更新」按钮让部署未发版提交的场景可被显式探测（仍受限于需 GitHub 新 Release 才 update_available=true）；③前端改动需 NAS 重新 build 后生效（与 B109 同为 WebUI 资产，随镜像重建）。
+
+### B111. WebUI 四项验收问题修复：知识图谱渲染时序 + 技能仓库检测命名（2026-08-27）
+
+**背景**：用户验收 1.0.1 时提出 4 项问题：①知识图谱页面空白看不见；②关怀信号消费者只有 default；③WIKI 知识库 579 篇是否为未清理 skill 混入；④技能仓库为空。排查结论：② ③ 为设计行为与正常数据（非缺陷）；① ④ 为真实缺陷需修复（①为 ST-13 图谱可视化的渲染回归，④属 ST-36 技能模块索引缺陷）。
+
+**改动**：
+1. **#1 知识图谱渲染时序修复（ui/src/views/graph/GraphView.vue）**：原 `load()` 在 `finally{ loading=false }` **之前**调用 `renderGraph()`，此时 `loading===true` 导致 `<svg v-else>` 未挂载、`svgRef` 为 null，`renderGraph` 直接 return；等 `loading` 翻 false 后 svg 出现却再无重绘触发 → 永久空白。修复：将 `renderGraph()` 移到 `finally` 之后并 `await nextTick()` 确保 svg 已挂载再绘制；尺寸计算兜底（width≥320 / height≥480，取 `parentElement.getBoundingClientRect()` 或 `clientWidth`）；`renderGraph` 收尾加 try/catch，渲染异常显式暴露到 `error` 而非静默空白。
+2. **#4 技能仓库检测/命名修复（sgme/skills/indexer.py）**：根因双因——①`collect_from_wiki` 仅按 `tags LIKE '%"skill"%'` 过滤过严（实测 wiki 中 6/7 个 skill 页 tags 不含 'skill'，仅 `category=skill/xxx`）；②中文 title 过 `validate_name` 白名单 `[A-Za-z0-9_.-]` 失败被静默 `continue` 跳过 → total:0。修复：SQL 放宽为 `WHERE status='active' AND (tags LIKE '%skill%' OR lower(category) LIKE 'skill%')`；新增 `_wiki_skill_name()` 从 title `skill:` 前缀 / category `skill/X` 子段 / 净化 title / page_id ASCII 残段 推导合法 ASCII 名（非 ASCII 中文 title 自动规整）；同名追加 `sha256(page_id)[:4]` 消歧；保留 Row/裸连接双兼容列访问。
+3. **#2 关怀信号消费者只有 default**：确认设计行为——`sgme/signal/engine.py` 用 `get_or_create_subscriber` 单一订阅者（默认 agent），无多消费者注册表；单用户记忆引擎单消费者订阅即正确，非缺陷，无需修改。
+4. **#3 WIKI 579 篇**：确认非 bug——NAS 上 `skill*` 类仅 7 篇（skill/vps/sgme×2/dsh/common/verify），其余为 research/dsh 等研究笔记，无大量未清理 skill 混入。
+
+**验证**：
+- #4：`tests/test_skills_indexer.py` 新增 `test_collect_from_wiki_chinese_title_category_marked`——内存 DB 插 7 个 skill 页（6/7 tags 不含 'skill'）+ 1 个 research 负样本，断言收录 7 个、名字为合法 ASCII（dsh/sgme/sgme-67a4/vps/common/verify/ff769a90）、同名消歧生效、研究笔记排除；该测试文件 **21 passed**。
+- #4 连带：indexer 系列（test_skills_indexer / store / pr7 / coldstart）合计 **52 passed**。
+- #1：UI `npm run build`（vite）通过（GraphView chunk ~68KB，无 TS/模板错误）。
+- #1 限制：沙箱浏览器走代理无法连 LAN 的 NAS（`net::ERR_NO_SUPPORTED_PROXIES`），未能真机 console 验证渲染；改以静态时序分析 + 编译验证定位，需用户在本地浏览器或 NAS 部署后实测确认。
+
+**运维影响**：①#1 #4 代码改动需 NAS 重新 build + 重启 SGME 服务生效（WebUI 资产随镜像重建）；②#4 放宽后 wiki skill 页将正常纳入技能仓库索引（此前 total:0 全空）；③#2 #3 无需运维动作。

@@ -123,6 +123,43 @@ class TestIndexer:
         got = {r.name: r for r in collect_from_wiki(conn)}
         assert set(got) == {"terminal-safety"}
 
+    def test_collect_from_wiki_chinese_title_category_marked(self, tmp_path: Path):
+        """2026-08-27 修复回归：生产数据 skill 页多为 category='skill/xxx' 标记、tags 不含
+        'skill'、且 title 为中文——旧过滤 + validate_name 白名单导致全部静默跳过、技能仓库空。
+        修复后：双条件命中 + 推导合法 ASCII 名（中文 title 规整为 ASCII 片段/哈希残段）。"""
+        from sgme.skills.indexer import collect_from_wiki
+
+        conn = self._wiki_conn(tmp_path)
+        rows = [
+            ("技能管理规则总纲-组织-拆分-编写-ff769a90", "技能管理规则总纲（组织/拆分/编写）",
+             "# 技能管理规则总纲", "skill", '["skill","governance","split","lint","sgme"]', "active"),
+            ("vps-加固变更与登录方式-2026-08-18-484cbbc0", "VPS 加固变更与登录方式（2026-08-18）",
+             "# VPS 加固变更", "skill/vps", '["vps","ssh","leo","fail2ban"]', "active"),
+            ("sgme操作手册-749c4590", "SGME操作手册", "# SGME操作手册", "skill/sgme",
+             '["skill","sgme","handbook"]', "active"),
+            ("免费模型key申请指南-sgme托底-548ba7b7", "免费模型Key申请指南（SGME托底）",
+             "# 免费模型Key申请指南", "skill/sgme", '["sgme","免费模型","key"]', "active"),
+            ("dsh-terminal-bash-命令-3-5s-延迟修复-提示符不匹配-098c3374", "DSH terminal-bash 命令 3.5s 延迟修复",
+             "# DSH terminal-bash", "skill/dsh", '["dsh","terminal-bash","踩坑"]', "active"),
+            ("skills-hub-manifest-分层清单-3726b12a", "skills-hub-MANIFEST-分层清单",
+             "# skills-hub-MANIFEST", "skill/common", '["skills-hub","manifest","L0"]', "active"),
+            ("生产验证页-0a6b411a", "生产验证页", "# 生产验证页", "skill/verify", '["skill","verify"]', "active"),
+            # 负样本：非 skill 类，不应被收录
+            ("某研究笔记", "某研究笔记", "# 某研究笔记", "research/dsh", '["dsh","note"]', "active"),
+        ]
+        conn.executemany("INSERT INTO wiki_pages VALUES (?,?,?,?,?,?)", rows)
+        recs = collect_from_wiki(conn)
+        names = sorted(r.name for r in recs)
+        # 7 个 skill 页全部收录，研究笔记排除
+        assert len(recs) == 7, names
+        assert names == ["common", "dsh", "ff769a90", "sgme", "sgme-67a4", "verify", "vps"], names
+        # 全部为合法 ASCII 技能名（白名单）
+        import re
+        for r in recs:
+            assert re.fullmatch(r"[A-Za-z0-9_.-]+", r.name), r.name
+        # 同名消歧生效：两个 skill/sgme 页得到不同名
+        assert len({r.name for r in recs}) == 7
+
     def test_merge_git_wins(self, tmp_path: Path):
         from sgme.skills.indexer import SkillRecord, merge_records
 

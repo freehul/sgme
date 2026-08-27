@@ -131,39 +131,92 @@ def collect_from_dir(root: str | Path) -> list[SkillRecord]:
     return out
 
 
-def collect_from_wiki(conn: sqlite3.Connection | None) -> list[SkillRecord]:
-    """从 wiki_pages 收集 skill 标记活跃页（tags JSON 数组精确含 "skill" 元素）。
+def _is_clean_name(s: str) -> bool:
+    """是否全由技能名白名单字符组成（[A-Za-z0-9_.-]）。"""
+    return bool(s) and bool(re.fullmatch(r"[A-Za-z0-9_.-]+", s or ""))
 
-    连接为 None 或查询异常时返回空列表（容错隔离，不影响其他源）——
-    与统一搜索 T-34 的 wiki_conn 容错语义一致。
+
+def _ascii_slug(s: str) -> str:
+    """仅保留白名单字符，折叠连续分隔符，去首尾分隔符。
+
+    用于把中文 title / page_id 规整为 ASCII 片段（如 '技能库-ff769a90' → 'ff769a90'）。
+    """
+    kept = [c for c in (s or "") if _NAME_RE.match(c)]
+    out = re.sub(r"[-_.]+", "-", "".join(kept))
+    return out.strip("-._")
+
+
+def _wiki_skill_name(title: str, category: str, page_id: str) -> str:
+    """为 wiki skill 页推导合法 ASCII 技能名（白名单 [A-Za-z0-9_.-]）。
+
+    优先级：title 的 'skill:' 前缀 > category 子段(skill/X) > 净化 title > page_id ASCII 残段；
+    全部失败返回 ''（调用方跳过并记告警）。
+    """
+    title = (title or "").strip()
+    category = (category or "").strip()
+    low_cat = category.lower()
+
+    if title.lower().startswith(WIKI_TITLE_PREFIX):
+        cand = title[len(WIKI_TITLE_PREFIX):].strip()
+    elif low_cat.startswith("skill/") and len(category) > len("skill/"):
+        cand = category[len("skill/"):].strip()
+    elif low_cat == "skill":
+        cand = ""
+    else:
+        cand = ""
+
+    # 非全 ASCII 名（如中文 title）→ 回退净化 title，再回退 page_id 残段
+    if not _is_clean_name(cand):
+        cand = _ascii_slug(title) or _ascii_slug(page_id)
+    if not _is_clean_name(cand):
+        cand = _ascii_slug(cand)
+    return cand
+
+
+def collect_from_wiki(conn: sqlite3.Connection | None) -> list[SkillRecord]:
+    """从 wiki_pages 收集 skill 标记活跃页（双条件任一命中即视为技能页）。
+
+    判定条件（2026-08-27 修复：生产数据 skill 页多为 category='skill/xxx' 标记，
+    tags 不含 'skill'，旧过滤 ``tags LIKE '%"skill"%'`` 仅命中 3/7；且中文 title
+    过不了 validate_name 白名单被静默跳过 → 技能仓库长期为空）：
+    - tags 含 'skill'（设计原约定，兼容 JSON 双/单引号存储），或
+    - category 以 'skill' 开头（'skill' / 'skill/vps' 等）
+
+    命名：经 ``_wiki_skill_name`` 推导合法 ASCII 名（中文 title 自动规整为 ASCII
+    片段或 page_id 哈希残段），同名追加 page_id 哈希前缀消歧。
+    连接为 None 或查询异常时返回空列表（容错隔离，不影响 git 源）。
     """
     if conn is None:
         return []
     try:
         rows = conn.execute(
-            "SELECT title, content, category, tags FROM wiki_pages "
-            "WHERE status='active' AND tags LIKE '%\"skill\"%' ORDER BY title"
+            "SELECT page_id, title, content, category, tags FROM wiki_pages "
+            "WHERE status='active' AND (tags LIKE '%skill%' OR lower(category) LIKE 'skill%') "
+            "ORDER BY title"
         ).fetchall()
     except Exception:
         return []
     out: list[SkillRecord] = []
+    seen: set[str] = set()
     for r in rows:
-        # ⚠️ 不依赖外部 row_factory（2026-08-27 实锤：裸 sqlite3.connect 调用
-        #    collect_from_wiki 时 r 是元组，r["title"] 直接 TypeError——生产 FastAPI
-        #    wiki_conn 设了 row_factory 所以未暴露；此处按位置取列 + Row 兼容）
+        # ⚠️ 不依赖外部 row_factory（裸 sqlite3.connect 调用时 r 是元组；
+        #    生产 FastAPI wiki_conn 设了 row_factory。此处按位置取列 + Row 兼容）
         if isinstance(r, sqlite3.Row):
-            title, content, category, tags = (r["title"], r["content"], r["category"], r["tags"])
+            page_id, title, content, category, tags = (
+                r["page_id"], r["title"], r["content"], r["category"], r["tags"])
         else:
-            title, content, category, tags = (r[0], r[1], r[2], r[3])
+            page_id, title, content, category, tags = (r[0], r[1], r[2], r[3], r[4])
         title = title or ""
-        name_raw = title[len(WIKI_TITLE_PREFIX):].strip() if title.startswith(WIKI_TITLE_PREFIX) else title.strip()
-        try:
-            name = validate_name(name_raw.replace("/", "-"))
-        except ValueError:
+        name = _wiki_skill_name(title, category or "", str(page_id))
+        if not name:
             continue
-        cat = (category or "").strip()
-        cat = cat.removeprefix("skill/")
-        rec = SkillRecord(
+        # 同名消歧：追加 page_id 稳定哈希末 4 位（hashlib 非进程随机，可复现）
+        if name in seen:
+            suffix = hashlib.sha256(str(page_id).encode("utf-8")).hexdigest()[:4]
+            name = f"{name}-{suffix}"
+        seen.add(name)
+        cat = (category or "").strip().removeprefix("skill/")
+        out.append(SkillRecord(
             name=name,
             description="",
             tags=["skill"],
@@ -172,8 +225,7 @@ def collect_from_wiki(conn: sqlite3.Connection | None) -> list[SkillRecord]:
             sha256=hashlib.sha256((content or "").encode("utf-8")).hexdigest(),
             source="wiki",
             origin_path=title,
-        )
-        out.append(rec)
+        ))
     return out
 
 
