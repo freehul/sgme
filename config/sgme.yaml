@@ -87,3 +87,9 @@ dream:
 care:
   enabled: true
   persona_max_chars: 2000
+scene_gc:
+  enabled: true
+  merge_threshold: 0.80     # 相似度 >= 0.80 的场景对入选合并
+  min_threshold: 0.70       # 兜底下限（候选不足时可降至此重算，当前未启用降级）
+  trigger_at: 275           # 仅当 active >= 此值才治理；与 l2.warn_thresholds.orange 一致
+  max_merges: 20            # 单次合并上限（防一次 LLM 烧太多；仍超限次日 Dream 继续压）
