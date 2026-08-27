@@ -52,6 +52,15 @@ COPY registry/ registry/
 COPY templates/ templates/
 COPY prompts/ prompts/
 COPY roles/ roles/
+# 技能模块自有技能树（SKILL.md）：烘焙进镜像，每次重建自动带出；
+# 并初始化为 git 仓（写侧 MCP 工具 store.write_skill 等需 git 提交）
+COPY skills/ /app/cache/skills/
+RUN cd /app/cache/skills && \
+    git init -q && \
+    git config user.email "sgme-skills@local" && \
+    git config user.name "SGME Skills" && \
+    git add -A && \
+    git commit -qm "skills: seed canonical skills" || true
 
 # WebUI 构建产物（Stage 1；app.py 检测 /app/ui/dist 存在即挂载 SPA，见 sgme/server/app.py §WebUI 静态托管）
 COPY --from=ui-build /ui/dist ui/dist/

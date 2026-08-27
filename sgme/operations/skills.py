@@ -20,8 +20,10 @@
 - L2 全文：正文全文注入上下文（显式调用）；section 为标题名时截取该节省 token
 - L3 物化：字节保真写盘 dest_dir/<name>/SKILL.md（不走 LLM 转写），遥测一条
 
-数据源：``sgme.skills.index_all(source_dirs, wiki_conn)``（git 工作区 ∪ wiki
-skill 标记页，按名去重 git 优先）。本模块**不做索引缓存**（百条规模毫秒级重建，
+数据源：``sgme.skills.index_all(source_dirs)``（git 工作区 SKILL.md，按名排序）。
+2026-08-28 起 wiki 桥接已移除，技能唯一来源为 ``skills.source_dirs`` 的 SKILL.md；
+``wiki_conn`` 形参在部分操作（cold_start 手册检索）中仍用于取 SGME 操作手册，
+但不参与技能索引。本模块**不做索引缓存**（百条规模毫秒级重建，
 入口层可用 app.state 缓存 BM25 索引对象复用，见 routes_skills._get_records）。
 
 search_skills 融合：BM25 分数 + 向量余弦相似度简单加权和（0.6/0.4）；
@@ -334,77 +336,77 @@ def search_skills(
         }
         for n, s in ranked
         if n in by_name
-    ]
-
-# ---------------------------------------------------------------------------
-# 冷启动包（T-106 M5）：新 agent 一次拉取即刻可用——索引全量 + 热集全文 + 操作手册
-
-
-def cold_start(
-    cfg: dict[str, Any],
-    wiki_conn: sqlite3.Connection | None,
-) -> OperationResult:
-    """冷启动包：GET /v1/skills/coldstart 的业务实现（设计 §三「冷启动包」）。
-
-    返回三件套：
-    - index：全量技能索引（name/description/tags/pattern/category，不受 budget 截断）
-    - hotset：pattern=auto 技能的 L2 全文（热集常驻，agent 免逐个拉取）
-    - manual：SGME 操作手册页（wiki 检索标题含「SGME操作手册」或 tags 含 onboarding；
-      找不到返回 None，不阻塞——agent 仍可按 MCP onboarding 工具指引使用）
-    """
-    from sgme.data import wiki_dao
-
-    records = index_all(
-        (cfg.get("skills") or {}).get("source_dirs") or [],
-        wiki_conn,
-    )
-    if not (cfg.get("skills") or {}).get("enabled", False):
-        raise InvalidArgs("skills 模块未启用（skills.enabled=false）")
-
-    items = [
-        {
-            "name": r.name,
-            "description": r.description,
-            "category": r.category,
-            "tags": list(r.tags),
-            "pattern": getattr(r, "pattern", "") or "",
-        }
-        for r in records
-    ]
-
-    hotset = [
-        {
-            "name": r.name,
-            "content": r.content,
-            "sha256": r.sha256,
-        }
-        for r in sorted(records, key=lambda x: x.name)
-        if (getattr(r, "pattern", "") or "") == "auto"
-    ]
-
-    manual: dict | None = None
-    if wiki_conn is not None:
-        try:
-            pages = wiki_dao.list_pages(wiki_conn, limit=500)
-        except Exception:
-            pages = []
-        hit = next((
-            p for p in pages
-            if ("onboarding" in (p.get("tags") or [])
-                or "sgme操作手册" in str(p.get("title", "")).replace(" ", "").lower())
-        ), None)
-        if hit is not None:
-            full = wiki_dao.get_page(wiki_conn, hit["page_id"]) or {}
-            manual = {
-                "page_id": full.get("page_id"),
-                "title": full.get("title"),
-                "content": full.get("content"),
-            }
-
-    return OperationResult.succeed(
-        {
-            "index": {"items": items, "total": len(items)},
-            "hotset": hotset,
-            "manual": manual,
-        }
+    ]
+
+# ---------------------------------------------------------------------------
+# 冷启动包（T-106 M5）：新 agent 一次拉取即刻可用——索引全量 + 热集全文 + 操作手册
+
+
+def cold_start(
+    cfg: dict[str, Any],
+    wiki_conn: sqlite3.Connection | None,
+) -> OperationResult:
+    """冷启动包：GET /v1/skills/coldstart 的业务实现（设计 §三「冷启动包」）。
+
+    返回三件套：
+    - index：全量技能索引（name/description/tags/pattern/category，不受 budget 截断）
+    - hotset：pattern=auto 技能的 L2 全文（热集常驻，agent 免逐个拉取）
+    - manual：SGME 操作手册页（wiki 检索标题含「SGME操作手册」或 tags 含 onboarding；
+      找不到返回 None，不阻塞——agent 仍可按 MCP onboarding 工具指引使用）
+    """
+    from sgme.data import wiki_dao
+
+    records = index_all(
+        (cfg.get("skills") or {}).get("source_dirs") or [],
+        wiki_conn,
+    )
+    if not (cfg.get("skills") or {}).get("enabled", False):
+        raise InvalidArgs("skills 模块未启用（skills.enabled=false）")
+
+    items = [
+        {
+            "name": r.name,
+            "description": r.description,
+            "category": r.category,
+            "tags": list(r.tags),
+            "pattern": getattr(r, "pattern", "") or "",
+        }
+        for r in records
+    ]
+
+    hotset = [
+        {
+            "name": r.name,
+            "content": r.content,
+            "sha256": r.sha256,
+        }
+        for r in sorted(records, key=lambda x: x.name)
+        if (getattr(r, "pattern", "") or "") == "auto"
+    ]
+
+    manual: dict | None = None
+    if wiki_conn is not None:
+        try:
+            pages = wiki_dao.list_pages(wiki_conn, limit=500)
+        except Exception:
+            pages = []
+        hit = next((
+            p for p in pages
+            if ("onboarding" in (p.get("tags") or [])
+                or "sgme操作手册" in str(p.get("title", "")).replace(" ", "").lower())
+        ), None)
+        if hit is not None:
+            full = wiki_dao.get_page(wiki_conn, hit["page_id"]) or {}
+            manual = {
+                "page_id": full.get("page_id"),
+                "title": full.get("title"),
+                "content": full.get("content"),
+            }
+
+    return OperationResult.succeed(
+        {
+            "index": {"items": items, "total": len(items)},
+            "hotset": hotset,
+            "manual": manual,
+        }
     )

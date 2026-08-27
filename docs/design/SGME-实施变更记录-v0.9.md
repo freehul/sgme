@@ -1746,3 +1746,22 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 - 前端 `npm run build` 通过（`WikiView` chunk 重编译无 TS/模板错误）。
 
 **运维影响**：① 修复需 NAS 重新 build + 重启 SGME 生效（WebUI 资产随镜像重建）；② 默认浏览仍为 active（160），用户点「全部」即可看 579 全量且翻页一致；③ 消除 total 误导，UI 翻页按钮 `offset+limit>=total` 判定现在与真实返回集对齐。
+
+### B114. 技能模块「去 wiki 化」：技能由 source_dirs 自有 SKILL.md 管理 + 移除 wiki 桥接 + 补 MCP 写侧（2026-08-28）
+
+**背景**：用户判定「通过 skill 标签在 wiki 库里识别技能」是历史遗留的权宜方案——技能本应由 skills 模块自有管理，而非寄居 wiki。B111 后技能仓库显示的 11→4 个「技能」实为 wiki 里被 `skill` 标签/分类误标的页面（研究/设计/治理文档混于其中），并非真正的可执行技能。本次落实三件事：① 把 4 个真 how-to 从 wiki 迁为 `source_dirs` 的 SKILL.md（模块真正「拥有」技能）；② 移除 index_all 对 wiki 的桥接调用（wiki 不再是技能来源，一并消解 B112 讨论的 `LIKE '%skill%'` 子串误收问题）；③ 补齐 MCP 技能工具缺口（L0 列表 / 冷启动 / 写侧）。
+
+**改动**：
+1. **新增仓库技能树 `skills/`（git 跟踪）**：`skills/{sgme,sgme-key,vps,verify}/SKILL.md`，内容从 wiki 4 个真 how-to 页（SGME操作手册 / 免费模型Key申请指南 / VPS加固变更与登录方式 / 生产验证页）抽取，frontmatter 含 `name/description/tags:[skill]/category`。
+2. **`sgme/skills/indexer.py`**：`index_all` 仅扫 `source_dirs`（移除 `collect_from_wiki` 调用）；`collect_from_wiki` 函数保留（测试/回滚用）但标注【已弃用】，不再接入索引。模块与 `operations/skills.py` 文档同步更新。
+3. **`Dockerfile`**：`COPY skills/ /app/cache/skills/` 烘焙技能树进镜像；并对 `/app/cache/skills` 执行 `git init` + 首次 commit（写侧 MCP 工具 `store.*` 需 git 仓提交）。
+4. **`sgme/mcp_server.py`**：新增 5 个 MCP 工具——`skill_list`（L0 列表）、`skill_coldstart`（冷启动包）、`skill_put`/`skill_delete`/`skill_rename`（写侧，调 `sgme.skills.store`，`_require_admin` 声明与仓库 MCP 鉴权姿态一致）；同步追加 `ONBOARDING_TOOLS` 能力清单（与 `@mcp.tool` 顺序一致，防漂移测试断言）。
+5. **NAS wiki 库剥离**：4 个 how-to 页去除 `skill` 标签 + `skill/` 分类前缀（`wiki_dao.update_page_content`，正文不动），wiki 现 0 个 skill 页——与 SKILL.md 来源不再重复/歧义。
+6. **测试**：`test_operations_skills.py` / `test_routes_skills.py` 移除对 wiki 桥接的断言，改为「技能仅来自 source_dirs」+ 负向断言「wiki-skill 不应出现在技能索引」（固化桥接移除）。
+
+**验证**：
+- 本地 `pytest -k "skill or mcp"` **144 passed**；`test_skills_indexer.py` + `test_wiki_filter.py` **33 passed**。
+- 容器内 `collect_from_dir` 对真实库实测：4 个 SKILL.md → 4 条记录、source 全为 `git`（部署后线上 `/v1/skills` 验证）。
+- 写侧工具链路：MCP `skill_put` 经 `store.write_skill` 落盘 `<source_dir>/<name>/SKILL.md` + git commit（容器内 `cache/skills` 已 `git init`）。
+
+**运维影响**：① 技能现由镜像内 `/app/cache/skills`（git 仓）真正拥有，重建镜像即随带出；② wiki 与技能彻底解耦——wiki 回归纯知识库，技能仓库=源目录 SKILL.md 视图；③ MCP agent 现可完整管理技能（搜/取/物化/枚举/冷启动/写）；④ 写侧 MCP 的 admin 门禁目前与仓库既有 MCP 姿态一致（中间件仅校验 agent-key，`_require_admin` 为意图声明桩），后续若要严格管理员隔离需补请求级 key 校验（待办）。
