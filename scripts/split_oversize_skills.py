@@ -144,13 +144,16 @@ def split_one(skill_dir: Path) -> dict:
         result_refs.append(fname)
 
     # frontmatter 追加 references 数组（幂等键）
+    # ⚠️ 用 fm 自身行尾 + rpartition 锚定 --- 结束符（2026-08-27 实锤：
+    #    insert(-1) 会插到 --- 之后——结尾换行导致 split 末尾空串，空串才是最后元素）
     new_fm = fm
     if new_fm and "references:" not in new_fm:
+        fm_eol = "\r\n" if "\r\n" in fm else "\n"
         arr = ", ".join(result_refs)
-        ins = f"references: [{arr}]" + eol
-        parts = new_fm.split(eol)
-        parts.insert(-1, ins.rstrip(eol))  # 插到结尾 --- 之前
-        new_fm = eol.join(parts) + eol
+        ins = f"references: [{arr}]"
+        head, sep, tail = new_fm.rpartition("---")
+        if sep:
+            new_fm = head + ins + fm_eol + sep + tail
 
     kept = "".join(sections[i][1] for i in range(len(sections)) if i not in externalized)
     links = eol.join(

@@ -89,6 +89,11 @@ def test_normal_split(tmp_path: Path):
 
     # frontmatter 追加了 references 数组
     assert "references:" in entrance_text
+    # ⚠️ 防回归（2026-08-27 实锤）：references 必须在 frontmatter 内（--- 结束符之前），
+    #    不能插到正文开头——insert(-1) 遇 CRLF+末尾空串会错位
+    fm_m = re.match(r"\A(---\r?\n.*?\r?\n---\r?\n?)", entrance_text, re.S)
+    assert fm_m is not None, "入口无 frontmatter"
+    assert "references:" in fm_m.group(1), f"references 错位到正文: {entrance_text[:80]!r}"
 
     # 外置章节引用链接存在
     for ref_name in result["refs"]:
