@@ -1667,3 +1667,24 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 - config 层验证：load_config 后 scene_gc 正确（trigger_at=275, max_merges=20），CONFIG_SECTIONS 含 scene_gc，UTF-8 校验 6 改动文件全 OK（bad=0）
 
 **运维影响**：①场景超限治理从「人工临时脚本」升级为「Dream 03:00 自动渐进收敛 + 手动触发兜底」；②复用 scene_vectors 不重 embed、复用 _apply_merge 不重写归档机制、原件永不删；③上线前建议先 `GET /v1/admin/scene-gc/candidates` 预览候选对确认无误再 `POST /v1/admin/scene-gc/trigger`；④NAS 生产需 git pull + 重启 SGME 服务让 scene_gc 生效（config 同步 scene_gc 段）；⑤T-97 demand 备注已刷新为「scene_gc 后台自动合并归档已落地」。
+
+### B110：WebUI 设置页新增「更新」Tab + 后端「检查更新」端点（2026-08-27）
+
+**背景**：原「立即更新」入口仅挂在 Dashboard 健康卡片提示条，且由 `health.update_available` 控制显隐——比对 GitHub Releases 最新 tag 与运行版本，当前运行 1.0.1 ≥ 最新 Release v1.0.0 时按钮整条隐藏，用户既看不到入口、也不知道为何无更新。用户要求把更新做成设置页独立 Tab，含「检查更新」与「更新」两个按钮，可主动探活而不依赖按钮显隐。
+
+**改动**：
+1. **`sgme/server/routes_admin.py`**——新增 `POST /v1/admin/update/check`：调 `update_check.refresh(SGME_VERSION, cfg)` 强制刷新版本检测缓存（立即重查 GitHub/Gitee Releases 最新 tag），返回 `{update_available, latest_version, update_checked_at, update_error}`；鉴权同其它 admin 端点（require_admin_key），永不抛异常（检测失败回填 update_error）。复用既有 `update/request` 写/读意图端点，不改
+2. **`ui/src/api/dashboard.ts`**——新增 `checkUpdate()`（POST /v1/admin/update/check，返回 UpdateCheck 对象）+ `UpdateCheck` 接口
+3. **`ui/src/views/settings/UpdateTab.vue`**（新增）——设置页「更新」Tab：
+   - 状态区：当前版本 / 最新版本 / 更新状态（有可用更新·已是最新）/ 上次检测时间 / 检测错误
+   - 「检查更新」按钮：调 `checkUpdate()` + 重新 `getHealth()` 刷新，展示结果（含检测失败原因）
+   - 「更新」按钮：复用 `requestUpdate(latest_version)`（仅在 `update_available && latest_version` 时可用），提交后每 5s 轮询 `getUpdateRequest()` 展示 pending/done/failed
+   - 底部提示：说明版本检测比对 GitHub Releases tag，按钮置灰含义，以及「部署未发版新提交需先发高于当前版本的新 Release」
+4. **`ui/src/views/settings/SettingsView.vue`**——TABS 数组追加 `{ key: 'update', label: '更新', comp: UpdateTab }`（Dashboard 原有更新条保留，二者并存）
+
+**验证**：
+- `tests/test_update_check_endpoint.py` 3 passed（缺 Key→403；正常返回检测对象；检测失败降级仍 200 且 update_error 回填）；`tests/test_routes_admin.py` 24 passed 零回归
+- UI `vite build` 通过（无 TS/模板错误，新增 UpdateTab 已打进 SettingsView chunk）
+- `tests/test_update_check_endpoint.py` UTF-8 校验 OK（bad=0）
+
+**运维影响**：①更新入口从「Dashboard 隐藏条」扩展为「设置页常驻 Tab + 主动检查」，可见性与可测性提升；②「检查更新」按钮让部署未发版提交的场景可被显式探测（仍受限于需 GitHub 新 Release 才 update_available=true）；③前端改动需 NAS 重新 build 后生效（与 B109 同为 WebUI 资产，随镜像重建）。

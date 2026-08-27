@@ -1328,6 +1328,7 @@ Query：`limit`（默认 50）/ `offset`（默认 0）——对齐 SCSM `list_te
 |---|---|
 | `GET /v1/admin/update/request` | 读当前意图文件（status/target_version/requested_at/error） |
 | `POST /v1/admin/update/request` | 写更新意图（body：target_version；原子落盘 `$SGME_HOME/update/request.json`，主机 cron 代理轮询执行） |
+| `POST /v1/admin/update/check` | 强制刷新版本检测缓存（立即重查 GitHub/Gitee Releases 最新 tag），返回 `{update_available, latest_version, update_checked_at, update_error}`；WebUI 设置页「检查更新」按钮调用 |
 
 **图谱（ST-13）**：
 
@@ -2342,7 +2343,7 @@ L1 输出 dimensions（自然语言，如"技术栈"）
 版本检测→提示→确认→自动更新的四段闭环，容器无特权：
 
 - **检测**：`sgme/operations/update_check.py`——GitHub Releases API（`releases/latest` 免 token）解析 tag_name，与当前版本语义化对比（预发布 b4<b5 视为新版、正式版>预发布）；网络/API 失败静默降级（记录 update_error 不拖垮服务）；模块级缓存（health 高频读不重复请求外网）；config `update_check` 段（enabled/interval_hours/source，默认 github/24h）
-- **提示**：health 只增字段（update_available/latest_version/update_checked_at/update_error，向后兼容，MCP 契约冻结不动）；WebUI DashboardView 健康卡片提示条 +「立即更新」确认弹窗
+- **提示**：health 只增字段（update_available/latest_version/update_checked_at/update_error，向后兼容，MCP 契约冻结不动）；WebUI DashboardView 健康卡片提示条 +「立即更新」确认弹窗；**设置页「更新」Tab（B110）** 常驻入口——状态区展示当前/最新版本与检测错误 +「检查更新」按钮（`POST /v1/admin/update/check` 强制刷新检测缓存，不受 update_available 显隐约束）+「更新」按钮（复用 `update/request`，提交后轮询展示 pending/done/failed）。Dashboard 提示条与设置 Tab 并存，后者解决「运行版本 ≥ 最新 Release 时入口整体隐藏、用户不知为何无更新」的可视性问题
 - **确认落意图**：`POST /v1/admin/update/request`（admin 鉴权）→ 原子写 `$SGME_HOME/update/request.json`（tmp+os.replace）；`sgme/operations/update_request.py`
 - **执行**：主机侧代理 `scripts/sgme-host-updater.sh`（NAS root cron 每 5 分钟轮询）——校验 target_version 格式（防注入）→ git pull → docker build 新镜像 → 备份 compose → 换 tag → compose up → 健康验证 + **版本一致性校验**（防假更新）→ 成功清请求 / 失败自动回滚旧镜像 + 标记 failed；锁文件防并发（陈旧 >30min 抢占）
 - **安全**：容器不挂 docker.sock（无特权），更新由主机脚本执行；版本号格式白名单防注入
