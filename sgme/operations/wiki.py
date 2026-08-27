@@ -57,19 +57,20 @@ def list_pages(
     category: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    status: str = "active",
 ) -> OperationResult:
-    """wiki 页面列表（updated_at 降序；category 可选过滤）。
+    """wiki 页面列表（updated_at 降序；category/status 可选过滤）。
 
     返回轻量字段（page_id/title/category/tags/source_*/ingested_at/updated_at），
-    不含正文——正文走 ``get_page`` 按需取。
+    不含正文——正文走 ``get_page`` 按需取。total 跟随 status 过滤，与返回集一致。
     """
-    pages = wiki_dao.list_pages(conn, category=category, limit=limit, offset=offset)
+    pages = wiki_dao.list_pages(conn, category=category, limit=limit, offset=offset, status=status)
     light = [
         {k: v for k, v in p.items() if k not in _LIST_SKIP_FIELDS}
         for p in pages
     ]
     return OperationResult.succeed(
-        {"pages": light, "total": wiki_dao.count_pages(conn)}
+        {"pages": light, "total": wiki_dao.count_pages(conn, status=status)}
     )
 
 

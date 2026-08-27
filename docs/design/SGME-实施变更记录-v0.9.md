@@ -1729,3 +1729,20 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 - 说明：当前运行即 1.0.1，故走「已是最新」短路（不重建）；要真触发完整 `git pull→build→compose up` 链，仍需 GitHub 发 >1.0.1 的 Release tag + bump `SGME_VERSION`（用户既定 1.1.0 计划），此为前提条件、非本次缺陷。
 
 **运维影响**：①「立即更新」自动链路现已可用（每 5 分钟 cron 以 LEO 轮询 request.json）；② 根治了 root 操作 LEO 仓库的属主漂移风险；③ 仍需用户发版到 1.1.0 + bump 版本号，按钮才能端到端完成一次真实更新（版本一致性校验 gate）。
+
+### B113. 修复 /v1/wiki/pages 分页「160 条假上限」——status 过滤 + total 口径一致（2026-08-28）
+
+**背景**：实测 `GET /v1/wiki/pages` 单次响应始终最多 160 条、offset≥160 返回空、但 `total` 报 579（全表）。排查 NAS 容器内真实库（`/data/data/wiki.db`，579 行）：status 分布为 `active=160 / superseded=419`。根因 = **`wiki_dao.list_pages` 硬编码 `status='active'`（只返 160 活跃页），而端点 `total` 用 `count_pages(conn)` 报全表 579** → total 与返回集口径分裂，造成「翻不到尾页」的假象（并非真有 160 条 API 上限）。
+
+**改动**：
+1. `sgme/data/wiki_dao.py`：`list_pages` 新增 `status` 参数（默认 `'active'`；`'all'` 不过滤；其余值按 status 等值过滤），SQL 改为动态 WHERE 拼接；`count_pages` 新增 `status` 参数（`None`=全表，否则按 status 计数）。保持 `evolve`/`skills` 调用默认 `active` 兼容。
+2. `sgme/wiki/routes.py`：`list_wiki_pages` 新增 `status` Query（pattern `^(active|all|superseded)$`，默认 `active`），透传 DAO；`total` 改为 `count_pages(conn, status=status)` 与返回集一致；响应体附 `status` 字段。
+3. `sgme/operations/wiki.py`：`list_pages` 同步加 `status`（默认 `active`），`total` 跟随；MCP `wiki_pages` 工具不传 status → 默认 `active` 行为不变。
+4. `ui/src/api/wiki.ts`：`listWikiPages` 支持 `status` 参数，`WikiPages` 接口增 `status?` 字段。
+5. `ui/src/views/wiki/WikiView.vue`：新增状态筛选下拉（active / 全部含历史 / superseded），切换时重置 offset 并 reload，`total` 与返回集一致驱动翻页。
+
+**验证**：
+- `tests/test_wiki_filter.py` 新增 4 用例：`status` 默认 active 只返 active 且 total=active 数；`all` 返全表且 total=全表；`superseded` 只返旧版且 total 一致；`all`+offset 翻页能取到 superseded（证明无空上限假象）。`wiki/skills` 相关测试合计 **109 passed**。
+- 前端 `npm run build` 通过（`WikiView` chunk 重编译无 TS/模板错误）。
+
+**运维影响**：① 修复需 NAS 重新 build + 重启 SGME 生效（WebUI 资产随镜像重建）；② 默认浏览仍为 active（160），用户点「全部」即可看 579 全量且翻页一致；③ 消除 total 误导，UI 翻页按钮 `offset+limit>=total` 判定现在与真实返回集对齐。

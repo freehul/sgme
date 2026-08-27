@@ -21,11 +21,13 @@ export interface WikiPages {
   total: number
   limit: number
   offset: number
+  status?: string
 }
 
-export function listWikiPages(params: { category?: string; limit?: number; offset?: number } = {}) {
+export function listWikiPages(params: { category?: string; status?: string; limit?: number; offset?: number } = {}) {
   const qs = new URLSearchParams()
   if (params.category) qs.set('category', params.category)
+  if (params.status) qs.set('status', params.status)
   if (params.limit) qs.set('limit', String(params.limit))
   if (params.offset) qs.set('offset', String(params.offset))
   const suffix = qs.toString() ? `?${qs.toString()}` : ''

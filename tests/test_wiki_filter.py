@@ -127,3 +127,46 @@ def test_search_wiki_pages_not_squeezed_by_skill(conn):
     ids = {r["page_id"] for r in results}
     assert "note1" in ids  # 知识页不被 skill 页挤掉
     assert not any(r["page_id"].startswith("skill") for r in results)
+
+
+# ---------- B113：/v1/wiki/pages 分页 status 过滤 + total 一致 ----------
+
+def test_list_pages_status_default_active(conn):
+    """默认（不传 status）只返 active，total 与返回集一致（active 数）。"""
+    wiki_dao.insert_page(conn, "a1", "手册", "x", category="design")
+    wiki_dao.insert_page(conn, "o1", "旧手册", "x", category="design", status="superseded")
+    wiki_dao.insert_page(conn, "o2", "另一旧手册", "x", category="design", status="superseded")
+    pages = wiki_dao.list_pages(conn)
+    assert {p["page_id"] for p in pages} == {"a1"}
+    assert wiki_dao.count_pages(conn) == 3          # 全表
+    assert wiki_dao.count_pages(conn, "active") == 1  # 默认口径
+    assert wiki_dao.count_pages(conn, status="active") == 1
+
+
+def test_list_pages_status_all_returns_everything(conn):
+    """status='all' 返全表（含 superseded），total 与返回集一致。"""
+    wiki_dao.insert_page(conn, "a1", "手册", "x", category="design")
+    wiki_dao.insert_page(conn, "o1", "旧手册", "x", category="design", status="superseded")
+    pages = wiki_dao.list_pages(conn, status="all")
+    assert {p["page_id"] for p in pages} == {"a1", "o1"}
+    assert wiki_dao.count_pages(conn, status="all") == 2
+
+
+def test_list_pages_status_superseded_only(conn):
+    """status='superseded' 只返旧版，total 一致。"""
+    wiki_dao.insert_page(conn, "a1", "手册", "x", category="design")
+    wiki_dao.insert_page(conn, "o1", "旧手册", "x", category="design", status="superseded")
+    pages = wiki_dao.list_pages(conn, status="superseded")
+    assert [p["page_id"] for p in pages] == ["o1"]
+    assert wiki_dao.count_pages(conn, status="superseded") == 1
+
+
+def test_list_pages_status_offset_paging_all(conn):
+    """status='all' + offset 翻页能正确取到 superseded（修复 160 条假上限）。"""
+    wiki_dao.insert_page(conn, "a1", "手册", "x", category="design")
+    wiki_dao.insert_page(conn, "o1", "旧手册", "x", category="design", status="superseded")
+    first = wiki_dao.list_pages(conn, limit=1, offset=0, status="all")
+    second = wiki_dao.list_pages(conn, limit=1, offset=1, status="all")
+    # 两页互不重叠且并集为全集（证明 offset 翻页真实生效，非空上限假象）
+    assert {p["page_id"] for p in first} | {p["page_id"] for p in second} == {"a1", "o1"}
+    assert wiki_dao.count_pages(conn, status="all") == 2
