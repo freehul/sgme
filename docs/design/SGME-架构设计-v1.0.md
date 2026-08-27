@@ -547,6 +547,7 @@ CREATE TABLE refine_cursor (
 - **supersedes 替代联动**：L1 输出可带 `supersedes` 字段（声明该记忆主体已取代旧主体）；L1.5 落库后把仍 active 且内容提及旧主体名的记忆标记 `status='rejected'`（数据保留可溯源，可 unreject 恢复），reject_reason 记录替代者内容与新记忆 id（溯源链）——防过时记忆长期存活（AIXM 案例）。与 memory_archive 机制协同不冲突（判等锚点 memory_id）
 - **L2 场景级向量预筛（l2.prescreen，2026-08-22 T-97）**：场景聚合的 existing_scenes 候选从「固定 EXISTING_SCENES_LIMIT=50 个最新场景摘要」改为「向量 Top-K ∪ 热度 Top-N」（默认 30+20，并集按 scene_id 去重）——对齐 L1.5 预筛模式。背景：场景数超 max_scenes 后固定 50 摘要覆盖不到语义相关场景，LLM 看不到就 merge 不了，场景数只增不减（active 276 > max 200 红警）。embed 不可达/预筛异常 → 回退固定 50 摘要（fallback=full_recall，宁多勿漏，功能不降级）
 - **batch_scan 兜底定时器**（`sgme/engine/batch_scan.py`）：服务启动（生产模式 lifespan）且 `refine.batch_scan.enabled=true` 时幂等拉起常驻 daemon 线程，按 `refine.batch_scan.interval_min`（默认 10 分钟）周期扫描 `status='new'` 的文件，逐文件走 `pipeline.refine_one` 批量提炼（单轮上限 max_files=50）——会话异常退出（崩溃/杀进程/断网）滞留的 new 文件由此兜底，不依赖 Agent 自觉。与 Dream **共用同一把提炼锁**（dream.RUN_LOCK），任一方执行中另一方跳过本轮；单文件独立 try/except（崩溃只丢当前文件），整体失败由 status='new' 幂等语义下轮重扫；错误事件 `batch_scan_error` 进 signal_events。**连接隔离**：调度器线程自建独立数据库连接（`db_mod.init_databases`），不共享宿主 app.state 连接——防 Windows access violation（与 Dream/backup 定时器同模式）
+- **场景主动治理（`sgme/engine/scene_gc.py`，T-97 治本，2026-08-27）**：L2 场景数超 max_scenes 后 finalize_refinement 仅发软告警不降数（生产 active 350 > max 300 红警常年触发），本模块把「相似度检测 → 自动合并 → 自动归档」做成常驻治理逻辑，由 Dream 夜间整理挂接调用（用户决策：并入 Dream，不复制定时器）。触发条件 active 场景数 ≥ trigger_at（默认 l2.warn_thresholds.orange=275）才执行，避免无谓 LLM 消耗；相似度 ≥ merge_threshold（默认 0.80）的场景对入选；单轮 max_merges（默认 20）上限，仍超限则次日 Dream 继续压，渐进收敛防一次烧太多。复用 scene_vectors 表（B102/B103 已回填，无需重 embed），合并落库直接调 `l2._apply_merge`（旧场景 status='archived' 可恢复 + scene_versions 快照 + 刷新场景向量，符合「原件永不删」铁律）。`RUN_LOCK` 防手动 trigger 与 Dream 并发合并（同场景二次合并 → scene_id 失效）。手动触发：`POST /v1/admin/scene-gc/trigger`（202 异步，执行中 409 ERR_CONFLICT）；预览：`GET /v1/admin/scene-gc/candidates`（dry-run 候选对，不落库）
 - **提炼健康自检**：refined_at / last_refined_seq 水位推进，停摆产 anomaly_warn
 
 ---
@@ -2301,6 +2302,7 @@ L1 输出 dimensions（自然语言，如"技术栈"）
 - 触发：`POST /v1/admin/dream/trigger`（202 异步；执行中 409 ERR_CONFLICT）；定时器 `ensure_scheduler` 幂等常驻（schedule 默认 03:00，enabled 可运行时切换）
 - 查询：`GET /v1/admin/dream/reports`（分页）+ `GET /v1/admin/dream/reports/{date}`（行 + MD 正文）
 - 防重入：RUN_LOCK（与 batch_scan 共用）；定时器线程连接探测自尽（防 Windows access violation）
+- **场景主动治理（T-97 治本，2026-08-27）**：Dream 第三步「生命周期」内、日报之前挂接 `scene_gc.run_scene_gc`——active 场景数 ≥ trigger_at（默认 275）时自动检测相似度 ≥0.80 的场景对并调 `l2._apply_merge` 合并归档（旧场景 archived 可恢复 + scene_versions 快照 + 刷新场景向量），单轮 max_merges（默认 20）上限渐进收敛；结果计入 Dream 统计（scene_gc_merged / scene_gc_archived）。手动 `POST /v1/admin/scene-gc/trigger` 与 Dream 受同一 RUN_LOCK 保护不并发。复用 scene_vectors 表不重 embed
 
 ### 30.2 Skills-Hub 同步
 

@@ -1642,3 +1642,28 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 **验证**：hub 技能化改造 lint 1→283；本地库 383 技能全量 lint 376 通过；原子技能 lint 全过；三技能合并 lint 全过且 8187B ≤8K；遗留 7+31 触发词窗口违规（内容质量，LLM 改写专项）。
 
 **运维影响**：①本地库 101→383（技能能力大幅补全）；②hub 独有技能不再删除，本地库=真源完整；③新增 2 原子技能（comfyui-skill-template / hermes-webui-endpoint-resolution），引用方 uses 声明；④触发词窗口违规（31 hub + 7 本地）待 LLM 改写专项；⑤脚本留存：hub_skills_normalize.py / hub_to_local.py（幂等可重跑）。
+
+### B109：L2 场景超限后台自动治理 scene_gc（T-97 治本，2026-08-27）
+
+**背景**：B102/B103 落地后场景超限红警仍未消除——finalize_refinement 只调 `l2.check_scene_threshold` 发软告警（anomaly_warn），并不降数；手动跑 `merge_similar_scenes.py` 是临时降数，治标不治本（生产 active 350 > max 300 红警常年触发）。用户裁决：应做后台**自动**合并+归档，而非人工干预。
+
+**改动**：
+1. **新增 `sgme/engine/scene_gc.py`**（治本核心，不复制定时器）：
+   - `list_merge_candidates(mem_conn, cfg)`：dry-run 检测——读 scene_vectors → numpy 两两余弦相似度 → 取 ≥ merge_threshold（默认 0.80）对 → 贪心去重叠（同一场景不进多对），返回候选列表（复用 B102/B103 已回填向量，不重 embed）
+   - `run_scene_gc(mem_conn, cfg, client)`：带 `RUN_LOCK` 执行；enabled=false→skipped_reason='disabled'；active < trigger_at→跳过；否则逐对调 `l2._apply_merge`，受 max_merges（默认 20）上限，连续失败 3 次中止（防死循环烧钱）；trigger_at 默认回退 `l2.warn_thresholds.orange`
+   - `SceneGcResult` dataclass + `MERGE_PROMPT_TMPL`（忠实聚合两场景正文，复用 merge_similar_scenes.py 范式）
+   - 合并落库复用 `l2._apply_merge`：**一处完成**「合并新场景 + 自动归档旧场景（status='archived' 可恢复）+ 写 scene_versions 快照 + 刷新场景向量」，符合「原件永不删」铁律与 Supersession 约束
+2. **`sgme/data/scene_dao.py`**——新增 `list_active_scene_vectors`（读 active 场景与其向量，供 scene_gc 无需重 embed）
+3. **`sgme/config.py`**——新增 `DEFAULT_SCENE_GC_CONFIG` + `_merge_scene_gc_config`（类型校验+合并）；`load_sgme_config` / `load_config` 注入 `scene_gc`；`CONFIG_SECTIONS` + `SECTION_KEYS` 加 scene_gc 白名单（防未知键注入）
+4. **`sgme/engine/dream.py`**——第三步「生命周期」内、日报前挂接 `scene_gc.run_scene_gc`，结果计入 Dream 统计（scene_gc_merged / scene_gc_archived / skipped_reason）；异常不阻塞该阶段
+5. **`sgme/server/routes_admin.py`**——新增两端点：
+   - `GET /v1/admin/scene-gc/candidates`：dry-run 预览（active_scenes / trigger_at / will_run / threshold / 候选对列表）
+   - `POST /v1/admin/scene-gc/trigger`：202 异步，后台线程自建独立连接跑 `run_scene_gc`；`RUN_LOCK.locked()` 防重入（409 ERR_CONFLICT）
+6. **`config/sgme.yaml`**——新增 scene_gc 段（enabled=true / merge_threshold=0.80 / min_threshold=0.70 / trigger_at=275 / max_merges=20）
+
+**验证**：
+- `tests/test_scene_gc.py` 11 passed（候选检测：相似对/贪心去重叠/低于阈值/跳过无向量；run_scene_gc：低于 trigger 跳过/禁用跳过/合并归档 mock LLM/max_merges 上限；配置合并：默认/覆盖/类型拒绝）
+- `tests/test_dream.py` 21 passed（dream.py 改动零回归）；test_config_api / test_routes_admin / test_scene_vectors 全过
+- config 层验证：load_config 后 scene_gc 正确（trigger_at=275, max_merges=20），CONFIG_SECTIONS 含 scene_gc，UTF-8 校验 6 改动文件全 OK（bad=0）
+
+**运维影响**：①场景超限治理从「人工临时脚本」升级为「Dream 03:00 自动渐进收敛 + 手动触发兜底」；②复用 scene_vectors 不重 embed、复用 _apply_merge 不重写归档机制、原件永不删；③上线前建议先 `GET /v1/admin/scene-gc/candidates` 预览候选对确认无误再 `POST /v1/admin/scene-gc/trigger`；④NAS 生产需 git pull + 重启 SGME 服务让 scene_gc 生效（config 同步 scene_gc 段）；⑤T-97 demand 备注已刷新为「scene_gc 后台自动合并归档已落地」。
