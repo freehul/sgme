@@ -1627,3 +1627,18 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 **结论**：及格线①达标（命中率可统计提升，100% 实证）——skills.db 建库决策暂缓成立（索引层 BM25 足矣）；后续可扩展评测集（更多查询 + wiki 双源对照）作为回归资产。
 
 **运维影响**：评测脚本 oneoff 留存（幂等可重跑）；测试断言语义变更（不再锁死检索排序，防脆弱断言）。
+
+## B108：hub 技能化改造 + 282 技能纳入本地库 + M4b 原子抽取（ST-36 T-109~T-112，2026-08-27）
+
+**背景**：用户质疑「318 技能变 101」与「0 原子技能」——查证双实锤：①hub 独有 313 技能是真技能（此前「删除」定案错误）②本地 101 扫描 0 原子是范围错误（hub 401 全量实扫 78 组候选）。用户令全做：纳入本地库 + 原子抽取 + 三技能合并。
+
+**改动**：
+1. **hub 技能化改造**（T-109 前置，hub_skills_normalize.py）：hub 314 独有技能仅 1 个 lint 通过——313 缺 frontmatter 必填（version/pattern/category，M4a wiki 迁移遗留）+ 114 超 8K；批量补齐（category 关键词推断 19 类）+ 117 超 8K 拆分 → lint 通过 **1→283**。修 3 个脚本 bug：metadata 嵌套字段误判（comfy-desktop-ops 等 category 在 metadata.hermes 下）/数字 version（`version: 1` lint 不认）/拆分独立判断（曾放「有字段才走」分支内二次运行永不拆）。
+2. **282 技能纳入本地库**（hub_to_local.py）：active+lint 过技能复制到 D:/HermesAgent/skills（18 分类目录），本地库 **101→383**；本地库旧 101 技能补 pattern/category（Hermes 原生格式历史缺口）→ 全量 lint **376/383（98%）**。
+3. **原子抽取①**（T-110）：comfyui-skill-template——14 个 comfyui 技能共享 A1/A2 标题骨架（结构约定），抽六段式模板技能 + 14 技能 uses 引用。
+4. **原子抽取②**（T-111）：hermes-webui-endpoint-resolution——apikey-image-gen/grok-image-to-video 共享 12 段解析逻辑（URL/token/profile/bash 模板），抽原子技能 + 2 技能 uses + 移除复制实现（各 11 段）+ 引用说明。
+5. **三技能合并**（T-112）：agent-email/agent-mail/agently-mail 同一主题历史重复——agently-mail 为主并入 5 章节（QQ 特性/限额/watch/两步确认/适用场景/管理端），另两个软删（status=deprecated + deprecated_by，原件保留）。
+
+**验证**：hub 技能化改造 lint 1→283；本地库 383 技能全量 lint 376 通过；原子技能 lint 全过；三技能合并 lint 全过且 8187B ≤8K；遗留 7+31 触发词窗口违规（内容质量，LLM 改写专项）。
+
+**运维影响**：①本地库 101→383（技能能力大幅补全）；②hub 独有技能不再删除，本地库=真源完整；③新增 2 原子技能（comfyui-skill-template / hermes-webui-endpoint-resolution），引用方 uses 声明；④触发词窗口违规（31 hub + 7 本地）待 LLM 改写专项；⑤脚本留存：hub_skills_normalize.py / hub_to_local.py（幂等可重跑）。
