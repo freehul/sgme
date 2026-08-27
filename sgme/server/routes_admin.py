@@ -1360,3 +1360,27 @@ def read_update_request(
     if not result:
         return {"request": None}
     return {"request": result}
+
+
+@router.post("/v1/admin/update/check")
+def check_update_now(
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """强制刷新版本检测缓存（ST-34 扩展）：WebUI「检查更新」按钮调用。
+
+    立即重查 GitHub/Gitee Releases 最新 tag，刷新模块级缓存，
+    返回最新更新检测结果 {update_available, latest_version, update_checked_at, update_error}。
+    永不抛异常：检测失败 → update_error 回填，update_available=False。
+    """
+    from sgme.operations import update_check as update_check_mod
+    from sgme.operations.health import SGME_VERSION
+
+    cfg = request.app.state.cfg
+    result = update_check_mod.refresh(SGME_VERSION, cfg)
+    return {
+        "update_available": result.get("update_available"),
+        "latest_version": result.get("latest_version"),
+        "update_checked_at": result.get("update_checked_at"),
+        "update_error": result.get("update_error"),
+    }

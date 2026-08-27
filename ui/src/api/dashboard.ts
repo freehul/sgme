@@ -148,3 +148,13 @@ export function requestUpdate(targetVersion: string) {
 export function getUpdateRequest() {
   return api.get<{ request: UpdateRequest | null }>('/v1/admin/update/request')
 }
+// ---------- ST-34 扩展：手动检查更新（POST /v1/admin/update/check） ----------
+export interface UpdateCheck {
+  update_available?: boolean
+  latest_version?: string
+  update_checked_at?: string | null
+  update_error?: string | null
+}
+export function checkUpdate() {
+  return api.post<UpdateCheck>('/v1/admin/update/check')
+}

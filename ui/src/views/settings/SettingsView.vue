@@ -9,6 +9,7 @@ import AgentsTab from './AgentsTab.vue'
 import RegistryTab from './RegistryTab.vue'
 import PromptsTab from './PromptsTab.vue'
 import BackupTab from './BackupTab.vue'
+import UpdateTab from './UpdateTab.vue'
 
 // 对齐参考设计：设置页单入口 + 标签页横向切分各配置功能区
 const TABS = [
@@ -22,6 +23,7 @@ const TABS = [
   { key: 'prompts', label: '提示词', comp: PromptsTab },
   { key: 'extensions', label: '扩展模块', comp: SettingsExtensions },
   { key: 'backup', label: '备份管理', comp: BackupTab },
+  { key: 'update', label: '更新', comp: UpdateTab },
 ]
 const active = ref('general')
 </script>
