@@ -457,6 +457,27 @@ def _run_dream_locked(
             logger.exception("Dream 关怀信号扫描失败（该阶段中止）: %s", e)
             stage_errors.append(f"关怀信号扫描失败: {e}")
 
+    # 场景主动治理（T-97 治本：相似场景自动合并 + 自动归档）
+    # 受 scene_gc.enabled 控制；仅当 active >= trigger_at 才执行，避免无谓 LLM 消耗。
+    scene_gc_merged = 0
+    scene_gc_archived = 0
+    try:
+        from sgme.engine import scene_gc as scene_gc_mod
+        gc_res = scene_gc_mod.run_scene_gc(mem_conn, cfg)
+        scene_gc_merged = gc_res.merged
+        scene_gc_archived = gc_res.archived
+        if gc_res.skipped_reason:
+            logger.info("Dream 场景治理跳过：%s", gc_res.skipped_reason)
+        else:
+            logger.info(
+                "Dream 场景治理：候选=%d 合并=%d 归档=%d 失败=%d（before=%d after=%d）",
+                gc_res.candidates, gc_res.merged, gc_res.archived,
+                gc_res.failed, gc_res.active_before, gc_res.active_after,
+            )
+    except Exception as e:
+        logger.exception("Dream 场景治理失败（该阶段中止）: %s", e)
+        stage_errors.append(f"场景治理失败: {e}")
+
     # ④ 日报：汇总 → MD 落盘 → dream_reports → signal_events
     tokens = _tokens_since(mem_conn, start_ts)
     pool = _pool_totals(mem_conn)
@@ -469,12 +490,15 @@ def _run_dream_locked(
         "archived_count": archived_count,
         "signal_purged_count": signal_purged_count,
         "care_signal_count": care_signal_count,
+        "scene_gc_merged": scene_gc_merged,
+        "scene_gc_archived": scene_gc_archived,
         "tokens": tokens,
     }
     summary = (
         f"提炼 {refined_count} 文件 / 新增记忆 {memory_count} / 新增场景 {scene_count}"
         f" / TTL 过期 {expired_count} / 冷归档 {archived_count}"
-        f" / 信号归档 {signal_purged_count} / 关怀信号 {care_signal_count} / 失败 {error_count}"
+        f" / 信号归档 {signal_purged_count} / 关怀信号 {care_signal_count}"
+        f" / 场景治理 合并 {scene_gc_merged} 归档 {scene_gc_archived} / 失败 {error_count}"
     )
     rel_path = _write_report_md(cfg, date_label, _render_report_md(
         date_label, stats, errors, stage_errors, pool,
@@ -504,6 +528,8 @@ def _run_dream_locked(
         "archived_count": archived_count,
         "signal_purged_count": signal_purged_count,
         "care_signal_count": care_signal_count,
+        "scene_gc_merged": scene_gc_merged,
+        "scene_gc_archived": scene_gc_archived,
         "report_path": rel_path,
         "errors": errors,
         "stage_errors": stage_errors,

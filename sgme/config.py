@@ -198,6 +198,40 @@ DEFAULT_L2_CONFIG = {
     "warn_thresholds": {"yellow": 150, "orange": 180, "red": 200},
 }
 
+# 场景主动治理（T-97 治本）：后台自动合并 + 归档相似场景
+DEFAULT_SCENE_GC_CONFIG = {
+    "enabled": True,            # 总开关
+    "merge_threshold": 0.80,    # 相似度入选阈值（>= 才合并）
+    "min_threshold": 0.70,      # 兜底下限（候选不足时可降至此重算，当前未启用降级）
+    "trigger_at": None,         # 仅当 active >= 此值才执行；None = 回退 l2.warn_thresholds.orange
+    "max_merges": 20,           # 单次合并上限（防一次 LLM 消耗过大）
+}
+
+
+def _merge_scene_gc_config(user_cfg: dict | None) -> dict:
+    """合并 scene_gc 段默认值与用户配置（T-97 场景主动治理）。
+
+    类型校验规则：
+    - enabled：必须 bool，否则回退默认
+    - merge_threshold / min_threshold：数值，否则回退默认
+    - trigger_at：int 或 None（None = 运行时回退 l2 橙色阈值），否则回退默认
+    - max_merges：正整数，否则回退默认
+    """
+    base = dict(DEFAULT_SCENE_GC_CONFIG)
+    if not isinstance(user_cfg, dict):
+        return base
+    if isinstance(user_cfg.get("enabled"), bool):
+        base["enabled"] = user_cfg["enabled"]
+    if isinstance(user_cfg.get("merge_threshold"), (int, float)):
+        base["merge_threshold"] = float(user_cfg["merge_threshold"])
+    if isinstance(user_cfg.get("min_threshold"), (int, float)):
+        base["min_threshold"] = float(user_cfg["min_threshold"])
+    if user_cfg.get("trigger_at") is None or isinstance(user_cfg.get("trigger_at"), int):
+        base["trigger_at"] = user_cfg.get("trigger_at")
+    if isinstance(user_cfg.get("max_merges"), int) and user_cfg["max_merges"] > 0:
+        base["max_merges"] = user_cfg["max_merges"]
+    return base
+
 # search 段默认兜底（向量检索 + RRF）
 DEFAULT_SEARCH_CONFIG = {
     "vector": {
@@ -564,6 +598,7 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
             "dream": _merge_dream_config(None),
             "care": _merge_care_config(None),
             "update_check": dict(DEFAULT_UPDATE_CHECK_CONFIG),
+            "scene_gc": _merge_scene_gc_config(None),
         }
     raw = _read_yaml(cfg_path)
     if not isinstance(raw, dict):
@@ -594,6 +629,8 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
     raw["care"] = _merge_care_config(raw.get("care"))
     # update_check 段合并默认值（ST-34 自动更新检测）
     raw["update_check"] = _merge_update_check_config(raw.get("update_check"))
+    # scene_gc 段合并默认值（T-97 场景主动治理）
+    raw["scene_gc"] = _merge_scene_gc_config(raw.get("scene_gc"))
     return raw
 
 
@@ -835,6 +872,7 @@ def load_config(
         "refine": sgme_cfg.get("refine", _merge_refine_config(None)),
         "server": sgme_cfg.get("server", dict(DEFAULT_SERVER_CONFIG)),
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
+        "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
         "wiki": sgme_cfg.get("wiki", dict(DEFAULT_WIKI_CONFIG)),
         "skills": sgme_cfg.get("skills", {"enabled": False}),
         "skills_hub": _merge_skills_hub_config(sgme_cfg.get("skills_hub")),
@@ -868,7 +906,7 @@ def get_env(name: str) -> str | None:
 # ---------- 配置写入（2026-08-07 模块化重构 B30：config = 配置唯一读写方） ----------
 
 # 可写段白名单（sgme.yaml 顶层键；llm.yaml/registry 属机密与注册表，不由接口改）
-CONFIG_SECTIONS = {"l1", "l2", "refine", "search", "backup", "wiki", "skills_hub", "logging", "dream"}
+CONFIG_SECTIONS = {"l1", "l2", "refine", "search", "backup", "wiki", "skills_hub", "logging", "dream", "scene_gc"}
 
 # 各段可写字段（防未知键注入；缺省 = 整段白名单）
 SECTION_KEYS: dict[str, set[str]] = {
@@ -878,6 +916,7 @@ SECTION_KEYS: dict[str, set[str]] = {
     "search": {"vector", "rrf"},
     "backup": {"dir", "schedule", "raw_cold_days", "remote_dir"},
     "dream": {"enabled", "schedule", "max_files", "ttl_mark", "archive_days", "report_dir"},
+    "scene_gc": {"enabled", "merge_threshold", "min_threshold", "trigger_at", "max_merges"},
 }
 
 

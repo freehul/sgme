@@ -134,6 +134,23 @@ def count_scenes(conn: sqlite3.Connection, status: str = "active") -> int:
     return cur.fetchone()["c"]
 
 
+def list_active_scene_vectors(conn: sqlite3.Connection) -> list[dict]:
+    """读 active 场景与其向量（T-97 场景治理用）。
+
+    返回 [{"scene_id","title","content","heat","embedding"(bytes),
+    "dims"(int)}]，供 scene_gc 在内存做两两相似度（无需重新 embed）。
+    embedding 为 float32 blob（np.frombuffer 解析），dims 用于维度校验。
+    """
+    cur = conn.execute(
+        """
+        SELECT s.scene_id, s.title, s.content, s.heat, sv.embedding, sv.dims
+        FROM scenes s JOIN scene_vectors sv ON sv.scene_id = s.scene_id
+        WHERE s.status='active'
+        """
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
 # ---------- scene_memories ----------
 
 def add_memory_link(conn: sqlite3.Connection, scene_id: str, memory_id: str) -> None:
