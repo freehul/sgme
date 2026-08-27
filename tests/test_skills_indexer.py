@@ -104,6 +104,25 @@ class TestIndexer:
         # None 连接容错
         assert collect_from_wiki(None) == []
 
+    def test_collect_from_wiki_bare_connection(self, tmp_path: Path):
+        """裸 sqlite3.connect（无 row_factory）也能收集——防回归（2026-08-27 实锤：
+        r["title"] 元组索引 TypeError 只在裸连接暴露，生产 FastAPI row_factory 掩盖）。"""
+        import sqlite3
+        from sgme.skills.indexer import collect_from_wiki
+
+        conn = sqlite3.connect(":memory:")  # 不设 row_factory
+        conn.execute(
+            "CREATE TABLE wiki_pages (page_id TEXT PRIMARY KEY, title TEXT,"
+            " content TEXT, category TEXT, tags TEXT, status TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO wiki_pages VALUES (?,?,?,?,?,?)",
+            ("w1", "skill:terminal-safety", "# 终端安全…", "skill/common",
+             '["skill","common"]', "active"),
+        )
+        got = {r.name: r for r in collect_from_wiki(conn)}
+        assert set(got) == {"terminal-safety"}
+
     def test_merge_git_wins(self, tmp_path: Path):
         from sgme.skills.indexer import SkillRecord, merge_records
 
