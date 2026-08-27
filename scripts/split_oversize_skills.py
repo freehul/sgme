@@ -161,7 +161,9 @@ def split_one(skill_dir: Path) -> dict:
     links = eol.join(
         f"- [{sections[i][0]}](references/{ref_map[i]})" for i in sorted(externalized)
     )
-    new_head = kept + (eol + eol + "## 外置章节" + eol + eol + links + eol if externalized else "")
+    # ⚠️ intro 必须保留（2026-08-27 实锤：曾漏拼 intro 导致引言块丢失——entrance_size
+    #    计算含 intro 但写盘漏了，hermes-agent 丢 1629B 引言；已修）
+    new_head = intro + kept + (eol + eol + "## 外置章节" + eol + eol + links + eol if externalized else "")
     f.write_text(new_fm + new_head, encoding="utf-8", newline="")
 
     return {"status": "ok", "skill": skill, "before": before, "after": after,

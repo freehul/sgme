@@ -105,6 +105,10 @@ def test_normal_split(tmp_path: Path):
         assert ref_path.exists()
         assert ref_path.stat().st_size > 0
 
+    # ⚠️ 防回归（2026-08-27 实锤）：引言块（首个 ## 之前）必须保留在入口——
+    #    曾漏拼 intro 导致 44 条技能引言丢失（entrance_size 算含 intro 但写盘漏了）
+    assert "这是一段引言文字" in entrance_text, "引言块丢失!"
+
 
 # ---------------------------------------------------------------------------
 # 原生形态（已有 references/ 也拆）+ 重跑幂等
