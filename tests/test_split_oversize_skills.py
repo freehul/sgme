@@ -107,19 +107,15 @@ def test_normal_split(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# 幂等跳过
+# 原生形态（已有 references/ 也拆）+ 重跑幂等
 # ---------------------------------------------------------------------------
 
 
-def test_idempotent_skip_main(tmp_path: Path):
-    """main() 层面：两个超 8K 技能，其中一个已有 references/ → 跳过该技能、处理另一个。"""
-    # 技能 A：有 references/（模拟已拆分），报告为 skip
+def test_native_refs_also_split(tmp_path: Path):
+    """已有 references/（原生辅助文件）但正文超 8K → 也拆（正文章节外置到现有目录）。"""
     skill_a = _setup_skill(tmp_path, "skill-a", _oversize_skill_md())
     (skill_a / "references").mkdir()
     (skill_a / "references" / "dummy.md").write_text("占位", encoding="utf-8")
-
-    # 技能 B：无 references/（待拆分），报告为 ok
-    _setup_skill(tmp_path, "skill-b", _oversize_skill_md())
 
     report_path = tmp_path / "report.md"
     rc = mod.main(["--root", str(tmp_path), "--apply", "--report", str(report_path)])
@@ -127,15 +123,35 @@ def test_idempotent_skip_main(tmp_path: Path):
 
     report = report_path.read_text(encoding="utf-8")
     assert "skill-a" in report
-    assert "skill-b" in report
-    assert "SKIP" in report  # skill-a 被跳过
+    assert "SKIP" not in report  # 原生形态不再跳过
 
-    # skill-b 成功拆分
-    assert (skill_b_dir := tmp_path / "skill-b" / "references").is_dir()
-    assert len(list(skill_b_dir.glob("*.md"))) >= 1
-
-    # skill-a 的 references/ 内容未被修改
+    # 拆后：入口 ≤8K + frontmatter 有 references 数组 + 原生文件未动
+    entrance = (skill_a / "SKILL.md").read_text(encoding="utf-8")
+    assert len(entrance.encode("utf-8")) <= mod.MAX_BODY_BYTES
+    fm_m = re.match(r"\A(---\r?\n.*?\r?\n---\r?\n?)", entrance, re.S)
+    assert fm_m and "references:" in fm_m.group(1)
     assert (skill_a / "references" / "dummy.md").read_text(encoding="utf-8") == "占位"
+
+
+def test_rerun_idempotent(tmp_path: Path):
+    """重跑 main()：已拆完（正文 ≤8K）不再重复处理；报告不报重复拆分。"""
+    skill_dir = _setup_skill(tmp_path, "big-skill", _oversize_skill_md())
+    report1 = tmp_path / "report1.md"
+    rc1 = mod.main(["--root", str(tmp_path), "--apply", "--report", str(report1)])
+    assert rc1 == 0
+
+    report2 = tmp_path / "report2.md"
+    rc2 = mod.main(["--root", str(tmp_path), "--apply", "--report", str(report2)])
+    assert rc2 == 0
+
+    r1 = report1.read_text(encoding="utf-8")
+    r2 = report2.read_text(encoding="utf-8")
+    assert "big-skill" in r1
+    assert "big-skill" not in r2  # 已拆完不再出现在报告
+
+    # 入口文件稳定（第二次运行后字节一致）
+    entrance = (skill_dir / "SKILL.md").read_bytes()
+    assert len(entrance.decode("utf-8").encode("utf-8")) <= mod.MAX_BODY_BYTES
 
 
 # ---------------------------------------------------------------------------

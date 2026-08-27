@@ -83,6 +83,8 @@ def split_one(skill_dir: Path) -> dict:
 
     refs_dir = skill_dir / "references"
     refs_dir.mkdir(parents=True, exist_ok=True)
+    # 已有 references/ 时把存量文件名加入去重集（原生辅助文件与新外置文件防撞名）
+    used_names: set[str] = set(p.stem for p in refs_dir.glob("*.md"))
 
     # 先全量切块按字节降序排，贪心外置直到入口 ≤8K；短块(<512B)不值得外置留原文
     order = sorted(range(len(sections)), key=lambda i: -len(sections[i][1].encode("utf-8")))
@@ -198,9 +200,8 @@ def main(argv=None) -> int:
 
     rows = {"ok": [], "skip": [], "manual": []}
     for d in targets:
-        if (d / "references").is_dir():
-            rows["skip"].append({"skill": d.name, "message": "已有 references/ 目录（幂等跳过）"})
-            continue
+        # 原生形态（已有 references/ 但正文超 8K）也拆——references 目录幂等复用，
+        # 已拆完的正文 ≤8K 不会进 targets（天然幂等）
         r = split_one(d) if args.apply else {
             "status": "dry-run-ok", "skill": d.name,
             "message": "dry-run 预演通过（--apply 才写盘）",
