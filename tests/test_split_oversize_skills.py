@@ -138,6 +138,33 @@ def test_idempotent_skip_main(tmp_path: Path):
     assert (skill_a / "references" / "dummy.md").read_text(encoding="utf-8") == "占位"
 
 
+# ---------------------------------------------------------------------------
+# 两级目录（分类结构）
+# ---------------------------------------------------------------------------
+
+
+def test_nested_category_structure(tmp_path: Path):
+    """本地库分类形态 <cat>/<skill>/SKILL.md：rglob 扫描应命中并拆分。"""
+    cat = tmp_path / "software-development"
+    cat.mkdir()
+    skill_dir = _setup_skill(cat, "deep-skill", _oversize_skill_md())
+
+    report_path = tmp_path / "report.md"
+    rc = mod.main(["--root", str(tmp_path), "--apply", "--report", str(report_path)])
+    assert rc == 0
+
+    report = report_path.read_text(encoding="utf-8")
+    assert "deep-skill" in report
+    assert "SKIP" not in report
+
+    # 拆分产物在分类目录内
+    assert (skill_dir / "references").is_dir()
+    entrance = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert len(entrance.encode("utf-8")) <= mod.MAX_BODY_BYTES
+    fm_m = re.match(r"\A(---\r?\n.*?\r?\n---\r?\n?)", entrance, re.S)
+    assert fm_m and "references:" in fm_m.group(1)
+
+
 def test_split_one_second_call_still_ok(tmp_path: Path):
     """split_one 第二次调用不报错（references: 不重复追加，幂等跳过 frontmatter 追加）。"""
     skill_dir = _setup_skill(tmp_path, "big-skill", _oversize_skill_md())

@@ -182,10 +182,11 @@ def main(argv=None) -> int:
     only = set(args.names.split(",")) if args.names else None
     targets = []
     total_over = 0
-    for d in sorted(p for p in root.iterdir() if p.is_dir()):
-        f = d / "SKILL.md"
-        if not f.is_file():
+    # rglob 支持任意深度：hub 扁平（<name>/SKILL.md）与本地库分类（<cat>/<name>/SKILL.md）两形态
+    for f in sorted(root.rglob("SKILL.md")):
+        if "references" in f.parts or "node_modules" in f.parts or ".git" in f.parts:
             continue
+        d = f.parent
         raw = f.read_bytes().decode("utf-8", errors="replace")
         fm_m = FM_RE.match(raw)
         body = fm_m.group(2) if fm_m else raw
