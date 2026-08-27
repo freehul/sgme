@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as d3 from 'd3'
 import { fetchGraph, type GraphData, type GraphLink, type GraphNode } from '../../api/graph'
@@ -43,14 +43,15 @@ async function load() {
     data.value = g
     selected.value = null
     selectedLinks.value = []
-    // nextTick 后 svg 已渲染
-    await new Promise((r) => setTimeout(r, 0))
-    renderGraph()
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : String(e)
   } finally {
+    // 先落定 loading=false，让模板把 <svg v-else> 渲染进 DOM（否则 svgRef 为 null）
     loading.value = false
   }
+  // 数据/loading 已落定，DOM 已切到 svg，nextTick 等 DOM 刷新后再绘制
+  await nextTick()
+  renderGraph()
 }
 
 // ── D3 force 布局 ──
@@ -59,12 +60,16 @@ function renderGraph() {
   if (!svgEl || !data.value) return
   const g = data.value
 
-  // 清理旧图
-  d3.select(svgEl).selectAll('*').remove()
-  if (sim) { sim.stop(); sim = null }
+  try {
+    // 清理旧图
+    d3.select(svgEl).selectAll('*').remove()
+    if (sim) { sim.stop(); sim = null }
 
-  const width = svgEl.clientWidth || 900
-  const height = svgEl.clientHeight || 640
+    // 尺寸：优先容器实测框（flex 布局未定时 svg.clientWidth 可能为 0），失败回退默认
+    const host = svgEl.parentElement
+    const rect = host?.getBoundingClientRect()
+    const width = Math.max(Math.round(rect?.width || svgEl.clientWidth || 0), 320)
+    const height = Math.max(Math.round(rect?.height || svgEl.clientHeight || 0), 480)
 
   const nodes = g.nodes.map((n) => ({ ...n }))
   const links = g.links.map((l) => ({ ...l }))
@@ -157,6 +162,10 @@ function renderGraph() {
 
   // drag 需要 sim，重新绑定
   nodeSel.call(drag(sim))
+  } catch (e) {
+    // 渲染异常显式暴露（避免静默空白），不阻塞页面其余部分
+    error.value = '图谱渲染失败：' + (e instanceof Error ? e.message : String(e))
+  }
 }
 
 function drag(simulation: d3.Simulation<d3.SimulationNodeDatum, undefined> | null) {
