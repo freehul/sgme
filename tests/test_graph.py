@@ -179,6 +179,24 @@ class TestGraphOperations:
         ids = {n["id"] for n in result.data["nodes"]}
         assert "page-001" in ids
 
+    def test_get_graph_scene_memory_orphan_skipped(self, mem_conn, wiki_conn):
+        """scene→memory 边指向不存在/非 active 的记忆（孤儿外键）→ 丢弃，不产生悬空边。
+
+        回归测试：记忆被删但 scene_memories 未清理时，旧逻辑会建出 target 无节点的边，
+        d3.forceLink 抛 "node not found" 导致 WebUI 图谱渲染失败。
+        """
+        _seed_graph(mem_conn, wiki_conn)
+        # 关联一个从未插入的记忆（模拟记忆被删未清 scene_memories 的孤儿外键）
+        scene_dao.add_memory_link(mem_conn, "scene-001", "mem-ghost")
+        result = graph_ops.get_graph(mem_conn, wiki_conn)
+        assert result.ok
+        node_ids = {n["id"] for n in result.data["nodes"]}
+        for l in result.data["links"]:
+            assert l["source"] in node_ids, f"悬空 source: {l}"
+            assert l["target"] in node_ids, f"悬空 target: {l}"
+        # 孤儿边确实被丢弃（不再出现在 links 中）
+        assert not any(l["target"] == "mem-ghost" for l in result.data["links"])
+
 
 # ═══════════════════════════════════════════════════
 # API 层测试
