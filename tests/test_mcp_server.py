@@ -802,3 +802,73 @@ def test_mcp_append_explicit_agent_id_wins(tmp_path, monkeypatch, raw_dir):
         assert row is not None and row[0] == "explicit-x", f"预期 explicit-x，实际 {row}"
     finally:
         gen.close()
+
+
+# ---------- B116：MCP 写侧 admin 门禁（请求级 key 校验） ----------
+
+_B116_SKILL_MD = """---
+name: demo
+description: B116 写侧门禁集成测试用技能
+tags: [skill]
+category: test
+---
+
+# Demo
+
+测试正文。
+"""
+
+
+def _b116_git_init(d: pathlib.Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=str(d), check=True)
+    subprocess.run(["git", "config", "user.email", "test@sgme.local"], cwd=str(d), check=True)
+    subprocess.run(["git", "config", "user.name", "SGME Test"], cwd=str(d), check=True)
+
+
+def test_mcp_skill_put_agent_key_forbidden(tmp_path, monkeypatch, raw_dir):
+    """B116：非管理员 Key（agent key）调 skill_put → ERR_FORBIDDEN（请求级门禁生效）。
+
+    注：MCP 工具以 JSON 字符串返回错误（FastMCP 不标 isError），故断言返回
+    文本含 ERR_FORBIDDEN 且不含 ok=True，而非依赖 isError 标志。
+    """
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        body = _mcp_call_tool(client, None, "skill_put", {
+            "name": "demo", "content": _B116_SKILL_MD,
+        }, api_key="test-agent-key")
+        assert body is not None and "result" in body, body
+        res = body["result"]
+        text = "".join(c.get("text", "") for c in res.get("content", []))
+        assert "ERR_FORBIDDEN" in text, text
+        assert "ok" not in text or '"ok": true' not in text.lower(), text
+    finally:
+        gen.close()
+
+
+def test_mcp_skill_put_admin_key_writes(tmp_path, monkeypatch, raw_dir):
+    """B116：管理员 Key 调 skill_put → 落盘成功（门禁放行 + 写侧链路工作）。"""
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        skills_dir = tmp_path / "skills_tree_b116"
+        skills_dir.mkdir()
+        _b116_git_init(skills_dir)
+        # mount_mcp 绑定 app.state.cfg 到 _app_state，改此 dict 对工具可见
+        app.state.cfg["skills"] = {
+            "enabled": True, "source_dirs": [str(skills_dir)], "budget": 40,
+        }
+        body = _mcp_call_tool(client, None, "skill_put", {
+            "name": "demo", "content": _B116_SKILL_MD,
+        }, api_key="test-admin-key")
+        assert body is not None and "result" in body, body
+        res = body["result"]
+        assert res.get("isError") is not True, res
+        text = "".join(c.get("text", "") for c in res.get("content", []))
+        data = json.loads(text)
+        assert data.get("ok") is True, data
+        assert (skills_dir / "demo" / "SKILL.md").exists()
+    finally:
+        gen.close()

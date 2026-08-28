@@ -1,8 +1,9 @@
 """sgme/skills/gates.py：技能准入门禁（ST-36 M3；PR-7 pattern 枚举 + scripts 收紧）。
 
 规则（复用 audit 引擎 R1-R5 思想 + 技能特化）：
-1. frontmatter 必填：description/version/pattern/category 非空；
-   pattern 为枚举字段（auto=热集自动加载 / manual=按需检索），枚举外拒绝
+1. frontmatter 必填：description/category 非空（B116 起 version/pattern 改可选——
+   仅作语义增强字段，有值才校验）；pattern 为枚举字段（auto=热集自动加载 /
+   manual=按需检索），枚举外拒绝
 2. 触发词窗口：triggers 每项必须出现在 description 前 57 字符内（无 triggers 跳过）
 3. 原子 ≤8K：body UTF-8 编码 ≤ 8192 字节（skip_limits 时由 store 层降级为警告）
 4. 名称 kebab-case：``^[a-z0-9]+(-[a-z0-9]+)*$`` 且不在 existing_names（全库唯一）
@@ -28,8 +29,9 @@ MAX_BODY_BYTES = 8192
 # 触发词窗口宽度（字符）：触发词必须落在 description 前 N 个字符内
 TRIGGER_WINDOW = 57
 
-# 必填字段
-REQUIRED_FIELDS = ("description", "version", "pattern", "category")
+# 必填字段（2026-08-28 B116 修正：version/pattern 改可选——已上线真实技能
+# 仅含 name/description/tags/category，强制 version/pattern 会使其无法经写侧重写）
+REQUIRED_FIELDS = ("description", "category")
 
 # pattern 枚举（PR-7 定稿语义：调用模式——auto=高频热集常驻自动加载 / manual=按需检索）
 VALID_PATTERNS = ("auto", "manual")
