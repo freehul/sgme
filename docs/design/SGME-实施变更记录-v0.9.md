@@ -1812,3 +1812,54 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 **验证**：编译 + UTF-8 校验 OK；部署重建后手动 `POST /v1/admin/scene-gc/trigger` 合并候选；复查 active 数下降、hermes 去重（见运维影响）。
 
 **运维影响**：① 重启后 dream 定时器自动常驻，夜间 03:00 自动执行场景治理，**根治复发**；② 阈值 0.70 更积极合并弱相似场景（契合用户「看到多个重复」诉求）；③ 合并走 `archived` 状态（原件不删、可恢复），符合「原件永不删」铁律；④ 本变更需 NAS 重新 build + 重启 SGME 生效（配置每次启动从代码默认值加载）。
+
+### B118. 技能详情页渲染 L2 全文，修复空大纲导致内容不可见（2026-08-28，补记）
+
+**背景**：SkillsView 技能详情页在技能无大纲（sections 为空）时正文区域不可见——详情页渲染依赖大纲字段，
+大纲缺失则整个内容区不渲染，用户点开技能看不到任何正文（commit 52b6917 已修，此处补登记变更记录）。
+
+**改动**：
+1. **`ui/src/api/skills.ts`**（+13）：补 L2 全文取数逻辑，详情页不再只依赖大纲字段。
+2. **`ui/src/views/skills/SkillsView.vue`**（+16/-9）：详情页改为渲染 L2 全文，空大纲时仍正常展示正文。
+
+**验证**：commit 52b6917（2026-08-28）。
+
+**运维影响**：无大纲的技能（如手工录入、frontmatter 不完整）详情页现在可读；UI 改动需重建镜像生效
+（`ui/dist` 烘焙进镜像不挂卷，见前端改动部署 SOP）。
+
+### B119. dsh-sgme 0.4.0：技能层接入 + source 类型漂移修复（2026-08-29）
+
+**背景**：用户升级 NAS 飞牛系统致 sgme 容器自启失效（已自行修复），要求核查 SGME 近期更新对 dsh-sgme 0.3.1 的影响。
+实测 25 个在用端点**零破坏**（`GET /v1/wiki/search?q=手册` 仍能召回 SGME操作手册，B114 技能去 wiki 化未波及 wiki 通道；
+`ideas|demands|projects` 仍是 `require_admin_key`，未被 B116 的 `/v1/admin/skills` 写侧门禁波及），但暴露 3 个实质问题：
+①skills 层 403 个技能 dsh 侧完全够不到（`SearchResult.source` 无 `skills`，所有调用点 scopes 恒为
+`['memory']`/`['wiki','wiki_pages']`/`['memory','wiki']`）；②统一搜索 skills 层结果只有 `name/description/category`、
+**无 `content`/`title`**，`tools.ts` 的 `r.content.length` 一旦接入必 TypeError 崩；③wiki 场景层 source 实际返回
+**`wiki_scene`**（非类型声明的 `wiki`/`scenes`），`context.ts` 过滤 `source==='wiki'||'scenes'` 恒空 →
+T-88「首句命中 L2 场景注入」自 2026-08-20 实现起**从未生效**，一直静默回退模板注入。
+
+**改动**：
+1. **`sgme-client.ts`**：`SearchResult.source` 补 `'wiki_scene' | 'skills'`；`content` 改可选并补 `name`/`description`/
+   `category`/`score`；新增技能层 5 类型（`SkillSummary`/`SkillsListResponse`/`SkillDigest`/`SkillDetail`/
+   `SkillsColdstartResponse`）；新增 `skillList`/`skillSearch`/`skillDigest`/`skillGet`/`skillColdstart` 五方法
+   （`skillSearch` 走 `POST /v1/search scope=["skills"]`——HTTP 侧唯一入口，服务端无 `/v1/skills/search`）。
+2. **`tools.ts`**：`formatSearchResults` 兜底 `content ?? (name — description) ?? description`（防 skills 层崩溃）；
+   新增 `skill_search`/`skill_digest`/`skill_get`/`skill_list`/`skill_coldstart` 五工具并注册（工具数 19 → 24）。
+3. **`context.ts`**：场景过滤补 `r.source === 'wiki_scene'`（**修复 T-88 场景注入从未生效**）；
+   `buildInjectionText`/`buildSceneInjectionText`/`formatRelatedMemories` 参数 `content` 改可选并兜底。
+4. **`commands.ts`**：`/sgme` 检索结果格式化同步补 content 兜底。
+5. **`tests`**：新增 `skills-tools.test.ts` 17 用例（含 3 个「skills 层无 content 不崩 + 兜底优先级 + 超长截断」回归）；
+   `admin-tools.test.ts` 注册数断言 19 → 24 并补 5 个技能工具名；清 tests 预存 7 个 typecheck 错误
+   （`b86-regression.test.ts` 5：import 补 `.js` 扩展名 ×2 + 参数显式类型 ×2 + 可选链兜底 ×1；
+   `context-v2.test.ts` 2：mock 标注 `SearchResponse`/`SearchResult[]`）。
+6. **`package.json`** 0.3.1 → 0.4.0（新功能走 minor）；**`README.md`** 工具清单 7 → 24 并按五组重排，补技能层范式说明。
+
+**验证**：`pnpm run verify` 三步全绿——typecheck **0 错误**（基线 7 → 0，顺带清掉历史技术债）、
+vitest **164 passed / 0 failed**（13 files，原 147 + 新增 17）、build 成功（`lib/index.js` 124.89 kB / gzip 35.30 kB）；
+8 个改动文件 UTF-8 解码校验 **BAD=0**。
+
+**运维影响**：① dsh agent 首次具备技能按需注入能力（403 技能），需 SGME skills 模块启用（`skills.source_dirs` 有配置，
+否则端点返回 404、工具降级提示）；② **行为变化**——场景注入修复后，首句命中 L2 场景时由「静默回退模板注入」改为
+「注入场景 + 相关记忆」，注入内容更贴题（T-88 设计意图首次真正生效），未命中时行为不变；
+③ 0.x 系列 `^` 锁 minor：profile 依赖 `"dsh-sgme": "^0.3.0"` 不会自动升 0.4.x，需显式改 `^0.4.0` 再 install
+（同 B106 记录的 npm 0.x 语义坑）；④ 发布仍需走 7897 代理 + granular token（`docs/design/SGME-dsh-sgme-发布流程-v0.1.md`）。
