@@ -593,6 +593,17 @@ def create_app(
         # 缺省回落全局 DATA_DIR——生产 __main__ 走自建分支，测试须显式传 data_dir）
         d = Path(data_dir) if data_dir else sgme_config.DATA_DIR
 
+    # skills.db（T-112 技能索引持久化）：**仅当技能模块启用时才连库**——
+    # 不并入 init_databases 的三元组返回值（那会破坏所有既有解包点，v0.7 已踩过），
+    # 且模块禁用时核心零影响（对称 wiki 扩展模块的挂载方式）。
+    skills_conn: sqlite3.Connection | None = None
+    if (cfg.get("skills") or {}).get("enabled", False):
+        try:
+            skills_conn = db_mod.connect_skills(d)
+        except Exception as e:  # 建库失败不阻断启动，技能模块降级为内存索引
+            logger.warning("skills.db 连接失败（技能模块降级为内存索引）: %s", e)
+            skills_conn = None
+
     # 启动时导入注册表（幂等；YAML 为种子，DB 为运行时真相）
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
     # 从 DB 回刷 cfg["dimensions"]：包含 API 运行时新增/停用的维度，保证 L1 提示词与 DB 一致
@@ -617,6 +628,52 @@ def create_app(
         print(f"[SGME auth] 警告：使用默认 agent key（{DEFAULT_AGENT_KEY}），生产请设置 SGME_AGENT_KEY")
 
     @asynccontextmanager
+    def _skills_bootstrap(
+        cfg: dict,
+        skills_conn: sqlite3.Connection,
+        wiki_conn: sqlite3.Connection | None,
+    ) -> None:
+        """skills.db 首次同步 + 向量分批预热（后台 daemon 线程，永不抛异常）。
+
+        两阶段：
+        1. 结构化同步（主表 + FTS + uses 图），跳过向量，秒级完成；
+        2. 循环补向量，每轮 10 条，直到 pending_embed 归零或连续失败。
+
+        ⚠️ 全程 try/except：技能索引是增强能力，任何失败都不能影响主服务。
+        """
+        import time
+
+        from sgme.operations import skills as skills_ops
+
+        try:
+            r = skills_ops.sync_index(cfg, skills_conn, wiki_conn, max_embed=0, embed=False)
+            data = (r.data if hasattr(r, "data") else None) or {}
+            print(
+                f"[SGME skills] 结构化同步：新增 {data.get('inserted', 0)} / "
+                f"更新 {data.get('updated', 0)} / 删除 {data.get('deleted', 0)} / "
+                f"未变 {data.get('unchanged', 0)}（共 {data.get('total', 0)}）"
+            )
+        except Exception as e:
+            print(f"[SGME skills] 结构化同步失败（技能模块降级）: {e}")
+            return
+
+        for round_no in range(1, 500):  # 上限防死循环：403 条约需 41 轮
+            try:
+                r = skills_ops.sync_index(cfg, skills_conn, wiki_conn, max_embed=10)
+                data = (r.data if hasattr(r, "data") else None) or {}
+                pending = int(data.get("pending_embed") or 0)
+                embedded = int(data.get("embedded") or 0)
+                if embedded == 0 and pending == 0:
+                    break
+                print(f"[SGME skills] 向量预热第 {round_no} 轮：嵌入 {embedded} 条，剩余 {pending} 条")
+                if pending <= 0:
+                    break
+            except Exception as e:
+                print(f"[SGME skills] 向量预热中断（第 {round_no} 轮）: {e}")
+                break
+            time.sleep(1)
+        print("[SGME skills] 向量预热结束")
+
     async def lifespan(app: FastAPI):
         """应用生命周期：启动定时任务（生产模式）/ 关闭时释放自建连接。"""
         # T-23② 安装清单（ST-23⑦ 服务发现落地）：生产模式启动即生成 ~/.sgme/install.json
@@ -647,6 +704,17 @@ def create_app(
                 dream.ensure_scheduler(cfg, data_dir=d)
             except Exception as e:
                 print(f"[SGME dream] 夜间整理定时器启动失败（不影响启动）: {e}")
+            # T-112：skills.db 首次同步 + 向量后台预热（daemon 线程，失败不阻断启动）。
+            # 结构化同步快（403 条约 1-3 秒）；向量首次全量约 13 分钟（Ollama bge-m3
+            # 每批 10 条约 19 秒），故只补一小批后交由循环预热逐步补齐——期间
+            # 检索照常可用（FTS 全量立即生效，向量逐步生效，routes 标记随之变化）。
+            if skills_conn is not None:
+                threading.Thread(
+                    target=_skills_bootstrap,
+                    args=(cfg, skills_conn, wiki_conn),
+                    daemon=True,
+                    name="sgme-skills-bootstrap",
+                ).start()
         yield
         # Batch 兜底扫描定时器线程（daemon）：置位 stop 并 join（幂等，未启动无副作用）
         try:
@@ -680,6 +748,7 @@ def create_app(
     app.state.mem_conn = mem_conn
     app.state.session_conn = session_conn
     app.state.wiki_conn = wiki_conn
+    app.state.skills_conn = skills_conn  # T-112：技能模块禁用时为 None（读侧自动回退内存索引）
     app.state.data_dir = d  # 调度器线程自建独立连接的数据库目录（2026-08-11 连接隔离修复）
     app.state.own_conns = own_conns
     app.state.key_store = store

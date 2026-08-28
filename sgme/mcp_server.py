@@ -1005,8 +1005,12 @@ def build_mcp_server():
         if _skills_disabled(cfg):
             return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
         wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        # T-112：传 skills_conn 走库内检索（FTS5 + 持久化向量），None 时回退内存索引
+        skills_conn = _app_state.get("skills_conn")
         try:
-            hits = search_skills_impl(query, cfg, wiki_conn, limit=min(limit, 20))
+            hits = search_skills_impl(
+                query, cfg, wiki_conn, limit=min(limit, 20), skills_conn=skills_conn
+            )
         except Exception as e:
             return json.dumps({"error": f"技能检索失败: {e}"}, ensure_ascii=False)
         return json.dumps(hits, ensure_ascii=False)
@@ -1298,6 +1302,8 @@ def mount_mcp(app, start_server: bool = True):
         "mem_conn": app.state.mem_conn,
         "session_conn": app.state.session_conn,
         "wiki_conn": app.state.wiki_conn,
+        # T-112：技能索引库（模块禁用时为 None，MCP 工具自动回退内存索引）
+        "skills_conn": getattr(app.state, "skills_conn", None),
         "key_store": app.state.key_store,
     })
     mcp = build_mcp_server()

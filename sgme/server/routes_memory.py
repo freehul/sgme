@@ -169,6 +169,8 @@ def search_memories(
         limit=payload.limit,
         include_sources=payload.include_sources,
         wiki_conn=wiki_conn,
+        # T-112：技能层走 skills.db（FTS5 + 持久化向量）；禁用时为 None，操作层回退内存索引
+        skills_conn=getattr(request.app.state, "skills_conn", None),
     )
     return search_http_payload(data)
 
