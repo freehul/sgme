@@ -48,6 +48,14 @@ export interface SkillGet {
   content: string
 }
 
+// L2 全文（agent key；详情页正文渲染用，GET /v1/skills/{name}）
+export interface SkillContent {
+  name: string
+  content: string
+  sha256?: string
+  source?: string
+}
+
 export interface SkillPut {
   name: string
   path: string
@@ -84,6 +92,11 @@ export function listSkills() {
 
 export function getSkill(name: string) {
   return api.get<SkillGet>(`/v1/admin/skills/${encodeURIComponent(name)}`)
+}
+
+/** L2 全文（agent key；详情页正文渲染，GET /v1/skills/{name}） */
+export function getSkillContent(name: string) {
+  return api.get<SkillContent>(`/v1/skills/${encodeURIComponent(name)}`)
 }
 
 export function putSkill(name: string, content: string) {

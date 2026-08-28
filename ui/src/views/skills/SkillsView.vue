@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import {
-  deleteSkill, getSkillDigest, listSkillsIndex, putSkill,
-  type SkillDigest, type SkillIndexItem,
+  deleteSkill, getSkillContent, listSkillsIndex, putSkill,
+  type SkillContent, type SkillIndexItem,
 } from '../../api/skills'
 import { ApiError } from '../../api/client'
 import { renderMarkdown } from '../../utils/markdown'
@@ -90,14 +90,12 @@ async function load() {
 
 async function openDetail(m: SkillMeta) {
   try {
-    // 详情抽屉改吃 L1 摘要（frontmatter+骨架）；编辑时再拉全文
-    const d: SkillDigest = await getSkillDigest(m.name)
+    // 详情抽屉直接渲染 L2 全文（GET /v1/skills/{name}，agent key），修复只显示空大纲的问题
+    const g: SkillContent = await getSkillContent(m.name)
     detail.value = { ...m }
-    const sections = (d.sections || []) as Array<{ level?: number; text?: string; title?: string }>
-    const outline = sections
-      .map((s) => `${'#'.repeat(Math.max(2, Number(s.level) || 2))} ${s.text || s.title || ''}`)
-      .join('\n')
-    detailBody.value = `> 来源: ${d.source}${d.origin_path ? `（${d.origin_path}）` : ''} · sha256: ${d.sha256.slice(0, 12)}…\n\n${outline}`
+    const src = g.source || m.source || 'git'
+    const sha = (g.sha256 || '').slice(0, 12)
+    detailBody.value = `> 来源: ${src}${sha ? ` · sha256: ${sha}…` : ''}\n\n${g.content || '(无正文)'}`
     detailOpen.value = true
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : String(e)
