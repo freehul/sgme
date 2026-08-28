@@ -131,6 +131,11 @@ def get_graph(
             })
             node_ids.add(r["memory_id"])
 
+    # ── ②b 孤儿边丢弃：scene→memory 边的目标记忆必须已建节点（存在且 active），
+    #     否则 d3.forceLink 会因找不到节点抛 "node not found"（记忆被删未清关联 /
+    #     超 memory_limit 截断都会产生悬空边）。与下方 wiki 边孤儿过滤保持一致。
+    links = [l for l in links if l["target"] in node_ids]
+
     # ── ③ wiki 页面节点 + wiki→wiki 边 ──
     wiki_links_count = 0
     if wiki_conn is not None:
