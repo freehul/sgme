@@ -51,7 +51,8 @@ class TestRequiredFields:
 
         assert lint_skill(dict(GOOD_META), GOOD_BODY, "good-skill", set()) == []
 
-    @pytest.mark.parametrize("field", ["description", "version", "pattern", "category"])
+    # B116（2026-08-28）起 version/pattern 放宽为可选，必填收敛为 description+category
+    @pytest.mark.parametrize("field", ["description", "category"])
     def test_reject_missing_field(self, field):
         from sgme.skills.gates import lint_skill
 
@@ -59,13 +60,28 @@ class TestRequiredFields:
         violations = lint_skill(meta, GOOD_BODY, "good-skill", set())
         assert any(field in v for v in violations), violations
 
-    @pytest.mark.parametrize("field", ["description", "version", "pattern", "category"])
+    @pytest.mark.parametrize("field", ["description", "category"])
     def test_reject_empty_string_field(self, field):
         from sgme.skills.gates import lint_skill
 
         meta = dict(GOOD_META, **{field: "   "})
         violations = lint_skill(meta, GOOD_BODY, "good-skill", set())
         assert any(field in v for v in violations), violations
+
+    # 放宽后的字段：缺失/空串都不应再被拒（B116 回归保护）
+    @pytest.mark.parametrize("field", ["version", "pattern"])
+    def test_optional_field_allowed_when_missing(self, field):
+        from sgme.skills.gates import lint_skill
+
+        meta = {k: v for k, v in GOOD_META.items() if k != field}
+        assert lint_skill(meta, GOOD_BODY, "good-skill", set()) == []
+
+    @pytest.mark.parametrize("field", ["version", "pattern"])
+    def test_optional_field_allowed_when_empty(self, field):
+        from sgme.skills.gates import lint_skill
+
+        meta = dict(GOOD_META, **{field: "   "})
+        assert lint_skill(meta, GOOD_BODY, "good-skill", set()) == []
 
 
 # ---------- 门禁：触发词 57 字符窗口 ----------

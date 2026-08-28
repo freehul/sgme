@@ -77,8 +77,10 @@ def list_skills(
     cfg = request.app.state.cfg
     _ensure_index(request)  # 惰性建/复用 BM25 索引缓存（app.state.skills_bm25）
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
+    # T-112：库可用时走 skills.db（结构化查询 + 免全量扫描），None 时操作层回退内存索引
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
     return run_operation(list_skills_operation, cfg, wiki_conn,
-                        offset=offset, limit=limit)
+                        offset=offset, limit=limit, skills_conn=skills_conn)
 
 
 # ---------- GET /v1/skills/coldstart （冷启动包，须先于 /{name} 注册） ----------

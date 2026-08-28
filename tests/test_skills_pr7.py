@@ -51,12 +51,15 @@ class TestPatternEnum:
         v = lint_skill(meta, GOOD_BODY, "good-skill", set())
         assert any("pattern" in x and ("auto" in x and "manual" in x) for x in v)
 
-    def test_missing_pattern_still_required(self):
+    def test_missing_pattern_allowed_after_b116(self):
+        """B116（2026-08-28）起 pattern 放宽为可选——缺失不再被拒。
+
+        枚举约束仍在：给了值就必须是 auto/manual（见 test_freeform_pattern_rejected）。
+        """
         from sgme.skills.gates import lint_skill
 
         meta = {k: v for k, v in GOOD_META.items() if k != "pattern"}
-        v = lint_skill(meta, GOOD_BODY, "good-skill", set())
-        assert any("pattern" in x for x in v)
+        assert lint_skill(meta, GOOD_BODY, "good-skill", set()) == []
 
 
 # ---------- scripts 规则收紧：目录实际存在才检查 ----------
