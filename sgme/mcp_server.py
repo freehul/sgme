@@ -48,9 +48,32 @@ def bind_app_state(state: Dict[str, Any]) -> None:
     _app_state.update(state)
 
 
-def _require_admin() -> str:
-    """校验管理员 Key（环境变量 SGME_ADMIN_KEY，与 HTTP 鉴权对齐）。"""
-    return os.environ.get("SGME_ADMIN_KEY", "dev-admin-key-change-me")
+def _require_admin(ctx: "Context | None" = None) -> tuple[bool, str]:
+    """校验调用方是否持管理员 Key（请求级，SGME_ADMIN_KEY）。
+
+    通过 ApiKeyMiddleware 写入 request.state.api_key 的反查 key，
+    与 AgentKeyStore.is_admin 比对。HTTP 传输层（部署态）每次调用都带
+    X-API-Key → request.state.api_key 必有意义；直调（无 HTTP 上下文、
+    ctx 无 request）无法反查 → 拒绝（安全默认，避免无鉴权直调绕过写侧）。
+    """
+    presented: str | None = None
+    if ctx is not None:
+        try:
+            req = ctx.request_context.request
+            if req is not None:
+                presented = getattr(req.state, "api_key", None)
+        except Exception:
+            presented = None
+    if not presented:
+        return False, "无法解析调用方 Key：写侧工具需经 MCP 鉴权中间件携带 X-API-Key 调用"
+    key_store = _app_state.get("key_store")
+    if key_store is not None and key_store.is_admin(presented):
+        return True, ""
+    # 兜底：无 key_store 时比对环境变量（与仓库既有 _require_admin 语义兼容）
+    admin_key = os.environ.get("SGME_ADMIN_KEY")
+    if admin_key and presented == admin_key:
+        return True, ""
+    return False, "需要管理员 Key（SGME_ADMIN_KEY）才能执行写侧操作"
 
 
 class ApiKeyMiddleware(BaseHTTPMiddleware):
@@ -1070,18 +1093,20 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
-    def skill_put(name: str, content: str) -> str:
+    def skill_put(name: str, content: str, ctx: Context | None = None) -> str:
         """写入/覆盖技能（ST-36 M3 写侧）：content 为 SKILL.md 全文（自动解析 frontmatter）。
 
-        需以管理员 Key 连接 MCP（与仓库 MCP 鉴权姿态一致，由部署侧管控）；
-        skills.source_dirs 未配置 → 报错。
+        需以管理员 Key 连接 MCP（请求级校验 SGME_ADMIN_KEY，非管理员 Key →
+        ERR_FORBIDDEN）；skills.source_dirs 未配置 → 报错。
         """
         import json
 
         from sgme.skills import store as skills_store
         from sgme.skills.indexer import parse_skill_md, validate_name
 
-        _require_admin()  # 管理员意图声明（与仓库 MCP 鉴权姿态一致）
+        ok, err = _require_admin(ctx)
+        if not ok:
+            return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
         cfg = _app_state["cfg"]
         source_dirs = (cfg.get("skills") or {}).get("source_dirs") or []
         if not source_dirs:
@@ -1109,13 +1134,15 @@ def build_mcp_server():
         )
 
     @mcp.tool()
-    def skill_delete(name: str, hard: bool = False, force: bool = False) -> str:
-        """删除技能（ST-36 M3 写侧）：默认软删（deprecated 标记）；hard=True 物理删；有入向 uses 引用需 force=True。"""
+    def skill_delete(name: str, hard: bool = False, force: bool = False, ctx: Context | None = None) -> str:
+        """删除技能（ST-36 M3 写侧）：默认软删（deprecated 标记）；hard=True 物理删；有入向 uses 引用需 force=True。需管理员 Key（请求级校验）。"""
         import json
 
         from sgme.skills import store as skills_store
 
-        _require_admin()
+        ok, err = _require_admin(ctx)
+        if not ok:
+            return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
         cfg = _app_state["cfg"]
         source_dirs = (cfg.get("skills") or {}).get("source_dirs") or []
         if not source_dirs:
@@ -1139,13 +1166,15 @@ def build_mcp_server():
         )
 
     @mcp.tool()
-    def skill_rename(name: str, new_name: str) -> str:
-        """改名（ST-36 M3 写侧，墓碑制）：写新名副本 + 旧位置留 superseded_by 墓碑 + 登记。"""
+    def skill_rename(name: str, new_name: str, ctx: Context | None = None) -> str:
+        """改名（ST-36 M3 写侧，墓碑制）：写新名副本 + 旧位置留 superseded_by 墓碑 + 登记。需管理员 Key（请求级校验）。"""
         import json
 
         from sgme.skills import store as skills_store
 
-        _require_admin()
+        ok, err = _require_admin(ctx)
+        if not ok:
+            return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
         cfg = _app_state["cfg"]
         source_dirs = (cfg.get("skills") or {}).get("source_dirs") or []
         registry_path = (cfg.get("skills") or {}).get("tombstone_registry")

@@ -1786,3 +1786,29 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 - 部署后线上 `POST /v1/search {"query":"…"}`（不传 scopes）默认含 skills 层；`/v1/health status=ok version=1.0.1`。
 
 **运维影响**：① 统一搜索默认同时召回记忆与技能，技能召回不再需 agent 显式传 `scopes=["skills"]`；② 全量说明文档与代码现状一致，消除「说明书滞后于架构」误导；③ MCP `search` 行为不变（仍 memory-only），避免破坏既有 agent 调用；④ 其余未触碰项——写侧 admin 门禁桩、LLM 降级链 agnes 描述不同步——仍属待办。
+
+### B116. MCP 写侧 admin 门禁落地 + AGENTS 降级链同步 + 技能 lint 放宽（2026-08-28）
+
+**背景**：B114 留两待办（写侧 `_require_admin` 为桩、AGENTS.md LLM 降级链仍写 zhipu→deepseek 与线上 agnes 不符）；另发现 `sgme/skills/gates.py` 的 `REQUIRED_FIELDS` 含 `version`/`pattern`，但已上线的 4 个真实技能无此字段，导致 `skill_put` 无法管理真实技能（生产隐患）。本次一并收尾。
+
+**改动**：
+1. **`sgme/mcp_server.py`**：`_require_admin` 由空桩改为真实请求级校验——从 `ctx.request_context.request.state.api_key` 取呈现 key，比对 `AgentKeyStore.is_admin`，返回 `tuple[bool, str]`；`skill_put`/`skill_delete`/`skill_rename` 接入 `ctx: Context | None = None` 参数，门禁拒绝时返回 `{"error":...,"code":"ERR_FORBIDDEN"}` 字符串（FastMCP 不标 isError，但 agent 可解析 code）。直调无 request 上下文 → 安全默认拒绝。
+2. **`sgme/skills/gates.py`**：`REQUIRED_FIELDS` 由 `("description","version","pattern","category")` 放宽 → `("description","category")`（`version`/`pattern` 改可选，保留 pattern 枚举校验当填写时），`lint_skill` 文档同步。理由：真实技能无 version/pattern，原必填使写侧工具无法落盘真实技能。
+3. **`AGENTS.md` 第 9 条**：LLM 降级链由 `zhipu(glm-4.7-flash)→deepseek(deepseek-v4-flash)→rule drop_batch` 按 `config/llm.yaml` 真实链同步为 `agnes(agnes-2.5-flash)→siliconflow(deepseek-ai/DeepSeek-V4-Flash)→zhipu(glm-4.7-flash)→rule drop_batch`（2026-08-22 用户定 agnes 优先）。
+4. **`tests/test_mcp_server.py`**：新增 `test_mcp_skill_put_agent_key_forbidden`（agent key 被拒 ERR_FORBIDDEN）+ `test_mcp_skill_put_admin_key_writes`（admin key 落盘成功）；断言按 FastMCP 实际返回（错误为 result 字符串，故检查 text 含 ERR_FORBIDDEN）。
+
+**验证**：B116 两测试 pass；`test_mcp_server.py`+`test_operations_search.py`+`test_routes_skills.py`+`test_server.py` 回归 **108 passed**（0 失败）；6 个改动文件 UTF-8 解码 BAD=0。
+
+**运维影响**：① 写侧 MCP 工具现在真正区分 admin/agent key（admin 可写、agent 403），与 HTTP admin 鉴权对齐；② AGENTS.md 与线上一致；③ 技能 lint 与已上线真实技能字段兼容，写侧工具可用。
+
+### B117. 场景治理根治：dream 调度器接入启动 + 合并阈值下调（2026-08-28）
+
+**背景**：用户观察到多个 AIRDT/SGME/hermes 场景重复。排查线上：active 场景 **350**（远超 max 300 红警），`scene_gc` 配置正确（`enabled=true, threshold=0.80`），GC 候选对 **21 对**（相似度≥0.80，含 `SGME 后端与 DSH 方向`×2 完全重复 sim=1.000、`家庭照护责任`×3、`父亲透析照护`×2 等），`will_run=true`——**逻辑能检测却从未合并**。根因：最近一次 dream 运行停在 **2026-08-15**（距今 13 天）；`scene_gc` 由夜间 dream 流水线驱动，但 `dream.ensure_scheduler` 仅 `POST /v1/admin/dream/trigger` 端点接线，**未接入 `app.py` lifespan 启动**——容器/进程重启后 daemon 线程死亡且永不自动复活，导致 dream 停摆、scene_gc 从未执行、重复场景堆积。
+
+**改动**：
+1. **`sgme/server/app.py` lifespan**：`start_background_tasks` 块接入 `dream.ensure_scheduler(cfg, data_dir=d)`（与 `batch_scan`/`persona_monthly` 同款 try/except 不阻断启动）。根治「重启即死」——生产 Gateway 启动即按 `dream.schedule`(03:00) 自动跑场景治理。
+2. **`sgme/config.py` `DEFAULT_SCENE_GC_CONFIG.merge_threshold`**：`0.80` → `0.70`（收掉 AIRDT/SGME/hermes 等弱相似度重复场景；下限 `min_threshold=0.70`）。
+
+**验证**：编译 + UTF-8 校验 OK；部署重建后手动 `POST /v1/admin/scene-gc/trigger` 合并候选；复查 active 数下降、hermes 去重（见运维影响）。
+
+**运维影响**：① 重启后 dream 定时器自动常驻，夜间 03:00 自动执行场景治理，**根治复发**；② 阈值 0.70 更积极合并弱相似场景（契合用户「看到多个重复」诉求）；③ 合并走 `archived` 状态（原件不删、可恢复），符合「原件永不删」铁律；④ 本变更需 NAS 重新 build + 重启 SGME 生效（配置每次启动从代码默认值加载）。

@@ -637,6 +637,16 @@ def create_app(
                 persona_monthly.ensure_scheduler(cfg, data_dir=d)
             except Exception as e:
                 print(f"[SGME persona] 月度校准定时器启动失败（不影响启动）: {e}")
+            # B117（2026-08-28 治本）：Dream 夜间整理定时器。此前仅手动触发端点
+            # （/v1/admin/dream/trigger）接线，容器重启后 daemon 线程死亡且永不自动
+            # 复活，导致 dream 流水线自 08-15 停摆、scene_gc 从未执行、重复场景堆积
+            # （active 350 > max 300）。现与生产其余 scheduler 同款接入启动，按
+            # dream.schedule(03:00) 自动执行；失败不阻断启动。
+            try:
+                from sgme.engine import dream
+                dream.ensure_scheduler(cfg, data_dir=d)
+            except Exception as e:
+                print(f"[SGME dream] 夜间整理定时器启动失败（不影响启动）: {e}")
         yield
         # Batch 兜底扫描定时器线程（daemon）：置位 stop 并 join（幂等，未启动无副作用）
         try:

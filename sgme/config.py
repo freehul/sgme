@@ -201,7 +201,7 @@ DEFAULT_L2_CONFIG = {
 # 场景主动治理（T-97 治本）：后台自动合并 + 归档相似场景
 DEFAULT_SCENE_GC_CONFIG = {
     "enabled": True,            # 总开关
-    "merge_threshold": 0.80,    # 相似度入选阈值（>= 才合并）
+    "merge_threshold": 0.70,    # 相似度入选阈值（>= 才合并）；B117 由 0.80 下调，收掉 AIRDT/SGME/hermes 等弱相似度重复场景（下限 min_threshold=0.70）
     "min_threshold": 0.70,      # 兜底下限（候选不足时可降至此重算，当前未启用降级）
     "trigger_at": None,         # 仅当 active >= 此值才执行；None = 回退 l2.warn_thresholds.orange
     "max_merges": 20,           # 单次合并上限（防一次 LLM 消耗过大）
