@@ -112,6 +112,20 @@ export interface SkillsColdstartResponse {
   manual: { page_id: string; title: string; content: string } | null
 }
 
+/**
+ * 技能小节名归一化（供 skillGet 的 section 参数使用）。
+ *
+ * ⚠️ 契约坑（2026-08-29 实测 SGME 1.1.0）：服务端 section 参数要**纯标题文本**
+ * （`前置条件`），而 skill_digest 的 sections 骨架给的是**带 # 前缀的原样行**
+ * （`## 前置条件`）——照抄骨架传上去必 404，且错误文案误导为「技能不存在」。
+ * 本函数剥掉 # 前缀与两侧空白，让两种写法都能命中。
+ */
+export function normalizeSkillSection(section: string | null | undefined): string | null {
+  if (!section) return null
+  const stripped = section.replace(/^#+\s*/, '').trim()
+  return stripped || null
+}
+
 /** /v1/inject 请求体（InjectRequest）。 */
 export interface InjectRequest {
   mode?: string | null                       // 模板名（daily/coding/work/full）；与 custom_filter 二选一
@@ -749,7 +763,9 @@ export class SgmeClient {
 
   /** L2 全文（GET /v1/skills/{name}?section=；section 给定时只取该节省 token）。失败返回 null。 */
   async skillGet(name: string, section?: string | null): Promise<SkillDetail | null> {
-    const qs = section ? `?section=${encodeURIComponent(section)}` : ''
+    // section 归一化见 normalizeSkillSection——服务端只认纯标题，骨架行带 # 前缀
+    const normalized = normalizeSkillSection(section ?? null)
+    const qs = normalized ? `?section=${encodeURIComponent(normalized)}` : ''
     const [data, err] = await this.get<SkillDetail>(
       `/v1/skills/${encodeURIComponent(name)}${qs}`,
       'agent',

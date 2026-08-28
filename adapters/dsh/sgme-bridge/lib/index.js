@@ -8,6 +8,18 @@ import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 //#region src/sgme-client.ts
 /**
+* 技能小节名归一化（供 skillGet 的 section 参数使用）。
+*
+* ⚠️ 契约坑（2026-08-29 实测 SGME 1.1.0）：服务端 section 参数要**纯标题文本**
+* （`前置条件`），而 skill_digest 的 sections 骨架给的是**带 # 前缀的原样行**
+* （`## 前置条件`）——照抄骨架传上去必 404，且错误文案误导为「技能不存在」。
+* 本函数剥掉 # 前缀与两侧空白，让两种写法都能命中。
+*/
+function normalizeSkillSection(section) {
+	if (!section) return null;
+	return section.replace(/^#+\s*/, "").trim() || null;
+}
+/**
 * SGME HTTP 客户端。
 *
 * 防代理劫持：fetch 不读 HTTP_PROXY 环境变量（防 Clash 劫持 localhost），
@@ -298,7 +310,8 @@ var SgmeClient = class {
 	}
 	/** L2 全文（GET /v1/skills/{name}?section=；section 给定时只取该节省 token）。失败返回 null。 */
 	async skillGet(name, section) {
-		const qs = section ? `?section=${encodeURIComponent(section)}` : "";
+		const normalized = normalizeSkillSection(section ?? null);
+		const qs = normalized ? `?section=${encodeURIComponent(normalized)}` : "";
 		const [data, err] = await this.get(`/v1/skills/${encodeURIComponent(name)}${qs}`, "agent");
 		if (err) {
 			console.warn(`[sgme-bridge] skillGet failed: ${err}`);
@@ -2177,7 +2190,7 @@ function createSkillDigestTool(client) {
 function createSkillGetTool(client) {
 	return defineTool({
 		name: "skill_get",
-		description: ["拉取技能全文（L2）并注入上下文——拿到后按其步骤执行，不要凭空编造。", "正文较长时传 section 只取该标题下的内容，省 token。"].join(" "),
+		description: ["拉取技能全文（L2）并注入上下文——拿到后按其步骤执行，不要凭空编造。", "正文较长时传 section 只取该标题下的内容，省 token（节名不对会 404，先 skill_digest 看骨架确认）。"].join(" "),
 		parameters: {
 			name: {
 				type: "string",
@@ -2186,7 +2199,7 @@ function createSkillGetTool(client) {
 			},
 			section: {
 				type: "string",
-				description: "只取该小节（如 \"## 前置条件\"，给 skill_digest 骨架里的标题原样传入）"
+				description: "只取该小节，传纯标题如 \"前置条件\"；带 # 前缀的骨架行会自动剥离，两种写法都行"
 			}
 		},
 		output: {
