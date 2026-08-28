@@ -348,41 +348,44 @@ def cold_start(
 ) -> OperationResult:
     """冷启动包：GET /v1/skills/coldstart 的业务实现（设计 §三「冷启动包」）。
 
+    渐进式披露范式（2026-08-28 定稿）：coldstart **只注入 1 个技能**——技能检索协议
+    （``sgme/skills/protocol/SKILL.md``），教 agent 用 SGME 的 ``skill_search`` 按需检索、
+    挑合适的技能再 ``skill_get`` 注入上下文。全量 403 技能**不预载**，由 agent 运行时检索，
+    既不占上下文、也无需维护热层。
+
     返回三件套：
-    - index：全量技能索引（name/description/tags/pattern/category，不受 budget 截断）
-    - hotset：pattern=auto 技能的 L2 全文（热集常驻，agent 免逐个拉取）
+    - index：仅含协议 skill 的索引（name/description/tags/category/pattern）
+    - hotset：恒定空（单协议范式下无热集；按需检索取代热常驻）
     - manual：SGME 操作手册页（wiki 检索标题含「SGME操作手册」或 tags 含 onboarding；
       找不到返回 None，不阻塞——agent 仍可按 MCP onboarding 工具指引使用）
     """
-    from sgme.data import wiki_dao
+    from pathlib import Path as _Path
 
-    records = index_all(
-        (cfg.get("skills") or {}).get("source_dirs") or [],
-        wiki_conn,
-    )
+    from sgme.data import wiki_dao
+    from sgme.skills.indexer import _record_from_meta, parse_skill_md, validate_name
+
     if not (cfg.get("skills") or {}).get("enabled", False):
         raise InvalidArgs("skills 模块未启用（skills.enabled=false）")
 
-    items = [
-        {
-            "name": r.name,
-            "description": r.description,
-            "category": r.category,
-            "tags": list(r.tags),
-            "pattern": getattr(r, "pattern", "") or "",
-        }
-        for r in records
-    ]
+    # 单一注入：技能检索协议 skill（内置源，随 sgme 包进镜像，不被 hub 同步覆盖）
+    proto_path = _Path(__file__).resolve().parent.parent / "skills" / "protocol" / "SKILL.md"
+    items: list[dict] = []
+    if proto_path.is_file():
+        text = proto_path.read_text(encoding="utf-8")
+        parsed = parse_skill_md(text)
+        name = validate_name(str(parsed["meta"].get("name") or proto_path.parent.name))
+        rec = _record_from_meta(name, parsed["meta"], parsed["body"], "builtin", str(proto_path))
+        items = [{
+            "name": rec.name,
+            "description": rec.description,
+            "category": rec.category,
+            "tags": list(rec.tags),
+            "pattern": rec.pattern,
+        }]
+    else:
+        logger.warning("cold_start: 协议 skill 缺失（%s），coldstart 将为空", proto_path)
 
-    hotset = [
-        {
-            "name": r.name,
-            "content": r.content,
-            "sha256": r.sha256,
-        }
-        for r in sorted(records, key=lambda x: x.name)
-        if (getattr(r, "pattern", "") or "") == "auto"
-    ]
+    hotset: list[dict] = []
 
     manual: dict | None = None
     if wiki_conn is not None:
