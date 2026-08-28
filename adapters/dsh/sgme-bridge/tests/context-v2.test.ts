@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { registerContextInjection } from '../src/context.js'
-import type { SgmeClient, InjectResponse } from '../src/sgme-client.js'
+import type { SgmeClient, InjectResponse, SearchResponse, SearchResult } from '../src/sgme-client.js'
 
 // ---------- 最小 mock ----------
 
@@ -328,8 +328,9 @@ describe('事件提醒注入（2026-08-20 修复）', () => {
 
 // ---------- T-88 对话内容驱动（首句选场景，2026-08-20 用户定） ----------
 
-function makeSceneSearchResponse(scenes: number, memories: number) {
-  const results = []
+function makeSceneSearchResponse(scenes: number, memories: number): SearchResponse {
+  // 显式标注 SearchResult[]：否则 source 被推断为 string，无法赋给联合字面量类型
+  const results: SearchResult[] = []
   for (let i = 1; i <= scenes; i++) {
     results.push({ rank: i, source: 'wiki', title: `场景${i}`, content: `L2 场景内容${i}：SGME 架构相关` })
   }
@@ -369,7 +370,10 @@ describe('registerContextInjection (T-88 对话内容驱动)', () => {
   it('首句无场景命中 → 回退模板注入（inject 被调用）', async () => {
     const { ctx, listeners } = makeCtx()
     const client = makeClient({
-      search: vi.fn(async () => ({ results: [{ rank: 1, source: 'memory', content: '普通记忆' }], meta: { routes: ['bm25'], rrf_k: 60 } })),
+      search: vi.fn(async (): Promise<SearchResponse> => ({
+        results: [{ rank: 1, source: 'memory', content: '普通记忆' }],
+        meta: { routes: ['bm25'], rrf_k: 60 },
+      })),
     })
     registerContextInjection(ctx, client, { injectMode: 'daily', injectMaxTokens: 800, searchLimit: 5 })
     const handler = listeners.get('agent/pre-step')!

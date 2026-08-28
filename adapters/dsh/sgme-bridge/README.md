@@ -12,6 +12,7 @@
 | **自动捕获** | session-sync 监听会话事件，每轮对话自动 `append` 落盘（零 LLM 成本） |
 | **记忆检索** | `memory_search` 检索 L1.5 标签化记忆池（带溯源） |
 | **知识库检索** | `wiki_search` 检索 L2 场景知识库（比记忆更精炼） |
+| **技能按需注入** | `skill_search` / `skill_digest` / `skill_get` / `skill_list` / `skill_coldstart` 五工具（v0.4.0）——对齐 SGME 1.1.0 范式：403 个技能不预载，按需检索 → 拉全文注入 |
 | **主动关怀** | `signal_pull` / `signal_claim` / `signal_ack` 三工具，消费 SGME 关怀信号——信号消费 = 主动关怀，谁消费谁标记 |
 | **DSH 规则注入** | 读取 `~/.dsh/dsg-rules/rules.md` 注册为 `dsg:rules` system section（order -70）——身份/铁律/SGME手册/偏好/环境进稳定层，前缀缓存全命中（v0.2，2026-08-16） |
 
@@ -70,7 +71,7 @@ dsh plugin --profile <你的profile> add dsh-sgme
 2. **一条命令自检**：会话内输入 `/sgme`（或 `/sgme status`）——显示 SGME 连接状态、版本、LLM、记忆水位；不可达时直接给出本体安装指引；
 3. **首次对话观察**：对话开始会自动注入画像与相关记忆；可先 `/sgme 试试` 确认检索链路。
 
-> 冷启动提示：新装后记忆池是空的，前几轮对话后记忆才开始积累；`wiki_search` 可立即查到 SGME 自带的操作手册。
+> 冷启动提示：新装后记忆池是空的，前几轮对话后记忆才开始积累；`wiki_search` 可立即查到 SGME 自带的操作手册，`skill_coldstart` 可拉到技能检索协议 + SGME 操作手册。
 
 ## 故障排查
 
@@ -100,15 +101,39 @@ syncOnTurnEnd: true
 
 ## 用法
 
-接入后，DSH 自动拥有 7 个工具：
+接入后，DSH 自动拥有 24 个工具：
 
+**检索与知识库（6）**
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
 - `wiki_search(query, limit)` — 查提炼后的场景知识（FTS5 BM25 + 中文分词）；
 - `wiki_pages(category, limit)` — 按 category 列知识库手册目录（如 skill/sgme），渐进式披露 L2 索引层（W5）；
 - `wiki_page(page_id)` — 按 page_id 拉取知识库手册全文（技能手册/踩坑记录），索引 skill 引导的加载通道（W5）；
+- `wiki_page_update(page_id, content, append)` — 追加/覆盖知识库手册正文（W5 回写通道）；
+- `wiki_page_add(title, content, category, tags)` — 新建知识库页面（幂等 upsert）。
+
+**技能层（5，v0.4.0 新增，对齐 SGME 1.1.0 范式）**
+- `skill_search(query, limit)` — 检索 SGME 技能库（403 个技能），只返回技能名与触发描述；
+- `skill_digest(name)` — 技能摘要：字段 + 正文骨架 + uses 依赖，执行前审核用；
+- `skill_get(name, section)` — 拉技能全文注入上下文（section 可只取一节省 token）；
+- `skill_list(limit, offset)` — 分页浏览技能库索引；
+- `skill_coldstart()` — 冷启动包：1 个《技能检索协议》+ SGME 操作手册。
+
+> ⚠️ 技能**不预载**，按需「先 `skill_search` 检索 → 再 `skill_get` 拉全文」注入——这是 SGME 1.1.0 的既定范式（B114 技能去 wiki 化后，技能正文已不在 wiki 里，wiki 通道搜不到技能手册）。
+
+**主动关怀（3）**
 - `signal_pull(signal_type, limit)` — 会话开始拉未消费关怀信号；
 - `signal_claim(event_id)` — 原子认领信号（谁消费谁标记）；
 - `signal_ack(event_id, status, result)` — 写消费回执。
+
+**三池登记（3，Agent 主动维护）**
+- `idea_add(content, priority, source_ref)` — 创意池（仅用户主动提出才记）；
+- `demand_create(title, content, priority, project_id)` — 待办池（跨项目统一，会话中遇到要办的事主动登记）；
+- `project_register(project_id, path, name, git_repo, milestone)` — 项目池（用户立项时登记）。
+
+**角色与记忆纠错（6）**
+- `inject(mode)` — 按场景模式拉画像；
+- `role_list()` / `role_assemble(role_id, inject_mode)` / `role_active_get()` / `role_active_set(role_id)` — 角色模板（换皮不换芯）；
+- `memory_get(memory_id)` / `memory_reject(memory_id, reason)` — 记忆详情与纠错。
 
 自进化（W4）：每个 turn 结束自动触发 SGME 经验回写（`/v1/wiki/evolve/trigger`，evolveEnabled 默认 true）——会话中的踩坑/新流程由 LLM 提炼后追加到知识库手册「踩坑记录」，多 agent 共享。
 

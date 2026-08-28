@@ -8,8 +8,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { SgmeEventSubscriber } from '../src/events'
-import type { SgmeEvent } from '../src/events'
+import { SgmeEventSubscriber } from '../src/events.js'
+import type { SgmeEvent } from '../src/events.js'
 
 const AGENT_ID = 'b86-regression-test' // 独立 agentId，避免与其他测试文件持久化互相污染
 
@@ -30,9 +30,9 @@ function runSteps(sub: SgmeEventSubscriber, steps: number): string[] {
     const unnotified = sub.unnotifiedEvents()
     if (unnotified.length) {
       // 与 context.ts 相同：只放 event_id 摘要，不放完整 payload
-      const text = '【SGME 事件提醒】' + unnotified.map((e) => e.event_id).join(', ')
+      const text = '【SGME 事件提醒】' + unnotified.map((e: SgmeEvent) => e.event_id).join(', ')
       injectedTexts.push(text)
-      sub.markNotified(unnotified.map((e) => e.event_id))
+      sub.markNotified(unnotified.map((e: SgmeEvent) => e.event_id))
     }
   }
   return injectedTexts
@@ -74,7 +74,7 @@ describe('B86 回归：多轮 step 事件提醒不重复注入', () => {
     for (let i = 0; i < 10; i++) sub['queue'].push(makeEvent('big-' + i))
     const injected = runSteps(sub, 30)
     expect(injected.length).toBe(1)
-    expect(injected[0].length).toBeLessThan(300) // 摘要文本极小
+    expect((injected[0] ?? '').length).toBeLessThan(300) // 摘要文本极小
   })
 
   it('事件被 claim 消费后（markConsumed），剩余 step 永不再提醒', () => {
