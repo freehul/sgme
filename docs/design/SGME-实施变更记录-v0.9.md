@@ -1853,10 +1853,11 @@ T-88「首句命中 L2 场景注入」自 2026-08-20 实现起**从未生效**�
    （`b86-regression.test.ts` 5：import 补 `.js` 扩展名 ×2 + 参数显式类型 ×2 + 可选链兜底 ×1；
    `context-v2.test.ts` 2：mock 标注 `SearchResponse`/`SearchResult[]`）。
 6. **`package.json`** 0.3.1 → 0.4.0（新功能走 minor）；**`README.md`** 工具清单 7 → 24 并按五组重排，补技能层范式说明。
+7. **`sgme-client.ts` 新增 `normalizeSkillSection()` 并在 `skillGet` 归一化 section**（真实链路冒烟发现，2026-08-29）：服务端 `section` 参数只认**纯标题文本**（`前置条件`），而 `skill_digest` 的 sections 骨架给的是**带 # 前缀的原样行**（`## 前置条件`）——agent 照抄骨架传上去必 404，且服务端错误文案误导为「技能不存在: xxx」，client 降级成 null 后工具提示「技能不存在或 Gateway 不可达」，排障极易跑偏。归一化剥掉 `#` 前缀与两侧空白，两种写法都能命中。
 
 **验证**：`pnpm run verify` 三步全绿——typecheck **0 错误**（基线 7 → 0，顺带清掉历史技术债）、
 vitest **164 passed / 0 failed**（13 files，原 147 + 新增 17）、build 成功（`lib/index.js` 124.89 kB / gzip 35.30 kB）；
-8 个改动文件 UTF-8 解码校验 **BAD=0**。
+8 个改动文件 UTF-8 校验 **BAD=0**；**真实链路冒烟**（临时 `tests/_live-skills.test.ts`，跑后删除）直连 NAS 生产端点 **6/6 通过**——skillList（total=403）/ skillSearch（命中 nas-docker-operations 等）/skillDigest（骨架+uses）/ skillGet（全文 3.4k 字符；section 截取后 truncated_by_section=true 且短于全文）/skillColdstart（1 个协议 skill 带 content 全文 + SGME操作手册）+ 五个工具 execute 均返回可用文本（正是这一轮冒烟暴露出 section 的 # 前缀 404 问题）。
 
 **运维影响**：① dsh agent 首次具备技能按需注入能力（403 技能），需 SGME skills 模块启用（`skills.source_dirs` 有配置，
 否则端点返回 404、工具降级提示）；② **行为变化**——场景注入修复后，首句命中 L2 场景时由「静默回退模板注入」改为
