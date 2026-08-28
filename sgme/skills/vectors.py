@@ -86,8 +86,8 @@ def _embed_config(cfg: dict) -> tuple[str, str, str, str]:
     return prov_name, model, base_url, api_key
 
 
-def embed_texts(texts: list[str], cfg: dict) -> dict[str, list[float]]:
-    """批量调 embedding API（OpenAI 兼容 /embeddings）；失败抛异常由调用方决定降级。"""
+def _embed_batch(texts: list[str], cfg: dict, timeout: float) -> dict[str, list[float]]:
+    """单批调 embedding API（OpenAI 兼容 /embeddings）；失败抛异常由调用方决定降级。"""
     provider, model, base_url, api_key = _embed_config(cfg)
     if not (provider and model and base_url):
         raise RuntimeError("向量模型未配置（providers 无 vector_capable 且 search.vector 无兜底）")
@@ -96,7 +96,7 @@ def embed_texts(texts: list[str], cfg: dict) -> dict[str, list[float]]:
         base_url.rstrip("/") + "/embeddings",
         json={"model": model, "input": texts},
         headers=headers,
-        timeout=30,
+        timeout=timeout,
         trust_env=False,  # 项目铁律：防代理劫持
     )
     r.raise_for_status()
@@ -104,13 +104,73 @@ def embed_texts(texts: list[str], cfg: dict) -> dict[str, list[float]]:
     return {str(d["index"]): d["embedding"] for d in data}
 
 
+def _embed_batch_params(cfg: dict) -> tuple[int, float]:
+    """取分批大小与单批超时（可由 skills 配置覆盖）。
+
+    默认值来自 2026-08-29 容器实测（Ollama bge-m3，每条约 500 字符）：
+    ``1 条 2.1s / 10 条 19.2s / 50 条 35s 超时`` —— 故批大小取 10、超时放宽到 60s。
+    """
+    raw = (cfg.get("skills") or {}) if isinstance(cfg, dict) else {}
+    try:
+        size = int(raw.get("embed_batch_size") or 10)
+    except (TypeError, ValueError):
+        size = 10
+    try:
+        timeout = float(raw.get("embed_timeout") or 60.0)
+    except (TypeError, ValueError):
+        timeout = 60.0
+    return max(1, size), max(5.0, timeout)
+
+
+def embed_texts(texts: list[str], cfg: dict) -> dict[str, list[float]]:
+    """批量 embed（**内部分批**），返回 {原索引字符串: 向量}。
+
+    ⚠️ 2026-08-29 修复（T-112）：原实现把全部 texts 一次性 POST，
+    403 条技能必然撞 timeout（30s）→ 异常被 build_vectors 吞掉 →
+    缓存永不落盘 → **向量路永久降级 BM25**（死循环）。
+    改成分批后单批 ≤10 条，失败批跳过不影响其他批（部分成功即可用）。
+
+    Raises:
+        RuntimeError: 所有批次都失败时抛出（调用方按降级处理）。
+    """
+    if not texts:
+        return {}
+    size, timeout = _embed_batch_params(cfg)
+    result: dict[str, list[float]] = {}
+    failed = 0
+    for start in range(0, len(texts), size):
+        chunk = texts[start : start + size]
+        try:
+            part = _embed_batch(chunk, cfg, timeout)
+        except Exception as e:
+            failed += 1
+            logger.warning(
+                "技能向量嵌入第 %d-%d 条失败（跳过该批，其余照常）: %s",
+                start, start + len(chunk) - 1, e,
+            )
+            continue
+        for j, vec in part.items():
+            try:
+                result[str(start + int(j))] = vec
+            except (TypeError, ValueError):
+                continue
+    if not result and failed:
+        raise RuntimeError(f"技能向量嵌入全部 {failed} 批失败（embedding 不可达）")
+    return result
+
+
 def build_vectors(records, cfg: dict, cache_dir: str | Path,
-                  policy: str = "lazy") -> dict[str, list[float]]:
-    """按需补齐全部记录向量并落盘；返回 {name: vec}。
+                  policy: str = "lazy",
+                  max_new: int | None = None) -> dict[str, list[float]]:
+    """按需补齐记录向量并落盘；返回 {name: vec}。
 
     policy=lazy（默认）：SHA 命中缓存的直接复用，只嵌 miss 部分；
     policy=refresh：全量重嵌（测试/强制刷新用）。
     embedding 失败：已命中部分照常可用，miss 部分跳过（WARNING，检索降级 BM25 单路）。
+
+    Args:
+        max_new: 本次调用最多新嵌入多少条（None=不限）。请求路径应给小值
+            （如 10）避免首轮全量把请求拖死，剩余由后台预热逐轮补齐。
     """
     cache = load_cache(cache_dir)
     items = cache["items"]
@@ -122,6 +182,14 @@ def build_vectors(records, cfg: dict, cache_dir: str | Path,
             result[rec.name] = hit
         else:
             need.append(rec)
+    # ⚠️ 单次调用上限（T-112）：首次全量 403 条 × 分批 ≈ 13 分钟，
+    # 若放在请求线程内同步跑会把请求拖死。请求路径只补一小批，
+    # 剩余交给后台预热任务逐轮补齐（向量逐步可用，不阻塞检索）。
+    if max_new is not None and max_new > 0 and len(need) > max_new:
+        logger.info(
+            "技能向量待补 %d 条，本次只处理 %d 条（余下交后台预热）", len(need), max_new,
+        )
+        need = need[:max_new]
     if need:
         try:
             embs = embed_texts([r.content[:2000] for r in need], cfg)

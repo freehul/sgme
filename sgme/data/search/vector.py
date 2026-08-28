@@ -481,3 +481,132 @@ def _numpy_cosine_scene_search(
         ))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [d for _, d in scored[:limit]]
+
+
+# ---------- 技能向量（T-112：skills.db / skill_vectors，对称 scene 系列） ----------
+
+
+def upsert_skill_vectors(
+    conn: sqlite3.Connection,
+    items: list[tuple[str, list[float]]],
+    model: str = _DEFAULT_EMBED_MODEL,
+) -> int:
+    """批量写入技能向量（单事务，分批嵌入场景用）。
+
+    Args:
+        items: [(name, vec), ...] 已算好的向量（由 skills.vectors.embed_texts 分批产出）。
+        model: 模型名（换模型时旧向量维度不符会被检索跳过，待重嵌）。
+
+    Returns:
+        写入条数。
+    """
+    if not items:
+        return 0
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = [(name, _serialize_vector(vec), model, len(vec), now) for name, vec in items if vec]
+    conn.executemany(
+        """
+        INSERT INTO skill_vectors (name, embedding, model, dims, embedded_at)
+        VALUES (?,?,?,?,?)
+        ON CONFLICT(name) DO UPDATE SET
+          embedding=excluded.embedding, model=excluded.model,
+          dims=excluded.dims, embedded_at=excluded.embedded_at
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def delete_skill_vector(conn: sqlite3.Connection, name: str) -> None:
+    """删除技能向量（技能删除/重嵌前清理）。"""
+    conn.execute("DELETE FROM skill_vectors WHERE name=?", (name,))
+    conn.commit()
+
+
+def skill_vector_search(
+    conn: sqlite3.Connection,
+    query_vec: list[float],
+    limit: int = 10,
+) -> list[dict]:
+    """技能向量检索（skill_vectors JOIN skills；sqlite-vec 优先，numpy 降级）。
+
+    返回 [{name, description, category, score}]（score=相似度 0-1，DESC）。
+    """
+    try_load_vec_extension(conn)
+    if _VEC_EXTENSION_LOADED:
+        try:
+            return _sqlite_vec_skill_search(conn, query_vec, limit)
+        except Exception as e:
+            logger.warning("sqlite-vec 技能检索失败，降级 numpy: %s", e)
+    return _numpy_cosine_skill_search(conn, query_vec, limit)
+
+
+def _sqlite_vec_skill_search(
+    conn: sqlite3.Connection,
+    query_vec: list[float],
+    limit: int,
+) -> list[dict]:
+    query_blob = _serialize_vector(query_vec)
+    sql = """
+        SELECT s.name, s.description, s.category,
+               vec_distance_cosine(v.embedding, ?) AS distance
+        FROM skill_vectors v
+        JOIN skills s ON s.name = v.name
+        ORDER BY distance ASC
+        LIMIT ?
+    """
+    cur = conn.execute(sql, (query_blob, limit))
+    return [
+        {
+            "name": r["name"],
+            "description": r["description"],
+            "category": r["category"],
+            "score": max(0.0, min(1.0, 1.0 - r["distance"])),
+        }
+        for r in cur.fetchall()
+    ]
+
+
+def _numpy_cosine_skill_search(
+    conn: sqlite3.Connection,
+    query_vec: list[float],
+    limit: int,
+) -> list[dict]:
+    import numpy as np
+
+    cur = conn.execute(
+        """
+        SELECT v.name, v.embedding, v.dims, s.description, s.category
+        FROM skill_vectors v
+        JOIN skills s ON s.name = v.name
+        """
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return []
+
+    q = np.asarray(query_vec, dtype=np.float32)
+    q_norm = np.linalg.norm(q)
+    if q_norm == 0:
+        return []
+    q = q / q_norm
+
+    scored: list[tuple[float, dict]] = []
+    for r in rows:
+        v = np.asarray(_deserialize_vector(r["embedding"]), dtype=np.float32)
+        norm = np.linalg.norm(v)
+        if norm == 0:
+            continue
+        sim = float(np.dot(q, v / norm))
+        scored.append((
+            sim,
+            {
+                "name": r["name"],
+                "description": r["description"],
+                "category": r["category"],
+                "score": max(0.0, min(1.0, sim)),
+            },
+        ))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [d for _, d in scored[:limit]]

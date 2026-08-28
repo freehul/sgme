@@ -300,6 +300,7 @@ def _search_skills_layer(
     cfg: dict[str, Any],
     query: str,
     limit: int,
+    skills_conn: sqlite3.Connection | None = None,
 ) -> list[dict]:
     """技能检索层（ST-36 M2，scope="skills"）：四级披露读侧接入统一搜索。
 
@@ -320,7 +321,8 @@ def _search_skills_layer(
     try:
         from sgme.operations.skills import search_skills as skills_search
 
-        hits = skills_search(query, cfg, None, limit=limit)
+        # T-112：传 skills_conn 走库内检索（FTS5 + 持久化向量），None 时回退内存索引
+        hits = skills_search(query, cfg, None, limit=limit, skills_conn=skills_conn)
     except Exception as e:
         logger.warning("skills 层检索失败（该层空结果）: %s", e)
         return []
@@ -354,6 +356,7 @@ def search(
     include_sources: bool = True,
     client: httpx.Client | None = None,
     wiki_conn: sqlite3.Connection | None = None,
+    skills_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
     """混合检索：记忆池（BM25+向量+RRF）+ wiki 场景（L2）+ wiki 知识库页面
     + L0 原始层会话（raw_files 索引，ST-33）+ 技能（git 源 SKILL.md，ST-36 M2，
@@ -441,7 +444,7 @@ def search(
         # 容错隔离（镜像 wiki_pages / sessions 层）：skills 未配置/禁用或
         # 该层失败 → 空结果 + WARNING，不拖累其他层。
         if "skills" in scopes:
-            results.extend(_search_skills_layer(cfg, query, limit))
+            results.extend(_search_skills_layer(cfg, query, limit, skills_conn))
     except Exception as e:
         # 检索内部错误 → ERR_INTERNAL（v0.6 由全局异常处理器兜底为 500，
         # 状态码不变；错误码统一收敛到 operations 层）

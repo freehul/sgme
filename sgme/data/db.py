@@ -448,6 +448,115 @@ def connect_wiki(data_dir: str | Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def connect_skills(data_dir: str | Path | None = None) -> sqlite3.Connection:
+    """打开 skills.db 连接并确保 schema 就绪（T-112：技能索引持久化）。
+
+    落盘位置 ``config.DATA_DIR / "skills.db"``（生产即 ``/data/data/skills.db``，
+    与 memory.db / wiki.db / session.db 同层级，随 SGME_HOME 卷持久化）。
+
+    设计取舍（2026-08-29 定）：
+    - **向量用普通表 + BLOB**（对称 scene_vectors），**不用 vec0 虚拟表**——
+      项目既有 memory_vectors/scene_vectors 均为该形态，且
+      ``data/search/vector.py`` 已封装 sqlite-vec 加速 + numpy 降级双路，
+      引入 vec0 属范式分裂且需固定维度、迁移成本高。
+    - **全文用 FTS5 外部内容表**（对称 wiki_fts），索引列为 jieba 分词后的
+      ``*_seg``，由触发器随主表同步；分词内容由 skills_dao 写入时计算。
+    - 技能模块禁用时**不调用本函数**（核心零影响，对称 wiki 扩展模块）。
+    """
+    d = Path(data_dir) if data_dir else config.DATA_DIR
+    conn = _connect(d / "skills.db")
+    _ensure_schema(conn, SKILLS_DDL, SCHEMA_VERSION, "skills_v1")
+    # FTS5 虚表 + 同步触发器（幂等；与 wiki 的 init_wiki_fts 同职责，
+    # 但技能库体量小且无需历史重建，直接在连接时就绪，避免调用方漏调）
+    conn.executescript(SKILLS_FTS_DDL)
+    conn.executescript(SKILLS_FTS_TRIGGERS)
+    conn.commit()
+    return conn
+
+
+# ============ T-112：skills.db（技能索引持久化，独立 DDL 常量） ============
+# 图纸：`docs/design/SGME-Skills管理模块设计-v0.2.md` §二「skills.db 两步门」——
+# 原设计「M1 不建库」基于内存 BM25 达标（全量重建 3.15s / 单次打分 0.5ms），
+# 但用户从**产品演进**角度拍板建库（结构化查询/依赖图/增量/对账是迟早要补的能力）。
+#
+# 表职责：
+#   skills         主表（name PK + sha256 增量锚点 + frontmatter 字段 + 全文）
+#   skills_fts     FTS5 全文索引（外部内容表，索引 jieba 分词列）
+#   skill_vectors  向量（BLOB，对称 scene_vectors；sqlite-vec 加速 + numpy 降级）
+#   skill_uses     uses 依赖图（入向引用一级信号源，写侧门禁用）
+#   skill_sync_meta 同步水位（对账 cron / 增量嵌入用）
+#
+# ⚠️ 刻意不加外键到 skills(name)：技能删除走墓碑制（store.py），
+#    外键会阻塞软删与重命名；存在性由 operations 层软校验。
+SKILLS_DDL = """
+CREATE TABLE IF NOT EXISTS skills (
+  name TEXT PRIMARY KEY,
+  sha256 TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  description_seg TEXT,
+  category TEXT,
+  tags TEXT,
+  version TEXT,
+  pattern TEXT,
+  source TEXT,
+  origin_path TEXT,
+  content TEXT NOT NULL,
+  content_seg TEXT,
+  content_len INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT,
+  synced_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
+CREATE INDEX IF NOT EXISTS idx_skills_updated ON skills(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS skill_vectors (
+  name TEXT PRIMARY KEY,
+  embedding BLOB NOT NULL,
+  model TEXT NOT NULL,
+  dims INTEGER NOT NULL,
+  embedded_at TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS skill_uses (
+  src TEXT NOT NULL,
+  dst TEXT NOT NULL,
+  PRIMARY KEY (src, dst));
+CREATE INDEX IF NOT EXISTS idx_skill_uses_dst ON skill_uses(dst);
+
+CREATE TABLE IF NOT EXISTS skill_sync_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT);
+"""
+
+# FTS5 外部内容表 + 同步触发器（对称 wiki/fts.py 的 WIKI_FTS_DDL / TRIGGERS）
+SKILLS_FTS_DDL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(
+    name_seg,
+    description_seg,
+    content_seg,
+    name UNINDEXED,
+    content='skills',
+    content_rowid='rowid'
+);
+"""
+
+SKILLS_FTS_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS skills_ai AFTER INSERT ON skills BEGIN
+    INSERT INTO skills_fts(rowid, name_seg, description_seg, content_seg, name)
+    VALUES (new.rowid, new.name, new.description_seg, new.content_seg, new.name);
+END;
+CREATE TRIGGER IF NOT EXISTS skills_ad AFTER DELETE ON skills BEGIN
+    INSERT INTO skills_fts(skills_fts, rowid, name_seg, description_seg, content_seg, name)
+    VALUES ('delete', old.rowid, old.name, old.description_seg, old.content_seg, old.name);
+END;
+CREATE TRIGGER IF NOT EXISTS skills_au AFTER UPDATE ON skills BEGIN
+    INSERT INTO skills_fts(skills_fts, rowid, name_seg, description_seg, content_seg, name)
+    VALUES ('delete', old.rowid, old.name, old.description_seg, old.content_seg, old.name);
+    INSERT INTO skills_fts(rowid, name_seg, description_seg, content_seg, name)
+    VALUES (new.rowid, new.name, new.description_seg, new.content_seg, new.name);
+END;
+"""
+
+
 def _migrate_wiki_page_columns(conn: sqlite3.Connection) -> None:
     """老库迁移：wiki_pages 补 description/description_seg/author/status/supersedes 列
     （wiki 渐进式披露 W1，2026-08-16，方案 v0.3 §5.1）。
