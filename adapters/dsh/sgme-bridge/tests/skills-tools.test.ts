@@ -17,6 +17,7 @@ import {
   createMemorySearchTool,
 } from '../src/tools.js'
 import type { SgmeClient, SearchResponse } from '../src/sgme-client.js'
+import { normalizeSkillSection } from '../src/sgme-client.js'
 
 type ToolLike = {
   name: string
@@ -129,15 +130,16 @@ describe('skill_get tool', () => {
     expect(result).toContain('# NAS Docker Operations')
   })
 
-  it('传 section 时透传并标注已截取', async () => {
+  it('传 section 时标注已截取（工具层原样透传给 client）', async () => {
     const client = makeMockClient({
       skillGet: vi.fn(async () => ({
-        name: 'x', content: '片段', sha256: 'a', section: '## 前置条件',
+        name: 'x', content: '片段', sha256: 'a', section: '前置条件',
         truncated_by_section: true, source: 'git',
       })),
     })
     const tool = asToolLike(createSkillGetTool(client))
     const result = (await tool.execute({ name: 'x', section: '## 前置条件' })) as string
+    // 归一化在 client 层（normalizeSkillSection），工具层只负责原样透传
     expect(client.skillGet).toHaveBeenCalledWith('x', '## 前置条件')
     expect(result).toContain('已按 section')
   })
@@ -274,5 +276,32 @@ describe('skills 层结果无 content 的格式化兜底（回归）', () => {
     const result = (await tool.execute({ query: 'q' })) as string
     expect(result.length).toBeLessThan(600)
     expect(result).toContain('…')
+  })
+})
+
+// ---------- section 归一化（契约坑回归：digest 骨架带 # 前缀，服务端只认纯标题） ----------
+
+describe('normalizeSkillSection', () => {
+  it('骨架行「## 前置条件」→ 纯标题「前置条件」', () => {
+    expect(normalizeSkillSection('## 前置条件')).toBe('前置条件')
+  })
+
+  it('多级标题（### 三级）也剥离到纯标题', () => {
+    expect(normalizeSkillSection('### 关键：两个独立的数据目录')).toBe('关键：两个独立的数据目录')
+  })
+
+  it('纯标题原样返回（不误伤）', () => {
+    expect(normalizeSkillSection('前置条件')).toBe('前置条件')
+  })
+
+  it('两侧空白被 trim', () => {
+    expect(normalizeSkillSection('  前置条件  ')).toBe('前置条件')
+  })
+
+  it('null / undefined / 空串 / 纯 # 一律返回 null', () => {
+    expect(normalizeSkillSection(null)).toBeNull()
+    expect(normalizeSkillSection(undefined)).toBeNull()
+    expect(normalizeSkillSection('')).toBeNull()
+    expect(normalizeSkillSection('###')).toBeNull()
   })
 })

@@ -563,7 +563,7 @@ export function createSkillGetTool(client: SgmeClient) {
     name: 'skill_get',
     description: [
       '拉取技能全文（L2）并注入上下文——拿到后按其步骤执行，不要凭空编造。',
-      '正文较长时传 section 只取该标题下的内容，省 token。',
+      '正文较长时传 section 只取该标题下的内容，省 token（节名不对会 404，先 skill_digest 看骨架确认）。',
     ].join(' '),
     parameters: {
       name: {
@@ -573,7 +573,7 @@ export function createSkillGetTool(client: SgmeClient) {
       },
       section: {
         type: 'string',
-        description: '只取该小节（如 "## 前置条件"，给 skill_digest 骨架里的标题原样传入）',
+        description: '只取该小节，传纯标题如 "前置条件"；带 # 前缀的骨架行会自动剥离，两种写法都行',
       },
     },
     output: {
