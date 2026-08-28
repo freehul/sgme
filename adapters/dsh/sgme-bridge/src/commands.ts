@@ -107,7 +107,11 @@ export async function executeSgmeCommand(
   for (const r of resp.results) {
     const titlePrefix = r.title ? `「${r.title}」` : ''
     const routes = r.routes && r.routes.length > 0 ? ` [${r.routes.join(',')}]` : ''
-    const content = r.content.length > 500 ? r.content.slice(0, 500) + '…' : r.content
+    // content 兜底：skills 层结果无 content（只有 name/description），取 .length 前必须兜底
+    const raw =
+      r.content ??
+      (r.name ? (r.description ? `${r.name} — ${r.description}` : r.name) : (r.description ?? ''))
+    const content = raw.length > 500 ? raw.slice(0, 500) + '…' : raw
     lines.push(`## ${r.rank}. [${r.source}]${titlePrefix}${routes}`)
     lines.push(content)
     lines.push('')

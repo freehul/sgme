@@ -371,8 +371,13 @@ function formatSearchResults(
   results: Array<{
     rank: number
     source: string
-    content: string
+    // skills 层无 content（只有 name/description），故为可选——必须兜底后再取 .length，
+    // 否则 TypeError 崩整个工具调用（2026-08-29 修复）。
+    content?: string
     title?: string
+    name?: string
+    description?: string
+    category?: string | null
     routes?: string[]
   }>,
 ): string {
@@ -380,15 +385,19 @@ function formatSearchResults(
   for (const r of results) {
     const titlePrefix = r.title ? `「${r.title}」` : ''
     const routes = r.routes && r.routes.length > 0 ? ` [${r.routes.join(',')}]` : ''
+    // 内容兜底：skills 层无 content，退到 name + description（先给技能名，否则模型无从调用）
+    const raw =
+      r.content ??
+      (r.name ? (r.description ? `${r.name} — ${r.description}` : r.name) : (r.description ?? ''))
     // 内容截断（避免超长结果撑爆上下文）
-    const content = r.content.length > 500 ? r.content.slice(0, 500) + '…' : r.content
+    const content = raw.length > 500 ? raw.slice(0, 500) + '…' : raw
     lines.push(`## ${r.rank}. [${r.source}]${titlePrefix}${routes}\n${content}`)
   }
   return lines.join('\n\n')
 }
 
 /**
- * 向 dsh ctx 注册全部工具（检索 + 信号消费 + 三池登记 + 角色 + 记忆纠错）。
+ * 向 dsh ctx 注册全部工具（检索 + 信号消费 + 三池登记 + 角色 + 记忆纠错 + 技能层）。
  *
  * 调用方：index.ts apply() 内调用，传入 ctx 和 client。
  */
@@ -418,6 +427,12 @@ export function registerTools(
   ctx.tools.register(createRoleActiveSetTool(client))
   ctx.tools.register(createMemoryGetTool(client))
   ctx.tools.register(createMemoryRejectTool(client))
+  // 技能层（ST-36 读侧：检索 → 摘要审核 → 全文注入 / 列表 / 冷启动包）
+  ctx.tools.register(createSkillSearchTool(client, defaultLimit))
+  ctx.tools.register(createSkillDigestTool(client))
+  ctx.tools.register(createSkillGetTool(client))
+  ctx.tools.register(createSkillListTool(client, defaultLimit))
+  ctx.tools.register(createSkillColdstartTool(client))
 }
 
 // ---------- 画像注入（T-88：agent 可主动按场景切换注入） ----------
@@ -450,6 +465,215 @@ export function createInjectTool(client: SgmeClient) {
         return '[inject 失败：SGME Gateway 不可达或模式无效，稍后重试]'
       }
       return buildInjectionText(profile, null)
+    },
+  })
+}
+
+// ---------- 技能层（ST-36 四级披露读侧，对齐 MCP skill_* 工具） ----------
+
+/**
+ * 创建 skill_search 工具（技能检索，先搜后取的第一步）。
+ *
+ * 走 POST /v1/search scope=["skills"]（HTTP 侧唯一入口；服务端无 /v1/skills/search）。
+ * ⚠️ 只返回 name/description/category，**不含正文**——拿到 name 后必须再调
+ * skill_digest 审核或直接 skill_get 拉全文，不要把 description 当技能内容用。
+ */
+export function createSkillSearchTool(client: SgmeClient, defaultLimit: number) {
+  return defineTool({
+    name: 'skill_search',
+    description: [
+      '检索 SGME 技能库（403 个技能，BM25+向量融合）。需要某项专业能力但不确定 SGME 有没有时必用。',
+      '只返回技能名与触发描述，**不含正文**——选定后调 skill_get 拉全文再执行。',
+      '范式（SGME 1.1.0）：技能不预载，按需检索→拉全文→注入，不要凭空编造操作步骤。',
+    ].join(' '),
+    parameters: {
+      query: {
+        type: 'string',
+        required: true,
+        description: '检索关键词或能力描述（如 "docker 部署"、"pdf 提取"）',
+      },
+      limit: {
+        type: 'number',
+        description: `返回条数上限（默认 ${defaultLimit}）`,
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { query: string; limit?: number }
+      const hits = await client.skillSearch(a.query, a.limit ?? defaultLimit)
+      if (!hits) {
+        return '[skill_search 失败：SGME Gateway 不可达或技能模块未启用，稍后重试]'
+      }
+      if (hits.length === 0) {
+        return `[skill_search 无结果：query="${a.query}"（可换更宽泛的关键词重试）]`
+      }
+      const lines = hits.map(
+        (s, i) => `## ${i + 1}. ${s.name}${s.category ? ` [${s.category}]` : ''}\n${s.description}`,
+      )
+      return lines.join('\n\n') + '\n\n（调 skill_get 传 name 拉全文后执行）'
+    },
+  })
+}
+
+/** 创建 skill_digest 工具（L1 摘要：字段 + 正文骨架 + uses 依赖，审核用）。 */
+export function createSkillDigestTool(client: SgmeClient) {
+  return defineTool({
+    name: 'skill_digest',
+    description: [
+      '查看技能摘要（L1）：frontmatter 字段 + 正文小节骨架 + uses 依赖清单。',
+      '用于执行前审核——先看骨架判断是否对症、有没有依赖要一并拉，再决定要不要 skill_get 全文。',
+    ].join(' '),
+    parameters: {
+      name: {
+        type: 'string',
+        required: true,
+        description: '技能名（skill_search 返回，kebab-case）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { name: string }
+      const d = await client.skillDigest(a.name)
+      if (!d) {
+        return `[skill_digest 失败：技能不存在或 Gateway 不可达（name="${a.name}"，先 skill_search 确认）]`
+      }
+      const deps = d.uses.length > 0 ? `\n依赖 uses: ${d.uses.join(', ')}` : ''
+      const sections = d.sections.length > 0 ? `\n正文骨架:\n${d.sections.map((s) => '  ' + s).join('\n')}` : ''
+      return [
+        `# ${d.name}${d.category ? ` [${d.category}]` : ''}${d.version ? ` v${d.version}` : ''}`,
+        d.description,
+        deps,
+        sections,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    },
+  })
+}
+
+/** 创建 skill_get 工具（L2 全文：显式注入上下文；section 可只取一节省 token）。 */
+export function createSkillGetTool(client: SgmeClient) {
+  return defineTool({
+    name: 'skill_get',
+    description: [
+      '拉取技能全文（L2）并注入上下文——拿到后按其步骤执行，不要凭空编造。',
+      '正文较长时传 section 只取该标题下的内容，省 token。',
+    ].join(' '),
+    parameters: {
+      name: {
+        type: 'string',
+        required: true,
+        description: '技能名（skill_search / skill_digest 返回）',
+      },
+      section: {
+        type: 'string',
+        description: '只取该小节（如 "## 前置条件"，给 skill_digest 骨架里的标题原样传入）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { name: string; section?: string }
+      const d = await client.skillGet(a.name, a.section ?? null)
+      if (!d) {
+        return `[skill_get 失败：技能不存在或 Gateway 不可达（name="${a.name}"，先 skill_search 确认）]`
+      }
+      const tag = d.truncated_by_section ? `（已按 section="${d.section}" 截取）` : ''
+      return `<!-- skill: ${d.name}${tag} -->\n${d.content}`
+    },
+  })
+}
+
+/** 创建 skill_list 工具（L0 索引列表，分页浏览全量）。 */
+export function createSkillListTool(client: SgmeClient, defaultLimit: number) {
+  return defineTool({
+    name: 'skill_list',
+    description: [
+      '列出 SGME 技能库索引（L0：name/description/category，分页浏览全量）。',
+      '不确定有没有某个技能时用 skill_search 检索更精准；本工具适合浏览摸底。',
+    ].join(' '),
+    parameters: {
+      limit: {
+        type: 'number',
+        description: `返回条数上限（默认 ${defaultLimit}）`,
+      },
+      offset: {
+        type: 'number',
+        description: '分页偏移（默认 0）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { limit?: number; offset?: number }
+      const resp = await client.skillList(a.limit ?? defaultLimit, a.offset ?? 0)
+      if (!resp) {
+        return '[skill_list 失败：SGME Gateway 不可达或技能模块未启用，稍后重试]'
+      }
+      if (resp.skills.length === 0) {
+        return `[skill_list 无技能（offset=${resp.offset}）]`
+      }
+      const lines = resp.skills.map(
+        (s) => `- ${s.name}${s.category ? ` [${s.category}]` : ''} — ${s.description.slice(0, 120)}`,
+      )
+      return [
+        `技能库共 ${resp.total} 个，本次返回 ${resp.returned} 个（offset=${resp.offset}${resp.budget ? `，默认窗口 ${resp.budget}` : ''}）`,
+        ...lines,
+      ].join('\n')
+    },
+  })
+}
+
+/**
+ * 创建 skill_coldstart 工具（冷启动包）。
+ *
+ * SGME 1.1.0 范式：只返回 1 个《技能检索协议》+ SGME 操作手册，**全量技能不预载**。
+ * 会话开始调一次即知道「要用技能时先检索、再拉全文」的正确姿势。
+ */
+export function createSkillColdstartTool(client: SgmeClient) {
+  return defineTool({
+    name: 'skill_coldstart',
+    description: [
+      '拉取技能冷启动包（SGME 1.1.0 范式）——仅注入 1 个《技能检索协议》+ SGME 操作手册。',
+      '会话开始调一次：协议教你怎么按需检索技能，操作手册讲 SGME 自身怎么用。',
+      '全量 403 个技能不预载，需要时用 skill_search 检索、skill_get 拉全文。',
+    ].join(' '),
+    parameters: {},
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(_args, _exec) {
+      const resp = await client.skillColdstart()
+      if (!resp) {
+        return '[skill_coldstart 失败：SGME Gateway 不可达或技能模块未启用，稍后重试]'
+      }
+      const parts: string[] = []
+      const items = resp.index?.items ?? []
+      for (const s of items) {
+        // 冷启动项带 content 全文（服务端已烘焙），直接注入
+        const body = (s as { content?: string }).content ?? s.description
+        parts.push(`<!-- skill: ${s.name} -->\n${body}`)
+      }
+      if (resp.manual?.content) {
+        parts.push(`<!-- sgme-manual: ${resp.manual.title} -->\n${resp.manual.content}`)
+      }
+      if (parts.length === 0) return '[skill_coldstart 冷启动包为空]'
+      const hotNote =
+        resp.hotset && resp.hotset.length > 0
+          ? `\n\n（常驻热集：${resp.hotset.map((s) => s.name).join(', ')}）`
+          : ''
+      return parts.join('\n\n') + hotNote
     },
   })
 }

@@ -45,13 +45,71 @@ export interface SearchResponse {
 
 export interface SearchResult {
   rank: number
-  source: 'memory' | 'wiki' | 'scenes' | 'wiki_pages'
-  content: string
+  // 实测（2026-08-29，SGME 1.1.0）：wiki 场景层实际返回 `wiki_scene`（非 `wiki`/`scenes`），
+  // 技能层返回 `skills`。旧声明的 'wiki'/'scenes' 保留仅为历史契约兼容。
+  source: 'memory' | 'wiki' | 'scenes' | 'wiki_pages' | 'wiki_scene' | 'skills'
+  // skills 层不返回 content（只给 name/description/category），故为可选；
+  // 消费方必须先兜底再取 .length（tools.ts formatSearchResults 已兜底）。
+  content?: string
   memory_id?: string             // memory 层独有
   page_id?: string               // wiki_pages 层独有
   title?: string                 // wiki/wiki_pages 层独有
+  name?: string                  // skills 层独有（技能名）
+  description?: string           // skills 层独有（触发描述）
+  category?: string | null       // skills 层独有
+  score?: number                 // memory / skills 层独有序分
   routes?: string[]
   trace?: Record<string, unknown>
+}
+
+// ---------- 技能层类型（/v1/skills*，Agent Key；ST-36 四级披露读侧） ----------
+
+/** L0 索引项（GET /v1/skills 的 skills[] 元素）。 */
+export interface SkillSummary {
+  name: string
+  description: string
+  category: string | null
+  tags: string[]
+  source: string | null
+  version: string | null
+}
+
+/** GET /v1/skills 列表响应（total=全量数，returned=实返回数，budget=默认截断窗口）。 */
+export interface SkillsListResponse {
+  skills: SkillSummary[]
+  total: number
+  returned: number
+  offset: number
+  budget: number
+}
+
+/** L1 摘要（GET /v1/skills/{name}/digest）：frontmatter 字段 + 正文骨架 + uses 依赖。 */
+export interface SkillDigest {
+  name: string
+  description: string
+  version: string | null
+  pattern: string | null
+  category: string | null
+  tags: string[]
+  uses: string[]
+  sections: string[]
+}
+
+/** L2 全文（GET /v1/skills/{name}?section=）。 */
+export interface SkillDetail {
+  name: string
+  content: string
+  sha256: string | null
+  section: string | null
+  truncated_by_section: boolean
+  source: string | null
+}
+
+/** 冷启动包（GET /v1/skills/coldstart）：索引 + 热集 + SGME 操作手册。 */
+export interface SkillsColdstartResponse {
+  index: { items: SkillSummary[]; total?: number }
+  hotset: SkillSummary[]
+  manual: { page_id: string; title: string; content: string } | null
 }
 
 /** /v1/inject 请求体（InjectRequest）。 */
@@ -629,6 +687,91 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] wikiCreatePage failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 技能层（ST-36 四级披露读侧，Agent Key） ----------
+
+  /** L0 索引列表（GET /v1/skills；分页浏览全量）。失败返回 null。 */
+  async skillList(limit = 50, offset = 0): Promise<SkillsListResponse | null> {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+    const [data, err] = await this.get<SkillsListResponse>(`/v1/skills?${params.toString()}`, 'agent')
+    if (err) {
+      console.warn(`[sgme-bridge] skillList failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 技能检索（POST /v1/search scope=["skills"]，BM25+向量融合）。
+   *
+   * ⚠️ 契约要点：skills 层结果**不含 content/title**，只给 name/description/category，
+   * 消费方必须走 skillDigest / skillGet 取正文，不可直接把 description 当全文用。
+   * 失败返回 null。
+   */
+  async skillSearch(query: string, limit = 5): Promise<SkillSummary[] | null> {
+    const [data, err] = await this.post<SearchResponse>(
+      '/v1/search',
+      { query, scopes: ['skills'], limit },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillSearch failed: ${err}`)
+      return null
+    }
+    if (!data?.results) return null
+    // 统一搜索 skills 层投影 → L0 索引项形态（category 缺失兜 null）
+    return data.results.map((r) => ({
+      name: r.name ?? '',
+      description: r.description ?? '',
+      category: r.category ?? null,
+      tags: [],
+      source: r.source ?? 'skills',
+      version: null,
+    }))
+  }
+
+  /** L1 摘要（GET /v1/skills/{name}/digest；审核媒介层：骨架 + uses 依赖）。失败返回 null。 */
+  async skillDigest(name: string): Promise<SkillDigest | null> {
+    const [data, err] = await this.get<SkillDigest>(
+      `/v1/skills/${encodeURIComponent(name)}/digest`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillDigest failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** L2 全文（GET /v1/skills/{name}?section=；section 给定时只取该节省 token）。失败返回 null。 */
+  async skillGet(name: string, section?: string | null): Promise<SkillDetail | null> {
+    const qs = section ? `?section=${encodeURIComponent(section)}` : ''
+    const [data, err] = await this.get<SkillDetail>(
+      `/v1/skills/${encodeURIComponent(name)}${qs}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillGet failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 冷启动包（GET /v1/skills/coldstart）。
+   *
+   * SGME 1.1.0 范式：只索引 1 个《技能检索协议》skill + SGME 操作手册，
+   * 全量技能不预载——agent 按协议「先 skill_search 检索、再 skill_get 拉全文注入」。
+   * 失败返回 null。
+   */
+  async skillColdstart(): Promise<SkillsColdstartResponse | null> {
+    const [data, err] = await this.get<SkillsColdstartResponse>('/v1/skills/coldstart', 'agent')
+    if (err) {
+      console.warn(`[sgme-bridge] skillColdstart failed: ${err}`)
       return null
     }
     return data

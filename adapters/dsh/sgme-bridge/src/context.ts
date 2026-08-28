@@ -197,8 +197,11 @@ export function registerContextInjection(
           limit: config.searchLimit,
         })
         const scenes = (sceneSearch?.results ?? []).filter(
-          (r): r is SearchResult & { source: 'wiki' | 'scenes' } =>
-            r.source === 'wiki' || r.source === 'scenes',
+          (r): r is SearchResult & { source: 'wiki' | 'scenes' | 'wiki_scene' } =>
+            // ⚠️ 实测（SGME 1.1.0，2026-08-29）：wiki 场景层 source 实际返回 `wiki_scene`，
+            // 旧判断只认 'wiki'/'scenes' → 过滤恒空、scenes.length 永远为 0 →
+            // T-88「首句命中 L2 场景注入」从未生效，一直静默回退模板注入。此处补上实际值。
+            r.source === 'wiki' || r.source === 'scenes' || r.source === 'wiki_scene',
         )
         const memories = (sceneSearch?.results ?? []).filter(
           (r): r is SearchResult & { source: 'memory' } => r.source === 'memory',
@@ -314,7 +317,7 @@ export function registerContextInjection(
  */
 export function buildInjectionText(
   profile: InjectResponse | null,
-  related: { results: Array<{ rank: number; content: string }> } | null,
+  related: { results: Array<{ rank: number; content?: string }> } | null,
 ): string {
   const hasTier0 = profile?.tier0.present && profile.tier0.content
   if (!profile || (profile.blocks.length === 0 && !hasTier0)) {
@@ -395,15 +398,17 @@ function extractMessageText(content: unknown): string | undefined {
 
 /** 拼接场景注入文本（T-88：首句命中 L2 场景时优先注入场景 + 相关记忆）。 */
 function buildSceneInjectionText(
-  scenes: Array<{ rank: number; content: string; title?: string }>,
-  memories: Array<{ rank: number; content: string }>,
+  // content 可选：统一搜索各层投影不保证都带 content（skills 层就没有），取 .length 前必须兜底。
+  scenes: Array<{ rank: number; content?: string; title?: string }>,
+  memories: Array<{ rank: number; content?: string }>,
 ): string {
   const parts: string[] = []
   if (scenes.length > 0) {
     parts.push('--- SGME 相关场景 ---')
     for (const s of scenes.slice(0, 3)) {
       const title = s.title ? `[${s.title}] ` : ''
-      const truncated = s.content.length > 300 ? s.content.slice(0, 300) + '…' : s.content
+      const raw = s.content ?? ''
+      const truncated = raw.length > 300 ? raw.slice(0, 300) + '…' : raw
       parts.push(`- ${title}${truncated}`)
     }
   }
@@ -418,11 +423,13 @@ function buildSceneInjectionText(
 
 /** 格式化相关记忆列表。 */
 function formatRelatedMemories(
-  results: Array<{ rank: number; content: string }>,
+  // content 可选：skills 层结果无 content（只有 name/description），取 .length 前必须兜底。
+  results: Array<{ rank: number; content?: string }>,
 ): string {
   return results
     .map((r) => {
-      const truncated = r.content.length > 200 ? r.content.slice(0, 200) + '…' : r.content
+      const raw = r.content ?? ''
+      const truncated = raw.length > 200 ? raw.slice(0, 200) + '…' : raw
       return `${r.rank}. ${truncated}`
     })
     .join('\n')
