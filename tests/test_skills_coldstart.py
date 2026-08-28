@@ -61,14 +61,11 @@ class TestColdstartOperation:
         r = cold_start(cfg, wiki_conn)
         assert r.ok
         d = r.data
-        # 索引全量（不受 budget=2 截断）
-        assert d["index"]["total"] == 3
-        names = [x["name"] for x in d["index"]["items"]]
-        assert set(names) == {"hot-skill-a", "hot-skill-b", "cold-skill-c"}
-        # 热集 = pattern=auto 的全文（L2）
-        hot = d["hotset"]
-        assert sorted(x["name"] for x in hot) == ["hot-skill-a", "hot-skill-b"]
-        assert "# hot-skill-a" in hot[0]["content"]
+        # 单一注入：仅协议 skill（与 source_dirs 的 3 个测试技能无关）
+        assert d["index"]["total"] == 1
+        assert d["index"]["items"][0]["name"] == "skill-registry-protocol"
+        # 热集恒定空（按需检索范式，无热常驻）
+        assert d["hotset"] == []
         # 操作手册
         assert d["manual"] is not None
         assert "SGME操作手册" in d["manual"]["title"]
@@ -129,8 +126,9 @@ class TestColdstartRoute:
         resp = c.get("/v1/skills/coldstart", headers={"X-API-Key": "test-agent-key"})
         assert resp.status_code == 200, resp.text
         d = resp.json()
-        assert d["index"]["total"] == 3
-        assert len(d["hotset"]) == 2
+        assert d["index"]["total"] == 1
+        assert d["index"]["items"][0]["name"] == "skill-registry-protocol"
+        assert len(d["hotset"]) == 0
         assert "SGME操作手册" in (d["manual"] or {}).get("title", "")
         db_mod.close(mem_conn)
         db_mod.close(session_conn)

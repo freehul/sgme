@@ -216,7 +216,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "skill_get", "description": "技能全文 L2：显式注入上下文；section 参数只取该标题节省 token"},
     {"name": "skill_materialize", "description": "技能物化 L3：字节保真落盘 dest_dir/<name>/SKILL.md（脚本执行用），返回 path+sha256"},
     {"name": "skill_list", "description": "技能 L0 索引列表（ST-36）：name/description/category/tags，支持分页浏览全量"},
-    {"name": "skill_coldstart", "description": "技能冷启动包（ST-36 M5）：索引全量+热集全文+SGME操作手册，新 agent 一次拉取即刻可用"},
+    {"name": "skill_coldstart", "description": "技能冷启动包（ST-36 M5）：仅注入《技能检索协议》1 个 skill，教 agent 用 skill_search 按需检索、skill_get 拉全文注入（全量技能不预载）；另含 SGME 操作手册页"},
     {"name": "skill_put", "description": "写入/覆盖技能（ST-36 M3 写侧）：content 为 SKILL.md 全文（自动解析 frontmatter）；需管理员 Key"},
     {"name": "skill_delete", "description": "删除技能（ST-36 M3 写侧）：默认软删；hard=True 物理删；有入向 uses 引用需 force=True"},
     {"name": "skill_rename", "description": "改名（ST-36 M3 写侧，墓碑制）：写新名副本+旧位置留 superseded_by 墓碑+登记"},

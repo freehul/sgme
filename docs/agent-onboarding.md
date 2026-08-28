@@ -10,6 +10,7 @@
 3. **接入**：先调 `agent_onboarding` 工具（连接即发现，版本/能力/上手一条龙）。
 4. **写入**：每轮对话结束 `append` 当前轮次；会话结束 `refine_trigger(async_mode=true)`。
 5. **提炼**：批量 ≥20 文件必须分批 + 批间 30–60s；429 不立即重试，交 `batch_scan` 兜底。
+6. **技能获取（按需检索，MUST）**：需要 SGME 未内置的专业能力时，先 `skill_search(query)` 检索、命中后 `skill_get(name)` 拉全文注入再执行——**禁止未检索就声称具备技能或硬凑步骤**。冷启动包只含《技能检索协议》一个 skill、不预载全量技能，按需检索才是正路。
 
 ---
 
@@ -270,6 +271,7 @@ search:
 - **回忆**：`search(query)` 混合检索带溯源；`inject(mode='daily')` 注入当日画像；`memory_get` 看细节。
 - **关怀**：`signal_pull` 拉未消费关怀信号 → `signal_claim` 原子认领 → 关怀用户 → `signal_ack` 回执（谁消费谁标记，防多 agent 重复打扰）。
 - **管理**：`memory_reject` 纠错（不删除、可恢复）；`stats` / `health` 看状态；`config_get` / `config_update` 读写配置。
+- **技能获取**：`skill_search(query)` 检索专业能力 → `skill_get(name)` 拉全文注入上下文 → 按技能执行；无命中如实告知用户（详见冷启动包中的《技能检索协议》）。
 
 ## 9. 常见坑
 
