@@ -175,8 +175,12 @@ def list_skills(
     wiki_conn: sqlite3.Connection | None,
     offset: int = 0,
     limit: int | None = None,
+    skills_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
     """L0 索引列表：name/description/category/tags（受 budget 截断，按名排序）。
+
+    T-112 双写过渡：``skills_conn`` 非 None 时走库（支持 category 过滤的
+    结构化查询、无需每次全量扫描目录），异常时回退内存索引路径。
 
     Raises:
         InvalidArgs: skills.enabled=false（模块禁用不该走到读侧端点）。
@@ -186,6 +190,27 @@ def list_skills(
     sc = parse_skills_config(cfg)
     if not sc.enabled:
         raise InvalidArgs("skills 模块未启用（skills.enabled=false）")
+    effective_limit = limit if limit is not None else sc.budget
+    # 库有数据才走库（空库=冷启动未同步，走内存索引避免返回空列表）
+    if _db_ready(skills_conn):
+        try:
+            from sgme.data import skills_dao
+
+            items = skills_dao.list_skills(
+                skills_conn, offset=offset, limit=effective_limit
+            )
+            total = skills_dao.count_skills(skills_conn)
+            return OperationResult.succeed(
+                {
+                    "skills": items,
+                    "total": total,
+                    "returned": len(items),
+                    "offset": offset,
+                    "budget": sc.budget,
+                }
+            )
+        except Exception as e:  # 容错隔离：库路径异常回退内存索引
+            logger.warning("技能库内列表失败，回退内存索引: %s", e)
     all_records = index_all(sc.source_dirs, wiki_conn)
     # budget=L0 常驻预算；支持分页（offset/limit）浏览全量，limit 缺省=budget（PR-7：385 件迁移后全量列表需求）
     effective_limit = limit if limit is not None else sc.budget
@@ -326,6 +351,7 @@ def search_skills(
     cfg: dict[str, Any],
     wiki_conn: sqlite3.Connection | None,
     limit: int = 10,
+    skills_conn: sqlite3.Connection | None = None,
 ) -> list[dict]:
     """技能检索：BM25 打分 + 向量余弦融合（0.6/0.4 加权和）→ [{name, score, source}]。
 
@@ -333,9 +359,19 @@ def search_skills(
     - 本函数为统一搜索 skills 层与 MCP skill_search 的共用实现，**返回裸 list**
       （非 OperationResult：调用方在层内做容错隔离）；
     - 空 query 返回空列表（对齐 memory 层空 query 不报错语义）。
+
+    T-112 双写过渡：``skills_conn`` 非 None 时优先走**库内检索**
+    （FTS5 持久化索引 + skill_vectors 持久化向量 + 停用词过滤 + name 加权），
+    库不可用/异常时自动回退内存索引路径，行为与改造前一致。
     """
     if not isinstance(query, str) or not query.strip() or limit <= 0:
         return []
+    # 库有数据才走库（空库=冷启动未同步，走内存索引避免返回空结果）
+    if _db_ready(skills_conn):
+        try:
+            return search_skills_db(query, skills_conn, cfg, limit=limit)
+        except Exception as e:  # 容错隔离：库路径异常不拖垮检索
+            logger.warning("技能库内检索失败，回退内存索引: %s", e)
     records = _load_records(cfg, wiki_conn)
     if not records:
         return []
@@ -440,3 +476,212 @@ def cold_start(
             "manual": manual,
         }
     )
+
+
+# ---------- T-112：skills.db 同步与库内检索 ----------
+
+
+def _record_to_dict(rec: SkillRecord | dict) -> dict:
+    """SkillRecord（或等价字典）→ 库写入字典（tags/uses 原样，由 dao 序列化）。
+
+    同时兼容 dataclass 与 dict：同步源既可能来自 indexer 的 SkillRecord，
+    也可能来自测试/离线脚本构造的普通字典。
+    """
+    if isinstance(rec, dict):
+        get = lambda k, d="": rec.get(k, d)  # noqa: E731
+    else:
+        get = lambda k, d="": getattr(rec, k, d)  # noqa: E731
+    return {
+        "name": get("name"),
+        "sha256": get("sha256") or "",
+        "description": get("description") or "",
+        "tags": list(get("tags", []) or []),
+        "category": get("category") or None,
+        "version": get("version") or None,
+        "pattern": get("pattern") or None,
+        "source": get("source") or None,
+        "origin_path": get("origin_path") or None,
+        "content": get("content") or "",
+        "uses": list(get("uses", []) or []),
+    }
+
+
+def sync_index(
+    cfg: dict,
+    skills_conn: sqlite3.Connection,
+    wiki_conn: sqlite3.Connection | None = None,
+    max_embed: int | None = 20,
+    embed: bool = True,
+) -> OperationResult:
+    """把 source_dirs 的技能增量同步进 skills.db（T-112）。
+
+    增量判据为 **内容 sha256**（对称向量缓存的失效语义）：
+    - insert/update 的技能重写主表（分词随写入计算，FTS 由触发器同步）
+    - delete 的技能连向量与 uses 边一并清理
+    - 向量只补缺失的，且受 ``max_embed`` 限批（首次 403 条约 13 分钟，
+      不能放在请求线程里一次跑完；剩余交后台预热逐轮补齐）
+
+    Args:
+        max_embed: 本次最多新嵌入多少条；None=不限（离线/后台场景用）。
+        embed: False 时只同步结构化数据（跳过向量，快速路径）。
+
+    Returns:
+        OperationResult.data = {inserted, updated, deleted, unchanged,
+        embedded, pending_embed, total}
+    """
+    from sgme.data import skills_dao
+
+    records = _load_records(cfg, wiki_conn)
+    dicts = [_record_to_dict(r) for r in records]
+    diff = skills_dao.diff_records(skills_conn, dicts)
+
+    for name in diff["delete"]:
+        skills_dao.delete_skill(skills_conn, name)
+
+    touched = set(diff["insert"]) | set(diff["update"])
+    # 兼容 SkillRecord / dict 两种源（_record_name 与 _record_to_dict 同款双形态处理）
+    by_name = {_record_to_dict(r)["name"]: r for r in records}
+    for name in touched:
+        rec = by_name.get(name)
+        if rec is None:
+            continue
+        rec_dict = _record_to_dict(rec)
+        skills_dao.upsert_skill(skills_conn, rec_dict)
+        skills_dao.replace_uses(skills_conn, name, rec_dict["uses"])
+    skills_conn.commit()
+
+    embedded = 0
+    pending = 0
+    if embed:
+        covered = skills_dao.vector_covered(skills_conn)
+        todo = [n for n in sorted(touched) if n not in covered]
+        pending = len(todo)
+        if max_embed is not None and max_embed > 0:
+            todo = todo[:max_embed]
+        if todo:
+            embedded = _embed_into_db(cfg, skills_conn, by_name, todo)
+
+    return OperationResult.succeed(
+        {
+            "inserted": len(diff["insert"]),
+            "updated": len(diff["update"]),
+            "deleted": len(diff["delete"]),
+            "unchanged": len(diff["unchanged"]),
+            "embedded": embedded,
+            "pending_embed": pending,
+            "total": len(records),
+        }
+    )
+
+
+def _embed_into_db(
+    cfg: dict,
+    skills_conn: sqlite3.Connection,
+    by_name: dict[str, SkillRecord],
+    names: list[str],
+) -> int:
+    """把指定技能嵌入并写入 skill_vectors（分批，失败批跳过）。
+
+    Returns:
+        成功写入的条数。
+    """
+    from sgme.data.search import vector as vector_mod
+    from sgme.skills.vectors import embed_texts
+
+    texts = [(_record_to_dict(by_name[n])["content"] or "")[:2000] for n in names]
+    try:
+        embs = embed_texts(texts, cfg)
+    except Exception as e:  # 容错：向量路失败不影响结构化同步
+        logger.warning("技能向量嵌入失败（本次同步跳过向量）: %s", e)
+        return 0
+
+    model = ((cfg.get("search") or {}).get("vector") or {}).get(
+        "model", vector_mod._DEFAULT_EMBED_MODEL
+    )
+    items: list[tuple[str, list[float]]] = []
+    for i, name in enumerate(names):
+        vec = embs.get(str(i))
+        if vec:
+            items.append((name, vec))
+    if not items:
+        return 0
+    return vector_mod.upsert_skill_vectors(skills_conn, items, model=model)
+
+
+def _db_ready(skills_conn: sqlite3.Connection | None) -> bool:
+    """skills.db 是否已有数据（冷启动空窗期判据）。
+
+    ⚠️ 必要性：容器重启后库文件可能是新建的空库，而同步在**后台线程**跑
+    （首次结构化同步 1-3 秒，向量预热更久）。若此时读侧直接走库，
+    L0 列表与检索会**返回空**——用户看到「技能库空了」。故库内无数据时
+    一律回退内存索引（内存索引每次现扫，立即可用）。
+    """
+    if skills_conn is None:
+        return False
+    try:
+        from sgme.data import skills_dao
+
+        return skills_dao.count_skills(skills_conn) > 0
+    except Exception:
+        return False
+
+
+def search_skills_db(
+    query: str,
+    skills_conn: sqlite3.Connection,
+    cfg: dict,
+    limit: int = 10,
+    category: str | None = None,
+) -> list[dict]:
+    """库内技能检索：FTS5 BM25（加权 + 停用词）∪ 向量余弦，0.6/0.4 融合。
+
+    与内存版 ``search_skills`` 的差别（T-112 的收益所在）：
+    - 全文索引**持久化**（重启不重建），且支持 ``category`` 结构化过滤；
+    - 向量**持久化**在 skill_vectors（sqlite-vec 加速 + numpy 降级）；
+    - BM25 对技能名列加权 10×，并对查询做停用词过滤（长句不再被虚词稀释）。
+
+    Returns:
+        [{name, score, source, description, category, _routes}]（按融合分降序）
+    """
+    from sgme.data import skills_dao
+    from sgme.data.search import vector as vector_mod
+    from sgme.skills.vectors import embed_texts
+
+    if not isinstance(query, str) or not query.strip() or limit <= 0:
+        return []
+
+    # 路 1：FTS5 BM25（bm25() 返回负值，越小越相关 → 归一化为 0-1）
+    fts_hits = skills_dao.fts_search(skills_conn, query, limit=limit * 3, category=category)
+    bm25_raw = {h["name"]: h["score"] for h in fts_hits}
+    bm25 = _normalize_minmax(bm25_raw)
+
+    # 路 2：向量余弦（查询串单独 embed，1 条不触发分批）
+    vec: dict[str, float] = {}
+    try:
+        qv_list = embed_texts([query[:2000]], cfg)
+        qv = qv_list.get("0")
+        if qv:
+            rows = vector_mod.skill_vector_search(skills_conn, qv, limit=limit * 3)
+            vec = {r["name"]: r["score"] for r in rows}
+    except Exception as e:  # 容错隔离：向量路任何失败都不拖累 FTS 主路
+        logger.info("技能向量路降级（FTS 单路）: %s", e)
+
+    fused = _fuse_scores(bm25, vec)
+    routes = ["skills_rrf"] if (vec and set(fused) & set(vec)) else ["skills_bm25"]
+    ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+
+    meta = {h["name"]: h for h in fts_hits}
+    out: list[dict] = []
+    for name, score in ranked:
+        row = meta.get(name)
+        out.append(
+            {
+                "name": name,
+                "score": round(score, 6),
+                "source": (row or {}).get("source") or "git",
+                "description": (row or {}).get("description") or "",
+                "category": (row or {}).get("category"),
+                "_routes": routes,
+            }
+        )
+    return out
