@@ -75,6 +75,24 @@ def _find_record(records: list[SkillRecord], name: str) -> SkillRecord | None:
     return next((rec for rec in records if rec.name == name), None)
 
 
+def _load_builtin_protocol() -> SkillRecord | None:
+    """加载内置「技能检索协议」skill（sgme/skills/protocol/SKILL.md）。
+
+    该技能随 sgme 包进镜像、不被 hub 同步覆盖，是 cold_start 唯一注入项；
+    此处让其 skill_get/skill_digest 也能解析，避免协议本身 404（agent 从
+    coldstart 读到摘要后，可再 skill_get 拉全文复核）。
+    """
+    from sgme.skills.indexer import _record_from_meta, parse_skill_md, validate_name
+
+    p = Path(__file__).resolve().parent.parent / "skills" / "protocol" / "SKILL.md"
+    if not p.is_file():
+        return None
+    text = p.read_text(encoding="utf-8")
+    parsed = parse_skill_md(text)
+    name = validate_name(str(parsed["meta"].get("name") or p.parent.name))
+    return _record_from_meta(name, parsed["meta"], parsed["body"], "builtin", str(p))
+
+
 def _skeleton(content: str) -> list[str]:
     """正文骨架 = 各标题行原文（含 # 前缀，保层级可读）。"""
     return [m.group(0).strip() for m in _HEADING_RE.finditer(content or "")]
@@ -196,6 +214,10 @@ def skill_digest(
     records = _load_records(cfg, wiki_conn)
     rec = _find_record(records, name)
     if rec is None:
+        bp = _load_builtin_protocol()
+        if bp is not None and bp.name == name:
+            rec = bp
+    if rec is None:
         return not_found(name)
     return OperationResult.succeed(
         {
@@ -224,6 +246,10 @@ def skill_get(
     """L2 全文：正文全文；section 给定时只回该节（找不到该节 → NOT_FOUND）。"""
     records = _load_records(cfg, wiki_conn)
     rec = _find_record(records, name)
+    if rec is None:
+        bp = _load_builtin_protocol()
+        if bp is not None and bp.name == name:
+            rec = bp
     if rec is None:
         return not_found(name)
     content = rec.content
@@ -381,6 +407,7 @@ def cold_start(
             "category": rec.category,
             "tags": list(rec.tags),
             "pattern": rec.pattern,
+            "content": rec.content,
         }]
     else:
         logger.warning("cold_start: 协议 skill 缺失（%s），coldstart 将为空", proto_path)
