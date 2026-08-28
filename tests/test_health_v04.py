@@ -286,7 +286,7 @@ def test_health_endpoint_returns_full_fields(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.1"
+    assert body["version"] == "1.1.0"
     # llm 字段
     assert "available" in body["llm"]
     assert "provider" in body["llm"]
