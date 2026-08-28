@@ -63,12 +63,25 @@ class TestColdstartOperation:
         d = r.data
         # 单一注入：仅协议 skill（与 source_dirs 的 3 个测试技能无关）
         assert d["index"]["total"] == 1
-        assert d["index"]["items"][0]["name"] == "skill-registry-protocol"
+        item = d["index"]["items"][0]
+        assert item["name"] == "skill-registry-protocol"
+        # 协议项须带全文 content：agent 从 coldstart 一次拿到完整检索协议
+        assert "skill_search" in item["content"]
         # 热集恒定空（按需检索范式，无热常驻）
         assert d["hotset"] == []
         # 操作手册
         assert d["manual"] is not None
         assert "SGME操作手册" in d["manual"]["title"]
+
+    def test_protocol_skill_gettable(self, cs_env):
+        """内置协议 skill 也能被 skill_get 解析（coldstart 外可复核全文）。"""
+        from sgme.operations.skills import skill_get
+
+        cfg, wiki_conn = cs_env
+        r = skill_get(cfg, wiki_conn, name="skill-registry-protocol")
+        assert r.ok, r.error_message if not r.ok else ""
+        assert "skill_search" in r.data["content"]
+        assert r.data["name"] == "skill-registry-protocol"
 
     def test_manual_missing_returns_none_not_error(self, cs_env, tmp_path):
         import sqlite3
