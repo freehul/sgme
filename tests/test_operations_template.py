@@ -55,11 +55,15 @@ def tpl_dir(tmp_path, monkeypatch) -> Path:
 
 
 def _valid_template(name: str = "custom") -> dict:
-    """一份结构合法的模板 body（结构化形态，Σ(limit)×30 = 240 ≤ 700）。"""
+    """一份结构合法的模板 body（结构化形态，Σ(limit)×30 = 240 ≤ 700）。
+
+    注：projects/tasks 维度已移除（2026-08-18 三池重构），动态段改用
+    goals/status（与生产模板 templates/work.yaml 现状同形）。
+    """
     return {
         "name": name,
         "display_name": "自定义模式",
-        "memory_types": ["identity", "projects", "tasks"],
+        "memory_types": ["identity", "goals", "status"],
         "token_budget": 700,
         "sections": [
             {
@@ -67,9 +71,9 @@ def _valid_template(name: str = "custom") -> dict:
                 "query": {"dimensions": ["identity"], "priority_min": 70, "limit": 5},
             },
             {
-                "title": "📁 项目",
+                "title": "🎯 目标与状态",
                 "query": {
-                    "dimensions": ["projects", "tasks"],
+                    "dimensions": ["goals", "status"],
                     "match": "any",
                     "sort": "updated_at DESC",
                     "limit": 3,
@@ -85,7 +89,7 @@ def _valid_yaml(name: str = "custom", display: str = "自定义模式") -> str:
         "# 自定义模板（注释应在原文写盘后保留）\n"
         f"name: {name}\n"
         f"display_name: {display}\n"
-        "memory_types: [identity, projects, tasks]\n"
+        "memory_types: [identity, goals, status]\n"
         "token_budget: 700\n"
         "sections:\n"
         '  - title: "👤 身份"\n'
@@ -201,7 +205,7 @@ def test_create_from_yaml_content_preserves_comments(tpl_dir, dimensions):
 
     text = (tpl_dir / "custom.yaml").read_text(encoding="utf-8")
     assert text.startswith("# 自定义模板")
-    assert "memory_types: [identity, projects, tasks]" in text  # 流式写法未被重排
+    assert "memory_types: [identity, goals, status]" in text  # 流式写法未被重排
 
 
 def test_create_infers_name_from_body_when_not_given(tpl_dir, dimensions):
@@ -278,7 +282,8 @@ def test_section_dimension_out_of_memory_types_rejected(tpl_dir, dimensions):
     """校验规则：section.dimensions ⊆ memory_types，越界 → 400 且 message 带详情。"""
     body = _valid_template("oob")
     body["memory_types"] = ["identity"]
-    body["sections"] = [{"title": "T", "query": {"dimensions": ["projects"], "limit": 3}}]
+    # goals 是已注册维度但不在 memory_types → 纯「越界」（非未注册）
+    body["sections"] = [{"title": "T", "query": {"dimensions": ["goals"], "limit": 3}}]
 
     with pytest.raises(InvalidArgs) as ei:
         tpl_ops.update_template("oob", body, dimensions)

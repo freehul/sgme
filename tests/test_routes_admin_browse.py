@@ -491,12 +491,16 @@ def test_scenes_default_active_and_heat_sort(client, seeded):
 
 
 def test_scenes_item_shape_and_memories_count(client, seeded):
-    """条目字段集与 memories_count 聚合正确（契约 §5.4.2）。"""
+    """条目字段集与 memories_count 聚合正确（契约 §5.4.2）。
+
+    related_memories 为 2026-08-18 T-55 后续有意新增（WebUI 场景详情展示关联记忆）。
+    """
     body = client.get("/v1/admin/scenes", headers=ADMIN).json()
     by_id = {s["scene_id"]: s for s in body["items"]}
     assert set(by_id["scene_a"].keys()) == {
         "scene_id", "title", "content", "heat", "status",
         "memories_count", "created_at", "updated_at",
+        "related_memories",
     }
     assert by_id["scene_a"]["memories_count"] == 2
     assert by_id["scene_b"]["memories_count"] == 0

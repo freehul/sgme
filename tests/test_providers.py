@@ -211,8 +211,9 @@ def test_real_config_memory_structure_compatible():
     cfg = config.load_llm_config()
     refinement = cfg["chains"]["refinement"]
     head = refinement[0]
+    # extra_body 为可选采样字段（现链 agnes/siliconflow 节点均未定义），不入必填清单
     for k in ("provider", "model", "base_url", "api_key_env",
-              "context_window", "max_tokens", "extra_body"):
+              "context_window", "max_tokens"):
         assert k in head, f"首链缺 {k}"
     assert head["provider"], "首链 provider 非空"
     assert head["base_url"], "首链 base_url 非空"

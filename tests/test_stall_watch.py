@@ -21,6 +21,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from sgme import __version__  # health 契约 version 动态断言（防版本 bump 漂移）
 from sgme import config as sgme_config
 from sgme.engine import health as health_mod
 from sgme.server.app import create_app
@@ -327,7 +328,8 @@ def test_health_endpoint_contract_intact_under_seq_stall(client, conns):
     assert body["refinement"]["heartbeat_ok"] is False
     assert body["refinement"]["watermark_age_sec"] is not None  # refined_at 新鲜，仍可算
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.0"
+    # version 与包版本动态对齐（operations/health.SGME_VERSION 契约 = sgme.__version__）
+    assert body["version"] == __version__
 
 
 # ---------- 8. check_seq_progression 单元 ----------

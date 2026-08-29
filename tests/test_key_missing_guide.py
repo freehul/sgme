@@ -27,9 +27,27 @@ from sgme.server.app import create_app
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
 
-# 链上实际引用的 Key（config/providers.yaml + sgme.yaml 真相源）
-_REFINE_KEYS = ["DEEPSEEK_API_KEY_SGME", "ZHIPU_API_KEY"]
+# 链上实际引用的 Key 从加载配置动态推导（config/llm.yaml + providers.yaml 真相源）。
+# 背景：zhipu 已移出降级链（2026-08-29，9af882b），当前链为
+# agnes(AGNESAI_API_KEY) → siliconflow(SILICONFLOW_API_KEY) → rule(drop_batch)。
 _VECTOR_KEY = "SILICONFLOW_API_KEY"
+
+
+def _chain_key_envs(cfg) -> list[str]:
+    """推导提炼链各节点 api_key_env（rule 节点无 key 语义跳过）。
+
+    与 sgme.operations.llm.detect_missing_model_keys 同一数据源，
+    链再调整时测试自动跟随，不再硬编码。
+    """
+    chains = (cfg.get("llm") or {}).get("chains") or cfg.get("chains") or {}
+    envs: list[str] = []
+    for node in chains.get("refinement", []):
+        if node.get("provider") == "rule":
+            continue
+        env = node.get("api_key_env")
+        if env:
+            envs.append(env)
+    return envs
 
 
 @pytest.fixture
@@ -85,16 +103,16 @@ def summary_path(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def all_keys_set(monkeypatch):
+def all_keys_set(cfg, monkeypatch):
     """显式注入全部链上 Key（确定性起点）。"""
-    for k in _REFINE_KEYS + [_VECTOR_KEY]:
+    for k in _chain_key_envs(cfg) + [_VECTOR_KEY]:
         monkeypatch.setenv(k, "test-key-value")
     yield
 
 
 @pytest.fixture
-def all_keys_unset(monkeypatch):
-    for k in _REFINE_KEYS + [_VECTOR_KEY]:
+def all_keys_unset(cfg, monkeypatch):
+    for k in _chain_key_envs(cfg) + [_VECTOR_KEY]:
         monkeypatch.delenv(k, raising=False)
     yield
 
@@ -106,15 +124,22 @@ def test_detect_all_configured_empty(all_keys_set, cfg):
 
 
 def test_detect_refine_missing(all_keys_unset, cfg, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY_SGME", "x")
-    monkeypatch.setenv("ZHIPU_API_KEY", "x")
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "x")
-    # 仅 ZHIPU 缺失
-    monkeypatch.delenv("ZHIPU_API_KEY")
+    """链首节点缺 Key → 恰 1 条 refinement 缺失（当前链首 agnes → AGNESAI_API_KEY）。"""
+    envs = _chain_key_envs(cfg)
+    # 除链首外全部就绪
+    for k in envs[1:]:
+        monkeypatch.setenv(k, "x")
     missing = detect_missing_model_keys(cfg)
     assert len(missing) == 1
     assert missing[0]["purpose"] == "refinement"
-    assert missing[0]["key_env"] == "ZHIPU_API_KEY"
+    assert missing[0]["key_env"] == envs[0]
+    assert missing[0]["key_env"] == "AGNESAI_API_KEY"  # 当前链首为 agnes
+
+
+def test_detect_zhipu_key_no_longer_detected(all_keys_set, cfg, monkeypatch):
+    """zhipu 已移出降级链（2026-08-29）：ZHIPU_API_KEY 缺失不再产生检测项。"""
+    monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
+    assert detect_missing_model_keys(cfg) == []
 
 
 def test_detect_vector_missing(all_keys_unset, cfg, monkeypatch):
@@ -126,32 +151,42 @@ def test_detect_vector_missing(all_keys_unset, cfg, monkeypatch):
         "enabled": True, "provider": "siliconflow",
         "model": "BAAI/bge-m3", "api_key_env": "SILICONFLOW_API_KEY",
     }
-    for k in _REFINE_KEYS:
+    for k in _chain_key_envs(cfg):
         monkeypatch.setenv(k, "x")
     monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
     missing = detect_missing_model_keys(cfg2)
-    assert len(missing) == 1
-    assert missing[0]["purpose"] == "vector"
-    assert missing[0]["key_env"] == "SILICONFLOW_API_KEY"
+    # 注：现链 siliconflow 同时是提炼链第二级与向量端，同一 Key 缺失会
+    # 连带产生 refinement 项；此处聚焦 vector 项被检测到这一原意图。
+    vec = [m for m in missing if m["purpose"] == "vector"]
+    assert len(vec) == 1
+    assert vec[0]["key_env"] == "SILICONFLOW_API_KEY"
+    refine = [m for m in missing if m["purpose"] == "refinement"]
+    assert all(m["key_env"] == "SILICONFLOW_API_KEY" for m in refine)
 
 
 def test_detect_rule_node_skipped(all_keys_unset, cfg, monkeypatch):
     """rule drop_batch 节点无 key 语义，不参与检测。"""
-    for k in _REFINE_KEYS + [_VECTOR_KEY]:
+    for k in _chain_key_envs(cfg) + [_VECTOR_KEY]:
         monkeypatch.setenv(k, "x")
     assert detect_missing_model_keys(cfg) == []
 
 
 # ---------- 2. 提醒文案 ----------
 
-def test_notice_nonempty_when_missing(all_keys_unset, cfg, monkeypatch):
-    """测试环境：llm.yaml 真实（链含 ZHIPU），sgme.yaml 隔离（vector 无 key_env）——
-    断言缺失文案非空且含 Key 名即可，不做整串精确匹配。"""
-    monkeypatch.delenv("ZHIPU_API_KEY", raising=False)
+def test_notice_nonempty_when_missing(all_keys_unset, cfg):
+    """全缺 → 文案非空且列出链上 Key 名（agnes/siliconflow 两家）。
+
+    测试环境：llm.yaml 真实（链 agnes→siliconflow→rule），sgme.yaml 隔离
+    （vector 无 key_env），故缺失仅 refinement 两家。
+    注：生产文案 MODEL_KEY_MISSING_NOTICE 中智谱句的去除在生产侧同步处理，
+    此处只断言链上 Key 名出现，不对 ZHIPU_API_KEY 字样的有无做断言。
+    """
     notice = model_keys_notice(cfg)
     assert "申请免费 Key" in notice
-    assert "ZHIPU_API_KEY" in notice
-    assert "DEEPSEEK_API_KEY_SGME" in notice  # llm.yaml 真实链，两个 refinement key 都在
+    assert "AGNESAI_API_KEY" in notice        # 链首 agnes
+    assert "SILICONFLOW_API_KEY" in notice    # 第二级 siliconflow
+    # B121：生产文案已去除智谱句——zhipu Key 不再出现在缺失提醒里
+    assert "ZHIPU_API_KEY" not in notice
 
 
 def test_notice_empty_when_configured(all_keys_set, cfg):

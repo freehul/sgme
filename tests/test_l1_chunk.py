@@ -129,5 +129,5 @@ def test_extract_l1_short_no_chunk(cfg, monkeypatch):
     memories, provider, _ = l1_mod.extract_l1(
         conv, cfg["dimensions"], cfg["llm"], client=cli,
     )
-    assert provider == "deepseek"  # 非 chunked；v0.5 主模型切换 DeepSeek（原 lm-studio）
+    assert provider == "agnes"  # 非 chunked；链首为 agnes（2026-08-22 主序，B121 后维持）
     assert len(memories) == 1
