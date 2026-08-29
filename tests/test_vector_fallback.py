@@ -113,3 +113,92 @@ def test_embed_all_fail_returns_none():
 
     got = vector_mod.embed("hello", cfg, client=cli)
     assert got is None
+
+
+# ---------- T-117：链首回退 vector_capable 门禁（2026-08-29）----------
+
+def _cfg_no_vector_base_url(chain_head: dict) -> dict:
+    """search.vector 无 base_url（触发链首回退）+ 指定链首节点。"""
+    return {
+        "search": {"vector": {"model": "bge-m3"}},
+        "llm": {"chains": {"refinement": [chain_head]}},
+    }
+
+
+def test_embed_skips_head_without_vector_capable(monkeypatch):
+    """链首在注册表且 vector_capable=false（agnes，9af882b 后无 embeddings 服务）
+    → 不发注定 401/404 的请求，直接返回 None 降级 BM25（T-117）。"""
+    import sgme.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_providers_config", lambda: {
+        "agnes": {
+            "name": "agnes",
+            "base_url": "https://apihub.agnes-ai.cn/v1",
+            "vector_capable": False,
+        },
+    }, raising=False)
+    calls: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        calls.append(str(req.url))
+        return _ok_embedding([0.1])
+
+    cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
+    cfg = _cfg_no_vector_base_url(
+        {"provider": "agnes", "base_url": "https://apihub.agnes-ai.cn/v1"}
+    )
+    got = vector_mod.embed("t117-gate-unique-text", cfg, client=cli)
+    assert got is None
+    assert calls == [], "vector_capable=false 的链首不应发起任何请求"
+
+
+def test_embed_fallback_head_without_provider_name_unchanged():
+    """链首无 provider 名（旧配置形态/本地链首）→ 保持旧行为照常回退。"""
+    cli = _embed_client(_ok_embedding([0.4, 0.4]))
+    cfg = _cfg_no_vector_base_url({"base_url": "http://127.0.0.1:1014/v1"})
+    got = vector_mod.embed("t117-legacy-unique-text", cfg, client=cli)
+    assert got == [0.4, 0.4]
+
+
+def test_embed_fallback_head_vector_capable_uses_registry_model(monkeypatch):
+    """链首在注册表且 vector_capable=true → 照常回退，且模型/密钥对齐注册表字段。"""
+    import sgme.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_providers_config", lambda: {
+        "siliconflow": {
+            "name": "siliconflow",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "default_model": "BAAI/bge-m3",
+            "api_key_env": "T117_KEY_ENV",
+            "vector_capable": True,
+        },
+    }, raising=False)
+    monkeypatch.setenv("T117_KEY_ENV", "k-registry")
+
+    class RecClient:
+        """记录请求的假客户端（vector.embed 消费 post/status_code/json）。"""
+
+        def __init__(self):
+            self.calls = []
+
+        def post(self, url, json=None, headers=None):  # noqa: A002
+            self.calls.append((url, json, headers))
+            return httpx.Response(200, json={"data": [{"embedding": [0.7, 0.7]}]})
+
+        def close(self):
+            pass
+
+    cli = RecClient()  # type: ignore[arg-type]  # 测试假客户端，运行时 duck-typing
+    # search.vector 不配 model/base_url → 连接字段应全部来自注册表链首对齐
+    cfg = {
+        "search": {"vector": {}},
+        "llm": {"chains": {"refinement": [
+            {"provider": "siliconflow", "base_url": "https://api.siliconflow.cn/v1"}
+        ]}},
+    }
+    got = vector_mod.embed("t117-registry-unique-text", cfg, client=cli)
+    assert got == [0.7, 0.7]
+    url, payload, headers = cli.calls[0]
+    assert url == "https://api.siliconflow.cn/v1/embeddings"
+    assert payload["model"] == "BAAI/bge-m3", "注册表 default_model 应对齐到请求"
+    assert headers.get("Authorization") == "Bearer k-registry"

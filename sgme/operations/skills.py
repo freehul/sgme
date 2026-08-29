@@ -553,8 +553,11 @@ def sync_index(
     embedded = 0
     pending = 0
     if embed:
+        # ⚠️ 待补向量必须按**全表**算，不能只算本次 touched——否则第二次调用时
+        # 所有技能都是 unchanged，todo 恒为空 → 后台预热第一轮就退出 →
+        # 向量永远补不上（2026-08-29 部署实测踩到）。
         covered = skills_dao.vector_covered(skills_conn)
-        todo = [n for n in sorted(touched) if n not in covered]
+        todo = sorted({r["name"] for r in dicts} - covered)
         pending = len(todo)
         if max_embed is not None and max_embed > 0:
             todo = todo[:max_embed]

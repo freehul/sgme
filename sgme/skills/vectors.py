@@ -53,36 +53,73 @@ def save_cache(cache_dir: str | Path, cache: dict) -> Path:
 def _embed_config(cfg: dict) -> tuple[str, str, str, str]:
     """从 providers.yaml/search.vector 配置取 embedding 提供商（provider/model/base_url+key）。
 
-    解析顺序（镜像 T-43/T-47 的统一供应商裁决）：providers 中 vector_capable=true 的当前
-    active 向量提供商 → search.vector 兜底段。找不到返回 ("", "", "")。
+    解析顺序（镜像 T-43/T-47 的统一供应商裁决，本地优先 2026-08-20 生产定案）：
+    1. search.vector.provider 指名的提供商：在注册表则用注册表连接字段；
+       不在注册表（如本地 ollama "local"）则用 search.vector 自带 base_url/model——
+       **本地直连优先于云端 vector_capable 扫描**；
+    2. 无 active 或 active 不可用 → 扫 providers 中 vector_capable=true 的首个可用者；
+    3. 最后兜底：search.vector 自带 base_url 的直连段。
+    找不到返回 ("", "", "", "")。
+
+    ⚠️ 2026-08-29 根修（T-118）：load_providers_config() 返回的就是**扁平**
+    {name: 连接字段} 字典，原实现误做 .get("providers") 二次解包 → 永远得空表
+    → 技能向量嵌入从未真正工作过（M1 起潜伏，被 mock 形状错误的测试掩护）。
     """
     prov_name = model = ""
     base_url = api_key = ""
     try:
         from sgme.config import load_providers_config
 
-        providers = (load_providers_config() or {}).get("providers", {}) or {}
+        providers = load_providers_config() or {}
     except Exception:
         providers = {}
-    # 当前激活的向量提供商：search.vector.provider 记录的名字优先
+    import os
+
+    def _key_value(env_name: object) -> str:
+        env_name = str(env_name or "").strip()
+        return os.environ.get(env_name, "") if env_name else ""
+
     search_cfg = ((cfg or {}).get("search") or {}).get("vector") or {}
     active = str(search_cfg.get("provider") or "").strip()
-    candidates = []
     if active:
-        candidates.append(active)
-    candidates += [n for n, p in providers.items()
-                   if isinstance(p, dict) and p.get("vector_capable")]
-    for name in candidates:
-        p = providers.get(name) or {}
+        p = providers.get(active)
         if isinstance(p, dict) and (p.get("api_key_env") or p.get("base_url")):
-            prov_name = name
-            model = p.get("default_model") or ""
-            base_url = str(p.get("base_url") or "")
-            env_name = str(p.get("api_key_env") or "")
-            import os
-
-            api_key = os.environ.get(env_name, "") if env_name else ""
-            break
+            # 活跃提供商在注册表：用注册表连接字段（default_model 缺省回落 search.vector.model）
+            return (
+                active,
+                str(p.get("default_model") or search_cfg.get("model") or ""),
+                str(p.get("base_url") or ""),
+                _key_value(p.get("api_key_env")),
+            )
+        if search_cfg.get("base_url"):
+            # 活跃提供商不在注册表（本地 ollama 场景）：直接用 search.vector 自带连接字段
+            return (
+                active,
+                str(search_cfg.get("model") or ""),
+                str(search_cfg.get("base_url") or ""),
+                _key_value(search_cfg.get("api_key_env")),
+            )
+    # 无 active / active 不可用：扫 vector_capable=true 的提供商（保持配置顺序）
+    for name, p in providers.items():
+        if (
+            isinstance(p, dict)
+            and p.get("vector_capable")
+            and (p.get("api_key_env") or p.get("base_url"))
+        ):
+            return (
+                name,
+                str(p.get("default_model") or search_cfg.get("model") or ""),
+                str(p.get("base_url") or ""),
+                _key_value(p.get("api_key_env")),
+            )
+    # 最后兜底：search.vector 自带 base_url 的直连段（无 provider 名也允许）
+    if search_cfg.get("base_url"):
+        return (
+            "",
+            str(search_cfg.get("model") or ""),
+            str(search_cfg.get("base_url") or ""),
+            _key_value(search_cfg.get("api_key_env")),
+        )
     return prov_name, model, base_url, api_key
 
 

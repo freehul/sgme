@@ -139,7 +139,35 @@ def embed(
     # 主 provider 缺 base_url → 回退 LLM 链首批（向后兼容）
     if not providers[0]["base_url"]:
         try:
-            providers[0]["base_url"] = cfg["llm"]["chains"]["refinement"][0]["base_url"]
+            head = cfg["llm"]["chains"]["refinement"][0]
+            head_name = str(head.get("provider") or "").strip()
+            head_prov: dict = {}
+            if head_name:
+                try:
+                    from sgme.config import load_providers_config
+
+                    head_prov = (load_providers_config() or {}).get(head_name) or {}
+                except Exception:
+                    head_prov = {}
+            # T-117（2026-08-29）：注册表明确标记 vector_capable=false 的链首
+            # （如 agnes，9af882b 后无 embeddings 服务）直接跳过——省一次注定
+            # 401/404 的外网请求；不在注册表（本地 LM Studio 等）保持旧行为照常尝试。
+            if head_prov and not head_prov.get("vector_capable", False):
+                logger.warning(
+                    "embed: 链首 %s 无向量能力(vector_capable=false)，跳过回退降级 BM25",
+                    head_name,
+                )
+                return None
+            providers[0]["base_url"] = head.get("base_url") or ""
+            # 链首在注册表时顺带对齐 embedding 模型/密钥（仅 search.vector 未显式配置时）
+            if head_prov:
+                if "model" not in vec_cfg and head_prov.get("default_model"):
+                    providers[0]["model"] = str(head_prov["default_model"])
+                if not providers[0]["api_key_env"] and head_prov.get("api_key_env"):
+                    providers[0]["api_key_env"] = str(head_prov["api_key_env"])
+            if not providers[0]["base_url"]:
+                logger.warning("embed: 无法从 cfg 解析 base_url，跳过向量")
+                return None
         except (KeyError, IndexError, TypeError):
             logger.warning("embed: 无法从 cfg 解析 base_url，跳过向量")
             return None

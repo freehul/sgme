@@ -257,18 +257,22 @@ class TestVectorsCache:
         assert set(got) == {"ok"} and got["ok"] > 0.999
 
     def test_embed_config_reads_active_provider(self, monkeypatch, tmp_path: Path):
-        """激活向量提供商解析：providers vector_capable + search.vector.provider。"""
+        """激活向量提供商解析：providers vector_capable + search.vector.provider。
+
+        ⚠️ T-118（2026-08-29 根修同步修正）：load_providers_config() 返回**扁平**
+        {name: 连接字段}（config.py:378 实测），旧 mock 多包一层 "providers" 是
+        错误形状——恰好掩盖了双重解包 bug（技能向量嵌入自 M1 起从未真正工作）。
+        """
         import sgme.config as config_mod
         from sgme.skills.vectors import _embed_config
 
         monkeypatch.setattr(config_mod, "load_providers_config", lambda: {
-            "providers": {
-                "siliconflow": {
-                    "base_url": "https://api.siliconflow.cn/v1",
-                    "default_model": "BAAI/bge-m3",
-                    "api_key_env": "SILICONFLOW_API_KEY_TEST",
-                    "vector_capable": True,
-                },
+            "siliconflow": {
+                "name": "siliconflow",
+                "base_url": "https://api.siliconflow.cn/v1",
+                "default_model": "BAAI/bge-m3",
+                "api_key_env": "SILICONFLOW_API_KEY_TEST",
+                "vector_capable": True,
             },
         }, raising=False)
         monkeypatch.setenv("SILICONFLOW_API_KEY_TEST", "k-test")
@@ -277,3 +281,49 @@ class TestVectorsCache:
         })
         assert (prov, model) == ("siliconflow", "BAAI/bge-m3")
         assert base_url.endswith("/v1") and key == "k-test"
+
+    def test_embed_config_local_provider_not_in_registry(self, monkeypatch):
+        """活跃提供商不在注册表（生产形态：provider=local 指向 NAS ollama）
+        → 用 search.vector 自带连接字段直连（本地优先，2026-08-20 生产定案）。
+
+        根修前此形态走注册表分支永远落空 → _embed_config 全空 → 嵌入全批失败。
+        """
+        import sgme.config as config_mod
+        from sgme.skills.vectors import _embed_config
+
+        monkeypatch.setattr(config_mod, "load_providers_config", lambda: {}, raising=False)
+        prov, model, base_url, key = _embed_config({
+            "search": {"vector": {
+                "provider": "local",
+                "model": "bge-m3",
+                "base_url": "http://192.168.10.10:11434/v1",
+            }},
+        })
+        assert prov == "local"
+        assert model == "bge-m3"
+        assert base_url == "http://192.168.10.10:11434/v1"
+        assert key == ""  # 本地 Ollama 无鉴权
+
+    def test_embed_config_fallback_scan_vector_capable(self, monkeypatch):
+        """无 active 提供商 → 扫 providers 中 vector_capable=true 的首个可用者。"""
+        import sgme.config as config_mod
+        from sgme.skills.vectors import _embed_config
+
+        monkeypatch.setattr(config_mod, "load_providers_config", lambda: {
+            "agnes": {
+                "base_url": "https://apihub.agnes-ai.cn/v1",
+                "vector_capable": False,
+            },
+            "siliconflow": {
+                "base_url": "https://api.siliconflow.cn/v1",
+                "default_model": "BAAI/bge-m3",
+                "api_key_env": "SILICONFLOW_API_KEY_SCAN",
+                "vector_capable": True,
+            },
+        }, raising=False)
+        monkeypatch.setenv("SILICONFLOW_API_KEY_SCAN", "k-scan")
+        prov, model, base_url, key = _embed_config({})
+        assert prov == "siliconflow"
+        assert model == "BAAI/bge-m3"
+        assert base_url == "https://api.siliconflow.cn/v1"
+        assert key == "k-scan"

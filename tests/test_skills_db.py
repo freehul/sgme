@@ -505,3 +505,48 @@ class TestSearchSkillsDb:
 
         assert skills_ops.search_skills_db("", conn, {}, limit=5) == []
         assert skills_ops.search_skills_db("   ", conn, {}, limit=5) == []
+
+    def test_second_sync_call_still_fills_vectors(self, conn, monkeypatch):
+        """回归：待补向量按全表算，第二次调用（全 unchanged）仍要继续补。
+
+        2026-08-29 部署踩到：pending 只统计本次 touched，导致二次调用 todo 恒空，
+        后台预热第一轮即退出，向量永远补不上。修复口径：
+        - pending_embed 按**全表差集**统计，且在 max_embed 截断之前；
+        - todo 截断只影响本次嵌入批，不影响 pending 数字。
+        """
+        from sgme.operations import skills as skills_ops
+        import sgme.skills.vectors as vectors_mod
+
+        records = [_rec("a", "aaa"), _rec("b", "bbb")]
+        monkeypatch.setattr(skills_ops, "_load_records", lambda cfg, wc: records)
+        # fake 嵌入不触网：embed_texts 打桩，upsert_skill_vectors 走真实现落库
+        monkeypatch.setattr(
+            vectors_mod,
+            "embed_texts",
+            lambda texts, cfg: {str(i): [float(i), 1.0] for i in range(len(texts))},
+        )
+        cfg = {"skills": {"enabled": True, "source_dirs": []}}
+
+        # 第一轮：embed=False 只同步结构化（快速路径），向量空、不统计 pending
+        r1 = skills_ops.sync_index(cfg, conn, None, max_embed=2, embed=False)
+        assert r1.data["inserted"] == 2
+        assert r1.data["pending_embed"] == 0
+        assert skills_dao.vector_covered(conn) == set()
+
+        # 第二轮：全 unchanged + embed=True —— 修复前 todo 恒空（只算 touched），
+        # 修复后 pending=2（全表差集），本轮嵌入受 max_embed=1 限批
+        r2 = skills_ops.sync_index(cfg, conn, None, max_embed=1, embed=True)
+        assert r2.data["pending_embed"] == 2
+        assert r2.data["embedded"] == 1
+        assert skills_dao.vector_covered(conn) == {"a"}
+
+        # 第三轮：放开限批 → 继续补剩余（后台预热逐轮补齐的形态）
+        r3 = skills_ops.sync_index(cfg, conn, None, max_embed=None, embed=True)
+        assert r3.data["pending_embed"] == 1
+        assert r3.data["embedded"] == 1
+        assert skills_dao.vector_covered(conn) == {"a", "b"}
+
+        # 第四轮：全覆盖 → pending 归零、不再嵌入
+        r4 = skills_ops.sync_index(cfg, conn, None, max_embed=None, embed=True)
+        assert r4.data["pending_embed"] == 0
+        assert r4.data["embedded"] == 0
