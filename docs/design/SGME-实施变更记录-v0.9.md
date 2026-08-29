@@ -1956,3 +1956,48 @@ resolve 构造节点返回 None 静默跳过，override 防劫持语义（防 ds
 `refine.llm_override` 为 agnes，否则生产继续悬空跳过（提炼跟随 agent 声明，存在被劫持风险）；
 ② `ZHIPU_API_KEY` 环境变量不再被任何配置引用，可从 docker.env/config/.env 移除；
 ③ `detect_missing_model_keys` 只报告实际在链供应商，智谱 Key 缺失不再出现在 missing_keys。
+
+### B122. T-113 全量测试漂移集中修复 + create_app bearer 环境污染根修（2026-08-29）
+
+**背景**：Backlog 审查（2026-08-29）发现 main 全量 pytest 不绿且被长期误标——T-97/T-99 备注把
+supersession/l15 失败写成「预存在环境问题（维度种子/网络）」，实际是「代码有意变更、测试没跟」的
+纯漂移欠账。登记 T-113 后以 worktree（pr-113-fix-drifted-tests）+ 并行子代理执行修复，
+merge --no-ff 回 main。**全量基线实测 50 failed（9af882b，2004 collected）**——最初「20 failed」
+为输出截断低估，登记口径已更正。
+
+**改动**（tests/ 20 文件 + 生产 1 处根修）：
+1. **projects/tasks 维度残留（≈25 例，最大组）**：三池重构（2026-08-18）移除维度后，supersession/
+   模板（operations+routes）/engine/l15/l15_prescreen/registry/e2e 的夹具与断言仍打 projects 标
+   → FK IntegrityError 或归一化 100% 丢弃；统一换 14 维中语义相近维度（tech_stack/goals 等），
+   模板类以生产 templates/*.yaml（已是正确现状）为形状基准。
+2. **版本断言硬编码**：test_server_v04/test_stall_watch 断言 '1.0.0' → `sgme.__version__` 动态
+   （固化 health SGME_VERSION 与包版本一致的契约，未来 bump 不再崩）。
+3. **9af882b 链变更余波**：vector_connectivity 链序期望、key_missing_guide 的 `_REFINE_KEYS`
+   （改从加载配置动态推导 + 新增「zhipu 不再被检测」反断言）、config/providers/l1_chunk 的
+   首链 deepseek 期望 → agnes→siliconflow→rule。
+4. **B117 余波**：scene_gc 默认 merge_threshold 0.70 + min_threshold 键。
+5. **scenes shape**：test_routes_admin_browse 补 T-55 新增的 `related_memories` 键。
+6. **测试密封性**：test_operations_inject 两例 no_note 用例打桩模型 Key——原依赖宿主未跟踪
+   config/.env，干净 checkout/CI 必挂（worktree 实测复现）。
+7. **生产根修（sgme/server/app.py）**：`create_app` 曾 `os.environ.setdefault("SGME_BEARER_TOKEN",
+   bearer)` ——工厂函数污染进程全局状态；同一进程后续 create_app（bearer_token=None）会从
+   环境读回泄漏值 → test_skills_coldstart 套件顺序下 401、单跑绿（test_signal/test_server_v04
+   的 delenv 防御注释为前人绕过证据）。全库无任何运行时读者依赖该回写，删除零行为影响；
+   +1 测试锁定「不污染 os.environ」语义。
+8. 顺带确认：skills 门禁 5 例（gates/pr7）已由 2b83671 修复，未复现。
+
+**验证**：
+- 基线 9af882b：50 failed → 修复后 worktree 全量 **exit=0 / 0 failed**（主代理亲自复跑，
+  非子代理自报口径）；merge 6eb215b 后主树抽验 6 文件 0 failed
+- e2e 两例根因定性：mock 维度「项目」归一化丢弃致记忆未入库（非 embed 问题，日志
+  `记忆=1 条 drops=1` 证据）
+
+**遗留与上报**：vector.py embed 回退未校验目标 provider `vector_capable`（链首 agnes 无
+embeddings，无 vector 配置环境发注定失败的 401 请求后才降级）→ 登记 T-117 🟡；属设计内
+降级非功能 bug。
+
+**运维影响**：
+① 部署契约不变：SGME_BEARER_TOKEN 仍是「启动前设环境变量」（app.py 不再回写，无消费者）；
+② 测试不再依赖宿主 config/.env，CI/干净 checkout 可直接全量跑；
+③ 直查 SQL/维度相关的后续改动请同步测试夹具——本次 50 例欠账的教训是「改维度/改链/改版本
+  三件事必须同跑全量」。

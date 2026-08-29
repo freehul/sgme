@@ -111,21 +111,20 @@ DSH 桥接（sgme-bridge 0.2.0）新增 **wiki_page_add** 工具：创建知识�
 
 ---
 
-## 2026-08-18 模型配置更新（T-55 免费托底 + 主链切换）
+## 模型配置（2026-08-29 更新：agnes 主链，zhipu 移出）
 
-**密钥表更正**（2026-08-18 主链与向量已切换）：
+**密钥表**（现状）：
 
 | 变量 | 用途 |
 |---|---|
-| ZHIPU_API_KEY | 提炼主链智谱 GLM-4.7-Flash（永久免费；key 缺失时 health 的 model_config.missing_keys 会提示） |
-| DEEPSEEK_API_KEY_SGME | 提炼备用 deepseek（付费，主链限流/故障时兜底） |
-| SILICONFLOW_API_KEY | 向量检索硅基流动 BAAI/bge-m3（1024 维，免费；实名认证后零费用） |
+| AGNESAI_API_KEY | 提炼主链 agnes-2.5-flash（免费，$0/1M token；key 缺失时 health 的 model_config.missing_keys 会提示） |
+| SILICONFLOW_API_KEY | 提炼备用 deepseek-ai/DeepSeek-V4-Flash（免费）+ 向量检索硅基流动 BAAI/bge-m3（1024 维，免费；实名认证后零费用） |
 
-**提炼降级链**（2026-08-18 用户定）：zhipu(glm-4.7-flash, 免费主) → deepseek(deepseek-v4-flash, 付费备) → rule drop_batch。
+**提炼降级链**（2026-08-22 agnes 主位；2026-08-29 zhipu 免费 Key 失效移出链，B121）：agnes(agnes-2.5-flash, 免费主) → siliconflow(deepseek-ai/DeepSeek-V4-Flash, 免费备) → rule drop_batch。
 
 **向量健康检查**：health 的 vector.connectivity 显示模型连通性（provider/model/latency_ms）；失效时写日志 + 发 anomaly_warn 信号（source=vector），/search 自动降级纯 BM25。
 
-**免费 Key 申请**：智谱 https://open.bigmodel.cn（手机号注册，GLM-4.7-Flash 永久免费）→ ZHIPU_API_KEY；硅基流动 https://cloud.siliconflow.cn（注册 + 实名认证解锁免费模型，BAAI/bge-m3 调用零费用）→ SILICONFLOW_API_KEY。完整流程见 docs/guide/免费模型Key申请指南.md。
+**免费 Key 申请**：Agnes https://agnes-ai.cn（邮箱注册，agnes-2.5-flash 免费）→ AGNESAI_API_KEY；硅基流动 https://cloud.siliconflow.cn（注册 + 实名认证解锁免费模型，BAAI/bge-m3 调用零费用）→ SILICONFLOW_API_KEY。完整流程见 docs/guide/免费模型Key申请指南.md。
 
 > 来源: dsh-agent | hash: e1d4200d
 
