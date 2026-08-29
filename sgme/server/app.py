@@ -618,8 +618,9 @@ def create_app(
         # （此前 store_path 从未接线 → 每次重启注册记录丢失，Agent 收到 403）
         store_path=Path(agent_store_path) if agent_store_path else sgme_config.DATA_DIR / "agent_keys.json",
     )
-    if bearer:
-        os.environ.setdefault("SGME_BEARER_TOKEN", bearer)
+    # ⚠️ 不把 bearer 写回 os.environ（B122 根修）：工厂函数污染进程全局状态，
+    # 泄漏到同进程后续测试/组件；bearer 经 app.state.bearer_token 传递，
+    # 外部部署契约 = 启动前设好 SGME_BEARER_TOKEN 环境变量（__main__/README）。
 
     # dev 默认 key 告警
     if store.admin_key == DEFAULT_ADMIN_KEY:
