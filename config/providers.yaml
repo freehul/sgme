@@ -12,20 +12,8 @@ providers:
     health_endpoint: /models
     health_interval_s: 60
     vector_capable: false
-  zhipu:
-    name: zhipu
-    display_name: 智谱（免费托底）
-    base_url: https://open.bigmodel.cn/api/paas/v4
-    api_key_env: ZHIPU_API_KEY
-    provider_type: openai_compat
-    default_model: glm-4.7-flash
-    context_window: 200000
-    timeout_s: 60
-    max_retries: 3
-    health_endpoint: /models
-    health_interval_s: 60
-    vector_capable: false
 # volc-plan（火山方舟）已移除（2026-08-18 用户定：向量统一走硅基流动免费档）
+# zhipu（智谱）段于 2026-08-29 删除：免费 key 失效，且降级链已移出 zhipu 节点（避免残留引用误触发付费）
   agnes:
     name: agnes
     display_name: Agnes AI（免费兜底）

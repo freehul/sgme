@@ -17,19 +17,14 @@
 #   需人工维护时以此版为基线。
 chains:
   refinement:
-    # 2026-08-22 用户定：zhipu 放最后（主序调整）。
-    # 实测 zhipu glm-4.7-flash 38s/次 + 高峰期 1305 风暴（连单调用都 429），
-    # agnes/siliconflow 免费档 1-4s。把快的放前面，zhipu 作最后兜底。
+    # 2026-08-22 用户定主序：agnes/siliconflow 免费档 1-4s 放前；
+    # zhipu 免费 key 失效，2026-08-29 移出降级链（避免烧付费 ZHIPU_API_KEY）。
     - provider: agnes          # 第一优先（2026-08-22 用户定）：Agnes 免费档，1-4s
       model: agnes-2.5-flash
       max_tokens: 16384
     - provider: siliconflow    # 第二优先：硅基流动 deepseek-ai/DeepSeek-V4-Flash 免费，1-3s
       model: deepseek-ai/DeepSeek-V4-Flash
       max_tokens: 16384
-    # zhipu 放最后（2026-08-22 用户定）：慢（38s/次）+ 1305 限流风暴，作末位兜底
-    - provider: zhipu
-      model: glm-4.7-flash
-      max_tokens: 16384     # 2026-08-18：8192→16384 防输出截断（截断→JSON 解析失败→降级 deepseek 烧钱）
     - provider: rule
       rule: drop_batch
 
