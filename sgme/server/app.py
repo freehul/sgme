@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger("sgme.server")
 
 from sgme import config as sgme_config
+from sgme import __version__  # FastAPI 文档页版本（单源 sgme.__version__，B123）
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
 
@@ -733,7 +734,7 @@ def create_app(
             db_mod.close(session_conn)
             db_mod.close(wiki_conn)
 
-    app = FastAPI(title="SGME", version="1.1.0", docs_url="/docs", lifespan=lifespan)
+    app = FastAPI(title="SGME", version=__version__, docs_url="/docs", lifespan=lifespan)
 
     # CORS：允许局域网来源（TackMark 等 HTML 工具需 fetch 页面内容做标注；
     # 鉴权仍由 X-API-Key 承担，开放 CORS 不降低安全性）

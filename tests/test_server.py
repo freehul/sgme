@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from sgme import config as sgme_config
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
+from sgme import __version__  # health version 契约动态断言（B123 单源化）
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
 
@@ -128,7 +129,7 @@ def test_health_no_api_key_returns_200(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.1.0"
+    assert body["version"] == __version__
     assert "refinement" in body
     assert "watermark_age_sec" in body["refinement"]
 

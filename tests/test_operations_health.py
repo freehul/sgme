@@ -200,7 +200,7 @@ def test_data_http_shape_complete(conns, cfg, mock_llm):
     assert data["refinement"]["stalled"] is False
     assert data["refinement"]["heartbeat_ok"] is True
     assert data["status"] == "ok"
-    assert data["version"] == SGME_VERSION == "1.1.0"
+    assert data["version"] == SGME_VERSION  # 单源：health 常量 = sgme.__version__（B123）
     assert data["llm"]["available"] is True
 
 
@@ -307,7 +307,7 @@ def test_http_endpoint_contract_unchanged(client, conns):
     assert list(body.keys()) == HTTP_TOP_KEYS
     assert list(body["refinement"].keys()) == HTTP_REFINEMENT_KEYS
     assert body["status"] == "ok"
-    assert body["version"] == "1.1.0"
+    assert body["version"] == SGME_VERSION  # 单源断言（B123 版本单源化）
     assert set(body["llm"].keys()) == {"available", "provider", "model", "error"}
     assert body["refinement"]["watermark_age_sec"] is not None
     assert body["refinement"]["heartbeat_ok"] is True
@@ -327,7 +327,7 @@ def test_mcp_tool_contract_unchanged(mcp, conns):
     assert list(body.keys()) == MCP_TOP_KEYS
     assert list(body["refinement"].keys()) == MCP_REFINEMENT_KEYS
     assert body["status"] == "ok"
-    assert body["version"] == "1.1.0"
+    assert body["version"] == SGME_VERSION  # 单源断言（B123 版本单源化）
     assert body["llm"]["available"] is True
 
 

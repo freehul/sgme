@@ -29,6 +29,7 @@ from sgme.engine import refine as refine_mod
 from sgme.profile import tier0 as tier0_mod
 from sgme.raw import store as raw_store
 from sgme.data.search import vector as vector_mod
+from sgme import __version__  # health version 契约动态断言（B123 单源化）
 from sgme.server.app import create_app
 from sgme.signal import engine as signal_engine
 from sgme.data import db as db_mod
@@ -359,7 +360,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.1.0"
+    assert body["version"] == __version__
     assert "available" in body["llm"]
     assert body["llm"]["available"] is True
     assert "stalled" in body["refinement"]

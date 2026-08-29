@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sgme import config as sgme_config
+from sgme import __version__  # health version 契约动态断言（B123 单源化）
 from sgme.engine import health as health_mod
 from sgme.server.app import create_app
 from sgme.data import db as db_mod
@@ -286,7 +287,7 @@ def test_health_endpoint_returns_full_fields(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.1.0"
+    assert body["version"] == __version__
     # llm 字段
     assert "available" in body["llm"]
     assert "provider" in body["llm"]
