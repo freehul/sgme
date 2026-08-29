@@ -2040,4 +2040,9 @@ test_vector_embed）**72 collected / exit=0 / 0 failed**；提交前另跑全量
   embedding 失败批跳过、检索降级 BM25（原行为），无新增风险；
 ② B121 的 llm_override 改 agnes 后，无 vector 配置环境不再向 agnes 发注定失败的
   /embeddings 请求（T-117 门禁生效）；
-③ 版本 1.1.0 → 1.1.1（bug 修复批 +0.0.1，0825 版本规则），health 契约随包版本自动对齐。
+③ 版本 1.1.0 → 1.1.1（bug 修复批 +0.0.1，0825 版本规则）。**沙箱验收揪出双源版本漂移**：
+  干净 clone + uv 安装 + `python -m sgme` 起服务，health 报 1.1.0 而包已 1.1.1——
+  operations/health.py:51 与 server/app.py:736 仍硬编码版本号。单源化收口：SGME_VERSION
+  与 FastAPI(version=) 均改引 sgme.__version__（兑现 B122「health 与包版本一致」契约，
+  原 v0.8 清理项提前落账）；test_e2e_v04/test_health_v04/test_operations_health/test_server
+  共 6 处硬编码版本断言同步动态化（T-113「版本断言硬编码」反模式残留清零）。

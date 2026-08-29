@@ -45,10 +45,12 @@ from sgme.operations.llm import detect_missing_model_keys, model_keys_notice
 
 logger = logging.getLogger("sgme.operations.health")
 
-# 版本号：原先硬编码在 routes_memory.health_check 与 mcp_server.health 两处，
-# v0.7 收敛到此单点常量。取值与 sgme.__version__ 一致（两者的统一属 v0.8 清理项，
-# 此处不直接引用 __version__，避免版本号变更静默改动 API 契约字段）。
-SGME_VERSION: str = "1.1.0"
+# 版本号：v0.7 收敛到此单点常量。v1.1.1 起单源化（B123，兑现 B122「health 版本与
+# 包版本一致」契约 + 原 v0.8 清理项）：直接引用 sgme.__version__，包 bump 即全链生效，
+# 消灭双源漂移（曾出现包 1.1.1 / health 1.1.0 分叉）。
+from sgme import __version__ as _pkg_version
+
+SGME_VERSION: str = _pkg_version
 
 
 def watermark_age_sec(last_refined_at: str | None) -> int | None:
