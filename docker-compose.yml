@@ -29,9 +29,11 @@ services:
     volumes:
       - sgme-data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9910/v1/health', timeout=3).status==200 else 1)"]
+      # 2026-08-29 B123：urlopen 内层 timeout 必须大于 /v1/health 实际延迟（内部
+      # 同步探测 LLM 首链，agnes 实测 5.5s）——曾为 3s 必然超时误判 unhealthy
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9910/v1/health', timeout=25).status==200 else 1)"]
       interval: 30s
-      timeout: 5s
+      timeout: 30s
       retries: 3
       start_period: 15s
 
