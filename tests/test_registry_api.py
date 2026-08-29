@@ -55,7 +55,8 @@ def test_registry_list_dimensions(app, client):
     body = resp.json()
     assert body["total"] == len(sgme_config.load_config()["dimensions"])
     dims = {d["id"] for d in body["dimensions"]}
-    assert {"identity", "family", "projects", "tech_stack"} <= dims
+    # projects/tasks 已移除（2026-08-18 三池重构），关键维度集合随之更新
+    assert {"identity", "family", "goals", "tech_stack"} <= dims
     # 每个维度带别名
     identity = next(d for d in body["dimensions"] if d["id"] == "identity")
     assert "身份" in identity["aliases"]

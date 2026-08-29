@@ -22,6 +22,7 @@ import pytest
 from anyio import move_on_after
 from fastapi.testclient import TestClient
 
+from sgme import __version__  # health 契约 version 动态断言（防版本 bump 漂移）
 from sgme import config as sgme_config
 from sgme.engine import health as health_mod
 from sgme.engine import l2 as l2_mod
@@ -331,7 +332,8 @@ def test_health_returns_full_observability_fields(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["version"] == "1.0.0"
+    # version 与包版本动态对齐（operations/health.SGME_VERSION 契约 = sgme.__version__）
+    assert body["version"] == __version__
     # llm 字段
     assert "available" in body["llm"]
     assert body["llm"]["available"] is True

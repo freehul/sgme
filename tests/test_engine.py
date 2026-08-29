@@ -98,7 +98,7 @@ def test_normalize_registry_id_exact_match(cfg, mem_conn):
     """
     alias_map = memory_dao.build_alias_map(mem_conn)  # 仅含中文别名（真实产物）
     registry_names = {d["id"]: d["display_name"] for d in cfg["dimensions"]}
-    for eng_id in ["identity", "projects", "tech_stack", "status", "family", "values"]:
+    for eng_id in ["identity", "goals", "tech_stack", "status", "family", "values"]:
         dim_id, hit, score = normalize.normalize_dimension(eng_id, alias_map, registry_names)
         assert dim_id == eng_id, f"{eng_id} 应精确命中注册表 id，实际 {dim_id}"
         assert hit == "alias"
@@ -373,7 +373,7 @@ def test_refine_file_success(raw_dir, mem_conn, session_conn, cfg):
         {"content": "用户使用 Python 3.11", "dimensions": ["技术栈"],
          "memory_type": "persona", "priority": 80, "time_velocity": "static",
          "source_message_ids": [1]},
-        {"content": "SGME 项目进行中", "dimensions": ["项目"],
+        {"content": "SGME 项目进行中", "dimensions": ["目标"],
          "memory_type": "episodic", "priority": 70, "time_velocity": "dynamic",
          "source_message_ids": [1]},
     ])
@@ -382,9 +382,9 @@ def test_refine_file_success(raw_dir, mem_conn, session_conn, cfg):
     result = refine.refine_file(fid, mem_conn, session_conn, cfg, client=cli)
     assert result.status == "refined"
     assert len(result.memories) == 2
-    # dimensions 已归一化为 id
+    # dimensions 已归一化为 id（projects 维度已移除，2026-08-18 三池重构，改用 goals）
     assert "tech_stack" in result.memories[0]["dimension_ids"]
-    assert "projects" in result.memories[1]["dimension_ids"]
+    assert "goals" in result.memories[1]["dimension_ids"]
     # last_refined_seq 推进
     assert result.new_last_refined_seq == 2
     rf = session_dao.get_raw_file(session_conn, fid)

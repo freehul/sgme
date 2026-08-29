@@ -169,7 +169,8 @@ def test_run_max_merges_cap(tmp_path, monkeypatch):
 def test_merge_scene_gc_config_defaults():
     cfg = config_mod._merge_scene_gc_config(None)
     assert cfg["enabled"] is True
-    assert cfg["merge_threshold"] == 0.80
+    assert cfg["merge_threshold"] == 0.70  # B117 由 0.80 下调（收弱相似度重复场景）
+    assert cfg["min_threshold"] == 0.70    # B117 新增兜底下限
     assert cfg["trigger_at"] is None
     assert cfg["max_merges"] == 20
 
@@ -178,7 +179,7 @@ def test_merge_scene_gc_config_user_override():
     user = config_mod._merge_scene_gc_config({"max_merges": 5, "trigger_at": 300})
     assert user["max_merges"] == 5
     assert user["trigger_at"] == 300
-    assert user["merge_threshold"] == 0.80  # 未覆盖保留默认
+    assert user["merge_threshold"] == 0.70  # 未覆盖保留默认（B117 起 0.80→0.70）
 
 
 def test_merge_scene_gc_config_rejects_bad_types():
