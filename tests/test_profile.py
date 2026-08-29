@@ -73,7 +73,7 @@ def test_load_work_template(cfg):
 def test_load_full_template(cfg):
     t = template.load_template("full", cfg["dimensions"])
     assert t["name"] == "full"
-    assert len(t["memory_types"]) == 15  # 全量
+    assert len(t["memory_types"]) == 13  # 全量（2026-08-18 三池重构移除 projects/tasks，15→13；ideas 不入注入模板）
 
 
 def test_load_template_not_found_raises():

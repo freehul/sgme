@@ -191,7 +191,7 @@ def test_candidate_pool_no_whole_pool_truncation_across_groups(mem_conn):
 
     旧 B2 实现按整池 char_budget 截断（可能漏冲突）；铁律 #7 仅允许单记忆候选超预算截断。
     """
-    dims = ["tech_stack", "identity", "status", "family", "projects"]
+    dims = ["tech_stack", "identity", "status", "family", "goals"]
     long = "x" * 200
     for dim in dims:
         for i in range(60):
@@ -346,7 +346,7 @@ def test_action_merge_combines_and_archives(mem_conn, cfg):
         updated_at="2026-01-01T00:00:00Z",
     )
     old2 = _insert_existing(
-        mem_conn, "用户写 SGME 项目", ["tech_stack", "projects"],
+        mem_conn, "用户写 SGME 项目", ["tech_stack", "goals"],
         updated_at="2026-02-01T00:00:00Z",
     )
     new_memories = [{
@@ -456,12 +456,12 @@ def test_ttl_static_dimension_remains_null(mem_conn, cfg):
 def test_ttl_ideas_forces_null_over_other_dimensions(mem_conn, cfg):
     """创意池铁律（2026-08-13）：含 ideas 维度 → ttl 强制 None（长期保存）。
 
-    ideas + projects（projects 默认 90d）共存时，必须 None——否则创意 90 天后
-    过期退出注入，违背创意池「ideas + ttl_days=NULL」定义。
+    ideas + goals（goals 默认 90d；projects 已移除，2026-08-18 三池重构）共存时，
+    必须 None——否则创意 90 天后过期退出注入，违背创意池「ideas + ttl_days=NULL」定义。
     """
     new_memories = [{
         "content": "用户想做一个个人知识管理工具（创意）",
-        "dimension_ids": ["ideas", "projects"],
+        "dimension_ids": ["ideas", "goals"],
         "memory_type": "persona", "priority": 80, "time_velocity": "static",
         "ttl_days": None,
     }]
@@ -469,7 +469,7 @@ def test_ttl_ideas_forces_null_over_other_dimensions(mem_conn, cfg):
     cli = _mock_llm_client(body)
     result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
-    assert mem["ttl_days"] is None  # ideas 覆盖 projects 的 90d
+    assert mem["ttl_days"] is None  # ideas 覆盖 goals 的 90d
 
 
 def test_ttl_ideas_forces_null_even_with_explicit_value(mem_conn, cfg):

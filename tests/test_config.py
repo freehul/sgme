@@ -20,9 +20,10 @@ def test_load_config_returns_dict_with_required_keys():
 
 
 def test_dimensions_count():
-    """维度注册表必须含 16 维（checklist T0 断言；2026-08-12 加 ideas 创意池维度）。"""
+    """维度注册表必须含 14 维（2026-08-18 三池重构移除 projects/tasks 两维，
+    16 → 14；ideas 创意池维度 2026-08-12 加入）。"""
     cfg = config.load_config()
-    assert len(cfg["dimensions"]) == 16
+    assert len(cfg["dimensions"]) == 14
 
 
 def test_dimension_fields_complete():
@@ -42,13 +43,18 @@ def test_dimension_ids_unique():
 
 
 def test_known_dimension_ids_present():
-    """关键维度 id 必须存在（identity/tech_stack/status 等）。"""
+    """关键维度 id 必须存在（identity/tech_stack/status 等）。
+
+    projects/tasks 已移除（2026-08-18 三池重构：项目池 project_meta /
+    待办池 demands 为专用落地点），不再出现在注册表。
+    """
     cfg = config.load_config()
     ids = {d["id"] for d in cfg["dimensions"]}
     for must in ("identity", "family", "social", "values", "skills", "tech_stack",
                  "preferences", "habits", "environment", "style",
-                 "focus", "projects", "goals", "tasks", "status", "ideas"):
+                 "focus", "goals", "status", "ideas"):
         assert must in ids, f"缺关键维度 {must}"
+    assert "projects" not in ids and "tasks" not in ids, "projects/tasks 已移除，不应回潜"
 
 
 def test_dynamic_dimensions_have_ttl():
@@ -89,14 +95,19 @@ def test_aliases_contain_known_mappings():
 
 
 def test_llm_config_has_refinement_chain():
-    """LLM 配置含 refinement 链：首链 deepseek 主模型 + 末链 rule drop_batch 兜底。"""
+    """LLM 配置含 refinement 链：首链 agnes 主模型 + 末链 rule drop_batch 兜底。
+
+    2026-08-29 链序（B121）：agnes(agnes-2.5-flash) → siliconflow(DeepSeek-V4-Flash)
+    → rule(drop_batch)；zhipu 免费节点已移出。
+    """
     cfg = config.load_config()
     chains = cfg["llm"]["chains"]
     assert "refinement" in chains
     refinement = chains["refinement"]
     assert refinement, "refinement 链为空"
     # 语义化断言：不绑死链长（历史教训：断言 len>=3 在 lm-studio 移除后脆弱化）
-    assert refinement[0]["provider"] == "deepseek"
+    assert refinement[0]["provider"] == "agnes"
+    assert refinement[0]["model"] == "agnes-2.5-flash"
     assert refinement[-1]["provider"] == "rule"
     assert refinement[-1].get("rule") == "drop_batch"
 

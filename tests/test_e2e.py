@@ -38,7 +38,8 @@ _L1_OUTPUT = json.dumps([
         "memory_type": "persona",
         "priority": 80,
         "time_velocity": "dynamic",
-        "dimensions": ["项目"],
+        # projects 维度已移除（2026-08-18 三池重构）；「正在开发」语义最贴 focus（当前关注话题）
+        "dimensions": ["关注"],
         "source_message_ids": [2],
     },
 ], ensure_ascii=False)
