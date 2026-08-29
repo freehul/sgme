@@ -50,8 +50,8 @@ _PROVIDER_FIELDS = (
 MODEL_KEY_MISSING_NOTICE = (
     "SGME 模型配置缺失（{missing}）：LLM 提炼 / 向量检索将降级。"
     "申请免费 Key：Agnes agnes-2.5-flash（https://agnes-ai.cn 注册，当前免费）→ AGNESAI_API_KEY；"
-    "硅基流动 DeepSeek-V4-Flash + bge-m3（https://cloud.siliconflow.cn 实名后免费）→ SILICONFLOW_API_KEY；"
-    "智谱 GLM-4.7-Flash（https://open.bigmodel.cn 手机号注册，永久免费）→ ZHIPU_API_KEY。"
+    "硅基流动 DeepSeek-V4-Flash + bge-m3（https://cloud.siliconflow.cn 实名后免费）→ SILICONFLOW_API_KEY。"
+    "（2026-08-29 zhipu 已移出降级链，无需智谱 Key，B121）"
     "完整流程见 docs/guide/免费模型Key申请指南.md"
 )
 

@@ -234,3 +234,38 @@ def test_apply_section_ignores_env_managed_source(monkeypatch, tmp_path):
     assert cfg["skills_hub"]["sync_policy"] == "auto"
     # 调用方 values 不被污染（source 键仍保留）
     assert "source" in values["remote"]
+
+
+# ---------- refine.llm_override 加载（B121 补遗：合并函数曾静默丢弃该键） ----------
+
+def test_refine_llm_override_loaded_from_yaml(tmp_path):
+    """refine.llm_override 必须从 sgme.yaml 加载——T-43 防劫持语义依赖它
+    （显式 override 优先于 agent_model 声明）。"""
+    yaml_path = tmp_path / "sgme.yaml"
+    yaml_path.write_text(
+        "refine:\n"
+        "  refine_on_append: false\n"
+        "  llm_override:\n"
+        "    provider: agnes\n"
+        "    model: agnes-2.5-flash\n"
+        "    max_tokens: 8192\n",
+        encoding="utf-8",
+    )
+    cfg = config.load_config(sgme_path=str(yaml_path))
+    override = cfg["refine"]["llm_override"]
+    assert override["provider"] == "agnes"
+    assert override["model"] == "agnes-2.5-flash"
+    assert override["max_tokens"] == 8192
+
+
+def test_refine_llm_override_invalid_falls_back_to_empty(tmp_path):
+    """llm_override 结构非法（缺 provider/model）→ 回退空 dict（跟随 agent 声明）。"""
+    yaml_path = tmp_path / "sgme.yaml"
+    yaml_path.write_text(
+        "refine:\n"
+        "  llm_override:\n"
+        "    provider: agnes\n",
+        encoding="utf-8",
+    )
+    cfg = config.load_config(sgme_path=str(yaml_path))
+    assert cfg["refine"]["llm_override"] == {}

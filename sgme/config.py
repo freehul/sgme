@@ -732,7 +732,11 @@ def _merge_l15_config(user_cfg: dict | None) -> dict:
 
 
 def _merge_refine_config(user_cfg: dict | None) -> dict:
-    """合并 refine 段默认值与用户配置（提炼调度）。"""
+    """合并 refine 段默认值与用户配置（提炼调度）。
+
+    llm_override（T-43 防劫持：显式指定优先于 agent_model 声明）2026-08-29 起
+    参与合并——此前该键被静默丢弃，sgme.yaml 里的专用提炼 LLM 从未生效（B121）。
+    """
     base = dict(DEFAULT_REFINE_CONFIG)
     if not isinstance(user_cfg, dict):
         return base
@@ -744,6 +748,14 @@ def _merge_refine_config(user_cfg: dict | None) -> dict:
             base["batch_scan"]["enabled"] = bs["enabled"]
         if isinstance(bs.get("interval_min"), int) and bs["interval_min"] > 0:
             base["batch_scan"]["interval_min"] = bs["interval_min"]
+    ov = user_cfg.get("llm_override")
+    if (isinstance(ov, dict)
+            and isinstance(ov.get("provider"), str) and ov["provider"].strip()
+            and isinstance(ov.get("model"), str) and ov["model"].strip()):
+        merged = {"provider": ov["provider"].strip(), "model": ov["model"].strip()}
+        if isinstance(ov.get("max_tokens"), int) and ov["max_tokens"] > 0:
+            merged["max_tokens"] = ov["max_tokens"]
+        base["llm_override"] = merged
     return base
 
 
