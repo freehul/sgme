@@ -125,11 +125,11 @@ python -m sgme
 # startup warns; once config/.env is set, default keys return 403)
 #   SGME_BEARER_TOKEN optional: transport-layer token, off by default (localhost bypass)
 # Model keys (optional, free tier supported): refinement uses agnes-2.5-flash (free) as primary,
-#   siliconflow DeepSeek-V4-Flash (free) as second, zhipu GLM-4.7-Flash (free) as last fallback;
+#   siliconflow DeepSeek-V4-Flash (free) as second (zhipu removed from the chain 2026-08-29, B121);
 #   vector search uses siliconflow BAAI/bge-m3 (free). When a key is missing,
 #   /v1/health returns model_config.missing_keys — apply free keys per
-#   docs/guide/免费模型Key申请指南.md (Agnes agnes-2.5-flash 免费 / 硅基流动 bge-m3 零费用 / 智谱 GLM-4.7-Flash 永久免费).
-#   AGNESAI_API_KEY=<agnes>   SILICONFLOW_API_KEY=<siliconflow>   ZHIPU_API_KEY=<zhipu>
+#   docs/guide/免费模型Key申请指南.md (Agnes agnes-2.5-flash 免费 / 硅基流动 bge-m3 零费用).
+#   AGNESAI_API_KEY=<agnes>   SILICONFLOW_API_KEY=<siliconflow>
 
 # 4. Run tests
 pytest tests/ -q
