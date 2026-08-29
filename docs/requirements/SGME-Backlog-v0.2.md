@@ -197,6 +197,7 @@
 | T-116 | Task | L2 场景超限治理（批量合并）评估与实施 | ST-5 | 🟡 暂缓 | — | 2026-08-29 从 T-97 备注「另行登记」落成条目；B117 手动收敛后 active 269/300，先观察场景级预筛（T-97）后的增速再评估批量合并 |
 | T-117 | Task | embed 回退未校验 vector_capable：链首无向量能力时仍发注定失败的请求 | ST-4 | ✅ 已解决 | v1.1.1 | 2026-08-29 B122 审查发现，同日修复（B123，v1.1.1）：`vector.py::embed` 链首回退前查 providers 注册表——明确 `vector_capable=false`（agnes）直接跳过省一次注定 401 的请求，注册表查无此人（本地 LM Studio 等旧形态）保持旧行为照常尝试；链首在注册表且 vector_capable=true 时顺带对齐 default_model/api_key_env（仅 search.vector 未显式配置时）。+3 测试（门禁/旧行为/注册表对齐），4 文件 72 例全绿 |
 | T-118 | Bug | 技能向量配置解析双重解包：_embed_config 永远得空表，技能向量嵌入自 M1 起从未真正工作 | ST-36 | ✅ 已解决 | v1.1.1 | 2026-08-29 接手另一会话在途改动（sync_index 待补口径全表化）时实锤（B123，v1.1.1）：`skills/vectors.py::_embed_config` 对 `load_providers_config()` 误做 `.get("providers")` 二次解包——该函数本就返回**扁平** {name: 连接字段}（config.py:378），永远得空表 → 技能嵌入全批失败（「向量模型未配置」）→ B120 修的分批/待补口径全部空转；被 `test_skills_indexer` 的错误 mock 形状（多包一层 providers）掩护，mock 全绿≠真实可用再添实锤。修复：扁平直读 + 解析顺序重排（active 在注册表→注册表字段；active 不在注册表（生产形态 provider=local 指向 NAS ollama）→ search.vector 自带连接字段直连，本地优先；无 active→vector_capable 扫描；最后 search.vector 直连兜底）。同批收尾：另一会话回归用例重复定义两份且 embed=False 未进修复分支，重写为真路径四轮验证（pending 截断前统计/限批逐轮补齐/全覆盖归零） |
+| T-119 | Task | /v1/health 的 LLM 探测加短 TTL 缓存（30s），消除 healthcheck 超时根因 | ST-1 | 🟡 暂缓 | — | 2026-08-29 B123 NAS 部署实录发现：health 内部同步探测 LLM 首链（timeout 5s，agnes 实测总延迟 5.5s），healthcheck 内层 urlopen timeout=3s 必然超时误判 unhealthy（docker-compose.yml 已放宽 timeout=25/30s 治标）；治本=check_llm_available 加 30s TTL 缓存（后台过期刷新），health 恢复毫秒级且不依赖外部 LLM 可达性 |
 
 ## 设计文档索引（依附关系）
 

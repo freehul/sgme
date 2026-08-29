@@ -2056,3 +2056,19 @@ test_vector_embed）**72 collected / exit=0 / 0 failed**；提交前另跑全量
   embed_texts 打桩抛异常=向量路降级语义，恢复确定性 BM25-only。修复后 5 文件
   103 passed / 0 failed；教训补强：改「静默失败路径」的代码，必须全局搜「依赖
   该静默失败的测试」——它们是潜伏的密封性炸弹。
+⑤ NAS 生产部署实录（2026-08-29 晚，v1.1.0-nas-autoupd → 1.1.1-nas-autoupd）：
+  - 前置处置：生产 /data/config/sgme.yaml 的 refine.llm_override zhipu→agnes
+    （原文件备份 sgme.yaml.bak-llmoverride-20260829）；NAS src 有另一会话旁路
+    手改的 B121 等价内容（未走 git），git stash 封存后 pull 官方版本（内容一致）；
+  - updater 链实际触发：意图文件 request.json（target_version=1.1.1）+ 手动执行
+    sgme-host-updater.sh（发现该 cron 未装在 NAS crontab——2026-08-28 的更新记录
+    疑似另有触发源，待查）；构建成功但健康验证失败自动回滚 1.1.0；
+  - 根因①healthcheck：内层 urlopen timeout=3s < health 实际延迟 5.5s（内部同步
+    探测 LLM 首链）→ 必然超时误判 unhealthy。治标：compose 内层 25s + timeout 30s
+    （已回写仓库 docker-compose.yml）；治本登记 T-119（探测加 TTL 缓存）；
+  - 根因②向量预热空转死循环：embed_timeout 60s < ollama bge-m3 冷加载时长，
+    每次超时中断模型加载下轮又冷启（日志「嵌入 0 剩余恒 393」，直连测试 20.4s
+    冷加载实证）。处置：手动长超时请求焐热模型 + 生产 sgme.yaml skills 段加
+    embed_timeout: 180.0，重启后预热稳定推进（每轮 10 条）；
+  - 终验：容器 healthy、/v1/health 200 + version 1.1.1 + LLM available(agnes)、
+    三远端 main=78a3f03 + tag v1.1.1 哈希一致、skills 向量 403 条后台补齐中。
