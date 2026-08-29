@@ -1864,3 +1864,95 @@ vitest **164 passed / 0 failed**（13 files，原 147 + 新增 17）、build 成
 「注入场景 + 相关记忆」，注入内容更贴题（T-88 设计意图首次真正生效），未命中时行为不变；
 ③ 0.x 系列 `^` 锁 minor：profile 依赖 `"dsh-sgme": "^0.3.0"` 不会自动升 0.4.x，需显式改 `^0.4.0` 再 install
 （同 B106 记录的 npm 0.x 语义坑）；④ 发布仍需走 7897 代理 + granular token（`docs/design/SGME-dsh-sgme-发布流程-v0.1.md`）。
+
+### B120. skills 索引持久化（skills.db）+ embed 分批解锁向量路（2026-08-29）
+
+**背景**：两条线交汇。①用户问「新的 skills 模块是否达到预期的渐进式披露」→ 实测结论：四级披露
+**形态达标**，但按需检索范式**未达标**（向量路从未生效 + 长句召回崩）。②用户问「是否该用数据库存
+skills 索引」→ 我先基于当前规模判断「暂不建库」（全量重建 3.15s、单次打分 0.5ms、向量仅 1.65MB），
+**用户从产品演进角度反驳**：「作为一个产品，目前可能够用，但未来呢？我建议直接上数据库」——采信，
+一次到位。
+
+**关键实测数据（决策依据）**：
+- 内存索引性能：`index_all` 0.58s / `SkillsBm25` 构建 2.56s / **全量重建 3.15s** / 单次打分 **0.5ms**
+  → 及格线②「≤数分钟」大幅达标，说明**性能从来不是瓶颈**
+- Ollama bge-m3 批量 embed（每条约 500 字符）：`1 条 2.1s / 10 条 19.2s / **50 条 35s 超时**`
+- 向量缓存目录 `/data/cache/skills/` **根本不存在**（`save_cache` 机制健全，是压根没执行到）
+- 路径勘误：用户指定「/data/skills.db」，但 `/data/` 下 memory.db/wiki.db 是 **0 字节死文件**，
+  真库在 `/data/data/`；`DATA_DIR = _USER_ROOT / "data"` 天然落在 `/data/data/skills.db`，与用户意图一致
+
+**改动**：
+1. **`sgme/data/db.py`**：新增 `SKILLS_DDL` / `SKILLS_FTS_DDL` / `SKILLS_FTS_TRIGGERS` 与
+   `connect_skills(data_dir)`。表设计——`skills`（主表 + sha256 锚点 + 分词列）、`skills_fts`（FTS5
+   外部内容表）、`skill_vectors`（BLOB）、`skill_uses`（依赖图 + 入向索引）、`skill_sync_meta`（水位）。
+   ⚠️ **向量用普通表 + BLOB 而非 vec0**：项目 memory_vectors/scene_vectors 均为该形态，
+   `data/search/vector.py` 已封装 sqlite-vec 加速 + numpy 降级双路，引入 vec0 属范式分裂。
+2. **新增 `sgme/data/skills_dao.py`**（data 层唯一出口）：CRUD / 分页 / category 过滤 / 分类目录；
+   FTS 检索带 **BM25 列加权 10:5:1**（技能名最强信号）与**中文停用词过滤**；
+   `diff_records`（sha256 增量判据）、`vector_covered`、`find_incoming` / `find_outgoing`、meta 读写。
+3. **`sgme/skills/vectors.py`**：`embed_texts` 改**内部分批**（`_embed_batch` 单批 + 循环），
+   默认 10 条/批、超时 60s（可配 `skills.embed_batch_size` / `skills.embed_timeout`）；
+   单批失败跳过不拖垮其余批，全失败才抛；`build_vectors` 加 `max_new` 限批。
+4. **`sgme/data/search/vector.py`**：新增 `upsert_skill_vectors`（批量单事务）、`delete_skill_vector`、
+   `skill_vector_search` + `_sqlite_vec_skill_search` / `_numpy_cosine_skill_search`（对称 scene 系列）。
+5. **`sgme/operations/skills.py`**：新增 `sync_index`（增量同步：insert/update/delete/unchanged + 向量补缺）
+   与 `search_skills_db`（FTS ∪ 向量 0.6/0.4 融合，routes 标记 skills_bm25 / skills_rrf）；
+   `search_skills` / `list_skills` 加 `skills_conn` 参数（None 回退内存索引）；
+   新增 **`_db_ready` 空库回退**、`_record_to_dict`（兼容 SkillRecord / dict）。
+6. **接线**：`app.py` 挂 `skills_conn`（仅 `skills.enabled` 时连库）+ lifespan 起 daemon 线程做
+   首次结构化同步与向量分批预热；`routes_memory.py` / `routes_skills.py` / `mcp_server.py` 三入口传参。
+   ⚠️ 刻意**不并入 `init_databases` 三元组返回值**——那会破坏所有既存解包点（v0.7 已踩过）。
+
+**验证**：
+- 新增 `tests/test_skills_db.py` **35 用例全绿**（schema 幂等 / DAO CRUD / FTS 停用词与 name 加权 /
+  category 过滤 / 引号不崩 / diff 增量 / 依赖图 / 分批边界 403→41 批 / 部分批失败 / max_new 限批 / 空库回退）
+- 技能模块 **101 passed**、跨模块（operations_search / routes_memory_l0 / mcp_server / server / search_v04）
+  **143 passed**，零回归
+- 顺带修 B116 遗留的 5 个过时断言（`REQUIRED_FIELDS` 已放宽为 description+category，
+  version/pattern 改可选，测试仍断言必填）
+- 部署：NAS 重建镜像，验证 skills.db 生成、同步统计、向量落盘、routes 变化、长句召回
+
+**运维影响**：
+① 首次启动后台预热约 **13 分钟**（403 条 ÷ 10 条/批 × 19.2s），期间检索照常可用
+——FTS 全量立即生效，向量逐步生效，routes 由 `skills_bm25` 过渡到 `skills_rrf`；
+② **空库回退**保障冷启动空窗期不返回空列表（否则用户会以为技能库空了）；
+③ skills.db 随 `/data` 卷持久化，容器重建不丢；
+④ 新增可配项 `skills.embed_batch_size`（默认 10）/ `skills.embed_timeout`（默认 60s）；
+⑤ 技能模块禁用时**不连库**，核心零影响（对称 wiki 扩展模块）。
+
+### B121. 降级链移除 zhipu 的文档/关联配置全量同步 + refine.llm_override 悬空修复（2026-08-29）
+
+**背景**：commit 9af882b「降级链移除智谱免费节点」（zhipu 免费 Key 失效，避免烧付费 ZHIPU_API_KEY）
+只改了 `config/llm.yaml` + `config/providers.yaml` 两个文件。Backlog 审查（2026-08-29）发现这是
+降级链第三次「改链不跟文档」（前两次 T-96/B100、T-109/B116 各补过一轮），且遗留一处**功能性悬空**：
+`config/sgme.yaml` 的 `refine.llm_override` 仍指向 `provider: zhipu`——该段已从 providers.yaml 删除，
+resolve 构造节点返回 None 静默跳过，override 防劫持语义（防 dsh agent 注册 agent_model 劫持提炼链）
+失效。本条把链描述与关联配置一次性对齐。
+
+**改动**：
+1. **`config/sgme.yaml`**：`refine.llm_override` provider zhipu→**agnes**（model agnes-2.5-flash），
+   保住「显式 override 优先于 agent 声明」的防劫持语义；batch_scan 注释去掉 zhipu 措辞。
+2. **`AGENTS.md` 铁律 9**：链序改 agnes → siliconflow（免费备用）→ rule drop_batch，注明 B121。
+3. **`README.md` / `README.zh-CN.md`**：模型 Key 说明段去 zhipu（zh-CN 侧原文本还停在更早的
+   「智谱主链」描述，属 B100 漏同步，一并修正）。
+4. **`docs/runbook.md` §4.2**：链示例 yaml 与 Key 导出示例去 zhipu（ZHIPU_API_KEY 标注废弃）。
+5. **`docs/agent-onboarding.md`**：「两个模型」段改 agnes 主链描述。
+6. **`docs/guide/免费模型Key申请指南.md`**：表格删智谱行、链序说明更新、§三 智谱节标记废弃留档、
+   providers 说明改两家、时效声明删智谱链接。
+7. **`docs/design/SGME-架构设计-v1.0.md`**：§1 铁律 9、§24 链示例、§4 窗口预算行、§5 默认模型行
+   四处去 zhipu。
+8. **`sgme/operations/llm.py`**：`MODEL_KEY_MISSING_NOTICE` 去智谱句（改为注明 zhipu 已移出链）。
+9. **`sgme/mcp_server.py`**：self_config `requirement` 文案去 ZHIPU_API_KEY。
+10. **`skills/sgme/SKILL.md` / `skills/sgme-key/SKILL.md`**：技能手册链描述仍停在最旧版
+    （「zhipu 主链」），随 T-113 测试修复批次收尾单独更新（避免与并行测试修复的 coldstart 基线撞车）。
+
+**验证**：
+- `grep glm-4.7|zhipu` 全库扫描（排除归档类文档），链描述残留清零（skills/ 两手册见改动 10）
+- 配置加载冒烟：`load_config` 正常、refinement 链 = [agnes, siliconflow, rule]；
+  pytest 全量数字见 B122（T-113 测试漂移修复批次）
+
+**运维影响**：
+① **NAS 生产 `/data/config/sgme.yaml` 为挂载卷副本，不在镜像内**——需手动同步改
+`refine.llm_override` 为 agnes，否则生产继续悬空跳过（提炼跟随 agent 声明，存在被劫持风险）；
+② `ZHIPU_API_KEY` 环境变量不再被任何配置引用，可从 docker.env/config/.env 移除；
+③ `detect_missing_model_keys` 只报告实际在链供应商，智谱 Key 缺失不再出现在 missing_keys。

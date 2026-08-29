@@ -96,7 +96,7 @@ INFO:     Uvicorn running on http://127.0.0.1:9910
 ### 4.2 生产模式（接 OpenAI 兼容 LLM）
 
 1. **准备 LLM 提供商**（任选 OpenAI 兼容提供商，连接字段见 `config/providers.yaml`）：
-   - 免费链（2026-08-22 用户定，三免费模型按序兜底）：Agnes agnes-2.5-flash（主，当前 $0/1M token，`AGNESAI_API_KEY`）→ 硅基流动 DeepSeek-V4-Flash（免费，`SILICONFLOW_API_KEY`）→ 智谱 GLM-4.7-Flash（永久免费，`ZHIPU_API_KEY`）；申请见 docs/guide/免费模型Key申请指南.md
+   - 免费链（2026-08-22 用户定；2026-08-29 zhipu 移出链，B121）：Agnes agnes-2.5-flash（主，当前 $0/1M token，`AGNESAI_API_KEY`）→ 硅基流动 DeepSeek-V4-Flash（免费，`SILICONFLOW_API_KEY`）→ rule drop_batch 兜底；申请见 docs/guide/免费模型Key申请指南.md
    - 模型名禁止含 `pro`/`reasoner`/`thinking`，禁止 `gemma-4-12b-qat`
 
 2. **配置降级链**：编辑 `config/llm.yaml`（只写链结构，连接字段由 providers.yaml 注入——provider 名即 providers.yaml 键名）：
@@ -107,9 +107,7 @@ INFO:     Uvicorn running on http://127.0.0.1:9910
          model: agnes-2.5-flash
        - provider: siliconflow    # 第二优先：DeepSeek-V4-Flash 免费，1-3s
          model: deepseek-ai/DeepSeek-V4-Flash
-       - provider: zhipu          # 末位兜底：GLM-4.7-Flash 永久免费（实测慢 38s/次 + 高峰限流）
-         model: glm-4.7-flash
-       - provider: rule
+       - provider: rule           # 兜底（2026-08-29 zhipu 移出链，B121）
          action: drop_batch
    ```
 
@@ -117,7 +115,7 @@ INFO:     Uvicorn running on http://127.0.0.1:9910
    ```bash
    export AGNESAI_API_KEY="..."          # Agnes 主链 key（agnes-2.5-flash 免费，申请见 docs/guide/免费模型Key申请指南.md）
    export SILICONFLOW_API_KEY="..."      # 硅基流动 key（DeepSeek-V4-Flash LLM 第二优先 + 向量 embedding BAAI/bge-m3 免费，见 §12）
-   export ZHIPU_API_KEY="..."            # 智谱兜底 key（GLM-4.7-Flash 永久免费）
+   # ZHIPU_API_KEY 已废弃：2026-08-29 zhipu 移出降级链，providers.yaml 已删该段（B121）
    ```
 
 4. **启动 SGME**：

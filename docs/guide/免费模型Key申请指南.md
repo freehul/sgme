@@ -11,10 +11,9 @@ SGME 免费运行需要三个免费 Key（每个注册约 5-10 分钟，全程�
 |---|---|---|---|---|
 | LLM 提炼 | Agnes AI | agnes-2.5-flash | 当前免费（$0/1M token，官方价目表） | **主位（第一优先）** |
 | LLM 提炼 | 硅基流动 | deepseek-ai/DeepSeek-V4-Flash | 免费 | 第二优先 |
-| LLM 提炼 | 智谱开放平台 | GLM-4.7-Flash | 永久免费、无限调用 | 末位兜底 |
 | 向量检索 | 硅基流动 | BAAI/bge-m3（1024 维） | 调用零费用 | — |
 
-> 链序说明（2026-08-22 用户定）：实测 zhipu 慢（38s/次）+ 高峰期 1305 限流风暴，agnes/siliconflow 免费档 1-4s——把快的放前面，zhipu 作最后兜底。**最少只需一个 Key 即可跑提炼**；建议三个都申请，容错最稳。
+> 链序说明（2026-08-22 用户定；2026-08-29 更新）：实测 zhipu 慢（38s/次）+ 高峰期 1305 限流风暴，agnes/siliconflow 免费档 1-4s——把快的放前面。**2026-08-29 zhipu 免费 Key 失效，已整体移出降级链（B121），无需再申请智谱 Key**。**最少只需一个 Key 即可跑提炼**；建议两个都申请，容错最稳。
 
 ## 一、Agnes AI（LLM 提炼主位）
 
@@ -40,20 +39,13 @@ SGME 免费运行需要三个免费 Key（每个注册约 5-10 分钟，全程�
 - 向量模型限流宽裕：RPM 2000-10000、TPM 50 万-1000 万（按账户维度，非 key）
 - 不实名仅影响充值与开发票（纯免费用户无影响）；部分免费模型需实名后全量解锁
 
-## 三、智谱开放平台（LLM 末位兜底）
+## 三、智谱开放平台（已移出降级链，2026-08-29）
 
-1. 打开 https://open.bigmodel.cn ，手机号注册（国内直连，无需翻墙）
-2. 登录控制台 → 左侧「API Keys」→ 新建 API Key → 复制保存（只显示一次）
-3. 把 Key 写入 SGME 的 `config/.env`：`ZHIPU_API_KEY=你的Key`
-
-**免费说明（官方口径）**：
-- GLM-4.7-Flash 属于官方「免费模型」分类：**永久免费、无限调用**，不消耗任何 token 额度
-- 注册赠送的 token 资源包是给付费模型（GLM-4.7/GLM-5 等）体验用的，与 Flash 免费**无关**——两者独立机制
-- 限流：按账户权益等级限并发，高峰期动态调整（错误码 1302）；**慢**（实测 38s/次），故放末位兜底
+> ⚠️ **zhipu 免费 Key 失效，已整体移出 SGME 降级链（B121），providers.yaml 已删该段**——本节仅留档，新用户无需申请智谱 Key。若日后智谱恢复免费档并重新入链，再按官方流程申请即可。
 
 ## 四、SGME 配置与生效
 
-- `config/providers.yaml` 已内置 agnes / zhipu / siliconflow 三个供应商连接（仓库自带）
+- `config/providers.yaml` 已内置 agnes / siliconflow 两个供应商连接（仓库自带）
 - 修改 `config/.env` 后**重启 Gateway 生效**
 - 验证：`GET /v1/health` 看 `model_config` 字段是否提示缺失；调用 `/v1/search` 看语义检索是否命中
 - 未配置任何 Key 时：LLM 提炼降级 `drop_batch`、向量检索降级纯 BM25——系统能跑但提炼不可用，这正是需要申请 Key 的原因
@@ -71,5 +63,4 @@ SGME 免费运行需要三个免费 Key（每个注册约 5-10 分钟，全程�
 
 免费政策随时可能调整，落地前以官方「价格/额度」页为准：
 - Agnes：https://wiki.agnes-ai.com/zh-Hans/docs/agnes-25-flash （价目表段）
-- 智谱：https://open.bigmodel.cn/pricing
 - 硅基流动：https://cloud.siliconflow.cn/models

@@ -30,7 +30,7 @@ SGME 是单用户 Agent 记忆引擎 Server：把 Agent 会话提炼为标签化
 6. **模板查询默认排序**：动态维度 updated_at DESC，静态维度 priority DESC
 7. **L1.5 候选池**：标签预过滤 OR、**不截断全量召回**（默认路径）、按上下文预算贪心装箱分批、同一新记忆只进一批；单记忆候选超预算才允许 top-k 截断并记 anomaly_warn；**候选池向量预筛（l15.prescreen，2026-08-12 成本治理）**：启用时候选 = 向量 Top-K ∪ 维度 Top-N（priority 降序），单记忆候选 ≤ vector_top_k + dimension_top_n（默认 50+50）；embed 不可达/向量检索异常自动回退全量召回（宁贵勿漏）
 8. **Supersession**：旧值归档不删除（memory_archive 表），判等锚点 memory_id
-9. **LLM 降级链**：agnes（agnes-2.5-flash，免费主模型）→ siliconflow（DeepSeek-V4-Flash，免费）→ zhipu（GLM-4.7-Flash，免费兜底）→ rule drop_batch；模型名含 pro/reasoner/thinking 或命中 gemma-4-12b-qat 拒绝加载
+9. **LLM 降级链**：agnes（agnes-2.5-flash，免费主模型）→ siliconflow（DeepSeek-V4-Flash，免费）→ rule drop_batch（2026-08-29 zhipu 免费 Key 失效移出链，B121）；模型名含 pro/reasoner/thinking 或命中 gemma-4-12b-qat 拒绝加载
 10. **密钥不落盘**：只引用环境变量名；API Key 铁律——禁止在代码/配置里硬编码密码
 11. **提炼健康自检**：refined_at / last_refined_seq 水位推进，停摆产 anomaly_warn
 12. **文档是第一公民**：改设计先改 docs，代码与文档不一致视为缺陷
@@ -1719,10 +1719,7 @@ chains:
     - provider: siliconflow        # 第二优先（硅基流动 DeepSeek-V4-Flash 免费，1-3s）
       model: deepseek-ai/DeepSeek-V4-Flash
       max_tokens: 16384
-    - provider: zhipu              # 末位兜底（智谱 GLM-4.7-Flash 永久免费，实测慢 38s/次 + 高峰限流）
-      model: glm-4.7-flash
-      max_tokens: 16384
-    - provider: rule               # 规则兜底（见 §3）
+    - provider: rule               # 规则兜底（见 §3；2026-08-29 zhipu 移出链，B121）
       rule: drop_batch
 
 rules:
@@ -1766,14 +1763,14 @@ rules:
 batch_budget = context_window - reserved_output - prompt_overhead × context_window
 ```
 
-- 每级模型独立窗口：agnes 200K / siliconflow 128K / zhipu 200K → budget ≈ window − 4K − 0.08×window（L1.5 分批、L2 分批、L1 长会话分块都按此）；`prompt_overhead` 为 0.08（8%）
+- 每级模型独立窗口：agnes 200K / siliconflow 128K → budget ≈ window − 4K − 0.08×window（L1.5 分批、L2 分批、L1 长会话分块都按此）；`prompt_overhead` 为 0.08（8%）
 - 窗口值从模型配置读取（`context_window` 字段，可配），**随模型动态变化**
 - `context_overflow` 判定：输入 token 估算（tiktoken 或模型近似）超 budget → 触发分块/降级
 
 ### 5. 模型白名单校验（提纯铁律落地）
 
 - 配置加载时校验：模型名含 `pro/reasoner/thinking` 前缀或命中 `deny_exact` → **拒绝加载并报错**（防配置错选）
-- `agnes-2.5-flash` 为默认主模型（免费，当前 $0/1M token），`deepseek-ai/DeepSeek-V4-Flash`（硅基流动免费）第二、`glm-4.7-flash`（智谱永久免费）末位兜底；`gemma-4-12b-qat` 禁用（白名单 deny_exact）
+- `agnes-2.5-flash` 为默认主模型（免费，当前 $0/1M token），`deepseek-ai/DeepSeek-V4-Flash`（硅基流动免费）第二；`gemma-4-12b-qat` 禁用（白名单 deny_exact）
 
 ### 6. 健康暴露
 
