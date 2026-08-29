@@ -273,14 +273,25 @@ class TestSearchSkills:
         names = [h["name"] for h in hits]
         assert "alpha" in names, f"降级后 alpha 必须被召回，实际: {names}"
 
-    def test_no_match_empty(self, skills_cfg, wiki_conn):
+    def test_no_match_empty(self, skills_cfg, wiki_conn, monkeypatch):
+        """纯垃圾串不命中（向量路打桩降级：真实 embed 会让弱相似虚命中 + 触外网，B123）。"""
         from sgme.operations.skills import search_skills
+        import sgme.skills.vectors as sv
 
+        def boom(texts, cfg, timeout=None):
+            raise RuntimeError("test: vector unavailable")
+
+        monkeypatch.setattr(sv, "embed_texts", boom)
         assert search_skills("zzzqqqxxx", skills_cfg, wiki_conn) == []
 
-    def test_limit_respected(self, skills_cfg, wiki_conn):
+    def test_limit_respected(self, skills_cfg, wiki_conn, monkeypatch):
         from sgme.operations.skills import search_skills
+        import sgme.skills.vectors as sv
 
+        def boom(texts, cfg, timeout=None):
+            raise RuntimeError("test: vector unavailable")
+
+        monkeypatch.setattr(sv, "embed_texts", boom)
         hits = search_skills("技能", skills_cfg, wiki_conn, limit=1)
         assert len(hits) <= 1
 
