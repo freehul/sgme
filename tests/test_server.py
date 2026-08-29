@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -526,6 +527,29 @@ def test_bearer_token_enforced(tmp_path, cfg, raw_dir):
         # 正确 Bearer → 200
         r3 = c.get("/v1/health", headers={"Authorization": "Bearer secret-bearer"})
         assert r3.status_code == 200
+    finally:
+        db_mod.close(mem_conn)
+        db_mod.close(session_conn)
+        db_mod.close(wiki_conn)
+
+
+def test_create_app_bearer_does_not_pollute_environ(tmp_path, cfg, raw_dir, monkeypatch):
+    """create_app 不得把 bearer 写入 os.environ。
+
+    历史 bug（B122 根修）：app.py 曾 os.environ.setdefault("SGME_BEARER_TOKEN", ...)
+    ——工厂函数污染进程全局状态，泄漏到同进程后续测试/组件，表现为
+    test_skills_coldstart 等无 Bearer 用例在套件顺序下 401、单跑却绿。
+    """
+    monkeypatch.delenv("SGME_BEARER_TOKEN", raising=False)
+    mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
+    memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
+    try:
+        create_app(
+            cfg=cfg, mem_conn=mem_conn, session_conn=session_conn, wiki_conn=wiki_conn,
+            admin_key="a", agent_key="b",
+            bearer_token="secret-bearer",
+        )
+        assert "SGME_BEARER_TOKEN" not in os.environ
     finally:
         db_mod.close(mem_conn)
         db_mod.close(session_conn)

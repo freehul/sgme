@@ -316,9 +316,12 @@ def test_inject_empty_custom_filter_has_note(conns, cfg, summary_path):
     assert "note" in (res.data or {})["stats"]
 
 
-def test_inject_nonempty_no_note(conns, cfg, summary_path):
+def test_inject_nonempty_no_note(conns, cfg, summary_path, monkeypatch):
     """有记忆命中 → 不加 note（字段不存在，向后兼容）。"""
-    # Arrange
+    # Arrange：打桩模型 Key——note 仅在 Key 缺失时出现，不打桩会依赖宿主
+    # config/.env（未跟踪文件），在干净 checkout/CI 上必然翻车（T-113 密封性）
+    monkeypatch.setenv("AGNESAI_API_KEY", "test-key")
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
     mem_conn, _session_conn, _ = conns
     _insert(mem_conn, "我是测试用户", dims=["identity", "family"])
 
@@ -330,9 +333,11 @@ def test_inject_nonempty_no_note(conns, cfg, summary_path):
     assert "note" not in (res.data or {})["stats"]
 
 
-def test_inject_empty_with_tier0_no_note(conns, cfg, summary_path):
+def test_inject_empty_with_tier0_no_note(conns, cfg, summary_path, monkeypatch):
     """空库但有 Tier0 摘要 → 摘要块占 1 item，不加 note。"""
-    # Arrange：只写摘要
+    # Arrange：只写摘要；Key 打桩同上（密封性）
+    monkeypatch.setenv("AGNESAI_API_KEY", "test-key")
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
     mem_conn, _session_conn, _ = conns
     tier0_mod.save_summary("画像摘要：测试用户", path=summary_path)
 

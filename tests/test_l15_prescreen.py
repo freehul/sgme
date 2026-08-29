@@ -121,8 +121,8 @@ def test_prescreen_merges_vector_candidates(mem_conn, cfg, monkeypatch):
     """向量 Top-K 补充维度外的语义候选，并集去重。"""
     dim_id = _insert_existing(mem_conn, "同维度记忆", ["tech_stack"], priority=60)
     # 两条不同维度但语义相似的记忆（向量会召回）
-    sem_a = _insert_existing(mem_conn, "语义相似记忆A", ["projects"], priority=60)
-    sem_b = _insert_existing(mem_conn, "语义相似记忆B", ["projects"], priority=60)
+    sem_a = _insert_existing(mem_conn, "语义相似记忆A", ["goals"], priority=60)
+    sem_b = _insert_existing(mem_conn, "语义相似记忆B", ["goals"], priority=60)
 
     fake_vectors = [
         {"memory_id": sem_a, "content": "语义相似记忆A", "priority": 60, "updated_at": "2026-01-01T00:00:00Z", "score": 0.9},
