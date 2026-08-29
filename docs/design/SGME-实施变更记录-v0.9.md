@@ -2001,3 +2001,43 @@ embeddings，无 vector 配置环境发注定失败的 401 请求后才降级）
 ② 测试不再依赖宿主 config/.env，CI/干净 checkout 可直接全量跑；
 ③ 直查 SQL/维度相关的后续改动请同步测试夹具——本次 50 例欠账的教训是「改维度/改链/改版本
   三件事必须同跑全量」。
+
+### B123. T-118 技能向量配置解析双重解包根修 + T-117 embed 回退 vector_capable 门禁（v1.1.1，2026-08-29）
+
+**背景**：全量验收通过后接手另一会话在途改动（skills.py sync_index 待补向量口径全表化 +
+回归用例），检查中发现回归用例重复定义两份且未真正进入修复分支；顺藤摸瓜实锤更深的
+生产缺陷——技能向量路自 ST-36 M1 起从未真正工作过。
+
+**T-118 根修（sgme/skills/vectors.py::_embed_config，真生产 bug）**：
+1. 双重解包：`load_providers_config()` 返回的就是**扁平** {name: 连接字段}（config.py:378，
+   实测顶层键 ['deepseek','agnes','siliconflow','nvidia']），原实现 `.get("providers", {})`
+   二次解包永远得空表 → `_embed_config` 恒返回全空 → `embed_texts` 全批失败（「向量模型
+   未配置」）→ B120 的分批修复与 sync_index 待补口径全部空转。潜伏自 bfee4cd（M1 骨架），
+   被 test_skills_indexer 的错误 mock 形状（多包一层 "providers"）掩护。
+2. 修复后解析顺序（本地优先 2026-08-20 定案落地）：
+   ① search.vector.provider 在注册表 → 注册表连接字段（default_model 缺省回落
+   search.vector.model）；② active 不在注册表（生产形态 provider=local 指向 NAS ollama）
+   → search.vector 自带 base_url/model 直连——本地直连优先于云端扫描；③ 无 active →
+   providers 中 vector_capable=true 首个可用者；④ 最后 search.vector 自带 base_url 兜底。
+   注释承诺的「search.vector 兜底段」原实现从未落地，本次一并补齐。
+3. 同批收尾在途改动：test_skills_db 回归用例重复定义两份且 embed=False 未进修复分支，
+   重写为真路径四轮验证（embed_texts 打桩 + upsert_skill_vectors 真实现落库：pending 在
+   max_embed 截断前统计、限批逐轮补齐、全覆盖归零）；test_skills_indexer mock 形状修正 +
+   新增 local-not-in-registry / vector_capable 扫描两例。
+
+**T-117（sgme/data/search/vector.py::embed，B122 遗留登记项）**：
+链首回退前查 providers 注册表——明确 `vector_capable=false`（agnes）直接跳过，省一次注定
+401/404 的外网请求；注册表查无此人（旧配置形态/本地链首）保持旧行为照常尝试（兼容
+test_vector_embed 的既有回退用例）；链首 vector_capable=true 时顺带对齐 default_model/
+api_key_env（仅 search.vector 未显式配置时）。+3 测试。
+
+**验证**：受影响 4 文件（test_skills_db/test_skills_indexer/test_vector_fallback/
+test_vector_embed）**72 collected / exit=0 / 0 failed**；提交前另跑全量 pytest。
+
+**运维影响**：
+① NAS 生产（provider=local + ollama bge-m3）技能向量路将真正打通——重启后后台预热会
+  补齐 skills.db 全部待嵌向量（403 条 × bge-m3，免费本地，无费用）；若 ollama 未起，
+  embedding 失败批跳过、检索降级 BM25（原行为），无新增风险；
+② B121 的 llm_override 改 agnes 后，无 vector 配置环境不再向 agnes 发注定失败的
+  /embeddings 请求（T-117 门禁生效）；
+③ 版本 1.1.0 → 1.1.1（bug 修复批 +0.0.1，0825 版本规则），health 契约随包版本自动对齐。

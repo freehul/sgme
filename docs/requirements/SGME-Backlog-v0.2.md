@@ -15,6 +15,7 @@
 | **v0.8** | 2026-08-13（建议） | ST-9/10/11/14/15/16、T-7/8/12/13/14、接口层缺口（F1 浏览端点 + 模板管理 API + L0 滑窗） |
 | **v1.0** | 2026-08-18 | ST-7 WebUI（含原 ST-17 创意池管理 UI）、ST-8 hook 落地、Bug 修复 |
 | **v1.1.0** | 2026-08-29（已发布） | ST-36 技能管理收官（skills.db 持久化 + 向量路解锁，B114-B120）、ST-26 dsh-sgme 0.4.0 技能层接入（B119）、T-113 测试漂移集中修复（B122） |
+| **v1.1.1** | 2026-08-29 | T-117 embed 回退 vector_capable 门禁 + T-118 技能向量配置解析双重解包根修（B123） |
 
 ---
 
@@ -194,7 +195,8 @@
 | T-114 | Task | ST-36 遗留优化：158 条超 8K 技能页拆分外置化 | ST-36 | 🟡 暂缓 | — | 2026-08-29 从 ST-36 行「后续优化另起 Task」承诺落成条目（M4a 已入库 385 页，超长页拆分待用户拍板优先级） |
 | T-115 | Task | ST-36 遗留优化：M4b 原子化扫描候选清单重组（用户拍板后执行） | ST-36 | 🟡 暂缓 | — | 2026-08-29 从 ST-36 行承诺落成条目；候选清单已产出（exports/m4b-atomic-*.md），待用户确认重组范围 |
 | T-116 | Task | L2 场景超限治理（批量合并）评估与实施 | ST-5 | 🟡 暂缓 | — | 2026-08-29 从 T-97 备注「另行登记」落成条目；B117 手动收敛后 active 269/300，先观察场景级预筛（T-97）后的增速再评估批量合并 |
-| T-117 | Task | embed 回退未校验 vector_capable：链首无向量能力时仍发注定失败的请求 | ST-4 | 🟡 暂缓 | — | 2026-08-29 B122 审查发现（sgme/data/search/vector.py:139-145）：主 provider 缺 base_url 时回退「refinement 链首 base_url」——9af882b 后链首 agnes 无 embeddings 服务（vector_capable=false），无 vector 配置环境会真实外网请求 agnes /embeddings → 401 后降级 BM25（设计内降级，非功能 bug）。修法：回退前校验目标 provider vector_capable，false 直接跳过省一次请求；顺带 conftest 统一注入 vector mock 提升测试密封性 |
+| T-117 | Task | embed 回退未校验 vector_capable：链首无向量能力时仍发注定失败的请求 | ST-4 | ✅ 已解决 | v1.1.1 | 2026-08-29 B122 审查发现，同日修复（B123，v1.1.1）：`vector.py::embed` 链首回退前查 providers 注册表——明确 `vector_capable=false`（agnes）直接跳过省一次注定 401 的请求，注册表查无此人（本地 LM Studio 等旧形态）保持旧行为照常尝试；链首在注册表且 vector_capable=true 时顺带对齐 default_model/api_key_env（仅 search.vector 未显式配置时）。+3 测试（门禁/旧行为/注册表对齐），4 文件 72 例全绿 |
+| T-118 | Bug | 技能向量配置解析双重解包：_embed_config 永远得空表，技能向量嵌入自 M1 起从未真正工作 | ST-36 | ✅ 已解决 | v1.1.1 | 2026-08-29 接手另一会话在途改动（sync_index 待补口径全表化）时实锤（B123，v1.1.1）：`skills/vectors.py::_embed_config` 对 `load_providers_config()` 误做 `.get("providers")` 二次解包——该函数本就返回**扁平** {name: 连接字段}（config.py:378），永远得空表 → 技能嵌入全批失败（「向量模型未配置」）→ B120 修的分批/待补口径全部空转；被 `test_skills_indexer` 的错误 mock 形状（多包一层 providers）掩护，mock 全绿≠真实可用再添实锤。修复：扁平直读 + 解析顺序重排（active 在注册表→注册表字段；active 不在注册表（生产形态 provider=local 指向 NAS ollama）→ search.vector 自带连接字段直连，本地优先；无 active→vector_capable 扫描；最后 search.vector 直连兜底）。同批收尾：另一会话回归用例重复定义两份且 embed=False 未进修复分支，重写为真路径四轮验证（pending 截断前统计/限批逐轮补齐/全覆盖归零） |
 
 ## 设计文档索引（依附关系）
 
