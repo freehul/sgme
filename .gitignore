@@ -76,3 +76,9 @@ Thumbs.db
 # DSH 专用用户级规则（~/.dsh/dsg-rules/ 用户目录，不属本仓库；此处双保险防误拷入）
 **/dsg-rules/
 **/rules.md.private
+
+# vite dev 瞬态产物（vite.config.ts 加载时自动生成的时间戳副本，可重建）
+ui/vite.config.ts.timestamp-*.mjs
+
+# 迁移过程预览快照（migrate_wiki_skills.py 生成，385 页可从 hub 重导出；报告类 exports/*.md 照常入库）
+exports/skills-migration-preview/
