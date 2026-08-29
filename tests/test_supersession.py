@@ -11,6 +11,9 @@
 - pipeline.persist_memories 接线：stats.supersession_rejected
 
 mock LLM 用 httpx.MockTransport 注入固定 JSON 输出。
+
+注：projects/tasks 维度已移除（2026-08-18），测试数据维度统一改用
+tech_stack（注册表边界定义：方案决策归技术栈）。
 """
 
 from __future__ import annotations
@@ -85,7 +88,7 @@ def test_l1_parse_passes_supersedes_string(cfg):
     """supersedes 为字符串 → 规整为单元素列表。"""
     text = json.dumps([{
         "content": "AIXM 已被 SGME 替代，项目移入 OLD/",
-        "dimensions": ["项目"], "memory_type": "episodic",
+        "dimensions": ["技术栈"], "memory_type": "episodic",
         "priority": 80, "time_velocity": "dynamic",
         "source_message_ids": [3], "supersedes": "AIXM",
     }])
@@ -97,7 +100,7 @@ def test_l1_parse_passes_supersedes_list(cfg):
     """supersedes 为数组 → 原样保留（多个旧主体）。"""
     text = json.dumps([{
         "content": "新引擎已替代旧引擎和旧方案",
-        "dimensions": ["项目"], "memory_type": "episodic",
+        "dimensions": ["技术栈"], "memory_type": "episodic",
         "priority": 80, "time_velocity": "dynamic",
         "source_message_ids": [1], "supersedes": ["AIXM", "旧方案"],
     }])
@@ -120,13 +123,13 @@ def test_l1_parse_supersedes_absent_defaults_empty(cfg):
 def test_l1_parse_supersedes_invalid_types(cfg):
     """supersedes 为非法类型/空白串 → 空列表。"""
     text = json.dumps([
-        {"content": "记忆A", "dimensions": ["项目"], "memory_type": "persona",
+        {"content": "记忆A", "dimensions": ["技术栈"], "memory_type": "persona",
          "priority": 60, "time_velocity": "static", "source_message_ids": [1],
          "supersedes": 123},
-        {"content": "记忆B", "dimensions": ["项目"], "memory_type": "persona",
+        {"content": "记忆B", "dimensions": ["技术栈"], "memory_type": "persona",
          "priority": 60, "time_velocity": "static", "source_message_ids": [1],
          "supersedes": "   "},
-        {"content": "记忆C", "dimensions": ["项目"], "memory_type": "persona",
+        {"content": "记忆C", "dimensions": ["技术栈"], "memory_type": "persona",
          "priority": 60, "time_velocity": "static", "source_message_ids": [1],
          "supersedes": ["AIXM", "", 7]},
     ])
@@ -159,7 +162,7 @@ def test_refine_file_preserves_supersedes(raw_dir, mem_conn, session_conn, cfg):
 
     l1_body = json.dumps([{
         "content": "AIXM 已被 SGME 替代，AIXM 项目移入 OLD/ 目录",
-        "dimensions": ["项目"], "memory_type": "episodic",
+        "dimensions": ["技术栈"], "memory_type": "episodic",
         "priority": 80, "time_velocity": "dynamic",
         "source_message_ids": [1], "supersedes": "AIXM",
     }])
@@ -175,18 +178,18 @@ def test_refine_file_preserves_supersedes(raw_dir, mem_conn, session_conn, cfg):
 
 def test_linkage_rejects_old_subject_memories(mem_conn):
     """声明替代 → 旧主体 X 相关记忆标记 rejected，原因含替代者与溯源链。"""
-    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["projects"])
+    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["tech_stack"])
     new_mem = {
         "memory_id": "new-1",
         "content": "AIXM 已被 SGME 替代，AIXM 项目移入 OLD/ 目录",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "supersedes": ["AIXM"],
     }
     # 模拟 L1.5 落库后状态：新记忆已在库（memory_id 写回 dict）
     new_id = memory_dao.insert_memory(
         mem_conn, content=new_mem["content"], memory_type="episodic",
         priority=80, time_velocity="dynamic", ttl_days=None,
-        dimension_ids=["projects"], created_at="2026-01-01T00:00:00Z",
+        dimension_ids=["tech_stack"], created_at="2026-01-01T00:00:00Z",
         updated_at="2026-01-01T00:00:00Z",
     )
     new_mem["memory_id"] = new_id
@@ -205,11 +208,11 @@ def test_linkage_rejects_old_subject_memories(mem_conn):
 
 def test_linkage_no_declaration_noop(mem_conn):
     """无 supersedes 声明 → 行为不变，旧记忆仍 active。"""
-    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["projects"])
+    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["tech_stack"])
     new_mem = {
         "memory_id": "new-1",
         "content": "今天修复了 AIXM 的一个 bug",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         # 无 supersedes
     }
     rejected = l15_mod.apply_supersession_linkage(mem_conn, [new_mem])
@@ -219,11 +222,11 @@ def test_linkage_no_declaration_noop(mem_conn):
 
 def test_linkage_subject_not_mentioned_noop(mem_conn):
     """声明的主体在旧记忆中无内容提及 → 不标记。"""
-    old_id = _insert_existing(mem_conn, "SGME 记忆引擎使用 Python", ["projects"])
+    old_id = _insert_existing(mem_conn, "SGME 记忆引擎使用 Python", ["tech_stack"])
     new_mem = {
         "memory_id": "new-1",
         "content": "AIXM 已被 SGME 替代",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "supersedes": ["AIXM"],
     }
     rejected = l15_mod.apply_supersession_linkage(mem_conn, [new_mem])
@@ -236,21 +239,21 @@ def test_linkage_excludes_batch_new_memories(mem_conn):
     new_a = {
         "memory_id": "new-a",
         "content": "AIXM 已被 SGME 替代，AIXM 项目移入 OLD/ 目录",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "supersedes": ["AIXM"],
     }
     # 同批另一条新记忆也提及旧主体名（如历史记录），同样不标记
     new_b = {
         "memory_id": "new-b",
         "content": "AIXM 迁移期间整理了旧文档",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
     }
     # 模拟 L1.5 落库后状态：两条新记忆都已在库（memory_id 写回 dict）
     for m in (new_a, new_b):
         m["memory_id"] = memory_dao.insert_memory(
             mem_conn, content=m["content"], memory_type="episodic",
             priority=80, time_velocity="dynamic", ttl_days=None,
-            dimension_ids=["projects"], created_at="2026-01-01T00:00:00Z",
+            dimension_ids=["tech_stack"], created_at="2026-01-01T00:00:00Z",
             updated_at="2026-01-01T00:00:00Z",
         )
     rejected = l15_mod.apply_supersession_linkage(mem_conn, [new_a, new_b])
@@ -261,12 +264,12 @@ def test_linkage_excludes_batch_new_memories(mem_conn):
 
 def test_linkage_skips_already_rejected_and_expired(mem_conn):
     """已 rejected / 非 active 的记忆不再处理。"""
-    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["projects"])
+    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["tech_stack"])
     memory_dao.reject_memory(mem_conn, old_id, "用户纠错")
     new_mem = {
         "memory_id": "new-1",
         "content": "AIXM 已被 SGME 替代",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "supersedes": ["AIXM"],
     }
     rejected = l15_mod.apply_supersession_linkage(mem_conn, [new_mem])
@@ -277,13 +280,13 @@ def test_linkage_skips_already_rejected_and_expired(mem_conn):
 
 def test_linkage_multiple_subjects_and_memories(mem_conn):
     """多个旧主体 + 多条旧记忆：全部命中并去重标记。"""
-    old_a = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["projects"])
-    old_b = _insert_existing(mem_conn, "旧方案基于 Python 2", ["projects"])
-    old_c = _insert_existing(mem_conn, "AIXM 的部署在 NAS 上", ["projects"])
+    old_a = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["tech_stack"])
+    old_b = _insert_existing(mem_conn, "旧方案基于 Python 2", ["tech_stack"])
+    old_c = _insert_existing(mem_conn, "AIXM 的部署在 NAS 上", ["tech_stack"])
     new_mem = {
         "memory_id": "new-1",
         "content": "新引擎已替代 AIXM 与旧方案",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "supersedes": ["AIXM", "旧方案"],
     }
     rejected = l15_mod.apply_supersession_linkage(mem_conn, [new_mem])
@@ -294,11 +297,11 @@ def test_linkage_multiple_subjects_and_memories(mem_conn):
 
 def test_linkage_case_insensitive_and_short_subject_ignored(mem_conn):
     """主体匹配大小写不敏感；过短主体（<2 字符）防御性忽略。"""
-    old_a = _insert_existing(mem_conn, "AIXM 的部署在 NAS 上", ["projects"])
+    old_a = _insert_existing(mem_conn, "AIXM 的部署在 NAS 上", ["tech_stack"])
     new_mem = {
         "memory_id": "new-1",
         "content": "AIXM 已被 SGME 替代",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "supersedes": ["aixm"],  # 小写主体 → 命中大写内容
     }
     rejected = l15_mod.apply_supersession_linkage(mem_conn, [new_mem])
@@ -307,7 +310,7 @@ def test_linkage_case_insensitive_and_short_subject_ignored(mem_conn):
     new_mem2 = {
         "memory_id": "new-2",
         "content": "X 方案被 Y 替代",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "supersedes": ["X"],
     }
     assert l15_mod.apply_supersession_linkage(mem_conn, [new_mem2]) == []
@@ -327,11 +330,11 @@ def _patch_l15_client(monkeypatch, cli):
 
 def test_persist_memories_supersession_linkage(monkeypatch, mem_conn, cfg):
     """完整接线：L1.5 落库（mock store）→ 替代联动标记旧记忆 → stats 上报。"""
-    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["projects"])
+    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["tech_stack"])
     new_mem = {
         "content": "AIXM 已被 SGME 替代，AIXM 项目移入 OLD/ 目录",
         "memory_type": "episodic", "priority": 80, "time_velocity": "dynamic",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "source_message_ids": [1], "file_id": "f1", "occurred_at": None,
         "supersedes": ["AIXM"],
     }
@@ -362,11 +365,11 @@ def test_persist_memories_supersession_linkage(monkeypatch, mem_conn, cfg):
 
 def test_persist_memories_no_supersedes_unchanged(monkeypatch, mem_conn, cfg):
     """无替代声明 → 旧记忆保持 active，stats 计数为 0（行为不变）。"""
-    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["projects"])
+    old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["tech_stack"])
     new_mem = {
         "content": "今天修复了 AIXM 的一个 bug",
         "memory_type": "episodic", "priority": 60, "time_velocity": "dynamic",
-        "dimension_ids": ["projects"],
+        "dimension_ids": ["tech_stack"],
         "source_message_ids": [1], "file_id": "f2", "occurred_at": None,
     }
     result = refine_mod.RefineResult(file_id="f2", status="refined", memories=[new_mem])

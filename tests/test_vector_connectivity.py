@@ -3,7 +3,7 @@
 覆盖：
 1. check_vector_model_connectivity：200 → available；HTTP 错误 → 不可用；超时 → 不可用；未配置 → 不可用
 2. _vector_block：连通失败时发布 anomaly_warn（source=vector）信号
-3. 提炼链顺序：zhipu 主、deepseek 备（2026-08-18 用户定）
+3. 提炼链顺序：agnes 主、siliconflow 备（2026-08-29 B121，zhipu 已移出）
 """
 from __future__ import annotations
 
@@ -144,11 +144,16 @@ def test_vector_block_ok_no_signal(cfg, monkeypatch):
     assert calls == []
 
 
-# ---------- 3. 提炼链顺序（主 zhipu 备 deepseek） ----------
+# ---------- 3. 提炼链顺序（主 agnes 备 siliconflow） ----------
 
-def test_chain_zhipu_primary_deepseek_backup(cfg):
+def test_chain_agnes_primary_siliconflow_backup(cfg):
+    """提炼链顺序（2026-08-29 B121）：agnes 主 → siliconflow 备 → rule drop_batch 兜底。
+
+    zhipu 免费节点已移出（9af882b）；锚定 config/llm.yaml 现链。
+    """
     chain = cfg["llm"]["chains"]["refinement"]
     providers = [n.get("provider") for n in chain]
-    assert providers == ["zhipu", "deepseek", "rule"]
-    assert chain[0]["model"] == "glm-4.7-flash"
-    assert chain[1]["model"] == "deepseek-v4-flash"
+    assert providers == ["agnes", "siliconflow", "rule"]
+    assert chain[0]["model"] == "agnes-2.5-flash"
+    assert chain[1]["model"] == "deepseek-ai/DeepSeek-V4-Flash"
+    assert chain[-1].get("rule") == "drop_batch"

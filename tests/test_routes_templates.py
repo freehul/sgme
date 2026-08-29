@@ -89,15 +89,19 @@ def client(app):
 
 
 def _body(name: str = "custom", display: str = "自定义模式") -> dict:
-    """结构合法的模板 body（Σ(limit)=8 → 240 tokens ≤ 700）。"""
+    """结构合法的模板 body（Σ(limit)=8 → 240 tokens ≤ 700）。
+
+    注：projects/tasks 维度已移除（2026-08-18），动态段改用 goals/status
+    （与生产模板 templates/work.yaml 现状同形）。
+    """
     return {
         "name": name,
         "display_name": display,
-        "memory_types": ["identity", "projects", "tasks"],
+        "memory_types": ["identity", "goals", "status"],
         "token_budget": 700,
         "sections": [
             {"title": "👤 身份", "query": {"dimensions": ["identity"], "priority_min": 70, "limit": 5}},
-            {"title": "📁 项目", "query": {"dimensions": ["projects", "tasks"], "match": "any", "limit": 3}},
+            {"title": "🎯 目标与状态", "query": {"dimensions": ["goals", "status"], "match": "any", "limit": 3}},
         ],
     }
 
@@ -252,7 +256,8 @@ def test_update_validation_failure_400(client, tpl_dir):
     """维度越界（section.dimensions ⊄ memory_types）→ 400，message 带校验详情。"""
     body = _body("oob")
     body["memory_types"] = ["identity"]
-    body["sections"] = [{"title": "T", "query": {"dimensions": ["projects"], "limit": 3}}]
+    # goals 是已注册维度但不在 memory_types → 纯「越界」（非未注册）
+    body["sections"] = [{"title": "T", "query": {"dimensions": ["goals"], "limit": 3}}]
 
     r = client.put("/v1/admin/templates/oob", json=body, headers=ADMIN_HEADERS)
     assert r.status_code == 400
