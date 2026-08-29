@@ -40,7 +40,13 @@ from sgme.data import memory_dao, scene_dao, session_dao
 
 @pytest.fixture
 def cfg():
-    return sgme_config.load_config()
+    cfg = sgme_config.load_config()
+    # 测试形态：显式 vector base_url（B123）——T-117 后链首 agnes 回退被门禁拦截，
+    # 向量路测试走主路（mock 客户端按传入 client 发请求）
+    cfg.setdefault("search", {}).setdefault("vector", {})[
+        "base_url"
+    ] = "http://mock-embed.test/v1"
+    return cfg
 
 
 @pytest.fixture

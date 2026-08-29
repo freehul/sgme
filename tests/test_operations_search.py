@@ -96,8 +96,17 @@ def mock_vector(monkeypatch):
     与 test_server_v04 的降级测试同一口径：避免测试依赖真实 embeddings 端点，
     保证离线 CI 确定性。monkeypatch 的是 sgme.search.vector 模块全局 embed，
     检索内部按模块全局解析，operations 层与入口层调用同样生效。
+
+    B123 追加：skills scope 走 skills.vectors.embed_texts（独立于 vector_mod.embed），
+    T-118 根修后该路真实触网 → 一并打桩为抛异常（技能检索向量路容错降级 BM25）。
     """
     monkeypatch.setattr(vector_mod, "embed", lambda query, cfg, client=None: None)
+    import sgme.skills.vectors as sv
+
+    def _boom(texts, cfg, timeout=None):
+        raise RuntimeError("mock_vector: skills vector unavailable")
+
+    monkeypatch.setattr(sv, "embed_texts", _boom)
 
 
 @pytest.fixture

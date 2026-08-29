@@ -2046,3 +2046,13 @@ test_vector_embed）**72 collected / exit=0 / 0 failed**；提交前另跑全量
   与 FastAPI(version=) 均改引 sgme.__version__（兑现 B122「health 与包版本一致」契约，
   原 v0.8 清理项提前落账）；test_e2e_v04/test_health_v04/test_operations_health/test_server
   共 6 处硬编码版本断言同步动态化（T-113「版本断言硬编码」反模式残留清零）。
+④ 全量回归 11 failed 复盘（第 2 轮）：T-117/T-118 修复暴露两类测试形态欠账——
+  ①8 例向量路测试（test_search_v04/test_server_v04/test_e2e_v04）夹具用真实
+  load_config()，隔离环境下 search.vector 为空 → 靠链首回退喂 mock 客户端，agnes
+  门禁生效即断路。修法：cfg fixture 显式注入 search.vector.base_url=mock 地址走主路
+  （测试本意是向量路机制，不是回退语义）；②2 例技能检索（test_operations_skills/
+  test_operations_search）在 T-118 根修前靠双重解包 bug「静默降级」蒙混，修复后
+  真实调用 siliconflow /embeddings（log 实证 HTTP 200，密封性反转）。修法：
+  embed_texts 打桩抛异常=向量路降级语义，恢复确定性 BM25-only。修复后 5 文件
+  103 passed / 0 failed；教训补强：改「静默失败路径」的代码，必须全局搜「依赖
+  该静默失败的测试」——它们是潜伏的密封性炸弹。
