@@ -7,8 +7,9 @@
 4. custom_filter 无 dimensions → ERR_INVALID_ARGS「custom_filter 需指定 dimensions」
 5. custom_filter 含未注册维度 id → ERR_INVALID_ARGS
 6. mode 模板不存在 / load_template 抛 TemplateError → ERR_INVALID_ARGS「模板加载失败:」
+   （T-120：文案自解释，附可用模板清单且不泄漏服务器路径）
 7. pipeline 层意外异常 → ERR_INTERNAL
-8. mode 与 custom_filter 均未指定 → ERR_INVALID_ARGS
+8. mode 与 custom_filter 均未指定 → 回落 DEFAULT_INJECT_MODE（daily）+ stats.note 注明（T-120）
 """
 from __future__ import annotations
 
@@ -220,7 +221,7 @@ def test_inject_custom_filter_unregistered_dimension(conns, cfg):
 # ---------- 4. mode 模板不存在 / 加载失败 ----------
 
 def test_inject_mode_template_missing(conns, cfg):
-    """mode 模板不存在 → ERR_INVALID_ARGS「模板加载失败:」。"""
+    """mode 模板不存在 → ERR_INVALID_ARGS，文案自解释（列可用模板，不泄漏路径）。"""
     # Arrange / Act
     mem_conn, _session_conn, _ = conns
     res = inject_operation(mem_conn, cfg, mode="no_such_mode")
@@ -229,6 +230,12 @@ def test_inject_mode_template_missing(conns, cfg):
     assert res.ok is False
     assert res.error_code == ERR_INVALID_ARGS
     assert res.message.startswith("模板加载失败:")
+    # T-120 报错自解释：附可用模板清单（含实际存在的 daily）
+    assert "可用: " in res.message
+    assert "daily" in res.message
+    # 防泄漏：只暴露文件名，不含服务器绝对路径（路径分隔符不得出现）
+    assert "/" not in res.message
+    assert "\\" not in res.message
 
 
 def test_inject_mode_template_error_raised(conns, cfg, monkeypatch):
@@ -271,18 +278,49 @@ def test_inject_pipeline_error_is_internal(conns, cfg, monkeypatch):
     assert "模拟查询引擎崩溃" in res.message
 
 
-# ---------- 6. 未指定 mode 与 custom_filter ----------
+# ---------- 6. mode 缺省回落（T-120） ----------
 
-def test_inject_requires_mode_or_custom_filter(conns, cfg):
-    """mode 与 custom_filter 均未指定 → ERR_INVALID_ARGS。"""
+def test_inject_mode_fallback_when_unspecified(conns, cfg, summary_path):
+    """mode 与 custom_filter 均未指定 → 回落 DEFAULT_INJECT_MODE（200，不再 400）。"""
+    # Arrange：全空库（note 合并链路走 _attach_empty_note → fallback 追加）
+    mem_conn, _session_conn, _ = conns
+
+    # Act
+    res = inject_operation(mem_conn, cfg)
+
+    # Assert：回落 daily 且 stats.note 自解释（含「回落」与回落目标）
+    assert res.ok is True
+    data = res.data or {}
+    assert data["stats"]["mode"] == "daily"
+    assert "回落" in data["stats"]["note"]
+    assert "daily" in data["stats"]["note"]
+
+
+def test_inject_explicit_empty_custom_filter_still_invalid(conns, cfg):
+    """显式传空 custom_filter（非缺省态）→ 保持原 ERR_INVALID_ARGS（回落只在两者都缺省时发生）。"""
     # Arrange / Act
     mem_conn, _session_conn, _ = conns
-    res = inject_operation(mem_conn, cfg)
+    res = inject_operation(mem_conn, cfg, custom_filter={})
 
     # Assert
     assert res.ok is False
     assert res.error_code == ERR_INVALID_ARGS
     assert res.message == "需指定 mode 或 custom_filter"
+
+
+def test_inject_custom_filter_no_fallback(conns, cfg, summary_path):
+    """显式传 custom_filter → 行为完全不变（stats.mode="custom"，note 无回落提示）。"""
+    # Arrange
+    mem_conn, _session_conn, _ = conns
+
+    # Act
+    res = inject_operation(mem_conn, cfg, custom_filter={"dimensions": ["goals"]})
+
+    # Assert
+    assert res.ok is True
+    data = res.data or {}
+    assert data["stats"]["mode"] == "custom"
+    assert "回落" not in data["stats"].get("note", "")
 
 
 # ---------- 7. 空结果引导提示（ST-22④） ----------
