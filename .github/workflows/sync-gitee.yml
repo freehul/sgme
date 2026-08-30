@@ -1,0 +1,26 @@
+name: Sync to Gitee
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync to Gitee (main + tags)
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          set -e
+          # 认证走 header，不把 token 写进 URL（防日志泄露）
+          AUTH=$(printf 'freehul:%s' "$GITEE_TOKEN" | base64 -w0)
+          git remote add gitee https://gitee.com/freehul/sgme.git
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" push gitee main --force
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" push gitee --tags --force
