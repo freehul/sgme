@@ -1081,6 +1081,64 @@ def write_install_json(
     return path
 
 
+def write_client_install_json(
+    host: str,
+    port: int = 9910,
+    mcp_port: int | None = None,
+) -> Path:
+    """生成**客户端模式**安装清单 install.json（T-121：纯远程接入端服务发现）。
+
+    分工（T-121）：
+      - 服务端模式 write_install_json：本机跑 SGME，生产启动时 app.py lifespan
+        自动调用生成，data_dir/raw_dir 指向本机数据目录。
+      - 客户端模式 write_client_install_json：本机**不跑 SGME**、只作为远程
+        接入端，由 CLI（scripts/install_client.py）手动生成——http 记录远程
+        SGME 地址，data_dir/raw_dir 置 None（表示本地无数据目录，防止接入机
+        上残留的本机安装清单误导服务发现第二步）。
+
+    结构与 write_install_json 同 schema（schema_version=1），Key 仍为
+    **环境变量名引用**，不落任何明文密钥（铁律 #10：密钥不落盘）。
+
+    Args:
+        host: 远程 SGME 主机地址（如 192.168.10.10）。
+        port: 远程 HTTP 端口（默认 9910）。
+        mcp_port: 远程 MCP 端口；未传时取 SGME_MCP_PORT env（默认 9913），
+            与 write_install_json 同逻辑。
+
+    Returns:
+        写入的 install.json 路径。
+    """
+    import sgme  # 延迟导入取版本（避免模块加载期循环）
+
+    data = {
+        "schema_version": 1,
+        "sgme_version": getattr(sgme, "__version__", "unknown"),
+        "http": {
+            "host": host,
+            "port": port,
+        },
+        "mcp": {
+            "port": int(mcp_port if mcp_port is not None
+                        else os.environ.get("SGME_MCP_PORT", "9913")),
+        },
+        "data_dir": None,  # 客户端模式：本地无数据目录（服务发现不得误读本机路径）
+        "raw_dir": None,   # 同上
+        "keys": {
+            "admin": "SGME_ADMIN_KEY",
+            "agent": "SGME_AGENT_KEY",
+            "bearer": "SGME_BEARER_TOKEN",
+        },
+    }
+    path = install_json_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("客户端模式安装清单已生成: %s（http://%s:%s）", path, host, port)
+    return path
+
+
 def _scrub_section_for_persist(section: str, section_cfg: dict, file_values: dict) -> dict:
     """落盘前处理段内 env 覆盖字段：env 设置期间恢复文件现值（占位符），否则原样返回。
 

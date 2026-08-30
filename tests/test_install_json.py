@@ -87,3 +87,55 @@ def test_write_install_json_respects_env_port(reload_config, tmp_path: Path, mon
     data = json.loads((home / "install.json").read_text(encoding="utf-8"))
     assert data["http"]["port"] == 9921
     assert data["mcp"]["port"] == 9922
+
+
+# ---------- T-121 客户端模式（本机不跑 SGME，纯远程接入端） ----------
+
+def test_write_client_install_json_null_dirs_remote_host(reload_config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """客户端模式：http 指向远程 host/port，data_dir/raw_dir 必须为 null。"""
+    home = tmp_path / "sgme-home"
+    monkeypatch.setattr(config, "SGME_HOME", home)
+    config.write_client_install_json(host="192.168.10.10", port=9910)
+    p = home / "install.json"
+    assert p.exists(), f"install.json 未生成: {p}"
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["schema_version"] == 1
+    assert data["http"]["host"] == "192.168.10.10"
+    assert data["http"]["port"] == 9910
+    assert data["data_dir"] is None, "客户端模式 data_dir 必须为 null（本地无数据目录，防服务发现误判）"
+    assert data["raw_dir"] is None, "客户端模式 raw_dir 必须为 null（本地无数据目录，防服务发现误判）"
+    assert isinstance(data["sgme_version"], str) and data["sgme_version"]
+
+
+def test_write_client_install_json_keys_env_refs_no_secrets(reload_config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """客户端模式：keys 仍为环境变量名引用，绝不落明文密钥（铁律 #10）。"""
+    home = tmp_path / "sgme-home"
+    monkeypatch.setattr(config, "SGME_HOME", home)
+    monkeypatch.setenv("SGME_ADMIN_KEY", "client-secret-admin-value")
+    config.write_client_install_json(host="192.168.10.10")
+    content = (home / "install.json").read_text(encoding="utf-8")
+    assert "client-secret-admin-value" not in content, "install.json 泄露了明文密钥！"
+    data = json.loads(content)
+    assert data["keys"]["admin"] == "SGME_ADMIN_KEY"
+    assert data["keys"]["agent"] == "SGME_AGENT_KEY"
+    assert data["keys"]["bearer"] == "SGME_BEARER_TOKEN"
+
+
+def test_write_client_install_json_mcp_port_env_and_explicit(reload_config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """客户端模式：mcp_port 未传取 SGME_MCP_PORT env（默认 9913），显式传参最高优先。"""
+    home = tmp_path / "sgme-home"
+    monkeypatch.setattr(config, "SGME_HOME", home)
+    # 未设 env：默认 9913（与 write_install_json 同逻辑）
+    monkeypatch.delenv("SGME_MCP_PORT", raising=False)
+    config.write_client_install_json(host="192.168.10.10")
+    data = json.loads((home / "install.json").read_text(encoding="utf-8"))
+    assert data["mcp"]["port"] == 9913
+    # env 生效：取 env 值
+    monkeypatch.setenv("SGME_MCP_PORT", "9923")
+    config.write_client_install_json(host="192.168.10.10")
+    data = json.loads((home / "install.json").read_text(encoding="utf-8"))
+    assert data["mcp"]["port"] == 9923
+    # 显式传参：覆盖 env
+    config.write_client_install_json(host="192.168.10.10", mcp_port=9933)
+    data = json.loads((home / "install.json").read_text(encoding="utf-8"))
+    assert data["mcp"]["port"] == 9933
