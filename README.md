@@ -2,7 +2,7 @@
 
 # SGME — ShiGuang Memory Engine
 
-Your AI, from now on, remembers you — it remembers everything you've shared, and reaches out to you.
+Switch AIs, keep everything. SGME takes over your memory, your wiki, and your skills — seamless agent switching, one shared brain.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -32,17 +32,17 @@ Three steps, fully automatic:
 
 ## Highlights
 
+### Seamless AI switching — memory, wiki & skills, fully taken over
+
+Switch models, switch agents — your AI loses nothing. SGME fully takes over your memory (who you are), your wiki (what you know), and your skills (how you work). Plug in any agent — Hermes, DSH, a coding partner, a writing assistant — and it already knows you: your projects, your preferences, your workflows. No re-introduction, no re-learning. One shared brain, every body.
+
+<img src="assets/selling-point-02-shared-memory.png" alt="Seamless AI switching" width="800"/>
+
 ### Traceable memory — every memory has a provenance
 
 Everything your AI says is backed by evidence: trace any persona statement all the way back to the original conversation. Memory is not a black box — "why does it know this" and "when did it learn this" are one click away.
 
 <img src="assets/selling-point-01-trace.png" alt="Traceable memory" width="800"/>
-
-### Shared memory across agents — one brain, many bodies
-
-Hermes, DSH... all your AIs share the same memory brain. What you discuss in one place is automatically known in another; AIs on your desktop, laptop, and NAS share the same memory. No more siloed conversations.
-
-<img src="assets/selling-point-02-shared-memory.png" alt="Shared memory across agents" width="800"/>
 
 ### Proactive care — it doesn't just remember you, it reaches out
 
