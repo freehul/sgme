@@ -54,6 +54,7 @@ SGME doesn't just wait for you to ask. Your memory updates, mood shifts, upcomin
 
 Every conversation quietly contributes to a living personality profile: decision style, work habits, quality standards — accumulated as evidence-weighted tendencies, never snap judgments. A monthly calibration refines the picture (with an entertainment-grade MBTI for fun), and the result is injected into every chat, so your AI doesn't just recall your past — it adapts to your character. All local, all traceable, toggleable anytime.
 
+<img src="assets/selling-point-11-persona-insight.png" alt="Persona insight" width="800"/>
 
 ### Unified search — one query, all memories
 
@@ -70,6 +71,8 @@ All your self-built skills (prompts, workflows, templates) live in one place: di
 ### Shared knowledge — a wiki your AIs write together
 
 A shared knowledge base lives next to your memories. Drop in files, URLs, or pasted text — SGME auto-categorizes, tags, and cross-links them, then makes them searchable and citable by every agent you connect. When an agent learns something useful, it can write it back to the wiki (self-evolution), so knowledge compounds across sessions instead of being re-discovered. Every entry keeps its source and author — traceable, never a black box.
+
+<img src="assets/selling-point-04-wiki.png" alt="Shared knowledge wiki" width="800"/>
 
 ### Chinese-first — a memory engine built for Chinese
 
