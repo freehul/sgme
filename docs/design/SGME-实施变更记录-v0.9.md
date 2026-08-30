@@ -2185,3 +2185,10 @@ tags 变更放行），test_skills_store **19 passed**（既有「完全无变�
 
 **运维影响**：部署 v1.1.2 后元数据更新（改分类/标签/版本）恢复可用；T-123 审核清单即治理台账，
 回滚 = 用备份库恢复 + PUT 回原 frontmatter（双侧可逆）。
+
+**B127 终态（2026-08-30 当日闭环）**：v1.1.2 部署 NAS（compose image → sgme:1.1.2-nas-autoupd，
+src git pull fb046fb → 92c9fee 两轮 build）后重放 apply **102/102 成功 0 失败**；重启触发 sync_index
+（diff_records 元数据指纹生效）→ **uncategorized 0/403**；分布 software-development 82 / hermes 65 /
+ai 63 / methodology 29 / creative 25 / github 23 等；检索 rrf 双路全绿、health 1.1.2 毫秒级
+（TTL 缓存生效实测 287ms vs 修复前 5.5s）；skills-hub bare 仓 sync to_remote 回推完成。
+遗留小项：GET /v1/skills 未透出 category 查询参数（数据层就绪，过滤入口待接线，随下版）。
