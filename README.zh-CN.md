@@ -2,7 +2,7 @@
 
 # SGME — 拾光记忆引擎
 
-你的 AI，从此记得你——拾光记忆引擎，它记得你们聊过的每一件事，还会主动关心你。
+换 AI，不失忆。SGME 全面接管你的记忆、知识库与技能库——任意智能体，无缝切换，共享同一个大脑。
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -32,17 +32,17 @@
 
 ## 核心卖点
 
+### AI 无缝切换——记忆、知识库、技能库全面接管
+
+换模型、换智能体，你的 AI 什么都不丢。SGME 全面接管你的记忆（你是谁）、知识库（你懂什么）、技能库（你怎么干活）。接入任意智能体——管家、写作助手、编程搭子——它瞬间就认识你：你的项目、你的偏好、你的工作流。不用重新介绍，不用重新学习。一个共享大脑，多副身体随意换。
+
+<img src="assets/selling-point-02-shared-memory.png" alt="AI 无缝切换" width="800"/>
+
 ### 记忆可溯源——每条记忆都有来处
 
 AI 说出的每一句话，背后都有据可查：从画像一路追回当时的原始对话。记忆不是黑盒——「它为什么知道这件事」「它什么时候知道的」，点开就能看到源头。
 
 <img src="assets/selling-point-01-trace.png" alt="记忆可溯源" width="800"/>
-
-### 多智能体共享记忆——一个大脑，多个身体
-
-Hermes、DSH……你的所有 AI 共享同一个记忆大脑。在这边聊的事，那边自动知道；台式机、笔记本、NAS 部署的 AI，记忆互通。AI 之间不再各说各话。
-
-<img src="assets/selling-point-02-shared-memory.png" alt="多智能体共享记忆" width="800"/>
 
 ### 主动关怀——它不只记得你，还会主动找你
 
