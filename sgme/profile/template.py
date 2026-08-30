@@ -30,9 +30,21 @@ class TemplateError(Exception):
 
 # ---------- 加载 ----------
 
+def list_templates() -> list[str]:
+    """列出可用模板名（TEMPLATES_DIR 下所有 *.yaml 的文件名 stem，sorted）。
+
+    T-120 报错自解释：模板加载失败时把可用清单附进报错/提示文案，
+    调用方无需猜测模板名，也无需查看服务器目录。
+    """
+    return sorted(p.stem for p in TEMPLATES_DIR.glob("*.yaml"))
+
+
 def _read_yaml(path: Path) -> dict:
     if not path.exists():
-        raise TemplateError(f"模板文件不存在: {path}")
+        # T-120：只暴露文件名不暴露绝对路径（防容器路径 /app/... 泄漏），并附可用模板清单
+        raise TemplateError(
+            f"模板文件不存在: {path.name}（可用: {', '.join(list_templates())}）"
+        )
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
