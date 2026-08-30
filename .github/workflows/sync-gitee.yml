@@ -19,8 +19,7 @@ jobs:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
           set -e
-          # 认证走 header，不把 token 写进 URL（防日志泄露）
-          AUTH=$(printf 'freehul:%s' "$GITEE_TOKEN" | base64 -w0)
-          git remote add gitee https://gitee.com/freehul/sgme.git
-          git -c http.extraheader="AUTHORIZATION: basic $AUTH" push gitee main --force
-          git -c http.extraheader="AUTHORIZATION: basic $AUTH" push gitee --tags --force
+          # token 直接嵌 URL 由 GitHub 自动打码；GITEE_USER 用 freehul
+          git remote add gitee "https://freehul:${GITEE_TOKEN}@gitee.com/freehul/sgme.git"
+          git push gitee main --force
+          git push gitee --tags --force
