@@ -2110,3 +2110,24 @@ config_home / config）；合并后 main 复跑并集 **183 passed / 0 failed**�
 消费方需知（grep 适配器无此依赖）；②远程接入端可 `python scripts/install_client.py --host <NAS>` 重写
 install.json；③版本 bump 1.1.1 → 1.1.2（__version__ 单源，B123），NAS 容器下次部署生效——部署前
 /v1/health 仍报 1.1.1 属正常。
+
+### B125. T-114/T-115 实测复核关闭 + T-123 分类治理立项（v1.1.2，2026-08-30）
+
+**背景**：skills 模块状态检测（用户问「原子拆解机制/运行是否正常/调用有无冲突」）时对两条 ST-36
+遗留任务（🟡 暂缓）做生产实测复核，发现登记口径已过时，用户拍板「按建议执行」。
+
+**T-114 关闭依据（实测）**：「158 条超 8K」为 wiki 时代口径（M4a 迁移前统计）。B114 de-wikification
+重写后：生产 skills.db 403 条 content（**剥离 frontmatter 的 body**）全部 ≤8192（最长 8050，平均 3893，
+原子门禁 100% 达标）；git 源 403 个 SKILL.md 中仅 12 个总字节超 8K——系含 frontmatter 所致（SSH 容器
+`find -size +8k` 对照 DB content_len 逐一核实）。无需拆分，实质已被 B114 收敛。
+
+**T-115 关闭依据（实测）**：M4b 扫描报告（exports/m4b-atomic-candidates.md）结论「未发现跨技能重复
+段落（≥2 技能且 ≥30 字符），候选 0 组」；存量佐证：同 SHA 重复组 0、悬空 uses 0（skill_uses 16 边全有效）。
+
+**T-123 立项**：uncategorized 102 条（403 的 26%）分类治理——category 结构化过滤对该部分失效。
+方案：LLM 辅助按 description/正文归类 → 白名单收敛现有 top 枚举（hermes 65/ai 55/software-development
+51/github 22/network 17…）→ 人工逐条过清单（AIXM 关键词误伤 44 条教训）→ 先备份 skills.db 记录原值
+可回滚。验收：uncategorized 归零或个位数、误伤抽查=0。
+
+**运维影响**：纯文档变更，零代码改动；skills 写侧门禁/检索路径/向量路零变化。检测侧证据链
+（403/403 向量满覆盖、rrf 双路全绿）见 L0 会话记录与本条。
