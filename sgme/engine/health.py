@@ -17,12 +17,37 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import threading
+import time as _time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 
 logger = logging.getLogger("sgme.engine.health")
+
+
+# ---------- T-119：LLM 探测 TTL 缓存（stale-while-revalidate） ----------
+# 背景（B123 NAS 部署实录）：healthcheck 内层 urlopen timeout=3s < 探测实测 5.5s
+# （agnes /models），health 每次同步探测必然把 healthcheck 拖到超时误判 unhealthy。
+# 治本：探测结果缓存——TTL 内毫秒级返回；过期返回旧值（stale）并后台刷新；
+# client 注入（测试形态）绕过缓存；首链 head 变化（配置热更新）强制失效。
+_LLM_CACHE_TTL_DEFAULT = 30.0
+_llm_cache: dict | None = None  # {"data": dict, "ts": monotonic, "head": tuple}
+_llm_cache_lock = threading.Lock()
+_llm_refreshing = threading.Event()  # 后台刷新防重入
+
+
+def reset_llm_cache() -> None:
+    """清空 LLM 探测缓存（测试隔离 / 配置热更新后可显式调用）。
+
+    同时清除后台刷新防重入标记——否则上一个过期周期的刷新线程未结束时
+    （如真实网络 5s 超时期间），新周期的刷新会被 Event 拦截，缓存永不更新。
+    """
+    global _llm_cache
+    with _llm_cache_lock:
+        _llm_cache = None
+    _llm_refreshing.clear()
 
 
 def _now_dt() -> datetime:
@@ -144,14 +169,92 @@ def check_refinement_stalled(
 
 # ---------- LLM 可用性探测 ----------
 
-def check_llm_available(cfg: dict, client: httpx.Client | None = None) -> dict:
-    """LLM 首链 provider 轻量 ping（/models 端点）。
+def check_llm_available(
+    cfg: dict, client: httpx.Client | None = None, ttl: float = _LLM_CACHE_TTL_DEFAULT,
+) -> dict:
+    """LLM 首链 provider 轻量 ping，带 TTL 缓存（T-119，stale-while-revalidate）。
 
     - 取 cfg["llm"]["chains"]["refinement"][0] 首链 provider/model/base_url
+    - **缓存编排**（仅生产形态，client=None）：TTL 内返回缓存（毫秒级，healthcheck
+      不再被 5s 探测拖超时）；过期返回旧值并后台 daemon 线程刷新（Event 防重入）；
+      首链 head（provider/model/base_url）变化 → 强制失效重新探测
+    - client 注入（测试形态）绕过缓存直连探测——既有 mock 测试零污染
+    - rule 兜底链/未配置快速分支不缓存（零成本且需即时反映配置变更）
+    - 返回字段不变：available / provider / model / error
+    """
+    global _llm_cache
+    try:
+        chain = cfg["llm"]["chains"]["refinement"]
+        head = chain[0] if chain else {}
+    except (KeyError, IndexError, TypeError):
+        return {
+            "available": False,
+            "provider": None,
+            "model": None,
+            "error": "refinement 链未配置",
+        }
+
+    provider = head.get("provider")
+    model = head.get("model")
+    base_url = head.get("base_url")
+
+    # rule 兜底链视为不可用（快速分支，不缓存）
+    if not provider or provider == "rule" or not base_url:
+        return {
+            "available": False,
+            "provider": provider,
+            "model": model,
+            "error": "无可 ping 的 provider（rule 兜底或 base_url 缺失）",
+        }
+
+    # 测试形态（client 注入）绕过缓存
+    if client is not None:
+        return _probe_llm(cfg, client)
+
+    head_key = (provider, model, base_url)
+    now = _time.monotonic()
+    with _llm_cache_lock:
+        snap = _llm_cache
+    if snap is not None and snap["head"] == head_key:
+        if now - snap["ts"] < ttl:
+            return snap["data"]
+        # 过期：返回旧值 + 后台刷新（不阻塞调用方）
+        _spawn_llm_refresh(cfg, head_key)
+        return snap["data"]
+
+    # 无缓存 / head 变化：同步探测并写缓存（保持原首调行为）
+    data = _probe_llm(cfg, None)
+    with _llm_cache_lock:
+        _llm_cache = {"data": data, "ts": _time.monotonic(), "head": head_key}
+    return data
+
+
+def _spawn_llm_refresh(cfg: dict, head_key: tuple) -> None:
+    """后台 daemon 线程刷新 LLM 探测缓存（Event 防并发重入，永不抛异常）。"""
+    if _llm_refreshing.is_set():
+        return
+    _llm_refreshing.set()
+
+    def _bg() -> None:
+        global _llm_cache
+        try:
+            data = _probe_llm(cfg, None)
+            with _llm_cache_lock:
+                _llm_cache = {"data": data, "ts": _time.monotonic(), "head": head_key}
+        except Exception as e:  # 刷新失败保旧值，下轮过期再试
+            logger.warning("LLM 探测缓存后台刷新失败（保留旧值）: %s", e)
+        finally:
+            _llm_refreshing.clear()
+
+    threading.Thread(target=_bg, daemon=True, name="llm-health-refresh").start()
+
+
+def _probe_llm(cfg: dict, client: httpx.Client | None) -> dict:
+    """LLM 首链探测实体（原 check_llm_available 探测体，T-119 抽出复用）。
+
     - 对 lm-studio / deepseek 调 /models 端点（httpx GET，trust_env=False，timeout=5s）
-    - rule 兜底链视为不可用（available=False）
-    - client 可注入（测试用 mock）；不传则用 sgme.llm.provider.make_client(timeout_s=5)
-    - 返回字段：available / provider / model / error
+    - 探测带首链鉴权（2026-08-08 修复）：api_key_env 缺失或 key 为空 → 不带头
+    - 自建 client 用后即关；注入 client 由调用方管理
     """
     try:
         chain = cfg["llm"]["chains"]["refinement"]
@@ -168,7 +271,6 @@ def check_llm_available(cfg: dict, client: httpx.Client | None = None) -> dict:
     model = head.get("model")
     base_url = head.get("base_url")
 
-    # rule 兜底链视为不可用
     if not provider or provider == "rule" or not base_url:
         return {
             "available": False,
