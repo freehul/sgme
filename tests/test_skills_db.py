@@ -217,6 +217,22 @@ class TestDiff:
         d = skills_dao.diff_records(conn, [_rec("a", "y", sha="new")])
         assert d["update"] == ["a"]
 
+    def test_diff_detects_metadata_change_same_sha(self, conn):
+        """T-124b：sha（body 口径，不含 frontmatter）不变时，category 等元数据
+        变更应判 update——否则 sync_index 对元数据变更失明（T-123 实测撞出）。"""
+        skills_dao.upsert_skill(conn, _rec("m", "x", category="uncategorized"))
+        conn.commit()
+        d = skills_dao.diff_records(conn, [_rec("m", "x", category="network")])
+        assert d["update"] == ["m"]
+
+    def test_diff_metadata_unchanged_stays_unchanged(self, conn):
+        """元数据全同保持 unchanged（防误扩 update 集合白烧向量重算）。"""
+        skills_dao.upsert_skill(conn, _rec("m", "x", category="network"))
+        conn.commit()
+        d = skills_dao.diff_records(conn, [_rec("m", "x", category="network")])
+        assert d["update"] == []
+        assert d["unchanged"] == ["m"]
+
     def test_vector_covered(self, conn):
         skills_dao.upsert_skill(conn, _rec("a", "x"))
         conn.execute(
