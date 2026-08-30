@@ -4,16 +4,19 @@
 - check_refinement_stalled：水位停滞检测（refined_at 距今超阈值 → stalled=True；
   T-12 起含 last_refined_seq 序号水位空转检测）
 - check_seq_progression：序号水位推进检测（最近窗口内是否有 last_refined_seq 推进）
-- check_llm_available：LLM 首链 provider 轻量 ping（/models 端点，5s 超时）
+- check_llm_available：LLM 首链 provider 轻量 ping（/models 端点，12s 超时；T-125 加宽）
 - check_heartbeat：综合心跳（LLM 可用 + 队列深度 + 最近提炼 + 停摆标记），异常发 anomaly_warn
 
 设计依据：§3 / §11.1
 - 异常时通过 signal.engine.publish('anomaly_warn', ...) 上报
 - anomaly_warn 发布失败仅日志，不抛异常
 - httpx 必须 trust_env=False（防 Clash 代理劫持 localhost 请求）
+- T-125：发布前同状态去重（同源 health 窗口内重复告警抑制，防御性收口——
+  设计上抑制窗口归消费端但实际无消费端做抑制，anomaly_warn 持续堆积）
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -252,7 +255,9 @@ def _spawn_llm_refresh(cfg: dict, head_key: tuple) -> None:
 def _probe_llm(cfg: dict, client: httpx.Client | None) -> dict:
     """LLM 首链探测实体（原 check_llm_available 探测体，T-119 抽出复用）。
 
-    - 对 lm-studio / deepseek 调 /models 端点（httpx GET，trust_env=False，timeout=5s）
+    - 对 lm-studio / deepseek 调 /models 端点（httpx GET，trust_env=False，timeout=12s；
+      T-125 加宽 5s→12s——agnes /models 实测 0.19s 正常，但间歇网络抖动可达 5.5s
+      （B123 记录），5s 超时触发误报）
     - 探测带首链鉴权（2026-08-08 修复）：api_key_env 缺失或 key 为空 → 不带头
     - 自建 client 用后即关；注入 client 由调用方管理
     """
@@ -283,7 +288,7 @@ def _probe_llm(cfg: dict, client: httpx.Client | None) -> dict:
     cli = client
     if own_client:
         from sgme.llm.provider import make_client
-        cli = make_client(timeout_s=5.0)
+        cli = make_client(timeout_s=12.0)  # T-125：5s→12s（间歇抖动实测 5.5s）
 
     try:
         url = base_url.rstrip("/") + "/models"
@@ -296,7 +301,7 @@ def _probe_llm(cfg: dict, client: httpx.Client | None) -> dict:
             api_key = os.environ.get(api_key_env)
             if api_key:
                 headers = {"Authorization": f"Bearer {api_key}"}
-        resp = cli.get(url, timeout=5.0, headers=headers)
+        resp = cli.get(url, timeout=12.0, headers=headers)  # T-125：与 make_client 同步加宽
         if resp.status_code == 200:
             return {
                 "available": True,
@@ -348,6 +353,47 @@ def _probe_llm(cfg: dict, client: httpx.Client | None) -> dict:
 
 # ---------- 综合心跳检查 ----------
 
+def _is_duplicate_warn(
+    mem_conn: sqlite3.Connection,
+    stalled: bool,
+    llm_available: bool,
+) -> bool:
+    """T-125：同源 health 最近一条 anomaly_warn 是否「同状态且在抑制窗口内」。
+
+    - 设计上发布端不做合并过滤（抑制窗口归消费端，§18），但实际没有消费端做
+      抑制，导致 anomaly_warn 每心跳重复堆积（08-30 实测 signal_events 已有
+      1321 条）——在发布方做同状态去重是防御性收口：状态未变 + 窗口内
+      （SUPPRESS_WINDOW_SECONDS=1800s）→ 抑制；状态变化或超窗口 → 照常发布
+      （状态变化必须对消费端可见）
+    - 查询走 signal_dao.get_recent_event（T-9 收口纪律：engine 层不写 SQL）
+    - 任何异常按「不抑制」处理——宁可多发一次，不可漏报
+    """
+    try:
+        from sgme.data import signal_dao
+        from sgme.signal import engine as signal_engine
+
+        row = signal_dao.get_recent_event(mem_conn, "anomaly_warn", "health")
+        if row is None or not row.get("ts"):
+            return False
+        last_dt = _parse_iso(row["ts"])
+        if last_dt is None:
+            return False
+        delta = (_now_dt() - last_dt).total_seconds()
+        if delta < 0 or delta > signal_engine.SUPPRESS_WINDOW_SECONDS:
+            return False
+        try:
+            last_payload = json.loads(row["payload"])
+        except (ValueError, TypeError):
+            return False
+        return (
+            last_payload.get("stalled") == stalled
+            and last_payload.get("llm_available") == llm_available
+        )
+    except Exception as e:
+        logger.warning("重复告警判定查询失败（按不抑制处理）: %s", e)
+        return False
+
+
 def check_heartbeat(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -360,6 +406,7 @@ def check_heartbeat(
     - 最近提炼时间 = MAX(refined_at) FROM raw_files WHERE refined_at IS NOT NULL
     - 调 check_refinement_stalled 和 check_llm_available
     - 任一异常（stalled=True 或 llm.available=False）→ 发布 anomaly_warn 信号
+    - T-125：同状态且在抑制窗口内的重复告警跳过发布（仅日志），状态变化照常发布
     - anomaly_warn 发布失败仅日志，不抛异常
     - 返回字段：llm / refinement / queue_depth / heartbeat_ok / stalled
     """
@@ -408,16 +455,24 @@ def check_heartbeat(
             "window_max_seq": seq_info["window_max_seq"],
             "window_hours": seq_info["window_hours"],
         }
-        try:
-            from sgme.signal import engine as signal_engine
-            signal_engine.publish(
-                event_type="anomaly_warn",
-                source="health",
-                payload=payload,
-                mem_conn=mem_conn,
+        # T-125：发布前同状态去重（防御性收口）——同状态 + 窗口内 → 抑制仅日志；
+        # 状态变化/超窗口 → 照常发布；发布失败仍仅日志不抛异常
+        if _is_duplicate_warn(mem_conn, stalled, llm_ok):
+            logger.info(
+                "已抑制重复告警: 同状态(stalled=%s, llm_available=%s) 在抑制窗口内，不重复发布",
+                stalled, llm_ok,
             )
-        except Exception as e:
-            logger.warning("anomaly_warn 发布失败（不阻塞）: %s", e)
+        else:
+            try:
+                from sgme.signal import engine as signal_engine
+                signal_engine.publish(
+                    event_type="anomaly_warn",
+                    source="health",
+                    payload=payload,
+                    mem_conn=mem_conn,
+                )
+            except Exception as e:
+                logger.warning("anomaly_warn 发布失败（不阻塞）: %s", e)
 
     return {
         "llm": llm_info,

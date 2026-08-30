@@ -276,6 +276,106 @@ def test_check_heartbeat_llm_down_warns(mem_conn, session_conn, cfg):
     cli.close()
 
 
+# ---------- 3.5 T-125：anomaly_warn 同状态去重 ----------
+
+def test_check_heartbeat_duplicate_warn_suppressed(mem_conn, session_conn, cfg):
+    """同状态重复告警 → 窗口内抑制：连续两次异常心跳只落 1 条 anomaly_warn。"""
+    _insert_raw_file(session_conn, "f-dup", refined_at=_iso(25))  # stalled=True
+
+    def handler(req):
+        return httpx.Response(200, json={"data": []})
+
+    cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
+    r1 = health_mod.check_heartbeat(mem_conn, session_conn, cfg, client=cli)
+    assert r1["heartbeat_ok"] is False
+    assert _count_anomaly_warns(mem_conn) == 1  # 首次照常发布
+    r2 = health_mod.check_heartbeat(mem_conn, session_conn, cfg, client=cli)
+    assert r2["heartbeat_ok"] is False
+    assert _count_anomaly_warns(mem_conn) == 1  # 同状态窗口内 → 抑制，未新增
+    cli.close()
+
+
+def test_check_heartbeat_state_change_publishes(mem_conn, session_conn, cfg):
+    """状态变化（stalled/llm_available 任一变化）→ 窗口内也照常发布。"""
+    _insert_raw_file(session_conn, "f-chg1", refined_at=_iso(1))  # 不 stalled
+
+    def down_handler(req):
+        raise httpx.ConnectError("connection refused")
+
+    cli_down = httpx.Client(transport=httpx.MockTransport(down_handler), trust_env=False)
+    r1 = health_mod.check_heartbeat(mem_conn, session_conn, cfg, client=cli_down)
+    assert r1["stalled"] is False and r1["llm"]["available"] is False
+    assert _count_anomaly_warns(mem_conn) == 1
+    cli_down.close()
+
+    # 状态变化：LLM 恢复但提炼停摆（stalled False→True）——改写既有行 refined_at
+    # 至 25h 前（MAX(refined_at) 才会越过 24h 阈值判停摆）
+    session_conn.execute(
+        "UPDATE raw_files SET refined_at=? WHERE file_id='f-chg1'",
+        (_iso(25),),
+    )
+    session_conn.commit()
+
+    def ok_handler(req):
+        return httpx.Response(200, json={"data": []})
+
+    cli_ok = httpx.Client(transport=httpx.MockTransport(ok_handler), trust_env=False)
+    r2 = health_mod.check_heartbeat(mem_conn, session_conn, cfg, client=cli_ok)
+    assert r2["stalled"] is True and r2["llm"]["available"] is True
+    assert _count_anomaly_warns(mem_conn) == 2  # 状态变化 → 照常发布
+    cli_ok.close()
+
+
+def test_check_heartbeat_duplicate_after_window_publishes(mem_conn, session_conn, cfg):
+    """同状态但距上次已超抑制窗口（1800s）→ 照常发布。"""
+    _insert_raw_file(session_conn, "f-win", refined_at=_iso(25))  # stalled=True
+    # 预置 1 小时前（> 1800s 窗口）同状态的 anomaly_warn
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    signal_dao.insert_event(
+        conn=mem_conn,
+        event_id="old-warn",
+        event_type="anomaly_warn",
+        source="health",
+        payload_json=json.dumps({"stalled": True, "llm_available": True}),
+        ts=old_ts,
+    )
+
+    def handler(req):
+        return httpx.Response(200, json={"data": []})
+
+    cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
+    result = health_mod.check_heartbeat(mem_conn, session_conn, cfg, client=cli)
+    assert result["heartbeat_ok"] is False
+    assert _count_anomaly_warns(mem_conn) == 2  # 旧事件 + 新发布
+    cli.close()
+
+
+def test_signal_dao_get_recent_event(mem_conn):
+    """get_recent_event 返回同源同类型最近一条完整行（含 ts/payload）。"""
+    signal_dao.insert_event(
+        mem_conn, "e1", "anomaly_warn", "health",
+        json.dumps({"stalled": True}), ts="2026-08-30T01:00:00Z",
+    )
+    signal_dao.insert_event(
+        mem_conn, "e2", "anomaly_warn", "health",
+        json.dumps({"stalled": True, "llm_available": False}),
+        ts="2026-08-30T02:00:00Z",
+    )
+    signal_dao.insert_event(
+        mem_conn, "e3", "anomaly_warn", "other",
+        json.dumps({"stalled": True}), ts="2026-08-30T03:00:00Z",
+    )
+    row = signal_dao.get_recent_event(mem_conn, "anomaly_warn", "health")
+    assert row is not None
+    assert row["event_id"] == "e2"
+    assert row["ts"] == "2026-08-30T02:00:00Z"
+    assert json.loads(row["payload"])["llm_available"] is False
+    # 无匹配 → None
+    assert signal_dao.get_recent_event(mem_conn, "anomaly_warn", "nope") is None
+
+
 # ---------- 4. /v1/health 端点 ----------
 
 def test_health_endpoint_returns_full_fields(client):
