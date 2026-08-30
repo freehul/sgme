@@ -572,6 +572,8 @@ CREATE TABLE refine_cursor (
 
 **TTL 归档**：异常类（anomaly_warn/batch_scan_error/dream_error）30 天、memory_updated 7 天、care_* 消费后 7 天，超期物理删除（信号是衍生数据，非「原件」）。
 
+**发布端同状态去重（T-125，2026-08-30）**：发布侧不做合并过滤（抑制窗口归消费端）的设计在实际运行中无消费端执行抑制，health 的 anomaly_warn 每心跳重复发布导致堆积（signal_events 实测 1321 条）。收口：`engine/health.py` 发布前对同源 health 最近一条 anomaly_warn 做同状态比对（stalled/llm_available），相同且在 SUPPRESS_WINDOW_SECONDS=1800s 窗口内 → 抑制（仅日志），状态变化/超窗口照常发布。此为 health 发布方防御性收口，不改动 signal/engine.py 发布端语义与其他事件类型。
+
 ---
 
 ## 19. 备份与恢复（backup/）

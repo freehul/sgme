@@ -322,6 +322,24 @@ def get_recent_event_ts(
     return row["ts"] if isinstance(row, sqlite3.Row) else row[0]
 
 
+def get_recent_event(
+    conn: sqlite3.Connection,
+    event_type: str,
+    source: str,
+) -> dict | None:
+    """同源同类型最近一条事件完整行（含 ts/payload；T-125 health 同状态去重用）。
+
+    get_recent_event_ts 只回 ts，健康检查同状态去重需要 payload 比对——
+    补完整行查询，engine 层不写 SQL（T-9 收口纪律）。无匹配返回 None。
+    """
+    row = conn.execute(
+        "SELECT * FROM signal_events WHERE type=? AND source=? "
+        "ORDER BY ts DESC LIMIT 1",
+        (event_type, source),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def count_events_before_ts(
     conn: sqlite3.Connection,
     ts: str,
