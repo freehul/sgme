@@ -2072,3 +2072,41 @@ test_vector_embed）**72 collected / exit=0 / 0 failed**；提交前另跑全量
     embed_timeout: 180.0，重启后预热稳定推进（每轮 10 条）；
   - 终验：容器 healthy、/v1/health 200 + version 1.1.1 + LLM available(agnes)、
     三远端 main=78a3f03 + tag v1.1.1 哈希一致、skills 向量 403 条后台补齐中。
+
+### B124. 接入体验三连修：inject 报错自解释/mode 缺省回落 + install.json 客户端模式 + 接入文档速查（v1.1.2，2026-08-30）
+
+**背景**：2026-08-30 ZCode 接入 SGME 全链路自检，实踩六个坑（完整版入 wiki《SGME新接入踩坑手册-2026-08-30》，
+page 尾号 329b3b33，category skill/sgme）。其中两个可代码治本，用户拍板「并行开发」：PR-17（T-120）+
+PR-18（T-121）双 worktree 并行子代理开发，主 agent 验证合并（parallel-subagent-dev 流程，merge --no-ff）。
+
+**T-120（PR-17，commit c01f8e9）**：
+1. `sgme/profile/template.py`：新增 `list_templates()`（扫 TEMPLATES_DIR/*.yaml 返回 sorted stem）；
+   `_read_yaml` 报错改「模板文件不存在: {文件名}（可用: ...）」——只暴露文件名，消灭 /app/... 容器路径泄漏；
+   extends 基模板缺失走同一函数自然获益。
+2. `sgme/operations/inject.py`：新增模块常量 `DEFAULT_INJECT_MODE = "daily"` + `_attach_fallback_note`；
+   mode 与 custom_filter 均未指定时回落 daily，并在 stats.note 注明（含可用模板清单）；显式 custom_filter
+   （含空 dict）行为完全不变；显式 mode 模板不存在仍 400 但文案自解释。契约兼容：错误码/状态码/响应结构
+   不变，只改文案与新增回落行为。
+
+**T-121（PR-18，commit ec06658）**：
+3. `sgme/config.py`：新增 `write_client_install_json(host, port=9910, mcp_port=None)`——同 schema，
+   data_dir/raw_dir 置 null（本地无数据目录语义）；`write_install_json`/`install_json_path` 零改动
+   （服务端启动自动生成契约冻结，app.py lifespan 不动）。
+4. `scripts/install_client.py`：CLI（--host 必填 / --port 默认 9910 / --mcp-port 默认走 SGME_MCP_PORT env）。
+   纯远程接入端手动生成服务发现清单——本次实踩：本机 sandbox 测试残留 install.json 指向 127.0.0.1:9910
+   + Temp 目录，NAS 探测失败时第二步兜底被误导。
+
+**T-122（文档沉淀）**：AGENTS.md 接入纪律块补「接入速查」（模板名清单 / append 契约与 started_at 幂等
+语义 / trust_env 标准写法 / dev key 403 排障口诀 / install_client 用法）；wiki 踩坑手册（含接入自检最小
+链路四步）；Backlog T-120/121/122 登记；待办池 3 条 demand（inject 报错自解释 p70 / install 客户端模式
+p50 / ONBOARDING 速查 p40）随本三任务关闭。
+
+**测试**：PR-17 worktree 内 52+64+54 全绿（operations_inject+operations_template / routes_templates+
+config+entry_hardening / profile+server_v04 回归）；PR-18 worktree 内 13+23 全绿（install_json+
+config_home / config）；合并后 main 复跑并集 **183 passed / 0 failed**（TDD 全程：新用例先红后绿，
+既有断言仅文案适配）。不触提炼链路，免真实 LLM 冒烟。
+
+**运维影响**：①inject 无参调用行为变化（400 → 200 回落 daily，响应带 note 说明）——依赖旧报错形态的
+消费方需知（grep 适配器无此依赖）；②远程接入端可 `python scripts/install_client.py --host <NAS>` 重写
+install.json；③版本 bump 1.1.1 → 1.1.2（__version__ 单源，B123），NAS 容器下次部署生效——部署前
+/v1/health 仍报 1.1.1 属正常。

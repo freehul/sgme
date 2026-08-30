@@ -199,6 +199,13 @@ SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。
 
 **接口**：HTTP API http://192.168.10.10:9910 ｜ MCP http://192.168.10.10:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key；默认 dev key 仅限本机回环，远程调用一律 403）。
 
+**接入速查**（2026-08-30 实测沉淀，六坑完整版见 wiki《SGME新接入踩坑手册-2026-08-30》）：
+- inject 模板四选一：`coding`/`daily`/`full`/`work`（无 default；不带 mode 服务端自动回落 daily 并在 stats.note 注明，v1.1.2 起）
+- append 契约：`POST /v1/append` body 必带 `session_key` + `started_at`（ISO）+ `content`；同 session_key+同 started_at **幂等丢弃**——每轮取当前时刻勿固定会话开始时刻（v0.5 曾因此静默丢整月捕获），成功以返回 `status:new` 为准
+- trust_env=False 标准写法：httpx `httpx.Client(trust_env=False)`；requests 是 Session 属性 `s=requests.Session(); s.trust_env=False`（放 request() 参数会 TypeError）
+- 排障口诀：403=鉴权/来源问题（dev key 仅本机回环，远程必须 SGME_AGENT_KEY/agt_*），400=参数问题（key 已通过）
+- 纯远程接入端：`python scripts/install_client.py --host <NAS地址>` 生成 install.json（data_dir/raw_dir 置 null），防本机测试残留误导服务发现（v1.1.2 起）
+
 **历史会话补导入**：本适配器提供历史会话全量导入方法（把接入前的存量会话补进 SGME）：
    `D:/Projects/SGME/.venv/Scripts/python.exe D:/Projects/SGME/adapters/dsh/import_history.py`
    幂等可重跑（已导入的自动跳过）。需要补录历史时执行它即可，然后汇报导入数量。
