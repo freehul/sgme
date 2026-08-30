@@ -12,11 +12,13 @@
    先校验维度 id 已注册）→ 拼装为单个 section → ``build_inject_blocks``
    → tier0 字段 + ``stats.mode="custom"``。
 
-异常翻译（照 v0.6 路由，逐条一致）：
+异常翻译（照 v0.6 路由，逐条一致；T-120 起新增 mode 缺省回落）：
 - ``template.TemplateError`` → ``fail(ERR_INVALID_ARGS, "模板加载失败: {e}")``
 - custom_filter 未指定 dimensions → ``fail(ERR_INVALID_ARGS, "custom_filter 需指定 dimensions")``
 - custom_filter 含未注册维度 id → ``fail(ERR_INVALID_ARGS, "未注册的维度 id: {d}")``
-- mode 与 custom_filter 均未指定 → ``fail(ERR_INVALID_ARGS, "需指定 mode 或 custom_filter")``
+- mode 与 custom_filter 均未指定（T-120）→ 回落 ``DEFAULT_INJECT_MODE`` 注入，
+  并在 ``stats.note`` 注明回落与可用模板清单；显式传空值（非缺省态）仍走
+  ``fail(ERR_INVALID_ARGS, "需指定 mode 或 custom_filter")`` 兜底
 - 其余意外异常（pipeline/DAO 层）→ ``fail(ERR_INTERNAL, ...)``
 
 依赖：只调 profile.template / profile.inject / profile.tier0 / storage.memory_dao
@@ -36,6 +38,9 @@ from sgme.profile import inject as inject_mod
 from sgme.profile import template as template_mod
 from sgme.profile import tier0 as tier0_mod
 from sgme.data import memory_dao
+
+# mode 缺省回落目标（T-120：2026-08-30 接入实测定，daily 为最常用画像注入模式）
+DEFAULT_INJECT_MODE = "daily"
 
 
 def _attach_key_missing_note(response: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
@@ -68,6 +73,22 @@ def _attach_empty_note(response: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
+def _attach_fallback_note(response: dict[str, Any], mode: str) -> dict[str, Any]:
+    """mode 缺省回落提示（T-120）：mode 未指定回落默认模式时在 ``stats.note`` 注明。
+
+    报错自解释：附可用模板清单，调用方无需猜测可切换的模板名。
+    与 ``_attach_key_missing_note`` 同款 append 语义，不覆盖既有 note；
+    调用方须保证本函数在 ``_attach_empty_note`` 之后执行（后者会整体覆盖 note）。
+    """
+    notice = (
+        f"mode 未指定，已回落 {mode}"
+        f"（可用模板: {', '.join(template_mod.list_templates())}）"
+    )
+    current = response.get("stats", {}).get("note", "")
+    response["stats"]["note"] = (current + "\n" + notice).strip()
+    return response
+
+
 def inject(
     mem_conn: sqlite3.Connection,
     cfg: dict[str, Any],
@@ -97,10 +118,17 @@ def inject(
         失败态（错误码与文案照 v0.6 路由）：
         - 模板加载失败（TemplateError）→ ERR_INVALID_ARGS「模板加载失败: {e}」
         - custom_filter 缺 dimensions / 含未注册维度 → ERR_INVALID_ARGS
-        - 未指定 mode 与 custom_filter → ERR_INVALID_ARGS
+        - 均未指定 mode 与 custom_filter → 回落 DEFAULT_INJECT_MODE（T-120，
+          ``stats.note`` 注明回落与可用模板清单）；显式传空值仍 → ERR_INVALID_ARGS
         - 其余意外异常（pipeline/DAO 层）→ ERR_INTERNAL
     """
     dimensions: list[dict[str, Any]] = cfg["dimensions"]
+    # T-120：mode 缺省回落——两者都缺省（None，非显式空值）时回落默认模式，
+    # 显式传入 custom_filter（哪怕空 dict）时行为完全不变
+    fallback_mode: str | None = None
+    if mode is None and custom_filter is None:
+        fallback_mode = DEFAULT_INJECT_MODE
+        mode = fallback_mode
 
     try:
         # ---------- 分支 1：mode 模板注入 ----------
@@ -122,7 +150,11 @@ def inject(
                 "present": tier0_summary is not None,
                 "content": tier0_summary,
             }
-            return OperationResult.succeed(_attach_key_missing_note(_attach_empty_note(response), cfg))
+            response = _attach_key_missing_note(_attach_empty_note(response), cfg)
+            if fallback_mode:
+                # 回落提示最后追加（_attach_empty_note 会整体覆盖 note，须先走既有链路）
+                response = _attach_fallback_note(response, fallback_mode)
+            return OperationResult.succeed(response)
 
         # ---------- 分支 2：custom_filter 自定义查询 ----------
         if custom_filter:
@@ -165,7 +197,8 @@ def inject(
             response["stats"]["mode"] = "custom"
             return OperationResult.succeed(_attach_key_missing_note(_attach_empty_note(response), cfg))
 
-        # 两个分支都未指定 → 参数非法（照 v0.6 路由兜底文案）
+        # 显式传空值（mode=""/custom_filter={} 等非缺省态）→ 参数非法（照 v0.6 路由兜底文案；
+        # 真正的缺省回落已在函数入口处理，T-120）
         return OperationResult.fail(ERR_INVALID_ARGS, "需指定 mode 或 custom_filter")
     except Exception as e:
         # 意外异常（pipeline/DAO 层）→ ERR_INTERNAL，照 v0.6 路由 api_error 兜底
