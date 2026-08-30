@@ -1,0 +1,722 @@
+{
+ "generated": "2026-08-30",
+ "model": "agnes-2.5-flash",
+ "count": 102,
+ "invalid_fixed": 0,
+ "suggestions": [
+  {
+   "name": "apple-notes",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "通过CLI管理Apple备忘录的应用工具",
+   "description": "Manage Apple Notes via memo CLI: create, search, edit."
+  },
+  {
+   "name": "apple-reminders",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "通过CLI管理Apple提醒事项的应用工具",
+   "description": "Apple Reminders via remindctl: add, list, complete."
+  },
+  {
+   "name": "architecture-diagram",
+   "current": "uncategorized",
+   "suggested": "design",
+   "reason": "生成架构图/云图SVG可视化设计",
+   "description": "Dark-themed SVG architecture/cloud/infra diagrams as HTML."
+  },
+  {
+   "name": "arxiv",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "搜索学术论文的学术研究工具",
+   "description": "Search arXiv papers by keyword, author, category, or ID."
+  },
+  {
+   "name": "ascii-art",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "ASCII艺术创作与图像处理工具",
+   "description": "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii."
+  },
+  {
+   "name": "ascii-video",
+   "current": "uncategorized",
+   "suggested": "media",
+   "reason": "视频音频转ASCII艺术格式处理",
+   "description": "ASCII video: convert video/audio to colored ASCII MP4/GIF."
+  },
+  {
+   "name": "baoyu-infographic",
+   "current": "uncategorized",
+   "suggested": "design",
+   "reason": "信息图设计与可视化布局生成",
+   "description": "Infographics: 21 layouts x 21 styles (信息图, 可视化)."
+  },
+  {
+   "name": "blocked-page-recovery",
+   "current": "uncategorized",
+   "suggested": "security",
+   "reason": "绕过WAF/付费墙恢复页面访问",
+   "description": "Recover blocked/paywalled/WAF'd pages via fallbacks."
+  },
+  {
+   "name": "blogwatcher",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "监控博客RSS源的研究跟踪工具",
+   "description": "Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool."
+  },
+  {
+   "name": "box",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "云端文件管理与共享开发工具",
+   "description": "Box manages cloud files, sharing, search, and metadata."
+  },
+  {
+   "name": "browser-annotation",
+   "current": "uncategorized",
+   "suggested": "design",
+   "reason": "网页视觉标注与交互反馈工具",
+   "description": "Visual feedback on web pages. Use when user says 'annotate'."
+  },
+  {
+   "name": "chengqianbihou-zhibing-jiuren",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "团队错误处理的管理方法论",
+   "description": "当用户需要处理团队成员的错误时激活，惩前毖后治病救人。"
+  },
+  {
+   "name": "claude-code",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "委托AI代理代码开发的工具",
+   "description": "Delegate coding to Claude Code CLI (features, PRs)."
+  },
+  {
+   "name": "codebase-inspection",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "代码库分析与统计的软件开发工具",
+   "description": "Inspect codebases w/ pygount: LOC, languages, ratios."
+  },
+  {
+   "name": "comfyui",
+   "current": "uncategorized",
+   "suggested": "media",
+   "reason": "基于扩散模型的图像视频音频生成",
+   "description": "Generate images, video, and audio via diffusion workflows."
+  },
+  {
+   "name": "comfyui-cloud-api-polling",
+   "current": "uncategorized",
+   "suggested": "media",
+   "reason": "云端GPU调用ComfyUI生成媒体内容",
+   "description": "用户想用云端 GPU 跑 ComfyUI 工作流、本地显存不够想换平台、想做 SaaS 服务、想批量生成不计本地资源、或在 CI/CD 中集成时调用此 skil"
+  },
+  {
+   "name": "comfyui-custom-node-skeleton",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "开发ComfyUI自定义节点的编码工具",
+   "description": "用户想从零写一个 ComfyUI 自定义节点, 或节点报 RETURN_TYPES / IS_CHANGED / NODE_CLASS_MAPPINGS 相关错"
+  },
+  {
+   "name": "comfyui-frontend-extension",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "扩展ComfyUI前端UI的编码工具",
+   "description": "用户想给自定义节点加 UI / 加侧边栏 Tab / 加快捷键 / 加 Settings / 监听画布事件 / 做 APP mode 表单 / 加 i18n 多"
+  },
+  {
+   "name": "comfyui-install-decision-tree",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "ComfyUI安装路径决策的部署工具",
+   "description": "用户首次安装 ComfyUI、更换设备/GPU、或问\"我该用 Desktop/Portable/Manual 哪种方式\"时调用,用于按\"平台 × GPU × 隔"
+  },
+  {
+   "name": "comfyui-is-changed-cache-strategy",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "自定义节点缓存策略的编码开发",
+   "description": "当自定义节点出现\"输出不更新\"、\"读了新文件但结果还是旧的\"、\"随机数节点每次结果一样\"、\"不确定要不要定义 IS_CHANGED\"时调用。不适用于: 想写整个"
+  },
+  {
+   "name": "comfyui-local-api-integration",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "本地API集成与自动化工作流开发",
+   "description": "用户想用代码调用 ComfyUI、批量生成、做 Web 应用集成、实时显示生成进度、或自动化工作流时调用此 skill。覆盖 POST /prompt 提交 +"
+  },
+  {
+   "name": "comfyui-mcp-integration",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "AI代理MCP协议集成的开发工具",
+   "description": "用户想让 AI agent (Claude Code/Cursor/Claude Desktop/Codex) 操作 ComfyUI 生成图像/视频/3D/音频"
+  },
+  {
+   "name": "comfyui-model-architecture-match",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "模型架构匹配与兼容性的开发工具",
+   "description": "用户在 ComfyUI 模型加载报错 / 生成花图 / ControlNet 无效果 / 不确定 Latent 尺寸 / 混用不同架构模型 (Flux/SD1."
+  },
+  {
+   "name": "comfyui-performance-tuning-flags",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "ComfyUI性能调优与参数配置开发",
+   "description": "用户在 ComfyUI 能正常运行但想优化速度/显存时调用 — 选对启动参数组合 (缓存/精度/预览/注意力)。\ntrigger 词: \"性能调优\" / \"pe"
+  },
+  {
+   "name": "comfyui-registry-publishing",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "发布自定义节点到注册中心的开发",
+   "description": "用户想把自己写的 ComfyUI 自定义节点发布到 Comfy Registry 让其他人能搜索安装,或想更新节点版本号 (semver),或想理解为什么已发布"
+  },
+  {
+   "name": "comfyui-troubleshoot-bisect",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "定位ComfyUI故障的调试开发工具",
+   "description": "用户在 ComfyUI 启动崩溃 / 工作流执行报错 / 节点加载失败 / 自定义节点更新后出问题时调用,用于按\"自定义节点优先怀疑 + 二分搜索\"定位故障源。"
+  },
+  {
+   "name": "comfyui-vram-degradation",
+   "current": "uncategorized",
+   "suggested": "ai",
+   "reason": "Stable Diffusion显存优化",
+   "description": "ComfyUI 启动或生成图像时报 \"CUDA out of memory\" / \"显存不足\" / \"OOM\" 时调用 — 通过渐进降级启动参数 (--lowv"
+  },
+  {
+   "name": "comfyui-workflow-dag-design",
+   "current": "uncategorized",
+   "suggested": "ai",
+   "reason": "ComfyUI工作流节点设计",
+   "description": "用户想自己设计 ComfyUI 工作流 / 不知道该用哪些节点 / 节点连接报错 / 想从 txt2img 改造成 img2img/inpaint/outpai"
+  },
+  {
+   "name": "comfyui-workflow-format-conversion",
+   "current": "uncategorized",
+   "suggested": "ai",
+   "reason": "ComfyUI API格式处理",
+   "description": "用户想用 API 调用 ComfyUI 工作流(本地 Server API 或 Cloud API)、拿到一份工作流 JSON 但不确定是 UI 还是 API "
+  },
+  {
+   "name": "competitor-news-monitor",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "竞品情报监控与摘要",
+   "description": "Watch named companies for material news; cited digests."
+  },
+  {
+   "name": "content-engine",
+   "current": "uncategorized",
+   "suggested": "social-media",
+   "reason": "多平台内容分发系统",
+   "description": "多平台内容系统——X/LinkedIn/YouTube/Newsletter原生适配。"
+  },
+  {
+   "name": "document-to-action-items",
+   "current": "uncategorized",
+   "suggested": "data",
+   "reason": "文档信息结构化提取",
+   "description": "Extract cited obligations, deadlines, tasks from documents."
+  },
+  {
+   "name": "docx",
+   "current": "uncategorized",
+   "suggested": "data",
+   "reason": "Word文档读写编辑",
+   "description": "Create, read, edit, template, and review Word .docx files."
+  },
+  {
+   "name": "email-inbox-triage",
+   "current": "uncategorized",
+   "suggested": "email",
+   "reason": "邮件优先级分类与回复",
+   "description": "Triage an inbox: prioritize threads, draft replies safely."
+  },
+  {
+   "name": "excalidraw",
+   "current": "uncategorized",
+   "suggested": "design",
+   "reason": "手绘风格架构图绘制",
+   "description": "Hand-drawn Excalidraw JSON diagrams (arch, flow, seq)."
+  },
+  {
+   "name": "fangxia-baofu-kaidong-jiqi",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "放下包袱的思想工作方法",
+   "description": "当用户被包袱束缚无法轻装前进时激活，放下包袱开动机器。"
+  },
+  {
+   "name": "firecrawl",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "AI网页爬取与结构化提取",
+   "description": "Firecrawl — AI 原生的网页抓取/搜索/爬取 API + MCP Server。 支持 JS 渲染、结构化提取、浏览器交互、站点爬取、网页监控。 通"
+  },
+  {
+   "name": "frontend-slides",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "动画HTML演示文稿创作",
+   "description": "当用户说'做个PPT/H5演示'时触发。动画HTML演示文稿"
+  },
+  {
+   "name": "gif-search",
+   "current": "uncategorized",
+   "suggested": "media",
+   "reason": "GIF动图搜索下载",
+   "description": "Search/download GIFs from Tenor via curl + jq."
+  },
+  {
+   "name": "github-code-review",
+   "current": "uncategorized",
+   "suggested": "github",
+   "reason": "GitHub PR审查与评论",
+   "description": "Review PRs: diffs, inline comments via gh or REST."
+  },
+  {
+   "name": "grounded-citations",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "答案来源引用验证",
+   "description": "Ground answers and documents in cited, verifiable sources."
+  },
+  {
+   "name": "home-assistant-camera-setup",
+   "current": "uncategorized",
+   "suggested": "devops",
+   "reason": "IoT摄像头接入配置",
+   "description": "RTSP/ONVIF 摄像头接入/camera HA integration/camera IP probe —— IP摄像头接入Home Assistant："
+  },
+  {
+   "name": "huggingface-hub",
+   "current": "uncategorized",
+   "suggested": "ai",
+   "reason": "HF模型数据集管理",
+   "description": "HuggingFace hf CLI: search/download/upload models, datasets."
+  },
+  {
+   "name": "hyperframes",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "视频动画创作系统入口",
+   "description": "Mandatory entry point: read this first for any request to make, create, edit, an"
+  },
+  {
+   "name": "hyperframes-animation",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "动画运动规则与场景设计",
+   "description": "All animation knowledge for HyperFrames — atomic motion rules, multi-phase scene"
+  },
+  {
+   "name": "hyperframes-cli",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "HyperFrames开发工具链",
+   "description": "Use the HyperFrames CLI development loop: init, add, catalog, capture, lint, che"
+  },
+  {
+   "name": "hyperframes-creative",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "视频创意方向与设计规范",
+   "description": "Non-animation creative direction for HyperFrames videos. Use for design spec (fr"
+  },
+  {
+   "name": "hyperframes-keyframes",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "2D/3D关键帧动画技术",
+   "description": "Use when a HyperFrames composition needs seek-safe 2D/3D keyframes, GSAP timelin"
+  },
+  {
+   "name": "imessage",
+   "current": "uncategorized",
+   "suggested": "social-media",
+   "reason": "iMessage/SMS消息收发",
+   "description": "Send and receive iMessages/SMS via the imsg CLI on macOS."
+  },
+  {
+   "name": "jianmiezhan-jizhong-bingli",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "集中优势突破的方法论",
+   "description": "当用户资源有限面临多个机会威胁时激活，集中优势兵力突破。"
+  },
+  {
+   "name": "llama-cpp",
+   "current": "uncategorized",
+   "suggested": "ai",
+   "reason": "本地GGUF推理引擎",
+   "description": "llama.cpp local GGUF inference + HF Hub model discovery."
+  },
+  {
+   "name": "macos-computer-use",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "macOS桌面自动化控制",
+   "description": "Drive the macOS desktop in the background — screenshots, mouse, keyboard,\nscroll"
+  },
+  {
+   "name": "manim-video",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "数学动画视频制作工具",
+   "description": "Manim CE animations: 3Blue1Brown math/algo videos."
+  },
+  {
+   "name": "maps",
+   "current": "uncategorized",
+   "suggested": "data",
+   "reason": "地理编码和POI数据服务",
+   "description": "Geocode, POIs, routes, timezones via OpenStreetMap/OSRM."
+  },
+  {
+   "name": "meeting-action-items",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "会议记录转任务追踪流程",
+   "description": "Turn meeting notes into cited decisions, owners, tickets."
+  },
+  {
+   "name": "notion",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "Notion笔记与数据库管理",
+   "description": "Notion API + ntn CLI: pages, databases, markdown, Workers."
+  },
+  {
+   "name": "nuwa-skill",
+   "current": "uncategorized",
+   "suggested": "ai",
+   "reason": "AI驱动的技能生成工具",
+   "description": "女娲造人：输入人名/主题/甚至只是模糊需求，自动深度调研→思维框架提炼→生成可运行的人物Skill。\n两种入口：(1)明确人名→直接蒸馏 (2)模糊需求→诊断推"
+  },
+  {
+   "name": "obsidian",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "Obsidian笔记库管理工具",
+   "description": "Read, search, create, and edit notes in the Obsidian vault."
+  },
+  {
+   "name": "ocr-and-documents",
+   "current": "uncategorized",
+   "suggested": "ai",
+   "reason": "OCR文字识别与文档提取",
+   "description": "Extract text from PDFs/scans (pymupdf, marker-pdf)."
+  },
+  {
+   "name": "official-method-first",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "坚持官方最佳实践的方法论",
+   "description": "必须使用官方方式，不能因为能跑就用自定义方案"
+  },
+  {
+   "name": "opencode",
+   "current": "uncategorized",
+   "suggested": "devops",
+   "reason": "自动化代码委托与PR审查",
+   "description": "Delegate coding to OpenCode CLI (features, PR review)."
+  },
+  {
+   "name": "openhue",
+   "current": "uncategorized",
+   "suggested": "linux",
+   "reason": "智能设备控制的CLI工具",
+   "description": "Control Philips Hue lights, scenes, rooms via OpenHue CLI."
+  },
+  {
+   "name": "openhuman-reuse",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "OpenHuman代码复用策略规范",
+   "description": "复用 OpenHuman 代码/吉祥物模块开发/Rive / Ghosty / 口型 / 状态机 —— OpenHuman 源码复用策略——有现成的不重写，直接"
+  },
+  {
+   "name": "p5js",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "p5.js创意编程与可视化",
+   "description": "p5.js sketches: gen art, shaders, interactive, 3D."
+  },
+  {
+   "name": "partnership-prep",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "合作方案准备方法论",
+   "description": "合作文档准备——合作方案、电话脚本、对比报告。当用户说'准备个合作方案'、'给投资人pitch'、'合作PPT'时触发。"
+  },
+  {
+   "name": "pdf",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "PDF文件的创建与处理工具",
+   "description": "Create, read, merge, fill, and secure PDF files."
+  },
+  {
+   "name": "peer-review-workflow",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "双模型代码审查工作流",
+   "description": "双模型互检工作流：Hermes设计方案/代码，DeepSeek审查并提出改进建议，Hermes整合后再次审查。\n适用于：架构设计、方案评审、代码审查等需要高质量"
+  },
+  {
+   "name": "popular-web-designs",
+   "current": "uncategorized",
+   "suggested": "design",
+   "reason": "流行网页设计系统参考实现",
+   "description": "build a page that looks like/make it look like stripe —— 54 real design systems "
+  },
+  {
+   "name": "powerpoint",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "PPT创建与编辑工具",
+   "description": "Create, read, edit .pptx decks with python-pptx."
+  },
+  {
+   "name": "product-price-monitor",
+   "current": "uncategorized",
+   "suggested": "data",
+   "reason": "商品价格监控与预警服务",
+   "description": "Watch product, flight, or listing prices; alert on target."
+  },
+  {
+   "name": "production-audit",
+   "current": "uncategorized",
+   "suggested": "devops",
+   "reason": "生产环境上线审计流程",
+   "description": "生产就绪审计——上线前检查、post-merge验证、风险评估。"
+  },
+  {
+   "name": "project-lifecycle-tracking",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "项目全生命周期管理规范",
+   "description": "项目立项与追踪体系。触发：立项、开搞、新建项目、需求池、创意池、项目注册表、问题追踪、D:\\Projects 整理。"
+  },
+  {
+   "name": "requesting-code-review",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "代码提交前审查工作流",
+   "description": "Pre-commit review: security scan, quality gates, auto-fix."
+  },
+  {
+   "name": "research-paper-writing",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "ML论文写作投稿指导",
+   "description": "Write ML papers for NeurIPS/ICML/ICLR: design→submit."
+  },
+  {
+   "name": "research-workflow",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "技术调研与知识管理流程",
+   "description": "调研/搜索/搜集/对比分析/技术选型 —— 调研工作流规范：从搜索到存档的完整流程。确保每份调研产出存到正确的地方（本地+NAS+本地记忆），不遗漏、不重复。适"
+  },
+  {
+   "name": "sdlc-review",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "SDLC流程评审与看板规范",
+   "description": "Review Kanban handoffs and route verified outcomes."
+  },
+  {
+   "name": "segment-anything",
+   "current": "uncategorized",
+   "suggested": "ai",
+   "reason": "SAM零样本图像分割模型",
+   "description": "SAM: zero-shot image segmentation via points, boxes, masks."
+  },
+  {
+   "name": "shijian-renshilun",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "实践导向的决策方法论",
+   "description": "当用户陷入分析瘫痪或盲目行动时激活，强调实践出真知。"
+  },
+  {
+   "name": "shiliuzijue",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "游击战术十六字诀，竞争策略思维框架",
+   "description": "当用户需要根据竞争对手状态选择行动节奏时激活，游击战十六字诀。"
+  },
+  {
+   "name": "sketch",
+   "current": "uncategorized",
+   "suggested": "creative",
+   "reason": "HTML设计原型制作，多方案视觉对比",
+   "description": "Throwaway HTML mockups: 2-3 design variants to compare."
+  },
+  {
+   "name": "skill-production-pipeline",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "知识萃取流程，书籍内容提炼为技能",
+   "description": "Use when distilling books into skills or evolving skills."
+  },
+  {
+   "name": "skill-script-packaging",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "Python脚本依赖管理与打包部署",
+   "description": "Use when a skill needs Python scripts with external deps."
+  },
+  {
+   "name": "songsee",
+   "current": "uncategorized",
+   "suggested": "media",
+   "reason": "音频频谱特征提取，Mel/MFCC分析",
+   "description": "Audio spectrograms/features (mel, chroma, MFCC) via CLI."
+  },
+  {
+   "name": "teams-meeting-pipeline",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "企业协作工具集成，会议数据自动化",
+   "description": "Teams meeting summaries, job replay, Graph subscriptions."
+  },
+  {
+   "name": "test-driven-development",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "TDD开发范式，先写测试再实现代码",
+   "description": "TDD: enforce RED-GREEN-REFACTOR, tests before code."
+  },
+  {
+   "name": "token-budget-advisor",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "上下文窗口优化，技术成本顾问",
+   "description": "token预算顾问——上下文窗口消耗审计+优化建议。"
+  },
+  {
+   "name": "tongyi-zhanxian-duli",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "统一战线策略，合作中的独立性思维",
+   "description": "当用户需要在合作中保持独立性时激活，统一战线中的独立自主。"
+  },
+  {
+   "name": "touchdesigner-mcp",
+   "current": "uncategorized",
+   "suggested": "media",
+   "reason": "TouchDesigner创意工具，实时视觉控制",
+   "description": "Control TouchDesigner via twozero MCP."
+  },
+  {
+   "name": "trae-ide-hooks-integration",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "IDE自动化钩子，开发工作流定制",
+   "description": "trae hooks/trae ide automation/hooks.json trae —— trae hooks/trae ide automation"
+  },
+  {
+   "name": "web-scraping-strategy",
+   "current": "uncategorized",
+   "suggested": "devops",
+   "reason": "网页数据采集策略，Jina优先方案",
+   "description": "Use when scraping web pages. Jina first, Firecrawl fallback."
+  },
+  {
+   "name": "weekly-review-planning",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "周度复盘规划，工作节奏管理",
+   "description": "Weekly reset: commitments, stalled work, next-week plan."
+  },
+  {
+   "name": "wiki-skills-manager-rules",
+   "current": "uncategorized",
+   "suggested": "software-development",
+   "reason": "技能库管理系统，分类规范读写",
+   "description": "处理 wiki 技能库（入库/查询/改分类/更新技能页）时必读。SGME wiki skill 页读写分类规范。"
+  },
+  {
+   "name": "windows-desktop-automation",
+   "current": "uncategorized",
+   "suggested": "windows",
+   "reason": "Windows桌面自动化，Computer Use决策",
+   "description": "Windows 桌面自动化决策框架：Computer Use (cua-driver) vs Windows MCP 的选择指南、\ncua-driver Win"
+  },
+  {
+   "name": "workbuddy-expert-handoff",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "专家团队协作，工作交接流程规范",
+   "description": "用户让WorkBuddy专家团干活时使用。验证评审结论、写交接单、划清分工边界，不抢活。"
+  },
+  {
+   "name": "xingxingzhihuo-genjudi",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "星星之火策略，从0到1扩张路径",
+   "description": "当用户处于早期弱小阶段需要规划从0到1扩张路径时激活。"
+  },
+  {
+   "name": "xlsx",
+   "current": "uncategorized",
+   "suggested": "data",
+   "reason": "Excel工作簿处理，CSV数据读写",
+   "description": "Create, read, edit Excel .xlsx workbooks and CSVs."
+  },
+  {
+   "name": "xurl",
+   "current": "uncategorized",
+   "suggested": "social-media",
+   "reason": "Twitter/X平台API，社交内容管理",
+   "description": "X/Twitter via xurl CLI: raw post search, posting, DM, media."
+  },
+  {
+   "name": "youtube-content",
+   "current": "uncategorized",
+   "suggested": "media",
+   "reason": "YouTube视频转文字，内容提炼摘要",
+   "description": "YouTube transcripts to summaries, threads, blogs."
+  },
+  {
+   "name": "youxiao-goutong-wenti-jiuej",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "有效沟通与问题解决，障碍突破框架",
+   "description": "当用户遇到沟通障碍或问题解决困难时激活，有效沟通与问题解决。"
+  },
+  {
+   "name": "yuanbao",
+   "current": "uncategorized",
+   "suggested": "social-media",
+   "reason": "元宝群协作，@提及查询企业社交",
+   "description": "Yuanbao (元宝) groups: @mention users, query info/members."
+  },
+  {
+   "name": "zhangxuefeng-perspective",
+   "current": "uncategorized",
+   "suggested": "research",
+   "reason": "张雪峰教育战略，思维模型深度调研",
+   "description": "张雪峰的思维框架与表达方式。基于5本著作、15+篇权威媒体深度采访、\n30+条一手语录、11个关键决策记录和完整人生时间线的深度调研，\n提炼5个核心心智模型、8"
+  },
+  {
+   "name": "zhudongxing-linghuoxing-jihuaxing",
+   "current": "uncategorized",
+   "suggested": "methodology",
+   "reason": "团队执行三性，主动灵活计划框架",
+   "description": "当用户团队执行力出现问题时激活，主动性灵活性计划性。"
+  }
+ ]
+}

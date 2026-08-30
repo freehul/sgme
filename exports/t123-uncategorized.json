@@ -1,0 +1,636 @@
+{
+ "existing_categories": [
+  "ai",
+  "creative",
+  "data",
+  "design",
+  "devops",
+  "email",
+  "github",
+  "hermes",
+  "linux",
+  "media",
+  "methodology",
+  "network",
+  "research",
+  "security",
+  "social-media",
+  "software-development",
+  "windows"
+ ],
+ "count": 102,
+ "skills": [
+  {
+   "name": "apple-notes",
+   "description": "Manage Apple Notes via memo CLI: create, search, edit.",
+   "category": "uncategorized",
+   "content_len": 2084
+  },
+  {
+   "name": "apple-reminders",
+   "description": "Apple Reminders via remindctl: add, list, complete.",
+   "category": "uncategorized",
+   "content_len": 3323
+  },
+  {
+   "name": "architecture-diagram",
+   "description": "Dark-themed SVG architecture/cloud/infra diagrams as HTML.",
+   "category": "uncategorized",
+   "content_len": 5408
+  },
+  {
+   "name": "arxiv",
+   "description": "Search arXiv papers by keyword, author, category, or ID.",
+   "category": "uncategorized",
+   "content_len": 6627
+  },
+  {
+   "name": "ascii-art",
+   "description": "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.",
+   "category": "uncategorized",
+   "content_len": 7179
+  },
+  {
+   "name": "ascii-video",
+   "description": "ASCII video: convert video/audio to colored ASCII MP4/GIF.",
+   "category": "uncategorized",
+   "content_len": 6507
+  },
+  {
+   "name": "baoyu-infographic",
+   "description": "Infographics: 21 layouts x 21 styles (信息图, 可视化).",
+   "category": "uncategorized",
+   "content_len": 6666
+  },
+  {
+   "name": "blocked-page-recovery",
+   "description": "Recover blocked/paywalled/WAF'd pages via fallbacks.",
+   "category": "uncategorized",
+   "content_len": 4801
+  },
+  {
+   "name": "blogwatcher",
+   "description": "Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool.",
+   "category": "uncategorized",
+   "content_len": 4725
+  },
+  {
+   "name": "box",
+   "description": "Box manages cloud files, sharing, search, and metadata.",
+   "category": "uncategorized",
+   "content_len": 6646
+  },
+  {
+   "name": "browser-annotation",
+   "description": "Visual feedback on web pages. Use when user says 'annotate'.",
+   "category": "uncategorized",
+   "content_len": 4256
+  },
+  {
+   "name": "chengqianbihou-zhibing-jiuren",
+   "description": "当用户需要处理团队成员的错误时激活，惩前毖后治病救人。",
+   "category": "uncategorized",
+   "content_len": 1470
+  },
+  {
+   "name": "claude-code",
+   "description": "Delegate coding to Claude Code CLI (features, PRs).",
+   "category": "uncategorized",
+   "content_len": 5259
+  },
+  {
+   "name": "codebase-inspection",
+   "description": "Inspect codebases w/ pygount: LOC, languages, ratios.",
+   "category": "uncategorized",
+   "content_len": 3238
+  },
+  {
+   "name": "comfyui",
+   "description": "Generate images, video, and audio via diffusion workflows.",
+   "category": "uncategorized",
+   "content_len": 5789
+  },
+  {
+   "name": "comfyui-cloud-api-polling",
+   "description": "用户想用云端 GPU 跑 ComfyUI 工作流、本地显存不够想换平台、想做 SaaS 服务、想批量生成不计本地资源、或在 CI/CD 中集成时调用此 skill。覆盖 POST /api/prompt 提交 + GET /api/job/{id}/status 轮询 + GET /api/view 下载三步标准模式,以及 X-API-Key 认证、Job 状态机 (pending/in_progress/completed/failed/cancelled)、并发 tier 限制 (Standard 1/Creator 3/Pro 5)、Partner Nodes 的 extra_data.api_key_comfy_org 注入。不适用于: 想本地跑 (用 local-api-integration)、想给 AI agent 用 (用 mcp-integration)、想用浏览器 OAuth (Cursor 不支持,必须用 API key)。Trigger 词: \"Cloud API\" / \"comfy cloud\" / \"X-API-Key\" / \"云端\" / \"cloud gpu\" / \"job polling\" / \"api.comfy.org\"。",
+   "category": "uncategorized",
+   "content_len": 4498
+  },
+  {
+   "name": "comfyui-custom-node-skeleton",
+   "description": "用户想从零写一个 ComfyUI 自定义节点, 或节点报 RETURN_TYPES / IS_CHANGED / NODE_CLASS_MAPPINGS 相关错误, 或想把 V1 节点迁移到 V3 schema, 或要判断节点是否兼容 API 模式时调用。不适用于: 只想用现有节点搭工作流(用 workflow-dag-design)、只想深入调 IS_CHANGED 缓存策略(用 is-changed-cache-strategy)、只想写前端 JS/Vue 扩展(用 frontend-extension)、只想调 API(用 local-api-integration)。\n关键 trigger: \"自定义节点\" / \"custom node\" / \"INPUT_TYPES\" / \"RETURN_TYPES\" / \"IS_CHANGED\" / \"NODE_CLASS_MAPPINGS\" / \"V3 migration\" / \"节点开发\"。",
+   "category": "uncategorized",
+   "content_len": 3792
+  },
+  {
+   "name": "comfyui-frontend-extension",
+   "description": "用户想给自定义节点加 UI / 加侧边栏 Tab / 加快捷键 / 加 Settings / 监听画布事件 / 做 APP mode 表单 / 加 i18n 多语言, 或前端报 WEB_DIRECTORY / registerExtension / setup hook 相关错误时调用。不适用于: 只想写后端 Python 节点类(用 custom-node-skeleton)、只想用现有节点搭工作流(用 workflow-dag-design)、只想调 API(用 local-api-integration)、只想调 IS_CHANGED 缓存(用 is-changed-cache-strategy)。\n关键 trigger: \"前端扩展\" / \"frontend extension\" / \"WEB_DIRECTORY\" / \"registerExtension\" / \"Sidebar Tab\" / \"Vue\" / \"APP mode\" / \"i18n\" / \"Nodes 2.0\" / \"Mask Editor\" / \"setup hook\"。",
+   "category": "uncategorized",
+   "content_len": 3801
+  },
+  {
+   "name": "comfyui-install-decision-tree",
+   "description": "用户首次安装 ComfyUI、更换设备/GPU、或问\"我该用 Desktop/Portable/Manual 哪种方式\"时调用,用于按\"平台 × GPU × 隔离需求\"三维决策选择正确安装路径并执行。不适用于: 已装好要排查故障 (用 comfyui-troubleshoot-bisect)、已装好但 OOM (用 comfyui-vram-degradation)、已装好要更新版本 (走版本切换子流程即可)。Trigger 信号: \"怎么装 ComfyUI\" / \"Mac 能装吗\" / \"AMD 显卡怎么装\" / \"Desktop vs Portable\" / \"how to install\" / \"which install method\"。",
+   "category": "uncategorized",
+   "content_len": 4226
+  },
+  {
+   "name": "comfyui-is-changed-cache-strategy",
+   "description": "当自定义节点出现\"输出不更新\"、\"读了新文件但结果还是旧的\"、\"随机数节点每次结果一样\"、\"不确定要不要定义 IS_CHANGED\"时调用。不适用于: 想写整个自定义节点骨架(用 comfyui-custom-node-skeleton)、想调全局缓存启动参数如 --cache-none/--cache-lru(用 comfyui-performance-tuning-flags)、节点不更新是工作流 Never 模式引起(用 comfyui-workflow-dag-design)。\n关键 trigger: \"IS_CHANGED\" / \"节点不更新\" / \"node not re-executing\" / \"缓存 stale\" / \"side effects\" / \"副作用节点\" / \"NaN 强制重算\" / \"返回 True 但不重算\"。",
+   "category": "uncategorized",
+   "content_len": 4189
+  },
+  {
+   "name": "comfyui-local-api-integration",
+   "description": "用户想用代码调用 ComfyUI、批量生成、做 Web 应用集成、实时显示生成进度、或自动化工作流时调用此 skill。覆盖 POST /prompt 提交 + WebSocket /ws 订阅 + GET /history & /view 取结果三步标准模式,以及三种调用模式 (HTTP Only / WebSocket+History / SaveImageWebsocket)。不适用于: 想用 Cloud API (用 cloud-api-polling)、想在 UI 内操作 (直接用 UI)、需要工作流格式转换 (用 format-conversion)。Trigger 词: \"ComfyUI API\" / \"/prompt\" / \"WebSocket\" / \"API 调用\" / \"programmatic\" / \"batch generation\" / \"自动化\"。",
+   "category": "uncategorized",
+   "content_len": 3787
+  },
+  {
+   "name": "comfyui-mcp-integration",
+   "description": "用户想让 AI agent (Claude Code/Cursor/Claude Desktop/Codex) 操作 ComfyUI 生成图像/视频/3D/音频、或自动化 agent 工作流时调用此 skill。覆盖三种 MCP 部署模式 (Cloud 托管 / Local 本地 comfy-local-mcp / Partner 30+ 提供商统一接口)、两种认证方式 (OAuth 浏览器登录 / API key headless)、四种客户端配置模板 (Claude Code 插件 / Claude Desktop 连接器 / Cursor mcp.json / Codex)。不适用于: 想直接写代码调 REST API (用 local-api-integration)、想用 Cloud REST 轮询 (用 cloud-api-polling)、CI/CD 自动化脚本 (用 comfy-cli generate)。Trigger 词: \"MCP\" / \"Claude Code ComfyUI\" / \"AI agent 生成图片\" / \"Cursor ComfyUI\" / \"comfy-local-mcp\" / \"comfy-cloud plugin\" / \"COMFY_BIN\"。",
+   "category": "uncategorized",
+   "content_len": 4141
+  },
+  {
+   "name": "comfyui-model-architecture-match",
+   "description": "用户在 ComfyUI 模型加载报错 / 生成花图 / ControlNet 无效果 / 不确定 Latent 尺寸 / 混用不同架构模型 (Flux/SD1.5/SDXL/SD3) 时调用,用于按架构族匹配 Checkpoint+LoRA+VAE+CLIP+ControlNet+Embedding 全套模型并设置正确 Latent 尺寸与 denoise。不适用于: 已知是节点逻辑错误 (用 comfyui-troubleshoot-bisect)、已知是显存 OOM (用 comfyui-vram-degradation)、想从零设计工作流结构 (用 comfyui-workflow-dag-design)。Trigger 信号: \"模型不匹配\" / \"model mismatch\" / \"花图\" / \"garbled image\" / \"ControlNet 无效\" / \"latent size\" / \"expected input to have N channels\" / \"Flux\" / \"SDXL\" / \"mat1 and mat2 shapes cannot be multiplied\"。",
+   "category": "uncategorized",
+   "content_len": 3288
+  },
+  {
+   "name": "comfyui-performance-tuning-flags",
+   "description": "用户在 ComfyUI 能正常运行但想优化速度/显存时调用 — 选对启动参数组合 (缓存/精度/预览/注意力)。\ntrigger 词: \"性能调优\" / \"performance tuning\" / \"启动参数\" / \"startup flags\" / \"cache\" / \"fp16\" / \"bf16\" / \"更快\" / \"faster\" / \"baseline\" / \"吞吐量\" / \"throughput\"。\n不适用于: 已经 OOM 崩溃 (用 comfyui-vram-degradation)、节点级缓存 silent stale (用 comfyui-is-changed-cache-strategy)、首次安装 (用 comfyui-install-decision-tree)。\n核心方法: 先 baseline 后逐项调整, 每次只改一个维度。",
+   "category": "uncategorized",
+   "content_len": 4443
+  },
+  {
+   "name": "comfyui-registry-publishing",
+   "description": "用户想把自己写的 ComfyUI 自定义节点发布到 Comfy Registry 让其他人能搜索安装,或想更新节点版本号 (semver),或想理解为什么已发布版本无法撤回,或看到\"安全扫描未通过\"提示时调用。不适用于: 只想本地用不发布 (直接放 custom_nodes/)、想从零写节点骨架 (用 custom-node-skeleton)、想写前端 JS/Vue 扩展 (用 frontend-extension)、想调本地/云端 API (用 local-api-integration / cloud-api-polling)。\n关键 trigger: \"Registry\" / \"publish\" / \"发布节点\" / \"semver\" / \"comfy-node.json\" / \"publisher\" / \"版本号\" / \"deprecate\"。",
+   "category": "uncategorized",
+   "content_len": 3828
+  },
+  {
+   "name": "comfyui-troubleshoot-bisect",
+   "description": "用户在 ComfyUI 启动崩溃 / 工作流执行报错 / 节点加载失败 / 自定义节点更新后出问题时调用,用于按\"自定义节点优先怀疑 + 二分搜索\"定位故障源。不适用于: 已知是显存 OOM (用 comfyui-vram-degradation)、已知是模型架构不匹配 (用 comfyui-model-architecture-match)、单节点明确报错 (直接看报错信息)。Trigger 信号: \"ComfyUI 报错了\" / \"节点不工作\" / \"custom node error\" / \"workflow failed\" / \"启动失败\"。",
+   "category": "uncategorized",
+   "content_len": 4259
+  },
+  {
+   "name": "comfyui-vram-degradation",
+   "description": "ComfyUI 启动或生成图像时报 \"CUDA out of memory\" / \"显存不足\" / \"OOM\" 时调用 — 通过渐进降级启动参数 (--lowvram → --novram → --cpu) 配合 --cache-none / --reserve-vram / --async-offload 让 ComfyUI 在低显存下仍能跑通。不适用于: 已知不是显存问题 (用故障排查二分法 comfyui-troubleshoot-bisect)、正常运行时想提升吞吐量 (用性能调优 comfyui-performance-tuning-flags)。关键 trigger 信号: \"out of memory\" / \"CUDA error\" / \"显存不足\" / \"low VRAM\" / \"模型加载失败\" / \"OOM\"。",
+   "category": "uncategorized",
+   "content_len": 4089
+  },
+  {
+   "name": "comfyui-workflow-dag-design",
+   "description": "用户想自己设计 ComfyUI 工作流 / 不知道该用哪些节点 / 节点连接报错 / 想从 txt2img 改造成 img2img/inpaint/outpaint/upscale / 不确定数据类型是否匹配时调用。不适用于: 想写新自定义节点 (用 comfyui-custom-node-skeleton)、想调 API (用 comfyui-local-api-integration)、已有工作流转 API 格式 (用 comfyui-workflow-format-conversion)。Trigger: \"工作流\" / \"workflow design\" / \"节点连接\" / \"node connection\" / \"数据类型\" / \"data type\"。",
+   "category": "uncategorized",
+   "content_len": 4403
+  },
+  {
+   "name": "comfyui-workflow-format-conversion",
+   "description": "用户想用 API 调用 ComfyUI 工作流(本地 Server API 或 Cloud API)、拿到一份工作流 JSON 但不确定是 UI 还是 API 格式、或直接喂 API 报错 \"node not found\" / \"invalid workflow\" 时调用。也适用于想从 UI 中导出 API 格式,或想把工作流从本地迁移到 Cloud。不适用于: 想设计/搭建工作流本身(用 comfyui-workflow-dag-design)、想实际发起 API 调用(用 comfyui-local-api-integration 或 comfyui-cloud-api-polling)。关键 trigger 词: \"API format\"、\"UI format\"、\"Save Format\"、\"Export Workflow (API)\"、\"workflow JSON\"、\"format conversion\"、\"工作流格式\"、\"格式转换\"。",
+   "category": "uncategorized",
+   "content_len": 3626
+  },
+  {
+   "name": "competitor-news-monitor",
+   "description": "Watch named companies for material news; cited digests.",
+   "category": "uncategorized",
+   "content_len": 4159
+  },
+  {
+   "name": "content-engine",
+   "description": "多平台内容系统——X/LinkedIn/YouTube/Newsletter原生适配。",
+   "category": "uncategorized",
+   "content_len": 1292
+  },
+  {
+   "name": "document-to-action-items",
+   "description": "Extract cited obligations, deadlines, tasks from documents.",
+   "category": "uncategorized",
+   "content_len": 3591
+  },
+  {
+   "name": "docx",
+   "description": "Create, read, edit, template, and review Word .docx files.",
+   "category": "uncategorized",
+   "content_len": 7307
+  },
+  {
+   "name": "email-inbox-triage",
+   "description": "Triage an inbox: prioritize threads, draft replies safely.",
+   "category": "uncategorized",
+   "content_len": 3707
+  },
+  {
+   "name": "excalidraw",
+   "description": "Hand-drawn Excalidraw JSON diagrams (arch, flow, seq).",
+   "category": "uncategorized",
+   "content_len": 6951
+  },
+  {
+   "name": "fangxia-baofu-kaidong-jiqi",
+   "description": "当用户被包袱束缚无法轻装前进时激活，放下包袱开动机器。",
+   "category": "uncategorized",
+   "content_len": 1524
+  },
+  {
+   "name": "firecrawl",
+   "description": "Firecrawl — AI 原生的网页抓取/搜索/爬取 API + MCP Server。 支持 JS 渲染、结构化提取、浏览器交互、站点爬取、网页监控。 通过 Hermes MCP 客户端集成，与内置 web_extract 互补使用。",
+   "category": "uncategorized",
+   "content_len": 4360
+  },
+  {
+   "name": "frontend-slides",
+   "description": "当用户说'做个PPT/H5演示'时触发。动画HTML演示文稿",
+   "category": "uncategorized",
+   "content_len": 1341
+  },
+  {
+   "name": "gif-search",
+   "description": "Search/download GIFs from Tenor via curl + jq.",
+   "category": "uncategorized",
+   "content_len": 2416
+  },
+  {
+   "name": "github-code-review",
+   "description": "Review PRs: diffs, inline comments via gh or REST.",
+   "category": "uncategorized",
+   "content_len": 5598
+  },
+  {
+   "name": "grounded-citations",
+   "description": "Ground answers and documents in cited, verifiable sources.",
+   "category": "uncategorized",
+   "content_len": 5877
+  },
+  {
+   "name": "home-assistant-camera-setup",
+   "description": "RTSP/ONVIF 摄像头接入/camera HA integration/camera IP probe —— IP摄像头接入Home Assistant：未知摄像头识别、RTSP/ONVIF协议探测、凭证发现、HA集成。",
+   "category": "uncategorized",
+   "content_len": 6454
+  },
+  {
+   "name": "huggingface-hub",
+   "description": "HuggingFace hf CLI: search/download/upload models, datasets.",
+   "category": "uncategorized",
+   "content_len": 3463
+  },
+  {
+   "name": "hyperframes",
+   "description": "Mandatory entry point: read this first for any request to make, create, edit, animate, or render a video, animation, or motion graphic, including a promo, explainer, captioned clip, title card, overlay, slideshow or interactive deck, Remotion port, or any HyperFrames HTML composition. Also use it to inspect, diagnose, validate, preview, publish, or batch-render an existing HyperFrames project. Inputs may be a website URL, GitHub PR, Figma design or URL, text or brief, existing footage, or music. It resumes project state, captures intent when applicable, selects and installs the owning workflow, and routes domain capabilities. HyperFrames is the default output framework unless the user explicitly chooses another framework for the deliverable or asks only to record a browser session.",
+   "category": "uncategorized",
+   "content_len": 3722
+  },
+  {
+   "name": "hyperframes-animation",
+   "description": "All animation knowledge for HyperFrames — atomic motion rules, multi-phase scene blueprints, scene transitions, broader motion-design techniques, AND the seven runtime adapters (GSAP default, plus Lottie, Three.js, Anime.js, CSS keyframes, Web Animations API, TypeGPU). Use for any motion or animation task: pick 2-4 rules and compose, or load a blueprint, or look up runtime-specific API (e.g. GSAP eases / Lottie player / Three.js mixer). Also covers auditing an existing composition's choreography (animation map) and 24 named text-animation effects. HyperFrames-native: single paused timeline, seek-safe, deterministic.",
+   "category": "uncategorized",
+   "content_len": 7078
+  },
+  {
+   "name": "hyperframes-cli",
+   "description": "Use the HyperFrames CLI development loop: init, add, catalog, capture, lint, check, snapshot, compare, grade-compare, preview, play, present, beats, keyframes, single or batch render, publish, cloud, cloudrun, feedback, lambda, doctor, browser, info, upgrade, skills, compositions, docs, benchmark, telemetry, transcribe, auth, tts, and remove-background. Also use when diagnosing build or render failures. validate, inspect, and layout are deprecated aliases; use check. Covers local, HeyGen-hosted cloud, AWS Lambda, and Google Cloud Run rendering.",
+   "category": "uncategorized",
+   "content_len": 5185
+  },
+  {
+   "name": "hyperframes-creative",
+   "description": "Non-animation creative direction for HyperFrames videos. Use for design spec (frame.md / design.md) handling, palettes, typography, narration, beat planning, audio-reactive visuals, composition patterns, and brand / style decisions. For atomic motion patterns and scene blueprints, use `hyperframes-animation`.",
+   "category": "uncategorized",
+   "content_len": 5485
+  },
+  {
+   "name": "hyperframes-keyframes",
+   "description": "Use when a HyperFrames composition needs seek-safe 2D/3D keyframes, GSAP timelines, CSS keyframes, Anime.js, WAAPI, FLIP, paths, masks, SVG morph/draw, text trails, 3D depth, or `hyperframes keyframes` diagnostics. Don't use for broad scene strategy, brand design, media sourcing, captions, or general video planning.",
+   "category": "uncategorized",
+   "content_len": 7149
+  },
+  {
+   "name": "imessage",
+   "description": "Send and receive iMessages/SMS via the imsg CLI on macOS.",
+   "category": "uncategorized",
+   "content_len": 2155
+  },
+  {
+   "name": "jianmiezhan-jizhong-bingli",
+   "description": "当用户资源有限面临多个机会威胁时激活，集中优势兵力突破。",
+   "category": "uncategorized",
+   "content_len": 1616
+  },
+  {
+   "name": "llama-cpp",
+   "description": "llama.cpp local GGUF inference + HF Hub model discovery.",
+   "category": "uncategorized",
+   "content_len": 6714
+  },
+  {
+   "name": "macos-computer-use",
+   "description": "Drive the macOS desktop in the background — screenshots, mouse, keyboard,\nscroll, drag — without stealing the user's cursor, keyboard focus, or\nSpace. Works with any tool-capable model. Load this skill whenever the\n`computer_use` tool is available.",
+   "category": "uncategorized",
+   "content_len": 6798
+  },
+  {
+   "name": "manim-video",
+   "description": "Manim CE animations: 3Blue1Brown math/algo videos.",
+   "category": "uncategorized",
+   "content_len": 6797
+  },
+  {
+   "name": "maps",
+   "description": "Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.",
+   "category": "uncategorized",
+   "content_len": 6248
+  },
+  {
+   "name": "meeting-action-items",
+   "description": "Turn meeting notes into cited decisions, owners, tickets.",
+   "category": "uncategorized",
+   "content_len": 3429
+  },
+  {
+   "name": "notion",
+   "description": "Notion API + ntn CLI: pages, databases, markdown, Workers.",
+   "category": "uncategorized",
+   "content_len": 5563
+  },
+  {
+   "name": "nuwa-skill",
+   "description": "女娲造人：输入人名/主题/甚至只是模糊需求，自动深度调研→思维框架提炼→生成可运行的人物Skill。\n两种入口：(1)明确人名→直接蒸馏 (2)模糊需求→诊断推荐→再蒸馏。\n触发词：「造skill」「蒸馏XX」「女娲」「造人」「XX的思维方式」「做个XX视角」「更新XX的skill」。\n模糊需求也触发：「我想提升决策质量」「有没有一种思维方式能帮我...」「我需要一个思维顾问」。\nEnglish triggers: \"distill [person]\", \"nuwa\", \"create a [person] perspective skill\", \"how does [person] think\", \"I need a thinking advisor\".",
+   "category": "uncategorized",
+   "content_len": 2769
+  },
+  {
+   "name": "obsidian",
+   "description": "Read, search, create, and edit notes in the Obsidian vault.",
+   "category": "uncategorized",
+   "content_len": 2802
+  },
+  {
+   "name": "ocr-and-documents",
+   "description": "Extract text from PDFs/scans (pymupdf, marker-pdf).",
+   "category": "uncategorized",
+   "content_len": 5409
+  },
+  {
+   "name": "official-method-first",
+   "description": "必须使用官方方式，不能因为能跑就用自定义方案",
+   "category": "uncategorized",
+   "content_len": 1229
+  },
+  {
+   "name": "opencode",
+   "description": "Delegate coding to OpenCode CLI (features, PR review).",
+   "category": "uncategorized",
+   "content_len": 6924
+  },
+  {
+   "name": "openhue",
+   "description": "Control Philips Hue lights, scenes, rooms via OpenHue CLI.",
+   "category": "uncategorized",
+   "content_len": 2509
+  },
+  {
+   "name": "openhuman-reuse",
+   "description": "复用 OpenHuman 代码/吉祥物模块开发/Rive / Ghosty / 口型 / 状态机 —— OpenHuman 源码复用策略——有现成的不重写，直接复制，只改导入路径。",
+   "category": "uncategorized",
+   "content_len": 3715
+  },
+  {
+   "name": "p5js",
+   "description": "p5.js sketches: gen art, shaders, interactive, 3D.",
+   "category": "uncategorized",
+   "content_len": 6508
+  },
+  {
+   "name": "partnership-prep",
+   "description": "合作文档准备——合作方案、电话脚本、对比报告。当用户说'准备个合作方案'、'给投资人pitch'、'合作PPT'时触发。",
+   "category": "uncategorized",
+   "content_len": 4364
+  },
+  {
+   "name": "pdf",
+   "description": "Create, read, merge, fill, and secure PDF files.",
+   "category": "uncategorized",
+   "content_len": 6523
+  },
+  {
+   "name": "peer-review-workflow",
+   "description": "双模型互检工作流：Hermes设计方案/代码，DeepSeek审查并提出改进建议，Hermes整合后再次审查。\n适用于：架构设计、方案评审、代码审查等需要高质量输出的场景。",
+   "category": "uncategorized",
+   "content_len": 2907
+  },
+  {
+   "name": "popular-web-designs",
+   "description": "build a page that looks like/make it look like stripe —— 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.",
+   "category": "uncategorized",
+   "content_len": 4776
+  },
+  {
+   "name": "powerpoint",
+   "description": "Create, read, edit .pptx decks with python-pptx.",
+   "category": "uncategorized",
+   "content_len": 6953
+  },
+  {
+   "name": "product-price-monitor",
+   "description": "Watch product, flight, or listing prices; alert on target.",
+   "category": "uncategorized",
+   "content_len": 4066
+  },
+  {
+   "name": "production-audit",
+   "description": "生产就绪审计——上线前检查、post-merge验证、风险评估。",
+   "category": "uncategorized",
+   "content_len": 1818
+  },
+  {
+   "name": "project-lifecycle-tracking",
+   "description": "项目立项与追踪体系。触发：立项、开搞、新建项目、需求池、创意池、项目注册表、问题追踪、D:\\Projects 整理。",
+   "category": "uncategorized",
+   "content_len": 3946
+  },
+  {
+   "name": "requesting-code-review",
+   "description": "Pre-commit review: security scan, quality gates, auto-fix.",
+   "category": "uncategorized",
+   "content_len": 7984
+  },
+  {
+   "name": "research-paper-writing",
+   "description": "Write ML papers for NeurIPS/ICML/ICLR: design→submit.",
+   "category": "uncategorized",
+   "content_len": 6303
+  },
+  {
+   "name": "research-workflow",
+   "description": "调研/搜索/搜集/对比分析/技术选型 —— 调研工作流规范：从搜索到存档的完整流程。确保每份调研产出存到正确的地方（本地+NAS+本地记忆），不遗漏、不重复。适用于技术调研、产品调研、方案对比等场景。调研工作流规范：从搜索到存档的完整流程。确保每份调研产出都存到正确的地方（本地+NAS+本地记忆），不遗漏、不重复。适用于技术调研、产品调研、方案对比等场景。",
+   "category": "uncategorized",
+   "content_len": 2490
+  },
+  {
+   "name": "sdlc-review",
+   "description": "Review Kanban handoffs and route verified outcomes.",
+   "category": "uncategorized",
+   "content_len": 5765
+  },
+  {
+   "name": "segment-anything",
+   "description": "SAM: zero-shot image segmentation via points, boxes, masks.",
+   "category": "uncategorized",
+   "content_len": 6385
+  },
+  {
+   "name": "shijian-renshilun",
+   "description": "当用户陷入分析瘫痪或盲目行动时激活，强调实践出真知。",
+   "category": "uncategorized",
+   "content_len": 1351
+  },
+  {
+   "name": "shiliuzijue",
+   "description": "当用户需要根据竞争对手状态选择行动节奏时激活，游击战十六字诀。",
+   "category": "uncategorized",
+   "content_len": 1352
+  },
+  {
+   "name": "sketch",
+   "description": "Throwaway HTML mockups: 2-3 design variants to compare.",
+   "category": "uncategorized",
+   "content_len": 5772
+  },
+  {
+   "name": "skill-production-pipeline",
+   "description": "Use when distilling books into skills or evolving skills.",
+   "category": "uncategorized",
+   "content_len": 7155
+  },
+  {
+   "name": "skill-script-packaging",
+   "description": "Use when a skill needs Python scripts with external deps.",
+   "category": "uncategorized",
+   "content_len": 1989
+  },
+  {
+   "name": "songsee",
+   "description": "Audio spectrograms/features (mel, chroma, MFCC) via CLI.",
+   "category": "uncategorized",
+   "content_len": 1989
+  },
+  {
+   "name": "teams-meeting-pipeline",
+   "description": "Teams meeting summaries, job replay, Graph subscriptions.",
+   "category": "uncategorized",
+   "content_len": 6348
+  },
+  {
+   "name": "test-driven-development",
+   "description": "TDD: enforce RED-GREEN-REFACTOR, tests before code.",
+   "category": "uncategorized",
+   "content_len": 7345
+  },
+  {
+   "name": "token-budget-advisor",
+   "description": "token预算顾问——上下文窗口消耗审计+优化建议。",
+   "category": "uncategorized",
+   "content_len": 1279
+  },
+  {
+   "name": "tongyi-zhanxian-duli",
+   "description": "当用户需要在合作中保持独立性时激活，统一战线中的独立自主。",
+   "category": "uncategorized",
+   "content_len": 1475
+  },
+  {
+   "name": "touchdesigner-mcp",
+   "description": "Control TouchDesigner via twozero MCP.",
+   "category": "uncategorized",
+   "content_len": 5947
+  },
+  {
+   "name": "trae-ide-hooks-integration",
+   "description": "trae hooks/trae ide automation/hooks.json trae —— trae hooks/trae ide automation/hooks.json trae/trae lifecycle/automate trae —— Trae IDE CN Hooks系统——生命周期事件、hooks.json配置、与外部编排器集成。当用户说'Trae hooks'、'Trae IDE自动化'时触发。",
+   "category": "uncategorized",
+   "content_len": 5858
+  },
+  {
+   "name": "web-scraping-strategy",
+   "description": "Use when scraping web pages. Jina first, Firecrawl fallback.",
+   "category": "uncategorized",
+   "content_len": 1151
+  },
+  {
+   "name": "weekly-review-planning",
+   "description": "Weekly reset: commitments, stalled work, next-week plan.",
+   "category": "uncategorized",
+   "content_len": 3578
+  },
+  {
+   "name": "wiki-skills-manager-rules",
+   "description": "处理 wiki 技能库（入库/查询/改分类/更新技能页）时必读。SGME wiki skill 页读写分类规范。",
+   "category": "uncategorized",
+   "content_len": 4583
+  },
+  {
+   "name": "windows-desktop-automation",
+   "description": "Windows 桌面自动化决策框架：Computer Use (cua-driver) vs Windows MCP 的选择指南、\ncua-driver Windows 安装配置陷阱、以及两者的能力边界。当需要操控 Windows 桌面应用时加载。",
+   "category": "uncategorized",
+   "content_len": 5093
+  },
+  {
+   "name": "workbuddy-expert-handoff",
+   "description": "用户让WorkBuddy专家团干活时使用。验证评审结论、写交接单、划清分工边界，不抢活。",
+   "category": "uncategorized",
+   "content_len": 1473
+  },
+  {
+   "name": "xingxingzhihuo-genjudi",
+   "description": "当用户处于早期弱小阶段需要规划从0到1扩张路径时激活。",
+   "category": "uncategorized",
+   "content_len": 1380
+  },
+  {
+   "name": "xlsx",
+   "description": "Create, read, edit Excel .xlsx workbooks and CSVs.",
+   "category": "uncategorized",
+   "content_len": 6563
+  },
+  {
+   "name": "xurl",
+   "description": "X/Twitter via xurl CLI: raw post search, posting, DM, media.",
+   "category": "uncategorized",
+   "content_len": 6741
+  },
+  {
+   "name": "youtube-content",
+   "description": "YouTube transcripts to summaries, threads, blogs.",
+   "category": "uncategorized",
+   "content_len": 3233
+  },
+  {
+   "name": "youxiao-goutong-wenti-jiuej",
+   "description": "当用户遇到沟通障碍或问题解决困难时激活，有效沟通与问题解决。",
+   "category": "uncategorized",
+   "content_len": 1535
+  },
+  {
+   "name": "yuanbao",
+   "description": "Yuanbao (元宝) groups: @mention users, query info/members.",
+   "category": "uncategorized",
+   "content_len": 3416
+  },
+  {
+   "name": "zhangxuefeng-perspective",
+   "description": "张雪峰的思维框架与表达方式。基于5本著作、15+篇权威媒体深度采访、\n30+条一手语录、11个关键决策记录和完整人生时间线的深度调研，\n提炼5个核心心智模型、8条决策启发式和完整的表达DNA。\n用途：作为思维顾问，用张雪峰的视角分析教育选择、职业规划、阶层流动等问题。\n当用户提到「用张雪峰的视角」「张雪峰会怎么看」「张雪峰模式」「雪峰视角」时使用。\n即使用户只是说「帮我用张雪峰的角度想想」「如果张雪峰会怎么说」「切换到张雪峰」也应触发。",
+   "category": "uncategorized",
+   "content_len": 2252
+  },
+  {
+   "name": "zhudongxing-linghuoxing-jihuaxing",
+   "description": "当用户团队执行力出现问题时激活，主动性灵活性计划性。",
+   "category": "uncategorized",
+   "content_len": 1432
+  }
+ ]
+}
