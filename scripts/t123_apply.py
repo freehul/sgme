@@ -84,9 +84,17 @@ def main() -> None:
     ok, fail = 0, 0
     for x in pending:
         name, cat = x["name"], x["suggested"]
-        r = s.get(f"{BASE}/v1/admin/skills/{name}", headers=headers, timeout=15)
-        if r.status_code != 200:
-            print(f"  [FAIL] {name}: GET {r.status_code}")
+        # GET 原文（带 429 重试：滑动窗口 120 req/min/Key，Retry-After 头为准）
+        r = None
+        for attempt in range(5):
+            r = s.get(f"{BASE}/v1/admin/skills/{name}", headers=headers, timeout=15)
+            if r.status_code != 429:
+                break
+            wait = int(r.headers.get("Retry-After", "8")) + 1
+            print(f"  [429] {name}: GET 限流，等 {wait}s（第 {attempt + 1} 次）")
+            time.sleep(wait)
+        if r is None or r.status_code != 200:
+            print(f"  [FAIL] {name}: GET {r.status_code if r is not None else 'n/a'}")
             fail += 1
             continue
         body = r.json()
@@ -100,16 +108,24 @@ def main() -> None:
             print(f"  [DRY] {name}: uncategorized -> {cat}")
             ok += 1
             continue
-        pr = s.put(
-            f"{BASE}/v1/admin/skills/{name}", headers=headers,
-            json={"content": new_content}, timeout=20,
-        )
-        if pr.status_code == 200:
+        # PUT 回写（同样 429 重试）
+        pr = None
+        for attempt in range(5):
+            pr = s.put(
+                f"{BASE}/v1/admin/skills/{name}", headers=headers,
+                json={"content": new_content}, timeout=20,
+            )
+            if pr.status_code != 429:
+                break
+            wait = int(pr.headers.get("Retry-After", "8")) + 1
+            print(f"  [429] {name}: PUT 限流，等 {wait}s（第 {attempt + 1} 次）")
+            time.sleep(wait)
+        if pr is not None and pr.status_code == 200:
             ok += 1
         else:
-            print(f"  [FAIL] {name}: PUT {pr.status_code} {pr.text[:80]}")
+            print(f"  [FAIL] {name}: PUT {pr.status_code if pr is not None else 'n/a'} {pr.text[:80] if pr is not None else ''}")
             fail += 1
-            time.sleep(1)
+        time.sleep(0.6)  # 限流友好：102 条 × (GET+PUT) 留出窗口余量
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"\n[{mode}] 成功 {ok} / 失败 {fail} / 跳过 {len(skipped)}")
