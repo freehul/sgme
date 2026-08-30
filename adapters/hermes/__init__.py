@@ -494,10 +494,59 @@ class SGMEProvider(MemoryProvider):
                     "required": ["query"],
                 },
             },
+            {
+                "name": "sgme_signal_pull",
+                "description": "拉取 SGME 未消费关怀信号（care_*：待办到期/情绪/过劳/每日）。"
+                               "会话开始时调用一次，只拉取不消费；拿到事件后用 sgme_signal_claim "
+                               "原子认领 → 关怀用户 → sgme_signal_ack 写回执（谁消费谁标记）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "description": "返回条数（默认 20，最大 20）"},
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "sgme_signal_claim",
+                "description": "原子认领关怀信号（谁消费谁标记，ST-27）。认领成功后应关怀用户，"
+                               "再调 sgme_signal_ack 写回执；已被他人消费时返回 409，跳过即可。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "event_id": {"type": "string", "description": "信号事件 id（来自 sgme_signal_pull 结果）"},
+                    },
+                    "required": ["event_id"],
+                },
+            },
+            {
+                "name": "sgme_signal_ack",
+                "description": "写关怀信号消费回执（ST-27：claimed/acked/failed）。"
+                               "认领后处理完调用，报告处理结果供溯源。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "event_id": {"type": "string", "description": "信号事件 id"},
+                        "status": {"type": "string", "description": "回执状态（默认 acked；可选 claimed/acked/failed）"},
+                        "result": {"type": "string", "description": "处理结果摘要（如「已转告用户，提醒喝水」）"},
+                    },
+                    "required": ["event_id"],
+                },
+            },
         ]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
-        """处理 sgme_* 工具调用 → /v1/search。"""
+        """处理 sgme_* 工具调用 → SGME Gateway HTTP。
+
+        关怀信号三件套（sgme_signal_pull/claim/ack）分发到独立方法，
+        检索工具（sgme_memory_search/sgme_conversation_search）走下方共用逻辑。
+        """
+        if tool_name == "sgme_signal_pull":
+            return self._tool_signal_pull(args)
+        if tool_name == "sgme_signal_claim":
+            return self._tool_signal_claim(args)
+        if tool_name == "sgme_signal_ack":
+            return self._tool_signal_ack(args)
         if tool_name not in ("sgme_memory_search", "sgme_conversation_search"):
             return json.dumps({"error": f"未知工具 {tool_name}"}, ensure_ascii=False)
         cli = self._http()
@@ -518,6 +567,122 @@ class SGMEProvider(MemoryProvider):
             return json.dumps(results[:limit], ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    # ---------- 关怀信号消费（ST-27 T-60：谁消费谁标记） ----------
+
+    @staticmethod
+    def _fmt_signal_events(events: List[Dict[str, Any]]) -> List[str]:
+        """事件列表 → 简洁可读行（id/type/ts/payload 摘要），供 agent 快速判断。"""
+        lines: List[str] = []
+        for ev in events or []:
+            eid = str(ev.get("id") or ev.get("event_id") or "")
+            etype = str(ev.get("type") or ev.get("event_type") or "")
+            ts = str(ev.get("ts") or ev.get("timestamp") or ev.get("created_at") or "")
+            payload = ev.get("payload")
+            if isinstance(payload, dict):
+                payload = json.dumps(payload, ensure_ascii=False)[:200]
+            else:
+                payload = str(payload or "")[:200]
+            lines.append(f"- [{eid}] {etype} @{ts} {payload}".rstrip())
+        return lines
+
+    def _tool_signal_pull(self, args: Dict[str, Any]) -> str:
+        """sgme_signal_pull：拉取未消费关怀信号（只拉取，不消费）。
+
+        契约：GET {base}/v1/events/pull?subscriber_id=<agent_id>&limit=N
+        返回 {events:[...], next_cursor}。每次调用最多拉 limit 条（≤20），
+        不循环拉空——会话开始时调一次即可，剩余留给后续轮次/其他消费者。
+        """
+        cli = self._http()
+        if cli is None or not self._probe():
+            return json.dumps({"error": "SGME Gateway 不可达"}, ensure_ascii=False)
+        limit = min(max(int(args.get("limit", 20)), 1), 20)
+        try:
+            r = cli.get(
+                f"{self.base_url}/v1/events/pull",
+                params={"subscriber_id": self.agent_id, "limit": limit},
+                headers={"X-API-Key": self.agent_key},
+            )
+            if r.status_code != 200:
+                return json.dumps({"error": f"SGME 返回 {r.status_code}"}, ensure_ascii=False)
+            data = r.json()
+            events = data.get("events", [])[:limit]
+            next_cursor = data.get("next_cursor")
+            summary = "\n".join(self._fmt_signal_events(events))
+            if not events:
+                return json.dumps(
+                    {"events": [], "next_cursor": next_cursor, "message": "暂无未消费关怀信号"},
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {"events": events, "next_cursor": next_cursor, "summary": summary},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps({"error": f"拉取信号失败: {e}"}, ensure_ascii=False)
+
+    def _tool_signal_claim(self, args: Dict[str, Any]) -> str:
+        """sgme_signal_claim：原子认领关怀信号（谁消费谁标记）。
+
+        契约：POST {base}/v1/admin/care/signals/{event_id}/consume
+        已被他人消费 → 409 ERR_CONFLICT（认领失败，跳过即可，不重试）。
+        """
+        cli = self._http()
+        if cli is None or not self._probe():
+            return json.dumps({"error": "SGME Gateway 不可达"}, ensure_ascii=False)
+        event_id = str(args.get("event_id", "")).strip()
+        if not event_id:
+            return json.dumps({"error": "缺少 event_id"}, ensure_ascii=False)
+        try:
+            r = cli.post(
+                f"{self.base_url}/v1/admin/care/signals/{event_id}/consume",
+                headers={"X-API-Key": self.agent_key},
+            )
+            if r.status_code == 409:
+                return json.dumps(
+                    {"event_id": event_id, "claimed": False, "message": "该信号已被其他 agent 认领消费，跳过即可"},
+                    ensure_ascii=False,
+                )
+            if r.status_code != 200:
+                return json.dumps({"error": f"SGME 返回 {r.status_code}: {r.text[:150]}"}, ensure_ascii=False)
+            data = r.json()
+            if isinstance(data, dict):
+                data.setdefault("event_id", event_id)
+                data.setdefault("claimed", True)
+            return json.dumps(data, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": f"认领信号失败: {e}"}, ensure_ascii=False)
+
+    def _tool_signal_ack(self, args: Dict[str, Any]) -> str:
+        """sgme_signal_ack：写关怀信号消费回执（认领后报告处理结果，供溯源）。
+
+        契约：POST {base}/v1/admin/care/signals/{event_id}/ack
+        body {"status": "acked", "result": "<摘要>"}；status 限 claimed/acked/failed。
+        """
+        cli = self._http()
+        if cli is None or not self._probe():
+            return json.dumps({"error": "SGME Gateway 不可达"}, ensure_ascii=False)
+        event_id = str(args.get("event_id", "")).strip()
+        if not event_id:
+            return json.dumps({"error": "缺少 event_id"}, ensure_ascii=False)
+        status = str(args.get("status", "acked")).strip() or "acked"
+        if status not in ("claimed", "acked", "failed"):
+            return json.dumps({"error": f"非法回执状态: {status}（限 claimed/acked/failed）"}, ensure_ascii=False)
+        result = str(args.get("result", "")).strip()
+        try:
+            r = cli.post(
+                f"{self.base_url}/v1/admin/care/signals/{event_id}/ack",
+                json={"status": status, "result": result},
+                headers={"X-API-Key": self.agent_key},
+            )
+            if r.status_code != 200:
+                return json.dumps({"error": f"SGME 返回 {r.status_code}: {r.text[:150]}"}, ensure_ascii=False)
+            data = r.json()
+            if isinstance(data, dict):
+                data.setdefault("event_id", event_id)
+            return json.dumps(data, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": f"写回执失败: {e}"}, ensure_ascii=False)
 
     # ---------- 生命周期 ----------
 
