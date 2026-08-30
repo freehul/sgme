@@ -2131,3 +2131,30 @@ install.json；③版本 bump 1.1.1 → 1.1.2（__version__ 单源，B123），N
 
 **运维影响**：纯文档变更，零代码改动；skills 写侧门禁/检索路径/向量路零变化。检测侧证据链
 （403/403 向量满覆盖、rrf 双路全绿）见 L0 会话记录与本条。
+
+### B126. T-119 health LLM 探测 TTL 缓存治本（v1.1.2，2026-08-30）
+
+**背景**：B123 NAS 部署实录发现 healthcheck 内层 urlopen timeout=3s < LLM 探测实测 5.5s（agnes
+/models），health 每次同步探测必然超时误判 unhealthy——当日以 docker-compose 放宽 timeout=25/30s
+治标（T-119 登记 🟡），本条治本落地。
+
+**实现（engine/health.py 重构，commit 02b7fd8）**：`check_llm_available` 拆为缓存编排层 + `_probe_llm`
+探测实体（探测逻辑逐字节保留）。缓存策略 **stale-while-revalidate**：
+- TTL 内（默认 30s）返回缓存，health 恢复毫秒级、不再依赖外部 LLM 可达性；
+- 过期返回旧值 + 后台 daemon 线程刷新（`_llm_refreshing` Event 防并发重入，刷新失败保旧值下轮再试）；
+- 首链 head（provider/model/base_url）变化强制失效——配置热更新（PUT /v1/admin/config）即时生效；
+- **client 注入（测试形态）绕过缓存**——既有 mock 测试（test_health_v04/test_stall_watch 等）零适配；
+- rule 兜底/未配置快速分支不缓存（零成本且需即时反映配置）；
+- `reset_llm_cache()` 公开清缓存（测试 autouse fixture + 配置热更新可调用），**同时清 Event**——
+  否则上轮刷新线程未结束时（真实网络 5s 超时期间）新周期刷新被拦截，缓存永不更新（测试串扰实锤）。
+
+**测试**：新增 tests/test_llm_ttl_cache.py 6 用例（TDD 红绿全程）——首调探测+缓存命中零重复探测 /
+过期 stale 返回+后台刷新落定新值 / client 注入绕缓存 / head 变化强制重探（load_config 共享 dict 需
+deepcopy 教训）/ reset 清缓存 / rule 链不缓存。health 相关 7 文件 **115 passed / 0 failed**。
+两个测试工程坑记档：①make_client 替换必须是工厂（每次新建）——共享单例被 _probe_llm 的 finally
+close 后，后续探测抛 RuntimeError 被吞，计数假象「缓存永远命中」；②轮询等待后台刷新要轮询
+**缓存内容落定**而非 handler 计数（calls==2 只代表 HTTP 返回，线程可能尚未写缓存）。
+
+**运维影响**：health /v1/health 响应字段零变化（缓存对调用方透明）；部署后 healthcheck 恢复可靠，
+compose 的 timeout=25/30s 宽限可保留（双保险）；LLM 探测频率从每次 health 请求一次降为 ≤1次/30s
+——对 agnes 免费端点的无谓请求显著减少。
