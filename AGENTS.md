@@ -178,7 +178,7 @@
 1. 每轮对话结束 append 当前轮次——纯落盘零 LLM 成本，崩溃不丢；
 2. 会话结束 refine_trigger(async_mode=true) 触发提炼；
 3. 对话开始时 inject 按场景取画像 / search 检索相关记忆；
-4. 主动关怀靠消费信号——**信号消费=主动关怀，谁消费谁标记**：拿到 care_* 信号后 signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过即可）。获取信号两条路：
+4. 主动关怀靠消费信号——**信号消费=主动关怀，谁消费谁标记**：拿到 care_* 信号后 signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过即可）。⚠️ **认领必须用 agent key（X-API-Key=SGME_AGENT_KEY 类）**——admin key 反查为合成身份 default，触发「关怀信号被合成身份认领」anomaly_warn（T-126 实锤，2026-08-30）。获取信号两条路：
    - 短连接（无常驻进程）：每次对话开始 signal_pull 拉未消费信号；
    - 长连接（有常驻能力，**主动关怀首选**）：挂 SSE 事件流 `GET http://192.168.10.10:9910/v1/events/stream?subscriber_id=<你的agent_id>`（带 X-API-Key），care_*/memory_updated/anomaly_warn 一产生即实时推送 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件；
 5. 对话开始时（或用户指定角色时）role_list 看可用角色 → role_assemble(role_id) 拿人设并按其说话——**换皮不换芯**，角色只是沟通外皮，记忆池不动。
