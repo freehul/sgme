@@ -87,6 +87,23 @@ class TestWriteSkill:
         r2 = _write(repo, "dup-skill")
         assert r2["ok"] is False and any("同名" in v for v in r2["violations"])
 
+    def test_write_metadata_only_change_allowed(self, repo):
+        """T-123 实锤修复：仅 frontmatter 元数据变更（category）是合法更新，不得拒。
+
+        「无变更重复提交」判定原只比 body sha——body 未变时 frontmatter 的
+        category/pattern/tags 等变更被误判为重复提交（409）。
+        """
+        assert _write(repo, "meta-skill", meta={**VALID_META, "category": "testing"})["ok"]
+        r = _write(repo, "meta-skill", meta={**VALID_META, "category": "network"})
+        assert r["ok"] is True, r.get("violations")
+        assert "category: network" in _read_skill(repo, "meta-skill")
+
+    def test_write_metadata_tags_change_allowed(self, repo):
+        """tags 变更同样放行（元数据变更族）。"""
+        assert _write(repo, "tags-skill", meta={**VALID_META, "tags": ["skill"]})["ok"]
+        r = _write(repo, "tags-skill", meta={**VALID_META, "tags": ["skill", "ops"]})
+        assert r["ok"] is True, r.get("violations")
+
     def test_write_same_content_different_name_rejected(self, repo):
         assert _write(repo, "first", body="完全相同的正文内容XYZ")["ok"]
         r = _write(repo, "second", body="完全相同的正文内容XYZ")

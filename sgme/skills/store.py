@@ -34,6 +34,7 @@ from sgme.skills.gates import lint_skill
 from sgme.skills.indexer import (
     SKILL_FILE,
     SkillRecord,
+    _to_list,
     collect_from_dir,
     parse_skill_md,
     validate_name,
@@ -136,6 +137,17 @@ def _content_sha(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _safe_validate_uses(raw) -> list[str]:
+    """uses 元素过名称校验，非法项跳过（仅用于变更判定，非法名由门禁拦截）。"""
+    out = []
+    for n in _to_list(raw):
+        try:
+            out.append(validate_name(n))
+        except ValueError:
+            out.append(str(n).strip())
+    return out
+
+
 def _build_record(name: str, meta: dict, body: str) -> SkillRecord:
     """从待写内容构造查重用记录。"""
     content = (body or "").strip()
@@ -226,11 +238,25 @@ def write_skill(
         new_sha = _content_sha((body or "").strip())
 
         # 3) 三层查重：拒绝层（同名/同SHA）→ 拒绝；警告层 → 进 warnings 放行
-        #    同名分支：内容完全相同 = 无意义重复提交 → 拒；内容有变化 = 有意更新 → 放行
+        #    同名分支：body 与 frontmatter 全部无变化 = 无意义重复提交 → 拒；
+        #    body 未变但元数据（category/tags/version/pattern/description/uses）有变
+        #    = 合法元数据更新 → 放行（T-123 实锤：原实现只比 body sha，元数据
+        #    变更被误判「无变更重复提交」409，写侧元数据更新路径全断）
         if self_rec is not None and self_rec.sha256 == new_sha:
-            return _reject("duplicate",
-                           [f"三层查重拒绝：同名冲突「{name}」已存在且内容完全相同"
-                            f"（无变更的重复提交）"])
+            meta_same = (
+                self_rec.description == str(meta.get("description") or "").strip()
+                and self_rec.category == str(meta.get("category") or "").strip()
+                and self_rec.version == str(meta.get("version") or "").strip()
+                and self_rec.pattern == str(meta.get("pattern") or "").strip()
+                and sorted(self_rec.tags or []) == sorted(_to_list(meta.get("tags")) or ["skill"])
+                and sorted(self_rec.uses or []) == sorted(
+                    _safe_validate_uses(meta.get("uses"))
+                )
+            )
+            if meta_same:
+                return _reject("duplicate",
+                               [f"三层查重拒绝：同名冲突「{name}」已存在且内容完全相同"
+                                f"（无变更的重复提交）"])
         verdict = check_duplicate(
             _build_record(name, meta, body), records,
             query_vec=query_vec, existing_vectors=existing_vectors,

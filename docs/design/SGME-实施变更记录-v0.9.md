@@ -2158,3 +2158,30 @@ close 后，后续探测抛 RuntimeError 被吞，计数假象「缓存永远命
 **运维影响**：health /v1/health 响应字段零变化（缓存对调用方透明）；部署后 healthcheck 恢复可靠，
 compose 的 timeout=25/30s 宽限可保留（双保险）；LLM 探测频率从每次 health 请求一次降为 ≤1次/30s
 ——对 agnes 免费端点的无谓请求显著减少。
+
+### B127. T-124 写侧元数据更新误拒根修 + T-123 分类治理执行（v1.1.2，2026-08-30）
+
+**T-124 根因（T-123 应用实测撞出）**：`skills/store.py write_skill` 同名分支的「无变更重复提交」
+判定只比 body sha——而 indexer 全链 sha 口径即 body（不含 frontmatter，`_record_from_meta` 的
+`full = body.strip()`），仅改 category/pattern/tags/version/uses 等 frontmatter 字段时 body 未变，
+被判「同名冲突已存在且内容完全相同」409 ERR_DUPLICATE_SKILL。**写侧元数据更新路径自 M3 起全断**
+（此前未更新过既有技能故潜伏；PUT 是全量覆盖语义，元数据更新是合法场景）。
+
+**修复**：同名分支在 body sha 相等时补六项元数据对比（description/category/version/pattern/tags
+sorted/uses sorted），全等才拒「无变更重复提交」，任一变化放行。+2 测试（category 变更放行 /
+tags 变更放行），test_skills_store **19 passed**（既有「完全无变更拒」用例保持绿=无误放开）。
+
+**T-123 执行实录**：
+1. NAS 备份先行：`~/sgme-backups/skills.db.bak-t123-20260830`（6.3MB）。
+2. 导出 102 条 uncategorized + 17 个现有分类枚举（exports/t123-uncategorized.json）。
+3. agnes-2.5-flash 预分类（4 批×26，429 读超时重试后全成）：分布 software-development 31 /
+   methodology 14 / creative 10 / research 9 / ai 8 / media 7 / design 5 / data 5 / 其余 13，
+   **100% 落在白名单内**（零越界）。产出 exports/t123-categorize-review.md（人工审核清单）+
+   t123-categorize-suggestions.json（机器可读）。
+4. 应用脚本 scripts/t123_apply.py：GET 原文 → 正则替换 frontmatter `category:` 行 → PUT 全量回写
+   （写侧正路，sha 重算后 sync_index 增量同步，单一真相源保持）；**默认 dry-run**，429 按
+   Retry-After 重试 + 0.6s 节流（限流 120 req/min/Key）。
+5. 首轮 apply 全 409 → 实锤 T-124 → 根修后待 NAS 部署 v1.1.2 重放。
+
+**运维影响**：部署 v1.1.2 后元数据更新（改分类/标签/版本）恢复可用；T-123 审核清单即治理台账，
+回滚 = 用备份库恢复 + PUT 回原 frontmatter（双侧可逆）。
