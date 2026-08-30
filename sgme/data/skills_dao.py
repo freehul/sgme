@@ -255,14 +255,53 @@ def diff_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> dic
     Returns:
         {"insert": [...], "update": [...], "delete": [...], "unchanged": [...]}
         —— insert/update 需要（重）计算向量；delete 需要清理向量与 uses 边。
+
+    T-124b：sha 口径为 body（不含 frontmatter），category/version/pattern/description/
+    tags 等元数据变更不改变 sha——sha 相同者追加元数据指纹比对，防 sync_index 对
+    元数据变更失明（T-123 分类治理实测撞出）。
     """
     db_sha = list_all_sha(conn)
     src = {r["name"]: (r.get("sha256") or "") for r in records}
+
+    def _meta_fp(r: dict[str, Any]) -> tuple:
+        return (
+            r.get("category") or "",
+            r.get("version") or "",
+            r.get("pattern") or "",
+            r.get("description") or "",
+            ",".join(sorted(r.get("tags") or [])),
+        )
+
+    update: list[str] = []
+    unchanged: list[str] = []
+    for rec in records:
+        n = rec["name"]
+        s = rec.get("sha256") or ""
+        if n not in db_sha:
+            continue
+        if db_sha[n] != s:
+            update.append(n)
+            continue
+        # sha 相同：元数据指纹比对（单行查询，frontmatter 五字段）
+        row = conn.execute(
+            "SELECT category, version, pattern, description, tags FROM skills WHERE name=?",
+            (n,),
+        ).fetchone()
+        if row is None:
+            unchanged.append(n)
+            continue
+        try:
+            db_tags = json.loads(row[4]) if row[4] else []
+        except (json.JSONDecodeError, TypeError):
+            db_tags = []
+        db_fp = (row[0] or "", row[1] or "", row[2] or "", row[3] or "", ",".join(sorted(db_tags)))
+        (update if db_fp != _meta_fp(rec) else unchanged).append(n)
+
     return {
         "insert": [n for n in src if n not in db_sha],
-        "update": [n for n in src if n in db_sha and db_sha[n] != src[n]],
+        "update": update,
         "delete": [n for n in db_sha if n not in src],
-        "unchanged": [n for n in src if n in db_sha and db_sha[n] == src[n]],
+        "unchanged": unchanged,
     }
 
 
