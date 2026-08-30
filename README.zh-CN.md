@@ -36,7 +36,7 @@
 
 换模型、换智能体，你的 AI 什么都不丢。SGME 全面接管你的记忆（你是谁）、知识库（你懂什么）、技能库（你怎么干活）。接入任意智能体——管家、写作助手、编程搭子——它瞬间就认识你：你的项目、你的偏好、你的工作流。不用重新介绍，不用重新学习。一个共享大脑，多副身体随意换。
 
-<img src="assets/selling-point-02-shared-memory.png" alt="AI 无缝切换" width="800"/>
+<img src="assets/selling-point-00-seamless-switching.png" alt="AI 无缝切换" width="800"/>
 
 ### 记忆可溯源——每条记忆都有来处
 

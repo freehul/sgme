@@ -36,7 +36,7 @@ Three steps, fully automatic:
 
 Switch models, switch agents — your AI loses nothing. SGME fully takes over your memory (who you are), your wiki (what you know), and your skills (how you work). Plug in any agent — Hermes, DSH, a coding partner, a writing assistant — and it already knows you: your projects, your preferences, your workflows. No re-introduction, no re-learning. One shared brain, every body.
 
-<img src="assets/selling-point-02-shared-memory.png" alt="Seamless AI switching" width="800"/>
+<img src="assets/selling-point-00-seamless-switching.png" alt="Seamless AI switching" width="800"/>
 
 ### Traceable memory — every memory has a provenance
 
