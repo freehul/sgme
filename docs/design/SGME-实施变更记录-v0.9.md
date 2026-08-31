@@ -2340,3 +2340,18 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 回滚 | 精确 applied 清单持久化 `/data/backups/t131_applied.json`（1,752 条/2,183 行，容器 /tmp 与 /data/backups 双份 + 本地 tmp/t131_applied.json 存档）；回滚 = `DELETE FROM memory_tags WHERE memory_id=? AND dimension_id=?` 遍历该清单（rollback_retag.py 已备，幂等）；另整库备份可整体还原。 |
 | ⚠️ 遗留 | ①TTL 维度（status 7d / focus 30d / goals 90d）新标签使记忆**可检索**（search/维度过滤立即生效），但 inject 需记忆 updated_at 刷新后才出现——本次刻意**不动 updated_at**（最小改动），如需 TTL 续期另立任务 ②323 条 LLM 判无相关维度维持原 projects/tasks ③本次为**直写生产库**，无代码改动；`scripts/t131_retag_classify.py` 等工具代码**未部署 NAS**（T-127~T-132 同，随下次发布）④一次性直写脚本在 tmp/（backup_memory/apply_retag/verify_retag/rollback_retag，均 ASCII）。 |
 | 文档 | 本记录 B132；Backlog T-131 标 ✅（v1.2+）；分布报告 `eval/results/t131_distribution.md`、dry-run 提案 `eval/results/t131_dryrun_proposal.md`。 |
+
+### B133. T-133 结构边：memory_edges 建表 + 零 token backfill（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | ST-38 图谱化第一步（进化方案 v0.2 §T2-1a）。需要一张关系边表承载「记忆↔记忆」结构关系，供 T-134 图召回 1-hop 使用；边源全部纯 SQL 零 token（归档链 + 场景共现），无 LLM 成本。设计风险点：场景共现按组合数爆炸（实测最大场景 1,239 记忆 → C(1239,2)=76.7 万边），必须硬截断 + 全局上限。 |
+| 表结构 | `db.py` 新增 `MEMORY_EDGES_DDL`（照 §T2-1 逐字节：edge_id PK / from_id / to_id / relation / weight REAL default 1.0 / valid_from / valid_to / created_at / source + `idx_edges_from(from_id,relation)` + `idx_edges_to(to_id,relation)`）+ `_migrate_memory_edges_table`（IF NOT EXISTS 幂等，不 bump SCHEMA_VERSION，同 `_migrate_demands_table` 模式），`connect_memory` 挂接。⚠️ 刻意不加外键（同 demands 先例：记忆会被 Supersession 归档/软删，外键阻塞溯源）。 |
+| 语义定夺 | `belongs_to` = **同场景记忆↔记忆共现边**（weight=共现场景数，仅存规范方向 from_id<to_id）。依据：设计明写「同场景**记忆对**」+ C(n,2) 组合爆炸算式 + T2-2a「1-hop 邻居」约束（若为 memory→scene 边，1-hop 到不了其他记忆，需 2-hop，与 v1 定义矛盾）。 |
+| 新模块 | `sgme/data/edge_dao.py`：`create_edge`（edge_id 确定性 `{from}::{to}::{relation}`，INSERT OR IGNORE 幂等）/ `delete_edges_by_source` / `count_edges` / `list_edges` / `neighbors`（1-hop 双向 from/to，同邻居多关系取最高 weight 去重，T-134 预留）/ `backfill_system_edges`（零 token 全量 backfill）/ `edge_stats`（按 source/relation 对账）。 |
+| backfill 逻辑 | ① `memory_archive.superseded_by` 非空 → 双向边：`superseder→archived` 记 `supersedes`、`archived→superseder` 记 `evolves_from`（weight=1.0）② active 场景 ∩ active 记忆 → 同场景记忆对聚合（weight=共现场景数）→ 每场景先按 priority/updated_at 取 top-100 参与配对（防组合爆炸）→ 每记忆取 top-8 邻 → 全局 cap 20 万，超限按 weight 降序裁剪 belongs_to 并 publish `anomaly_warn`（signal.engine.publish，source='edge_backfill'）。**幂等**：单事务内先 `DELETE WHERE source='system'` 再全量重插（收敛式，重跑结果一致；语义边 source='llm'/'cooccur' 不受影响）。dry_run 模式只统计不写库。 |
+| CLI | `scripts/oneoff/backfill_edges.py`（--data-dir / --dry-run / --top-n / --per-scene-top-n / --min-weight / --cap），输出 JSON 统计 + edge_stats 对账。 |
+| 测试 | `tests/test_edge_dao.py` 12 例：建表幂等 / create_edge 幂等 / delete_by_source / neighbors 双向+去重+relation 过滤 / supersession 双向边与方向断言 / 共现 weight 聚合 / per-scene+per-memory 截断（C(30,2)=435→≤90 边）/ 仅 active 场景与 active 记忆参与 / 全局 cap 触发 anomaly_warn 落 signal_events / 幂等重跑两次一致 / dry-run 零写入 / 其他 source（llm）保留。**68 passed**（12 新增 + 56 回归：session_db/scenes_moved/refine_dao/persona_dao/search_stoplist）。 |
+| 生产预估（dry-run） | 复用 12:17 备份快照（182MB）本地 dry-run：superseded_pairs **9,859**（→supersedes+evolves_from 19,718 边）、scene_pairs_raw 93,530（8 个大场景被 per-scene top-100 截断）、belongs_to **16,816**（per-memory top-8）→ **总边 36,534**，远低于 20 万 cap，**无 anomaly**。 |
+| ⚠️ 遗留 | ①生产 backfill 未执行（需部署后或经 SSH 直写，随部署确认）②「update/merge 动作顺手写 supersedes 边」运行时钩子未做（T-133 AC 未含；可随 T-134 或后续补）③T-134 图召回消费本表（neighbors 已预留）。 |
+| 文档 | 本记录 B133；Backlog T-133 标 ✅、ST-38 转 🟡 进行中（v1.2+）。 |
