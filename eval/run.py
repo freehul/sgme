@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -321,7 +322,8 @@ def _run_realdb(args: argparse.Namespace) -> None:
     else:
         if not args.self_test:
             logger.warning("未提供 --replica，自动改用合成 mini 副本自测（--self-test 等价）")
-        tmp_dir = PROJECT_ROOT / "eval" / "tmp" / "realdb_self_test"
+        # 每次自测用唯一临时目录，保证「命令可重复执行」（避免旧副本残留导致 UNIQUE 冲突）
+        tmp_dir = Path(tempfile.mkdtemp(prefix="realdb_self_test_", dir=PROJECT_ROOT / "eval" / "tmp"))
         replica_path = make_mini_replica(tmp_dir, n=12, seed=args.seed)
         logger.info("合成 mini 副本: %s", replica_path)
 
