@@ -25,8 +25,9 @@ SENSITIVE_PATTERNS: dict[str, re.Pattern] = {
     "bank_card": re.compile(r"(?<!\d)\d{16,19}(?!\d)"),
     # API 密钥（sk-/pk-/ak- 前缀 + 长随机串，覆盖 DeepSeek/火山/Agnes 等格式）
     "api_key": re.compile(r"\b(?:sk|pk|ak|sk-[a-z0-9])[A-Za-z0-9_-]{16,}\b"),
-    # 邮箱
-    "email": re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"),
+    # 邮箱：域名段必须以字母开头（防 npm 版本号误报——`pnpm@11.21.0` 的
+    # 11.21.0 以数字开头 → 不判邮箱；2026-08-31 生产抽检实锤误报后收紧）
+    "email": re.compile(r"[\w.+-]+@[A-Za-z][\w-]*\.[A-Za-z]{2,}[\w.]*"),
     # 内网 IP（10.x / 172.16-31.x / 192.168.x——部署拓扑泄露面）
     "private_ip": re.compile(r"\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b"),
 }
