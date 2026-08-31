@@ -18,6 +18,7 @@ import httpx
 
 from sgme.data.search import rrf as rrf_mod
 from sgme.data.search import vector as vector_mod
+from sgme.data.search import stoplist as stoplist_mod
 from sgme.segment import current_segmenter_id, segment, segment_terms
 
 logger = logging.getLogger("sgme.data.search")
@@ -326,8 +327,8 @@ def recall_routes(
     if not query or not query.strip():
         return [], [], []
 
-    # FTS5 查询：用 OR 连接分词后的词（简单空格切分）
-    fts_query = _build_fts_query(query)
+    # FTS5 查询：用 OR 连接分词后的词（简单空格切分）+ 停用词过滤（T-130）
+    fts_query = _build_fts_query(query, use_stoplist=_stoplist_enabled(cfg))
     bm25_results: list[dict] = []
 
     try:
@@ -475,7 +476,7 @@ def search_scenes(
         ]
 
     try:
-        fts_query = _build_fts_query(query)
+        fts_query = _build_fts_query(query, use_stoplist=_stoplist_enabled(cfg))
         rows = mem_conn.execute(
             """
             SELECT f.rowid, s.scene_id, s.title, s.content, s.heat,
@@ -544,6 +545,18 @@ def _vector_enabled(cfg: dict) -> bool:
     return bool(vec_cfg.get("enabled", True))
 
 
+def _stoplist_enabled(cfg: dict | None) -> bool:
+    """cfg 中 search.stoplist.enabled 缺省 True（T-130 查询侧停用词过滤开关）。
+
+    cfg 为 None / 缺键 → 默认开启（生产默认行为）。关闭用于 A/B 对照。
+    """
+    if not cfg:
+        return True
+    search_cfg = cfg.get("search", {}) or {}
+    sl_cfg = search_cfg.get("stoplist", {}) or {}
+    return bool(sl_cfg.get("enabled", True))
+
+
 def _rrf_k(cfg: dict) -> int:
     """cfg 中 search.rrf.k 缺省 60。"""
     search_cfg = cfg.get("search", {}) or {}
@@ -575,18 +588,47 @@ def _filter_by_dimensions(
     return filtered
 
 
-def _build_fts_query(query: str) -> str:
-    """构造 FTS5 查询：分词 + OR 连接（宽松匹配）。
+def _build_fts_query(query: str, *, use_stoplist: bool = True) -> str:
+    """构造 FTS5 查询：分词 + 停用词过滤 + OR 连接（宽松匹配，T-130）。
 
     查询侧与写入侧共用 `segment()` 口径（中文检索分词 v0.3 §1.3）——
     两层同一函数，否则 FTS 精确 token 匹配必然错位（中文无空格 → 整串 token）。
+
+    T-130 改动：
+    1. 分段后按 `stoplist.filter_stopwords` 去掉功能词/高噪词，降低 OR 连接后
+       常见词爆炸稀释 BM25 排序（自然语句类 precision 提升）。
+    2. 英文清理：去 jieba 可能残留的空格占位 + 小写归一（unicode61 已折叠，
+       这里防御性统一），避免「NAS」与「nas」形态不一致。
+    3. 全停用词场景（如「谁 和 在」）→ 回退原 token，不直接空召回；
+       真空再走 `recall_routes` 的 LIKE 兜底。
     """
     tokens = [t for t in segment(query).split() if t]
     if not tokens:
         return query
-    # 单 token 直接返回；多 token 用 OR 连接（带引号防特殊字符）
+
+    if use_stoplist:
+        filtered = stoplist_mod.filter_stopwords(tokens)
+        # 英文清理：去空格占位 + 小写（仅作用于含 ASCII 的 token）
+        cleaned = [_clean_en_term(t) for t in filtered]
+        cleaned = [t for t in cleaned if t]
+        # 全停用词 → 回退原 token，避免空召回
+        if cleaned:
+            tokens = cleaned
+
     quoted = [f'"{t}"' for t in tokens]
     return " OR ".join(quoted)
+
+
+def _clean_en_term(term: str) -> str:
+    """英文 token 清理：折叠内部空白 + ASCII 小写归一（防御性）。
+
+    jieba 对中英混排偶发残留空格占位（如「NAS server」会切出带空格的片段），
+    unicode61 已做大小写折叠，这里再显式统一，保证查询 token 与索引列一致。
+    """
+    t = " ".join(term.split())  # 折叠多空格/制表符
+    if any(ord(c) < 128 for c in t):
+        t = t.lower()
+    return t
 
 
 def _search_no_dims(mem_conn: sqlite3.Connection, fts_query: str, limit: int) -> list[dict]:
@@ -651,7 +693,10 @@ def _search_like_fallback(
     - `LIMIT min(limit, 20)`，score 占位 0.0（不参与 RRF 的 bm25 排序权重）
     - 全单字/空词时退化为整串 LIKE（旧行为，至少不空手而归）
     """
-    terms = [t for t in segment_terms(query) if len(t) >= 2][:8]
+    terms = [
+        t for t in segment_terms(query)
+        if len(t) >= 2 and not stoplist_mod.is_stopword(t)
+    ][:8]
     if not terms:
         stripped = query.strip()
         terms = [stripped] if stripped else []
