@@ -36,6 +36,7 @@ ENV_PATH = ROOT / "docker.env"
 CACHE = ROOT / "tmp" / "t131_raw.json"
 PROPOSAL_MD = ROOT / "eval" / "results" / "t131_dryrun_proposal.md"
 PROPOSAL_JSON = ROOT / "eval" / "results" / "t131_proposals_sample.json"
+PROPOSAL_JSON_FULL = ROOT / "eval" / "results" / "t131_proposals_full.json"
 DEPRECATED = {"projects", "tasks"}
 DIMS_YAML = ROOT / "registry" / "dimensions.yaml"
 
@@ -302,12 +303,54 @@ def render_proposal(
     return "\n".join(L)
 
 
+def render_summary(
+    proposals: dict, gap_total: int, raw_total: int,
+    valid_dims: dict, prov_used: str | None,
+) -> str:
+    dim_counter: dict[str, int] = {}
+    add_count = 0
+    none_count = 0
+    for mid, dims in proposals.items():
+        if dims:
+            add_count += 1
+            for d in dims:
+                dim_counter[d] = dim_counter.get(d, 0) + 1
+        else:
+            none_count += 1
+    L = []
+    L.append("# T-131 重打标 全量分类结果（缺口集）")
+    L.append("")
+    L.append(f"- 缺口集: **{gap_total}** / 拉取 {raw_total}")
+    L.append(f"- 已分类: **{len(proposals)}**")
+    L.append(f"- LLM provider: {prov_used}")
+    L.append(
+        f"- 拟补打维度数 >0: **{add_count}**；无相关维度: **{none_count}**"
+    )
+    L.append("")
+    L.append("## 拟补打维度频次（全量）")
+    L.append("")
+    L.append("| 维度 | 显示名 | 命中次数 |")
+    L.append("|---|---|---|")
+    for did in valid_dims:
+        c = dim_counter.get(did, 0)
+        if c:
+            L.append(f"| {did} | {valid_dims[did]['display_name']} | {c} |")
+    L.append("")
+    L.append(
+        "机器可读明细见 t131_proposals_full.json（memory_id -> [dims]），"
+        "供 apply 步骤消费。"
+    )
+    return "\n".join(L)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("pull")
     p_cl = sub.add_parser("classify")
     p_cl.add_argument("--sample", type=int, default=45)
+    p_cl.add_argument("--all", action="store_true",
+                      help="classify the ENTIRE gap set (not just a sample)")
     p_cl.add_argument("--seed", type=int, default=7)
     p_cl.add_argument("--batch", type=int, default=15)
     args = ap.parse_args()
@@ -329,9 +372,14 @@ def main() -> None:
     valid_dims = load_valid_dims()
     print(f"valid dims: {len(valid_dims)}")
 
-    rnd = random.Random(args.seed)
-    n = min(args.sample, len(gap))
-    samples = rnd.sample(gap, n)
+    if args.all:
+        samples = gap
+        print(f"classifying FULL gap set: {len(samples)} memories")
+    else:
+        rnd = random.Random(args.seed)
+        n = min(args.sample, len(gap))
+        samples = rnd.sample(gap, n)
+        print(f"sampling {len(samples)} memories (seed={args.seed})")
 
     load_dotenv(ROOT / ".env")
     import sgme.config as cfg_mod
@@ -340,25 +388,36 @@ def main() -> None:
     cfg = cfg_mod.load_llm_config()
     proposals, prov = classify_all(samples, valid_dims, cfg, args.batch)
 
-    md = render_proposal(
-        samples, proposals, len(gap), len(raw), valid_dims, prov
+    if args.all:
+        out_json = PROPOSAL_JSON_FULL
+        md = render_summary(proposals, len(gap), len(raw), valid_dims, prov)
+    else:
+        out_json = PROPOSAL_JSON
+        md = render_proposal(
+            samples, proposals, len(gap), len(raw), valid_dims, prov
+        )
+
+    if not args.all:
+        PROPOSAL_MD.write_text(md, encoding="utf-8")
+    out_json.write_text(
+        json.dumps(
+            {
+                "seed": args.seed,
+                "sample": len(samples),
+                "all": args.all,
+                "gap_total": len(gap),
+                "raw_total": len(raw),
+                "provider": prov,
+                "proposals": proposals,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
     )
-    PROPOSAL_MD.write_text(md, encoding="utf-8")
-    json.dump(
-        {
-            "seed": args.seed,
-            "sample": len(samples),
-            "gap_total": len(gap),
-            "raw_total": len(raw),
-            "provider": prov,
-            "proposals": proposals,
-        },
-        open(PROPOSAL_JSON, "w", encoding="utf-8"),
-        ensure_ascii=False,
-        indent=2,
-    )
-    print(f"proposal -> {PROPOSAL_MD}")
-    print(f"json     -> {PROPOSAL_JSON}")
+    print(f"json -> {out_json}")
+    if not args.all:
+        print(f"proposal -> {PROPOSAL_MD}")
 
 
 if __name__ == "__main__":
