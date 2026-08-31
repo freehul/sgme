@@ -144,7 +144,7 @@ def open_replica(path: Path, readonly: bool = True) -> sqlite3.Connection:
     if readonly:
         conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
     else:
-        conn = sqlite3.connect(f"file:{path.as_posix()}", uri=False)
+        conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -273,6 +273,40 @@ def _stub_query_fn(content: str, memory_id: str) -> str:
     return " ".join(terms)
 
 
+# 自然语句模板：围绕内容词注入**纯停用词**包裹层（谁/在/吗/关于/这个…），
+# 查询时经 stoplist 过滤后仅留内容词 → GT 仍命中（T-130 A/B「自然语句类」）。
+# ⚠️ 模板填充词必须全部落在 STOPWORDS_ZH 内——否则这些填充词会残留于 FTS
+# 查询并误命中干扰记忆，污染 A/B（曾因「了解/内容/意思/觉得」等非停用词翻车）。
+_NATURAL_TEMPLATES = [
+    lambda ts: f"请问 你 知道 谁 在 {ts} 吗",
+    lambda ts: f"关于 这个 {ts} 事情 我们 在 哪儿 呢",
+    lambda ts: f"我 去 {ts} 哪些 地方 呢",
+    lambda ts: f"{ts} 和 这个 是 什么 呢",
+    lambda ts: f"如果 从 {ts} 我们 去 哪儿 呢",
+]
+
+
+def _natural_query_fn(content: str, memory_id: str) -> str:
+    """自然语句桩 query（0-token，确定）：内容词 + 停用词包裹，模拟用户口语提问。
+
+    与 _stub_query_fn 共享内容词抽取；区别仅在表层裹一层停用词，
+    供 T-130 基线的「自然语句类」A/B——stoplist 开启时应滤掉包裹层、
+    召回 precision 提升，而 recall@k（内容词保留）不劣化。
+    """
+    try:
+        from sgme.segment import segment_terms
+        terms = [t for t in segment_terms(content or "") if len(t) >= 2][:3]
+    except Exception:
+        terms = []
+    if not terms:
+        base = (content or memory_id or "").strip()
+        return base[:12] if base else "记忆"
+    ts = " ".join(terms)
+    # 确定性选模板（按内容 hash，避免随机不可复现）
+    idx = (sum(ord(c) for c in ts) + len(ts)) % len(_NATURAL_TEMPLATES)
+    return _NATURAL_TEMPLATES[idx](ts)
+
+
 def build_realdb_gt(
     conn: sqlite3.Connection,
     *,
@@ -281,6 +315,8 @@ def build_realdb_gt(
     seed: int = 0,
     llm_fn: Callable[[str, str], str] | None = None,
     source: str = "stub",
+    query_style: str = "content",
+    exclude_ids: set[str] | None = None,
 ) -> RealDbGt:
     """在副本上构造中文检索 GT（GT = memory）。
 
@@ -289,13 +325,21 @@ def build_realdb_gt(
       query=llm_fn(anchor_content, anchor_id) → relevant=整组
     - 占比 ≈ multi_hop_ratio（至少 0，若有边则至少含 1 条 multi）
     - LLM 调用可注入（llm_fn）；留空用桩函数，本次 0-token 跑通链路
+    - query_style: "content"（默认，内容词直接拼）| "natural"（内容词裹停用词，
+      模拟用户口语提问，供 T-130 自然语句类 A/B）
     """
-    llm_fn = llm_fn or _stub_query_fn
+    if llm_fn is None:
+        llm_fn = _natural_query_fn if query_style == "natural" else _stub_query_fn
+    effective_source = source if source != "stub" else (
+        "natural" if query_style == "natural" else "stub"
+    )
 
     single_n = max(0, int(sample_n * (1 - multi_hop_ratio)))
     hop_n = max(0, int(sample_n * multi_hop_ratio))
 
     singles = sample_memories(conn, single_n, seed=seed)
+    if exclude_ids:
+        singles = [m for m in singles if m["memory_id"] not in exclude_ids]
     pairs = multi_hop_pairs(conn, limit=hop_n, seed=seed)
 
     items: list[RealDbGtItem] = []
@@ -311,13 +355,13 @@ def build_realdb_gt(
         ))
 
     logger.info(
-        "构建真实库 GT: 共 %d 条 query（single=%d multi=%d），source=%s seed=%d",
+        "构建真实库 GT: 共 %d 条 query（single=%d multi=%d），source=%s style=%s seed=%d",
         len(items),
         sum(1 for it in items if it.hop_type == "single"),
         sum(1 for it in items if it.hop_type != "single"),
-        source, seed,
+        effective_source, query_style, seed,
     )
-    return RealDbGt(items=items, source=source)
+    return RealDbGt(items=items, source=effective_source)
 
 
 # ── 合成 mini 副本（CI / 端到端，无需真实 NAS 拷贝） ──
