@@ -241,6 +241,78 @@ def test_search_fill_only_no_displacement(tmp_path):
     db_mod.close(conn)
 
 
+# ---------- T-137 图召回 v2：关系过滤 / 关系加权 ----------
+
+def _build_v2_db(tmp_path) -> sqlite3.Connection:
+    """m1 seed；m2=similar（语义边）、m3=belongs_to（共现）、m4=contradicts（否定边）。"""
+    conn = _conn(tmp_path)
+    for m in ("m1", "m2", "m3", "m4"):
+        _mem(conn, m)
+    conn.commit()
+    edge_dao.create_edge(conn, "m1", "m2", "similar", weight=0.85, source="l1_conflict")
+    edge_dao.create_edge(conn, "m1", "m3", "belongs_to", weight=3.0, source="system")
+    edge_dao.create_edge(conn, "m1", "m4", "contradicts", weight=0.9, source="l1_conflict")
+    conn.commit()
+    return conn
+
+
+def test_neighbors_exclude_relations(tmp_path):
+    conn = _build_v2_db(tmp_path)
+    # 默认（v1 行为）：4 个邻居全返回
+    all_n = edge_dao.neighbors(conn, "m1")
+    assert {n["memory_id"] for n in all_n} == {"m2", "m3", "m4"}
+    # v2：排除 contradicts
+    n2 = edge_dao.neighbors(conn, "m1", exclude_relations=["contradicts"])
+    assert {n["memory_id"] for n in n2} == {"m2", "m3"}
+    # 向后兼容：None/空 → 与 v1 等价
+    assert edge_dao.neighbors(conn, "m1", exclude_relations=None) == all_n
+    db_mod.close(conn)
+
+
+def test_neighbors_relation_weights(tmp_path):
+    conn = _build_v2_db(tmp_path)
+    # 无加权：belongs_to weight=3.0 最大
+    raw = edge_dao.neighbors(conn, "m1")
+    assert raw[0]["memory_id"] == "m3"
+    # v2 加权：belongs_to×0.3=0.9 < similar 0.85？0.9>0.85 → m3 仍第一，但差距缩小
+    w = edge_dao.neighbors(conn, "m1", relation_weights={"belongs_to": 0.3})
+    by_id = {n["memory_id"]: n["weight"] for n in w}
+    assert abs(by_id["m3"] - 0.9) < 1e-6      # 3.0 × 0.3
+    assert abs(by_id["m2"] - 0.85) < 1e-6     # 语义边不缩放
+    # belongs_to×0.2=0.6 → similar 0.85 反超共现（m4 contradicts 0.9 未加权自然居首）
+    w2 = edge_dao.neighbors(conn, "m1", relation_weights={"belongs_to": 0.2})
+    rank = {n["memory_id"]: i for i, n in enumerate(w2)}
+    assert rank["m2"] < rank["m3"]
+    db_mod.close(conn)
+
+
+def test_graph_candidates_v2_excludes_contradicts(tmp_path):
+    conn = _build_v2_db(tmp_path)
+    cands = search_mod._graph_candidates(
+        conn, [{"memory_id": "m1"}], [], {"search": {"graph": {"enabled": True}}})
+    ids = [c["memory_id"] for c in cands]
+    assert "m2" in ids and "m3" in ids
+    assert "m4" not in ids          # contradicts 排除（v2 默认）
+    db_mod.close(conn)
+
+
+def test_graph_candidates_v2_relation_weights_affect_rank(tmp_path):
+    conn = _build_v2_db(tmp_path)
+    # 无加权：m3（belongs_to 3.0）得分 3.0 > m2（0.85）
+    cands1 = search_mod._graph_candidates(
+        conn, [{"memory_id": "m1"}], [], {"search": {"graph": {"enabled": True, "relation_weights": None}}})
+    assert cands1[0]["memory_id"] == "m3"
+    # v2 默认加权：belongs_to×0.3=0.9 > 0.85 → m3 仍第一（验证配置可调）
+    cands2 = search_mod._graph_candidates(
+        conn, [{"memory_id": "m1"}], [], {"search": {"graph": {"enabled": True}}})
+    assert cands2[0]["memory_id"] == "m3"
+    # belongs_to×0.2 → similar 反超
+    cands3 = search_mod._graph_candidates(
+        conn, [{"memory_id": "m1"}], [], {"search": {"graph": {"enabled": True, "relation_weights": {"belongs_to": 0.2}}}})
+    assert cands3[0]["memory_id"] == "m2"
+    db_mod.close(conn)
+
+
 if __name__ == "__main__":
     import sys
 
