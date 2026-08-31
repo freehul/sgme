@@ -2312,3 +2312,17 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | ⚠️ 延后决策（待用户拍板，未阻塞） | (a) **真实 LLM 生成 GT**：暂用桩 `_stub_query_fn`（jieba ≥2 字关键词拼问句，BM25 可召回但非自然语言形态）；生产态需注入真实 `llm_fn` 才能逼近 LoCoMo 自然语句质量、真正测出图召回增益。(b) **真实 NAS 副本**：暂未拷 `memory.db`，自测用 `make_mini_replica` 合成副本证明端到端+可复现；生产跑用 `--replica <真实副本>`（建议 `snapshot_replica` 在线备份快照保一致）。两项均不影响当前 0-token 链路与护栏可用性。 |
 | 运维影响 | 纯评测侧新增，不触生产服务；`make_mini_replica` 落 `eval/tmp/` 不污染 `data/`。部署 NAS 时本变更随镜像带出（CLI 仅在本地/CI 跑，不在服务进程内）。 |
 | 文档 | 本记录 B130；Backlog T-129 标 ✅（v1.2+）。 |
+
+### B131. T-130 查询侧停用词过滤（中英双语）+ 英文清理 + 空结果降级护栏（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | T-130 实测：自然语言提问召回落空（旧 MATCH 隐式 AND + 查询侧停用词零过滤）。当前 `sgme/data/search/__init__.py:_build_fts_query` 虽已为 OR 连接（规避硬空召回），但停用词（who/with/a/的/了/谁/在…）不滤除 → OR 膨胀、常见词稀释 BM25 排序、结果集噪声高，且会让 T-134 图召回 A/B 被噪声淹没。需查询侧中英停用词过滤 + 英文清理 + 全停用词回退护栏。 |
+| 改动 | ① 新增 `sgme/data/search/stoplist.py`：`STOPWORDS_EN`（功能词+检索无承载词）/ `STOPWORDS_ZH`（功能词+疑问/指示/语气/连词）/ `is_stopword(term)`（英文小写归一比对）/ `filter_stopwords(tokens)`（精确 token 匹配、顺序不变、去空，保留内容词）。② 改 `_build_fts_query(query,*,use_stoplist=True)`：分段后 `filter_stopwords` → `_clean_en_term`（折叠内部空白+ASCII 小写，防御「NAS」vs「nas」）→ 全停用词时**回退原 token**（不直接空召回，真空交 `recall_routes` 现有 LIKE 兜底）。③ `recall_routes`/`search_scenes` 经 cfg `search.stoplist.enabled`（默认 True）控制开关；`_search_like_fallback` 同步过滤停用词。④ `eval/realdb.py:build_realdb_gt` 增 `query_style="natural"`（内容词裹**纯停用词**模板，供 A/B「自然语句类」）+ `exclude_ids`（A/B 注入噪声记忆时排除出 GT）。⑤ 新增 `eval/ab_stoplist.py`：复用 T-129 副本/GT 基建，注入 N 条纯停用词 distractor，跑 stoplist 开/关双臂，产出 recall@k + 结果集噪声（avg 返回条数 / avg distractor 命中）对比报告。 |
+| ⚠️ 关键修正（A/B 模板翻车） | 初版 `_NATURAL_TEMPLATES` 用「了解/内容/意思/觉得」等**非停用词**作填充词 → 这些词残留于 FTS 查询并误命中噪声记忆，导致 stoplist 开臂仍见 1.62 噪声命中、A/B 结论不干净。改为**全部填充词落在 `STOPWORDS_ZH` 内**（仅 谁/在/吗/关于/这个/事情/哪儿/呢…）→ stoplist 开臂噪声命中归零。教训：A/B 的自然语句模板自身不得引入非停用词。 |
+| ⚠️ 顺带修复（T-129 自测可重复性） | `eval/run.py:_run_realdb` 自测用固定 `eval/tmp/realdb_self_test` 目录 → 二次运行 `make_mini_replica` 因旧副本残留触发 `UNIQUE constraint failed: memories.memory_id`。改为 `tempfile.mkdtemp` 每次唯一临时目录，满足 T-129「命令可重复执行」。 |
+| 测试 | 新增 `tests/test_search_stoplist.py`（11 例）：is_stopword/filter_stopwords 中英、_clean_en_term 小写+折叠、_build_fts_query 过滤/保留中文内容词/全停用词回退/开关对照、_stoplist_enabled cfg 默认、集成（合成语料：stoplist 开滤除纯停用词 distractor 且 recall 不劣化、内容词 query 两臂 recall 一致）。回归：`test_search_v04`/`test_operations_search`/`test_scenes_fts`/`test_eval_realdb`/`test_eval_recall_at_k`/`test_eval_rrf` = **133 passed** + stoplist 11 = **144 passed**，0 失败。 |
+| 实证（A/B） | `python -m eval.ab_stoplist --noise 40 --output eval/results/ab_stoplist` → 副本 51 记忆（11 真实 + 40 噪声）；GT 13 自然语句 query；双臂纯 BM25 仅 `search.stoplist.enabled` 不同：recall@k **0.8846 两臂一致（不劣化）**；结果集噪声 distractor 命中 **0.0（开）vs 8.15（关，↓100%）**；avg 返回条数 1.15 vs 10.0。T-129 自测 recall@k 0.875/0.9583 不变（不劣化确认）。 |
+| 验收 | 满足 Backlog T-130：用 T-129 基线 A/B，recall@k 不劣化（内容词保留）+ 自然语句类结果集噪声明显下探（纯停用词 distractor 被滤除）。 |
+| 运维影响 | 查询侧默认开启（`search.stoplist.enabled` 默认 True），属检索质量改进；下游 inject/图谱化读同一 search 路径，受益一致。生产部署随镜像带出。 |
+| 文档 | 本记录 B131；Backlog T-130 标 ✅（v1.2+）。 |
