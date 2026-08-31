@@ -57,6 +57,14 @@ class L15Error(Exception):
 
 
 @dataclass
+class RelationEdge:
+    """T-135 语义边：L1.5 裁决附带的新记忆 ↔ 候选关系判定（零新增调用）。"""
+    candidate_id: str               # 候选 memory_id（旧记忆）
+    relation: str                   # similar / causes / contradicts
+    confidence: float               # LLM 置信（0.0-1.0），过滤阈值见 l15.semantic_edges.min_weight
+
+
+@dataclass
 class ConflictDecision:
     """单条新记忆的冲突裁决。"""
     new_memory_index: int           # 新记忆在输入列表中的序号（0-based）
@@ -64,6 +72,7 @@ class ConflictDecision:
     action: str                     # store/skip/update/merge
     merged_content: str | None = None
     reason: str = ""
+    relations: list[RelationEdge] = field(default_factory=list)   # T-135：关系判定（可选）
 
 
 @dataclass
@@ -78,6 +87,7 @@ class L15Result:
     error: str | None = None
     prompt_meta: dict | None = None                         # #33：本次 L1.5 提示词版本元信息
     prescreen_skipped: int = 0                              # T-132：本批因 embed 不可达走 skip_conflict 降级的新记忆数（可观测标记）
+    semantic_edges_written: int = 0                         # T-135：本次落库写入的语义边数（source='l1_conflict'）
 
 
 # ---------- prompt 渲染 ----------
@@ -125,6 +135,39 @@ def _format_candidates(candidates: list[dict]) -> str:
 
 # ---------- JSON 解析 ----------
 
+#: T-135 语义边允许的关系类型 + source 标识（可溯源，delete_edges_by_source 一键关闭）
+SEMANTIC_RELATIONS: tuple[str, ...] = ("similar", "causes", "contradicts")
+SEMANTIC_EDGE_SOURCE = "l1_conflict"
+
+
+def _parse_relations(raw: object) -> list[RelationEdge]:
+    """容错解析 LLM 输出的 relations 数组（T-135）。
+
+    - 非 list / 字段缺失 / 类型错误 → 跳过该项（不阻断裁决，宁缺毋滥）
+    - relation 不在允许集合 → 丢弃
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[RelationEdge] = []
+    for r in raw:
+        if not isinstance(r, dict):
+            continue
+        cand = r.get("candidate_id")
+        rel = r.get("relation")
+        if not isinstance(cand, str) or not cand:
+            continue
+        if not isinstance(rel, str) or rel not in SEMANTIC_RELATIONS:
+            continue
+        conf = r.get("confidence")
+        try:
+            conf_f = float(conf) if conf is not None else 0.0
+        except (TypeError, ValueError):
+            continue  # 置信度无法解析 → 宁缺毋滥，丢弃该项
+        conf_f = min(max(conf_f, 0.0), 1.0)
+        out.append(RelationEdge(candidate_id=cand, relation=rel, confidence=conf_f))
+    return out
+
+
 def parse_l15_output(text: str) -> list[ConflictDecision]:
     """解析 L1.5 输出为裁决列表。"""
     import re
@@ -156,6 +199,7 @@ def parse_l15_output(text: str) -> list[ConflictDecision]:
             action=action,
             merged_content=item.get("merged_content"),
             reason=item.get("reason", ""),
+            relations=_parse_relations(item.get("relations")),
         ))
     return result
 
@@ -535,6 +579,7 @@ def _store_memory(
         updated_at=new_mem.get("updated_at"),
         prompt_version=prompt_version,
         occurred_at=new_mem.get("occurred_at"),
+        facts=new_mem.get("facts"),
     )
 
 
@@ -693,6 +738,52 @@ def apply_supersession_linkage(
 
 
 # ---------- 完整 L1.5 提炼 ----------
+
+def _write_semantic_edges(
+    mem_conn: sqlite3.Connection,
+    new_mem: dict,
+    decision: ConflictDecision,
+    cfg: dict,
+) -> int:
+    """T-135：把 L1.5 裁决附带的关系判定写入 memory_edges（source='l1_conflict'）。
+
+    零新增调用：关系判定复用冲突提炼同一次 LLM 输出（relations 字段）。
+    脏边控制（AC）：
+    - weight 阈值：confidence < `l15.semantic_edges.min_weight`（默认 0.6）丢弃
+    - 被 update/merge 归档的候选跳过（已被取代，替代关系由 archive 链 supersedes 承载）
+    - 候选非 active（rejected/过期）跳过
+    - source='l1_conflict' 可溯源：delete_edges_by_source(conn, 'l1_conflict') 一键关闭该路
+    返回写入边数。
+    """
+    from sgme.data import edge_dao
+    se_cfg = (cfg.get("l15", {}) or {}).get("semantic_edges", {}) or {}
+    if not se_cfg.get("enabled", True):
+        return 0
+    min_weight = float(se_cfg.get("min_weight", 0.6))
+    new_id = new_mem.get("memory_id")
+    if not new_id or not decision.relations:
+        return 0
+    archived = set(decision.candidate_ids)
+    written = 0
+    for rel in decision.relations:
+        if rel.candidate_id in archived:
+            continue
+        if rel.confidence < min_weight:
+            continue
+        cand = memory_dao.get_memory(mem_conn, rel.candidate_id)
+        if not cand or cand.get("status") != "active":
+            continue
+        edge_dao.create_edge(
+            mem_conn, new_id, rel.candidate_id, rel.relation,
+            weight=round(rel.confidence, 3), source=SEMANTIC_EDGE_SOURCE,
+        )
+        written += 1
+    # create_edge 是裸 INSERT（隐式事务）：必须提交，否则下一条 insert_memory 的
+    # BEGIN 会抛 "cannot start a transaction within a transaction"（多记忆批次实测）
+    if written:
+        mem_conn.commit()
+    return written
+
 
 def _resolve_batch_budget(llm_cfg: dict) -> int:
     """计算 L1.5 上下文预算（tokens）：链首节点 context_window 折算；失败回退默认值。"""
@@ -931,6 +1022,9 @@ def resolve_conflicts(
                 new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
+
+        # T-135：语义边（新记忆落库拿到 memory_id 后写入；skip/无裁决时 new_id 为空 → 0）
+        result.semantic_edges_written += _write_semantic_edges(mem_conn, new_mem, decision, cfg)
 
     logger.info(
         "L1.5 完成: store=%d skip=%d update=%d merge=%d archived=%d warn=%s",
