@@ -77,6 +77,7 @@ class L15Result:
     anomaly_warn: bool = False
     error: str | None = None
     prompt_meta: dict | None = None                         # #33：本次 L1.5 提示词版本元信息
+    prescreen_skipped: int = 0                              # T-132：本批因 embed 不可达走 skip_conflict 降级的新记忆数（可观测标记）
 
 
 # ---------- prompt 渲染 ----------
@@ -201,6 +202,33 @@ def _memory_tags(mem_conn: sqlite3.Connection, memory_id: str, cache: dict[str, 
 PRESCREEN_SKIP_CONFLICT = "__PRESCREEN_SKIP_CONFLICT__"
 
 
+def _record_prescreen_skip_run(
+    mem_conn: sqlite3.Connection,
+    bucket_key: str,
+    count: int,
+    bucket_ctx,
+) -> None:
+    """T-132：预筛降级可观测标记。
+
+    embed 不可达且 fallback=skip_conflict 时，候选被清空、短路直接 store，
+    本就不调 LLM、不走正常裁决路径 → 原 action_counts["skip"]（LLM 判无变化）
+    与之同名混淆、且降级完全不可见。此处独立记一条 refine_run，
+    action_counts={"prescreen_skipped": count}，供 A/B 观测 / metrics 端点识别。
+    """
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    pv = PromptStore().get("l1_conflict", bucket_ctx)
+    run_id = RefineRunRecorder.start(
+        mem_conn, file_id=bucket_key, stage="l1_conflict",
+        version=pv.version, variant=pv.variant,
+        provider="prescreen_skip", bucket_key=bucket_key,
+    )
+    RefineRunRecorder.finish(
+        mem_conn, run_id, memories_count=count,
+        action_counts={"prescreen_skipped": count}, status="ok", error=None,
+    )
+
+
 def _build_prescreened_candidates(
     mem_conn: sqlite3.Connection,
     new_mem: dict,
@@ -277,6 +305,7 @@ def build_candidate_groups(
     per_memory_budget_tokens: int | None = None,
     cfg: dict | None = None,
     prescreen: dict | None = None,
+    stats: dict | None = None,
 ) -> tuple[list[CandidateGroup], bool]:
     """按新记忆分组构建候选池：标签 OR 预过滤 + 全量召回 + 单记忆预算 top-k。
 
@@ -293,12 +322,16 @@ def build_candidate_groups(
 
     per_memory_budget_tokens=None → 用 DEFAULT_CHAR_BUDGET 字符预算折算（兼容直调入口）。
     返回 (groups, any_truncated)。
+
+    stats（可选）：调用方传入的 dict，本函数填充 ``prescreen_skipped``（因 embed
+    不可达走 skip_conflict 降级、清空候选的新记忆数）——T-132 预筛降级可观测标记。
     """
     if per_memory_budget_tokens is None:
         per_memory_budget_tokens = int(DEFAULT_CHAR_BUDGET / CHARS_PER_TOKEN)
     tags_cache: dict[str, list[str]] = {}
     groups: list[CandidateGroup] = []
     any_truncated = False
+    prescreen_skipped = 0
     for i, new_mem in enumerate(new_memories):
         dims = new_mem.get("dimension_ids", new_mem.get("dimensions", []))
         cands: list[dict] = []
@@ -312,6 +345,7 @@ def build_candidate_groups(
                     "L1.5 预筛跳过冲突检测（fallback=skip_conflict）: 新记忆#%d 直接 store", i,
                 )
                 prescreen_used = True
+                prescreen_skipped += 1
             elif pc is not None:
                 cands = pc
                 prescreen_used = True
@@ -336,6 +370,8 @@ def build_candidate_groups(
             group.truncated = True
             any_truncated = True
         groups.append(group)
+    if stats is not None:
+        stats["prescreen_skipped"] = prescreen_skipped
     return groups, any_truncated
 
 
@@ -725,16 +761,22 @@ def resolve_conflicts(
     #     仅单记忆候选超上下文预算 → top-k 截断 + anomaly_warn；
     #     2026-08-12 成本治理：l15.prescreen 配置开启向量预筛 → 候选受限，见 build_candidate_groups）
     prescreen = (cfg.get("l15", {}) or {}).get("prescreen")
+    _prescreen_stats: dict = {}
     groups, pool_warn = build_candidate_groups(
         mem_conn, new_memories, top_k=top_k, per_memory_budget_tokens=budget,
-        cfg=cfg, prescreen=prescreen,
+        cfg=cfg, prescreen=prescreen, stats=_prescreen_stats,
     )
+    prescreen_skipped = int(_prescreen_stats.get("prescreen_skipped", 0))
+    result.prescreen_skipped = prescreen_skipped
     result.anomaly_warn = pool_warn
 
     # 1.6 所有候选池为空 → 无冲突可能，直接全部 store（短路，不调 LLM）
     # 否则空 {{candidates}} 会让 LLM 困惑（输出非 JSON 文本），且浪费一次调用
     if not any(g.candidates for g in groups):
         logger.info("L1.5 候选池为空，全部 store（%d 条，短路）", len(new_memories))
+        # T-132：若因预筛降级清空候选，独立记一条 refine_run 标记（否则完全不可见）
+        if prescreen_skipped > 0:
+            _record_prescreen_skip_run(mem_conn, bucket_key, prescreen_skipped, bucket_ctx)
         for i, new_mem in enumerate(new_memories):
             if i in idem_skip:
                 result.skipped.append(i)
@@ -836,6 +878,11 @@ def resolve_conflicts(
                     pv.version, pv.variant, provider_name, action_counts)
         if result.prompt_meta is None:
             result.prompt_meta = {"stage": "l1_conflict", "version": pv.version, "variant": pv.variant}
+
+    # 3.5 T-132：若本批发生预筛降级（embed 不可达 + skip_conflict），独立记一条
+    # refine_run 标记，避免与 LLM 判「无变化」(action_counts["skip"]) 同名混淆、事后不可识别
+    if prescreen_skipped > 0:
+        _record_prescreen_skip_run(mem_conn, bucket_key, prescreen_skipped, bucket_ctx)
 
     # 4. 四动作落库
     # 同一新记忆只进一批 → 至多一个裁决；按 new_memory_index 聚合（防御跨批重复）
