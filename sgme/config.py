@@ -337,6 +337,15 @@ DEFAULT_REFINE_CONFIG = {
     "llm_override": {},
 }
 
+# ST-39 T-139 Guardrail：敏感信息写前/召回后过滤层（顶层配置，pipeline 与 search 共用）
+# ⚠️ 默认关（灰度）：误脱敏可控——先观察规则命中率再开；规则见 operations/guardrail.py
+DEFAULT_GUARDRAIL_CONFIG = {
+    "enabled": False,          # 总开关（默认关：行为与 T-139 前一致）
+    "write_mode": "mask",      # 写前：block=拦截丢弃 | mask=脱敏放行
+    "read_mode": "filter",     # 召回后：filter=敏感记忆不返回 | off
+    "llm_fallback": {"enabled": False},  # 规则未命中时的 LLM 兜底判定（慢，默认关）
+}
+
 # 限流段默认兜底（§6 限流，T-7）：默认 120 req/min/Key；0 = 关闭
 DEFAULT_SERVER_CONFIG = {
     "rate_limit_per_min": 120,
@@ -767,6 +776,25 @@ def _merge_l15_config(user_cfg: dict | None) -> dict:
     return base
 
 
+def _merge_guardrail_config(user_cfg: dict | None) -> dict:
+    """合并 guardrail 段默认值（T-139：敏感信息过滤层；默认关=灰度安全）。"""
+    base = {
+        "enabled": DEFAULT_GUARDRAIL_CONFIG["enabled"],
+        "write_mode": DEFAULT_GUARDRAIL_CONFIG["write_mode"],
+        "read_mode": DEFAULT_GUARDRAIL_CONFIG["read_mode"],
+        "llm_fallback": dict(DEFAULT_GUARDRAIL_CONFIG["llm_fallback"]),
+    }
+    if not isinstance(user_cfg, dict):
+        return base
+    for k in ("enabled", "write_mode", "read_mode"):
+        if k in user_cfg:
+            base[k] = user_cfg[k]
+    lf = user_cfg.get("llm_fallback")
+    if isinstance(lf, dict) and "enabled" in lf:
+        base["llm_fallback"]["enabled"] = lf["enabled"]
+    return base
+
+
 def _merge_refine_config(user_cfg: dict | None) -> dict:
     """合并 refine 段默认值与用户配置（提炼调度）。
 
@@ -918,6 +946,7 @@ def load_config(
         "l1": sgme_cfg.get("l1", dict(DEFAULT_L1_CONFIG)),
         "l15": sgme_cfg.get("l15", dict(DEFAULT_L15_CONFIG)),
         "refine": sgme_cfg.get("refine", _merge_refine_config(None)),
+        "guardrail": _merge_guardrail_config(sgme_cfg.get("guardrail")),
         "server": sgme_cfg.get("server", dict(DEFAULT_SERVER_CONFIG)),
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
