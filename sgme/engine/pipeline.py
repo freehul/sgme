@@ -66,6 +66,27 @@ def persist_memories(
     if not refine_result.memories:
         return dict(_ZERO_STATS)
 
+    # ST-39 T-139 Guardrail 写前：敏感记忆 block=丢弃 / mask=脱敏改写（默认关=灰度）
+    grd = (cfg.get("guardrail") or {})
+    if grd.get("enabled", False) and refine_result.memories:
+        from sgme.operations import guardrail
+        kept: list[dict] = []
+        for m in refine_result.memories:
+            action, masked, matched = guardrail.decision(grd, m.get("content", ""))
+            if action == guardrail.ACTION_BLOCK:
+                logger.warning("Guardrail 写前拦截记忆: %s (matched=%s)", m.get("content", "")[:40], matched)
+                continue
+            if action == guardrail.ACTION_MASK and masked != m.get("content", ""):
+                m["content"] = masked
+                m["_guardrail_masked"] = matched
+            kept.append(m)
+        if len(kept) != len(refine_result.memories):
+            logger.info("Guardrail 写前: %d 条拦截 / %d 条保留",
+                        len(refine_result.memories) - len(kept), len(kept))
+        refine_result.memories = kept
+        if not refine_result.memories:
+            return dict(_ZERO_STATS)
+
     file_id = refine_result.file_id
     # source_ref: {file_id}:{首个 msg seq}（溯源用）
     src_refs: list[str] = []

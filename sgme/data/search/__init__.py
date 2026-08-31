@@ -511,6 +511,10 @@ def search_memories(
     if _valid_period_enabled(cfg or {}):
         results = _filter_expired(mem_conn, results)
 
+    # ST-39 T-139：Guardrail 召回后过滤（敏感记忆不返回；默认关=灰度）
+    if _guardrail_read_enabled(cfg or {}):
+        results = _filter_guardrail(results, cfg or {})
+
     # T-89（2026-08-20）：内容去重 + limit 截断。
     # 1) 去重：同一事实被 L1 重复落库（不同 memory_id、相同 content）时全量召回
     #    会稀释注入（实测注入 10 条记忆 4 对重复）——按 content 保留最优者；
@@ -713,6 +717,34 @@ def _valid_period_enabled(cfg: dict | None) -> bool:
         return True
     vp = (cfg.get("search") or {}).get("valid_period") or {}
     return bool(vp.get("enabled", True))
+
+
+def _guardrail_read_enabled(cfg: dict | None) -> bool:
+    """T-139：guardrail 召回后过滤开关（读 cfg 顶层 guardrail 段；局部 cfg 缺省关）。
+
+    默认关（灰度）：与 T-139 前行为一致；开启后敏感记忆不返回。
+    """
+    if not cfg:
+        return False
+    grd = cfg.get("guardrail") or {}
+    return bool(grd.get("enabled", False)) and grd.get("read_mode", "filter") == "filter"
+
+
+def _filter_guardrail(results: list[dict], cfg: dict | None) -> list[dict]:
+    """T-139：召回后过滤敏感记忆（content 规则命中 → 不返回）。
+
+    防御性自检 enabled/read_mode（与调用方 _guardrail_read_enabled 一致）：
+    默认关 → 原样返回（灰度，行为不变）。
+    """
+    if not results or not _guardrail_read_enabled(cfg):
+        return results
+    from sgme.operations import guardrail
+    kept = []
+    for r in results:
+        if guardrail.detect(r.get("content", "")):
+            continue
+        kept.append(r)
+    return kept
 
 
 def _filter_expired(mem_conn: sqlite3.Connection, results: list[dict]) -> list[dict]:
