@@ -2431,3 +2431,13 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 改动 | ①写侧：`_resolve_file_agent(session_conn, file_id)` 查 raw_files.agent_id → `persist_memories(agent_tag=...)` 给提炼产物打标（refine_one/refine_many/async_refine_worker 三路；记忆显式携带 agent_tag 时保留）。②读侧：`search_memories`/`operations.search` 加 `agent_id` 参数 + `_filter_agent_scope`（可见规则：agent_tag IS NULL 无主全通 + 'default' 共享 + 同 agent；异 agent 隔离；请求方无身份默认 'default'）。③鉴权映射：`routes /v1/search` 由 `_ = Depends(require_agent_key)` 改为捕获 auth_key → `store.resolve_agent_id(auth_key)` 透传（注册 agt_* key → 绑定 agent；主 key → default）。④config 顶层 `agent_scope.enabled=False`（默认关=全通，共存不受影响）。 |
 | 关键设计 | 灰度三步：①默认关（全通，行为逐字节不变）②开启后 NULL 历史记忆仍全通（存量不丢可见性）③新记忆按来源 agent 打标积累后逐步收窄。 |
 | 测试 | test_agent_scope.py 7 例（可见性矩阵/无身份仅共享/默认关全通/开+agent 过滤/解析 raw agent/写侧打标+显式保留）。相关回归 101 passed。 |
+
+### B141. T-123/T-116 生产实测关闭（2026-08-31，ST-36/ST-5 收尾）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户定「ST-40 之外的任务先完成」——剩余未完成 3 项中的 T-123（skills 分类治理 🔴）与 T-116（L2 场景超限治理 🟡）做生产实测评估。 |
+| T-123 关闭依据 | **生产 skills.db 403 条 uncategorized=0**（17 枚举：software-development 82/hermes 65/ai 63/methodology 29/creative 25/github 23/design 21/network 17/research 17/social-media 14/data 10/devops 9/media 8/security 7/email 5/linux 4/windows 4）。**完整 frontmatter YAML 解析 403/403 全部有 category**——B125（2026-08-30）检测的「102 条 uncategorized」系旧库/旧缓存口径（B114 重写后 indexer + hub sync 已解决；首查 800 字符截断误判 20 条，实为 compatibility 长字段把 category 挤出前 800 字符）。db vs frontmatter 双源对账 **mismatch=0**。验收三项（归零/收敛枚举/零误伤）全达标 → **无需执行归类**。 |
+| T-116 评估结论 | active **268** < 300 上限（B117 收敛后 7 天 -1，**周净增长≈0**）；总 678（active 268 + archived 407 + expired 1 + rejected 2）；周新增 154 场景全有归档出口——场景级预筛（T-97）+ 自动 GC 生效。**超限触发条件未出现，批量合并不必要**，维持暂缓（观察条件：active 逼近 300 或净增速转正持续 2 周）。 |
+| 关键教训 | ①frontmatter 解析必须用完整 frontmatter 段（YAML 解析），**不能用前 N 字符截断正则**——长多行字段（compatibility 等）会把目标键挤出窗口造成假阴性误判 ②B125 检测口径（uncategorized）与当前库不一致时先对账现状再开工，避免为已消失的问题做无用功。 |
+| 文档 | Backlog T-123/T-116 标 ✅（附实测依据）。 |
