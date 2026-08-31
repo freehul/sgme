@@ -355,3 +355,69 @@ def test_config_merge_prescreen_fallback_default_full_recall():
     assert base["prescreen"]["fallback"] == "full_recall"
     merged = sgme_config._merge_l15_config({"prescreen": {"fallback": "skip_conflict"}})
     assert merged["prescreen"]["fallback"] == "skip_conflict"
+
+
+# ---------- 6. T-132 预筛降级可观测标记（prescreen_skipped） ----------
+
+def test_prescreen_skip_conflict_records_observable_marker(mem_conn, cfg, monkeypatch):
+    """embed 不可达 + fallback=skip_conflict → refine_runs 出现独立 prescreen_skipped 标记。
+
+    验收（T-132）：降级原本走「候选清空→全部 store」短路、不调 LLM、不记任何 run，
+    与 LLM 判「无变化」(action_counts['skip']) 同名混淆且完全不可见。
+    现独立记一条 run，action_counts={'prescreen_skipped': N}，可被 A/B 观测识别。
+    """
+    for i in range(120):
+        _insert_existing(mem_conn, f"旧记忆{i}内容", ["tech_stack"], priority=60)
+
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)  # 端点不可达
+
+    cfg["l15"] = {"prescreen": _ps_cfg() | {"fallback": "skip_conflict"}}
+    result = l15.resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
+
+    # 1) 结果层标记
+    assert result.prescreen_skipped == 1
+    assert len(result.stored) == 1  # 短路 store 行为不变（不丢数据）
+
+    # 2) refine_runs 层独立标记（可观测）
+    rows = mem_conn.execute(
+        "SELECT action_counts FROM refine_runs WHERE stage='l1_conflict'"
+    ).fetchall()
+    assert rows, "应记录至少一条 refine_run"
+    found = False
+    for (ac_json,) in rows:
+        ac = json.loads(ac_json or "{}")
+        if "prescreen_skipped" in ac:
+            assert ac["prescreen_skipped"] == 1
+            found = True
+    assert found, "refine_runs 中未找到 prescreen_skipped 标记"
+
+
+def test_prescreen_normal_path_no_skip_marker(mem_conn, cfg, monkeypatch):
+    """对照组：向量可用（正常预筛）→ 不记 prescreen_skipped 标记。"""
+    existing_ids = [
+        _insert_existing(mem_conn, f"旧记忆{i}内容", ["tech_stack"], priority=60)
+        for i in range(120)
+    ]
+
+    # embed 返回正常向量；vector_search 返回完整候选记录（含 content，可被 prompt 渲染）
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(
+        vector_mod, "vector_search",
+        lambda *a, **kw: [
+            {"memory_id": existing_ids[i], "content": f"旧记忆{i}内容",
+             "priority": 60, "updated_at": "2026-01-01T00:00:00Z", "score": 0.9}
+            for i in range(5)
+        ],
+    )
+
+    cfg["l15"] = {"prescreen": _ps_cfg()}
+    result = l15.resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
+
+    assert result.prescreen_skipped == 0
+    rows = mem_conn.execute(
+        "SELECT action_counts FROM refine_runs WHERE stage='l1_conflict'"
+    ).fetchall()
+    for (ac_json,) in rows:
+        ac = json.loads(ac_json or "{}")
+        assert "prescreen_skipped" not in ac, "正常路径不应出现降级标记"
+
