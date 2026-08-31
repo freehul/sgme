@@ -2368,3 +2368,27 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 运维影响 | 生产默认开图（fill-only 安全形态）；memory_edges 空（未 backfill）时图路零贡献、routes 无 "graph"，与 T-133 前逐字节等价。部署需先跑 `scripts/oneoff/backfill_edges.py` 生产 backfill（36,534 边预估）再生效。 |
 | ⚠️ 遗留 | ①止损点裁决：fill-only 有净增益（scene 类）→ T-135（语义边）/T-136（三元组）保持可投，但增益中等且仅共现联想类生效，投入前建议扩样本/真实 LLM GT 复核（T-129 延后决策 a）②supersession 型多跳图路帮不上（需 2-hop 或语义边，属 v2）③生产 backfill 未执行。 |
 | 文档 | 本记录 B134；Backlog T-134 标 ✅、ST-38 转 🟡（T-135 待做）。A/B 报告：eval/results/ab_graph_prod / ab_graph_fill / ab_graph_fill_scene（gitignored，随库可复现）。 |
+
+### B135. T-135 语义边（搭 l1_conflict 顺风车，零新增调用）（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | T-134 止损裁决「fill-only 有净增益」→ T-135 可投。l1_conflict 阶段已看到新记忆 + 候选池全文，顺风车加一列关系判定输出（similar/causes/contradicts），不新增独立 LLM 调用，增量 token 仅输出侧。 |
+| 改动 | ①`l15.py`：`RelationEdge` dataclass（candidate_id/relation/confidence）；`ConflictDecision.relations`（可选，旧格式兼容）；`_parse_relations` 容错（非法 relation 丢弃、confidence 无法解析 → 宁缺毋滥丢弃、越界钳制 0-1）；`_write_semantic_edges` 落库钩子——过滤：confidence < `l15.semantic_edges.min_weight`（默认 0.6）丢弃、被 update/merge 归档的候选跳过（替代关系由 archive 链 supersedes 承载）、候选非 active 跳过；`source='l1_conflict'` 可溯源（delete_edges_by_source 一键关闭该路）；**⚠️ 写入后 commit**（create_edge 裸 INSERT 隐式事务，多记忆批次下一条 insert_memory 的 BEGIN 会崩——真实 bug，测试 test_resolve_conflicts_multiple_memories_first_with_edges 回归）。②`L15Result.semantic_edges_written` 计数（可观测）。③`config.py` l15 段加 `semantic_edges={enabled:True, min_weight:0.6}`（_merge_l15_config 同步）。④`prompts/l1_conflict.txt` 加「关系判定（语义边，可选输出）」节 → 发布 v002（active 保持 @working 热更新）。 |
+| 验收实证 | `eval/check_semantic_edges.py`（真实 LLM agnes-2.5-flash）：n1「上周日打飞盘」→ c1「公园玩飞盘」similar 0.85 / c2「飞盘俱乐部训练」similar 0.7 两条边写入；判定标尺示例化后（similar=主题相关可联想，非同一事实）脏边率 **0.0%**，报告 eval/results/t135_semantic_edges_check.md → **通过**。n2「住上海」被判 update c3「住北京」（同一事实更新）→ contradicts 边按设计不写（归档候选）——正确行为。 |
+| 关键教训 | ①免费模型 agnes-2.5-flash 对较长输出（含 relations）**偶发坏 JSON**（char 587 缺逗号实测）：resolve_conflicts 既有 1 次重试 + 默认 store 兜底（不丢数据），但语义边随解析失败丢失——验收脚本外层重试 3 次，生产为「尽力而为」特性（降级不致命）②similar 边语义 = 「主题相关可联想」（服务图召回），不是「同一事实」——验收判定标尺必须按设计意图定义，否则误判脏边。 |
+| 测试 | tests/test_semantic_edges.py 13 例（解析容错/写入过滤×5/配置开关/端到端 store/update 不写边/多记忆回归/幂等）。 |
+| 部署 | T-135 随下一轮部署（NAS 现为 1.1.3，不含本改动；生产 backfill 36,572 边已于 B135 部署段执行）。 |
+| 文档 | 本记录 B135；Backlog T-135 标 ✅、ST-38 转 🟡（T-136 待做）。 |
+
+### B136. T-136 原子事实三元组（搭 l1_extraction 顺风车，D4 JSON 列 MVP）（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | T-135 完成后 ST-38 最后一环：符号层精确查询（「XX 在哪家公司」）能力，与 BM25/向量/图三路互补。D4 先 JSON 列 MVP（免建表迁移），验证价值后再迁 memory_facts 表。 |
+| 改动 | ①`l1.py _validate_item` 解析 facts（subject/predicate/object 非空校验，非法项丢弃）；②`db.py _migrate_mem_facts_json`（memories+memory_archive 加 facts_json 列，幂等，不 bump SCHEMA_VERSION）；③`memory_dao.insert_memory` 加 `facts` 参数 + `_facts_to_json` 规范化（空/全非法 → NULL）；④`l15.py _store_memory` 透传（update/merge 亦经此落库）；⑤新 `sgme/data/facts_dao.py`：JSON1 `json_each` 展开查询——`query_facts(subject/predicate/object 任意组合, exact=精确=/子串 LIKE, only_active)` + `list_facts_by_memory` + `count_facts` 对账；⑥`prompts/l1_extraction.txt` 加 facts 输出说明 → v002；**v003 补时间/地点/频率类确定性属性拆解示例**（如「飞盘俱乐部每周三训练」→ 训练时间/每周三）。 |
+| 验收实证 | `eval/check_facts.py`（真实 LLM agnes-2.5-flash）：会话埋 5 个确定性事实 → 抽取成功率 **100%（5/5）**，报告 eval/results/t136_facts_smoke.md → **通过**。符号层：query_facts(subject=张伟, predicate=任职于) 精确命中 object=腾讯。v002 首跑 40%→修正匹配器空格归一化（群晖NAS vs 群晖 NAS）→80%→v003 补引导 →100%（prompt 迭代闭环实证）。 |
+| 关键教训 | ①验收匹配器必须先做空白归一化+子串匹配——LLM 输出「群晖NAS」「AI平台」与期望「群晖 NAS」「AI 平台」空格差异导致误判不命中（非抽取质量问题）②免费模型对「时间/频率类确定性属性拆解」初始跟随性差（80%），prompt 加显式示例后 100%——示例驱动优于规则描述。 |
+| 测试 | tests/test_facts.py 9 例（落库规范化/查询精确-子串-active 过滤/对账/L1 解析容错/l1→l15 全链路/迁移幂等）。 |
+| 部署 | T-136 随下一轮部署（facts_json 列迁移 connect_memory 自动执行）。 |
+| 文档 | 本记录 B136；Backlog T-136 标 ✅、ST-38 全部任务 ✅（T-137 图召回 v2 待投）。 |

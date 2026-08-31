@@ -437,6 +437,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_signal_acks_table(conn)
     _migrate_persona_tables(conn)
     _migrate_memory_edges_table(conn)
+    _migrate_mem_facts_json(conn)
     return conn
 
 
@@ -872,6 +873,20 @@ def _migrate_memory_edges_table(conn: sqlite3.Connection) -> None:
     表内容（边）由 scripts/backfill_edges.py 一次性/周期 backfill 写入（source='system'）。
     """
     conn.executescript(MEMORY_EDGES_DDL)
+    conn.commit()
+
+
+def _migrate_mem_facts_json(conn: sqlite3.Connection) -> None:
+    """老库迁移：memories/memory_archive 补 facts_json 列（ST-38 T-136，2026-08-31）。
+
+    D4 MVP：原子事实三元组以 JSON 数组列落库（免建表迁移），后续验证价值后再迁
+    memory_facts 独立表（可索引、可 SQL 精确过滤）。JSON1 json_each 展开查询见
+    sgme/data/facts_dao.py。幂等：列已存在则无操作。
+    """
+    for table in ("memories", "memory_archive"):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if "facts_json" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN facts_json TEXT")
     conn.commit()
 
 

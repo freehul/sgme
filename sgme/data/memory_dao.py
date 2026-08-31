@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -25,6 +26,24 @@ def _now_iso() -> str:
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _facts_to_json(facts: Iterable[dict] | None) -> str | None:
+    """T-136：三元组列表 → facts_json 列值（规范化后 JSON 序列化，None/空 → None）。"""
+    if not facts:
+        return None
+    cleaned: list[dict] = []
+    for f in facts:
+        if not isinstance(f, dict):
+            continue
+        s = str(f.get("subject") or "").strip()
+        p = str(f.get("predicate") or "").strip()
+        o = str(f.get("object") or "").strip()
+        if s and p and o:
+            cleaned.append({"subject": s, "predicate": p, "object": o})
+    if not cleaned:
+        return None
+    return json.dumps(cleaned, ensure_ascii=False)
 
 
 # ---------- 维度注册表导入（幂等 upsert） ----------
@@ -204,6 +223,7 @@ def insert_memory(
     updated_at: str | None = None,
     prompt_version: str | None = None,
     occurred_at: str | None = None,
+    facts: Iterable[dict] | None = None,
 ) -> str:
     """插入一条记忆 + 标签 + 溯源。
 
@@ -215,6 +235,8 @@ def insert_memory(
       触发器只同步、不分词——写路径由 data 层填 content_seg）
     - occurred_at（v0.5，2026-08-06）：会话事件的真实发生时刻
       （vs created_at=提炼落库时刻）；缺省 None 时回退为 created_at
+    - facts（T-136，2026-08-31）：原子事实三元组列表
+      [{"subject":..., "predicate":..., "object":...}, ...]，序列化为 JSON 写 facts_json 列
     - 返回 memory_id
     """
     mid = memory_id or _uuid()
@@ -227,11 +249,13 @@ def insert_memory(
             """
             INSERT INTO memories
               (memory_id, content, content_seg, memory_type, priority, time_velocity,
-               ttl_days, created_at, updated_at, agent_tag, prompt_version, occurred_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               ttl_days, created_at, updated_at, agent_tag, prompt_version, occurred_at,
+               facts_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (mid, content, segment(content), memory_type, priority, time_velocity,
-             ttl_days, c_at, u_at, agent_tag, prompt_version, o_at),
+             ttl_days, c_at, u_at, agent_tag, prompt_version, o_at,
+             _facts_to_json(facts)),
         )
         for dim_id in dimension_ids:
             conn.execute(

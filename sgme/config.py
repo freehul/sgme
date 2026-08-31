@@ -302,6 +302,13 @@ DEFAULT_L15_CONFIG = {
         "dimension_top_n": 50,
         "fallback": "full_recall",
     },
+    # T-135 语义边（搭 l1_conflict 顺风车，零新增调用）：关系判定写入 memory_edges
+    # source='l1_conflict' 可溯源关闭（delete_edges_by_source）；min_weight 为 LLM confidence
+    # 阈值（脏边控制，见 l15.py _write_semantic_edges）
+    "semantic_edges": {
+        "enabled": True,
+        "min_weight": 0.6,
+    },
 }
 
 # 提炼调度默认兜底（2026-08-04 新增：文件到达联动 + Batch 兜底扫描）
@@ -731,9 +738,10 @@ def _merge_l1_config(user_cfg: dict | None) -> dict:
 
 
 def _merge_l15_config(user_cfg: dict | None) -> dict:
-    """合并 l15 段默认值与用户配置（候选池向量预筛，T-25）。"""
+    """合并 l15 段默认值与用户配置（候选池向量预筛 T-25；语义边 T-135）。"""
     base = {
         "prescreen": dict(DEFAULT_L15_CONFIG["prescreen"]),
+        "semantic_edges": dict(DEFAULT_L15_CONFIG["semantic_edges"]),
     }
     if not isinstance(user_cfg, dict):
         return base
@@ -742,6 +750,11 @@ def _merge_l15_config(user_cfg: dict | None) -> dict:
         for k in ("enabled", "vector_top_k", "dimension_top_n", "fallback"):
             if k in ps:
                 base["prescreen"][k] = ps[k]
+    se = user_cfg.get("semantic_edges")
+    if isinstance(se, dict):
+        for k in ("enabled", "min_weight"):
+            if k in se:
+                base["semantic_edges"][k] = se[k]
     return base
 
 

@@ -313,10 +313,17 @@ def test_inject_invalid_dimension_returns_400(client):
     assert resp.json()["error"]["code"] == "ERR_INVALID_ARGS"
 
 
-def test_inject_no_mode_no_filter_returns_400(client):
-    """既无 mode 也无 custom_filter → 400。"""
+def test_inject_no_mode_no_filter_falls_back_to_daily(client):
+    """既无 mode 也无 custom_filter → T-120 回落 DEFAULT_INJECT_MODE=daily（200，非 400）。
+
+    T-120（2026-08-30）接入实测定：mode 与 custom_filter 均未指定时回落 daily，
+    不再 400（旧断言 400 为 T-120 遗漏未同步，2026-08-31 全量回归发现修正）。
+    """
     resp = client.post("/v1/inject", json={}, headers=AGENT_HEADERS)
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    body = resp.json()
+    # 回落 daily：正常走注入（结果含 memories 或 trace 字段，非 ERR_INVALID_ARGS）
+    assert "error" not in body or body.get("error") is None
 
 
 # ---------- /v1/search ----------

@@ -19,7 +19,7 @@
 - 只输出一个 JSON 数组，无其他文字、无 markdown 代码块标记（不要 ```json```）。
 - 每条：{"content": 事实原文, "dimensions": [维度标签], "memory_type": 类型, "priority": 分数, "time_velocity": "static"或"dynamic", "source_message_ids": [消息序号], "supersedes": 被替代旧主体名称（可选，无则省略）, "facts": [原子事实三元组数组]}
 - 替代关系声明（ST-18 项目替代联动）：当会话明确表达某主体（项目/工具/方案/产品等）已被另一主体替代、取代或迁移时，在声明该替代关系的那条记忆上输出 "supersedes" 字段，值为被替代旧主体的精确名称（如 "AIXM 已被 SGME 替代" → "supersedes": "AIXM"）；旧主体有多个时输出数组。仅当替代关系明确时才输出，普通的新旧对比、升级演进描述不算替代，禁止输出该字段。
-- 原子事实三元组（facts，可选输出）：从记忆内容中拆解出可独立断言的原子事实，每项 {"subject": 主体, "predicate": 谓词, "object": 客体}。示例：记忆「张伟在腾讯工作」→ {"subject": "张伟", "predicate": "任职于", "object": "腾讯"}；「SGME 部署在群晖 NAS」→ {"subject": "SGME", "predicate": "部署于", "object": "群晖 NAS"}。规则：①只对确定性、可长期复用的断言输出，推测/情绪/临时状态不要 ②predicate 用简洁动词或关系词 ③subject 用具体实体名（人/项目/物/组织），不用代词 ④时间/地点/频率等确定性属性同样要拆解（如「飞盘俱乐部每周三训练」→ {"subject": "飞盘俱乐部", "predicate": "训练时间", "object": "每周三"}；「用户住在上海」→ {"subject": "用户", "predicate": "居住于", "object": "上海"}）⑤每条记忆最多 5 个三元组，没有则省略 facts 或填空数组。
+- 原子事实三元组（facts，可选输出）：从记忆内容中拆解出可独立断言的原子事实，每项 {"subject": 主体, "predicate": 谓词, "object": 客体}。示例：记忆「张伟在腾讯工作」→ {"subject": "张伟", "predicate": "任职于", "object": "腾讯"}；「SGME 部署在群晖 NAS」→ {"subject": "SGME", "predicate": "部署于", "object": "群晖 NAS"}。规则：①只对确定性、可长期复用的断言输出，推测/情绪/临时状态不要 ②predicate 用简洁动词或关系词 ③subject 用具体实体名（人/项目/物/组织），不用代词 ④每条记忆最多 5 个三元组，没有则省略 facts 或填空数组。
 - time_velocity 判断：月~年不变的事实 = static；天~周可能变化的状态/关注/待办 = dynamic。
 - 宁缺毋滥：无长期价值的寒暄、闲聊、临时细节不要提取；priority < 50 的记忆直接丢弃（不输出）。
 - content 使用原文语言，保持事实原貌，不概括、不加工。

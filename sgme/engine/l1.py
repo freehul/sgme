@@ -131,6 +131,18 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
         supersedes = [s for s in supersedes if isinstance(s, str) and s.strip()]
     else:
         supersedes = []
+    # T-136 原子事实三元组：容错校验（缺键/非字符串/空 → 丢弃该项；非 list → []）
+    facts: list[dict] = []
+    raw_facts = item.get("facts")
+    if isinstance(raw_facts, list):
+        for f in raw_facts:
+            if not isinstance(f, dict):
+                continue
+            s = str(f.get("subject") or "").strip()
+            p = str(f.get("predicate") or "").strip()
+            o = str(f.get("object") or "").strip()
+            if s and p and o:
+                facts.append({"subject": s, "predicate": p, "object": o})
     return {
         "content": content,
         "dimensions": [str(x) for x in dims],  # 归一化前的原始标签
@@ -139,6 +151,7 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
         "time_velocity": time_velocity,
         "source_message_ids": source_ids,
         "supersedes": supersedes,
+        "facts": facts,
     }
 
 

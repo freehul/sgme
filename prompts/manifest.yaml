@@ -1,12 +1,3 @@
-# prompts/manifest.yaml — 提示词版本清单（#33 提示词版本管理）
-# 约定：
-#   active: "@working"          → 当前生效 = prompts/<stage>.txt 工作副本（编辑即热更新）
-#           "versions/<stage>/vNNN.txt" → 钉版（A/B 或固定版本时使用）
-#   ab: A/B 分流；enabled=false 时忽略其余字段
-#   bucket_by: file_id | memory_id | random（分流键；默认 file_id，确定性分流）
-#   versions: 发布元数据（publish 自动维护，勿手改 sha256/created_at）
-# 注：publish/activate/ab 会整文件重写本清单（yaml.safe_dump），注释不保留，属预期。
-# 字段英文；注释中文。
 stages:
   tier0_summary:
     active: '@working'
@@ -41,12 +32,27 @@ versions:
     sha256: bf089086b2e2c350af4908f25d384719b7e3eb3a93bb9116e762dadd565ddf54
     created_at: '2026-08-05T00:00:00Z'
     note: 初始快照（与 v0.1 工作副本一致）
+  - version: v002
+    file: versions/l1_extraction/v002.txt
+    sha256: bd585c59aca42e414ac145fb6b19d06c3c34198a82759da01259b3b975b57581
+    created_at: '2026-08-31T05:28:17Z'
+    note: T-136 原子事实三元组：输出 schema 增 facts 字段（subject/predicate/object 数组，最多 5 个）
+  - version: v003
+    file: versions/l1_extraction/v003.txt
+    sha256: 34534605ed54197eba25045389b538cd01180242760fa89f0d1c9916428f2e87
+    created_at: '2026-08-31T05:45:35Z'
+    note: T-136 v2：facts 规则补时间/地点/频率类确定性属性拆解示例（v002 冒烟 80% → 补引导）
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt
     sha256: 6bea4f49a90f383519a9fda8f70c9909288241183b5adfe7b30d8af4d0129108
     created_at: '2026-08-05T00:00:00Z'
     note: 初始快照（与 v0.1 工作副本一致）
+  - version: v002
+    file: versions/l1_conflict/v002.txt
+    sha256: 90eb728bf7541b56b182b25827156d8c31777fb502934963ffce30649498d425
+    created_at: '2026-08-31T05:22:55Z'
+    note: T-135 语义边：新增 relations 关系判定输出列（similar/causes/contradicts + confidence），零新增调用
   l2_scene:
   - version: v001
     file: versions/l2_scene/v001.txt
