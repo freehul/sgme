@@ -346,6 +346,13 @@ DEFAULT_GUARDRAIL_CONFIG = {
     "llm_fallback": {"enabled": False},  # 规则未命中时的 LLM 兜底判定（慢，默认关）
 }
 
+# ST-39 T-140 多 Agent scope：写侧按来源 agent 打标（raw_files.agent_id → memories.agent_tag），
+# 读侧按请求方 agent 隔离（NULL=历史无主记忆全通 + 'default'=共享 + 同 agent 可见）
+# ⚠️ 默认关（灰度）：enabled=False 时全通行为与 T-140 前逐字节一致（Hermes/DSH/Trae/WorkBuddy 共存不受影响）
+DEFAULT_AGENT_SCOPE_CONFIG = {
+    "enabled": False,          # 隔离开关（默认关=当前全通行为保留）
+}
+
 # 限流段默认兜底（§6 限流，T-7）：默认 120 req/min/Key；0 = 关闭
 DEFAULT_SERVER_CONFIG = {
     "rate_limit_per_min": 120,
@@ -776,6 +783,14 @@ def _merge_l15_config(user_cfg: dict | None) -> dict:
     return base
 
 
+def _merge_agent_scope_config(user_cfg: dict | None) -> dict:
+    """合并 agent_scope 段默认值（T-140：多 Agent 隔离；默认关=灰度全通）。"""
+    base = {"enabled": DEFAULT_AGENT_SCOPE_CONFIG["enabled"]}
+    if isinstance(user_cfg, dict) and "enabled" in user_cfg:
+        base["enabled"] = bool(user_cfg["enabled"])
+    return base
+
+
 def _merge_guardrail_config(user_cfg: dict | None) -> dict:
     """合并 guardrail 段默认值（T-139：敏感信息过滤层；默认关=灰度安全）。"""
     base = {
@@ -947,6 +962,7 @@ def load_config(
         "l15": sgme_cfg.get("l15", dict(DEFAULT_L15_CONFIG)),
         "refine": sgme_cfg.get("refine", _merge_refine_config(None)),
         "guardrail": _merge_guardrail_config(sgme_cfg.get("guardrail")),
+        "agent_scope": _merge_agent_scope_config(sgme_cfg.get("agent_scope")),
         "server": sgme_cfg.get("server", dict(DEFAULT_SERVER_CONFIG)),
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),

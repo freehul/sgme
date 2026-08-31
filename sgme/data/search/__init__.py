@@ -458,6 +458,7 @@ def search_memories(
     include_sources: bool = True,
     cfg: dict | None = None,
     client: httpx.Client | None = None,
+    agent_id: str | None = None,
 ) -> list[dict]:
     """检索：FTS5 BM25 + 维度标签过滤 + 向量检索 + 图召回（ST-38 T-134）+ RRF 融合 + trace。
 
@@ -514,6 +515,10 @@ def search_memories(
     # ST-39 T-139：Guardrail 召回后过滤（敏感记忆不返回；默认关=灰度）
     if _guardrail_read_enabled(cfg or {}):
         results = _filter_guardrail(results, cfg or {})
+
+    # ST-39 T-140：多 Agent scope 隔离（默认关=全通；开启后按请求方 agent 过滤）
+    if _agent_scope_enabled(cfg or {}):
+        results = _filter_agent_scope(mem_conn, results, agent_id)
 
     # T-89（2026-08-20）：内容去重 + limit 截断。
     # 1) 去重：同一事实被 L1 重复落库（不同 memory_id、相同 content）时全量召回
@@ -744,6 +749,38 @@ def _filter_guardrail(results: list[dict], cfg: dict | None) -> list[dict]:
         if guardrail.detect(r.get("content", "")):
             continue
         kept.append(r)
+    return kept
+
+
+def _agent_scope_enabled(cfg: dict | None) -> bool:
+    """T-140：agent_scope.enabled（顶层配置；缺省 False=全通灰度，行为与 T-140 前一致）。"""
+    if not cfg:
+        return False
+    return bool((cfg.get("agent_scope") or {}).get("enabled", False))
+
+
+def _filter_agent_scope(mem_conn: sqlite3.Connection, results: list[dict],
+                        agent_id: str | None) -> list[dict]:
+    """T-140：召回后按请求方 agent 隔离（调用方已 gate enabled）。
+
+    可见规则：agent_tag 为 NULL（历史无主记忆）或 'default'（共享）或等于
+    请求方 agent_id；其他 agent 的记忆不可见。
+    """
+    if not results:
+        return results
+    ids = [r["memory_id"] for r in results]
+    ph = ",".join("?" * len(ids))
+    rows = mem_conn.execute(
+        f"SELECT memory_id, agent_tag FROM memories WHERE memory_id IN ({ph})",
+        ids,
+    ).fetchall()
+    tag_by_id = {r["memory_id"]: r["agent_tag"] for r in rows}
+    agent = agent_id or "default"
+    kept = []
+    for r in results:
+        tag = tag_by_id.get(r["memory_id"])
+        if tag is None or tag == "default" or tag == agent:
+            kept.append(r)
     return kept
 
 

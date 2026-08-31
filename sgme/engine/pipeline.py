@@ -48,10 +48,25 @@ def _apply_supersession_linkage_safe(
         return []
 
 
+def _resolve_file_agent(session_conn: sqlite3.Connection | None, file_id: str) -> str | None:
+    """T-140：raw_files.agent_id → 提炼产物 agent_tag（多 Agent 隔离写侧）。
+
+    失败/未知 → None（记忆保持无主=全通语义，不阻断提炼）。
+    """
+    if not session_conn or not file_id:
+        return None
+    try:
+        rf = session_dao.get_raw_file(session_conn, file_id)
+        return (rf or {}).get("agent_id") or None
+    except Exception:
+        return None
+
+
 def persist_memories(
     refine_result: refine_mod.RefineResult,
     mem_conn: sqlite3.Connection,
     cfg: dict,
+    agent_tag: str | None = None,
 ) -> dict:
     """把 refine_file 产出的 L1 记忆经 L1.5 落库。
 
@@ -65,6 +80,12 @@ def persist_memories(
     """
     if not refine_result.memories:
         return dict(_ZERO_STATS)
+
+    # ST-39 T-140 写侧打标：来源 agent_id → 记忆 agent_tag（记忆已带则保留；未带且已知 → 填充）
+    if agent_tag:
+        for m in refine_result.memories:
+            if not m.get("agent_tag"):
+                m["agent_tag"] = agent_tag
 
     # ST-39 T-139 Guardrail 写前：敏感记忆 block=丢弃 / mask=脱敏改写（默认关=灰度）
     grd = (cfg.get("guardrail") or {})
@@ -203,7 +224,8 @@ def refine_one(
     """单文件提炼：refine_file → L1.5 落库。返回 (result, l15_stats)。"""
     result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
     l15_stats = (
-        persist_memories(result, mem_conn, cfg)
+        persist_memories(result, mem_conn, cfg,
+                         agent_tag=_resolve_file_agent(session_conn, file_id))
         if result.memories else dict(_ZERO_STATS)
     )
     return result, l15_stats
@@ -218,7 +240,9 @@ def refine_many(
     """批量提炼（同步）：refine_batch 收集全部 L1 结果 → 逐个 L1.5 落库。"""
     results = refine_mod.refine_batch(mem_conn, session_conn, cfg, limit=limit)
     return [
-        (r, persist_memories(r, mem_conn, cfg) if r.memories else dict(_ZERO_STATS))
+        (r, persist_memories(r, mem_conn, cfg,
+                             agent_tag=_resolve_file_agent(session_conn, r.file_id))
+         if r.memories else dict(_ZERO_STATS))
         for r in results
     ]
 
@@ -241,7 +265,8 @@ def async_refine_worker(
         if file_id:
             result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
             if result.memories:
-                persist_memories(result, mem_conn, cfg)
+                persist_memories(result, mem_conn, cfg,
+                                 agent_tag=_resolve_file_agent(session_conn, file_id))
             logger.info("async refine file=%s status=%s", file_id, result.status)
         else:
             new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
