@@ -180,6 +180,50 @@ def _publish_vector_signal(
         logger.warning("向量 anomaly_warn 发布失败（不阻塞）: %s", e)
 
 
+# 维度一致性 anomaly_warn 抑制窗口（秒）：防止 10 分钟心跳周期对同一个
+# 不一致状态反复刷屏（T-128）。进程级单点，同一 SGME 实例内共享。
+_DIM_ANOMALY_LAST_PUBLISHED: datetime | None = None
+_DIM_ANOMALY_SUPPRESS_SEC = 1800  # 30 分钟
+
+
+def publish_dimension_anomaly(mem_conn: sqlite3.Connection, report: dict) -> None:
+    """维度注册表一致性异常 → anomaly_warn（T-128 防复发）。
+
+    - 复用 signal.engine.publish 的 anomaly_warn 通道（SSE/pull 消费端零改动）
+    - 进程级 30 分钟抑制窗口：同一不一致状态不重复刷屏（与信号引擎同源
+      suppress_hint 互补——后者只附 hint 不丢事件，本窗口主动节流）
+    - 发布失败仅日志，不抛异常（与 _publish_vector_signal 同语义）
+    """
+    global _DIM_ANOMALY_LAST_PUBLISHED
+    now = datetime.now(timezone.utc)
+    if _DIM_ANOMALY_LAST_PUBLISHED is not None:
+        if (now - _DIM_ANOMALY_LAST_PUBLISHED).total_seconds() < _DIM_ANOMALY_SUPPRESS_SEC:
+            return
+    _DIM_ANOMALY_LAST_PUBLISHED = now
+    try:
+        from sgme.signal import engine as signal_engine
+        signal_engine.publish(
+            event_type="anomaly_warn",
+            source="registry",
+            payload={
+                "component": "dimension_registry",
+                "consistent": report.get("consistent", False),
+                "orphan_active_in_db": report.get("orphan_active_in_db", []),
+                "missing_in_db": report.get("missing_in_db", []),
+                "inactive_in_db": report.get("inactive_in_db", []),
+                "db_active_count": report.get("db_active_count"),
+                "yaml_count": report.get("yaml_count"),
+                "hint": "维度注册表与 registry/dimensions.yaml 不一致：孤儿维度仍在打标"
+                        "（脏数据来源）或 YAML 声明维度未激活。诊断："
+                        "GET /v1/admin/registry/consistency；禁用孤儿维度："
+                        "PUT /v1/admin/registry/dimensions/{id} body {\"active\":false}。",
+            },
+            mem_conn=mem_conn,
+        )
+    except Exception as e:  # noqa: BLE001 —— 信号发布必须健壮，禁止上抛
+        logger.warning("维度一致性 anomaly_warn 发布失败（不阻塞）: %s", e)
+
+
 # ---------- 向量可用性（ST-22②：health 加 vector 可用性） ----------
 
 def check_vector_availability(mem_conn: sqlite3.Connection) -> dict[str, Any]:

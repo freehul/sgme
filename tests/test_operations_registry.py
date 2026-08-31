@@ -426,3 +426,80 @@ def test_deactivate_dim_refreshes_cfg_dimensions(conns, cfg):
     res = registry_update_dim(mem_conn, cfg, "ops_tmp_dim", updates={"active": False})
     assert res.ok is True
     assert "ops_tmp_dim" not in _dim_ids(cfg)
+
+
+# ---------- 5. T-128 维度注册表一致性校验 ----------
+
+def test_dim_consistency_healthy_is_consistent(conns):
+    """健康态（import 自 YAML 的 14 维度全 active）：consistent=True 无差集。"""
+    mem_conn, _, _ = conns
+    yaml_ids = {d["id"] for d in sgme_config.load_config()["dimensions"]}
+    report = memory_dao.check_dimension_consistency(mem_conn, yaml_ids)
+    assert report["consistent"] is True
+    assert report["orphan_active_in_db"] == []
+    assert report["missing_in_db"] == []
+    assert report["inactive_in_db"] == []
+    assert report["yaml_count"] == report["db_active_count"] == len(yaml_ids)
+
+
+def test_dim_consistency_detects_orphan_active(conns):
+    """模拟 T-127 复发：DB 存在 YAML 未声明却 active=1 的孤儿维度 → 进 orphan_active_in_db。"""
+    mem_conn, _, _ = conns
+    # YAML 未声明、active=1 的孤儿（正是 B81 漏停用形态）
+    memory_dao.upsert_dimension(mem_conn, {
+        "id": "ghost_dim", "display_name": "幽灵", "category": "动态",
+        "time_velocity": "dynamic", "ttl_days": 7, "description": "孤儿",
+    })
+    yaml_ids = {d["id"] for d in sgme_config.load_config()["dimensions"]}
+    report = memory_dao.check_dimension_consistency(mem_conn, yaml_ids)
+    assert report["consistent"] is False
+    assert "ghost_dim" in report["orphan_active_in_db"]
+    # 已停用（active=0）的孤儿不算异常（溯源保留）
+    memory_dao.update_dimension_fields(mem_conn, "ghost_dim", {"active": False})
+    report2 = memory_dao.check_dimension_consistency(mem_conn, yaml_ids)
+    assert "ghost_dim" not in report2["orphan_active_in_db"]
+
+
+def test_dim_consistency_detects_missing_and_inactive(conns):
+    """YAML 声明但 DB 缺行 → missing_in_db；YAML 声明但 DB 停用 → inactive_in_db。"""
+    mem_conn, _, _ = conns
+    base_yaml_ids = {d["id"] for d in sgme_config.load_config()["dimensions"]}
+    # 1) 缺行：YAML 多声明一个 DB 不存在的维度（不实际写库，避免 FK 约束）
+    yaml_ids = base_yaml_ids | {"future_dim"}
+    report = memory_dao.check_dimension_consistency(mem_conn, yaml_ids)
+    assert "future_dim" in report["missing_in_db"]
+    # 2) 停用 goals（YAML 声明但 DB inactive）
+    memory_dao.update_dimension_fields(mem_conn, "goals", {"active": False})
+    report2 = memory_dao.check_dimension_consistency(mem_conn, base_yaml_ids)
+    assert "goals" in report2["inactive_in_db"]
+    assert report2["missing_in_db"] == []  # 无缺失，仅 goals 未激活
+
+
+def test_consistency_endpoint_contract_unchanged(client, conns):
+    """GET /v1/admin/registry/consistency：健康态返回 consistent=True + 三差集键。"""
+    resp = client.get("/v1/admin/registry/consistency", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["consistent"] is True
+    assert set(body.keys()) == {
+        "consistent", "yaml_count", "db_total_count", "db_active_count",
+        "orphan_active_in_db", "missing_in_db", "inactive_in_db",
+    }
+    assert body["orphan_active_in_db"] == []
+    assert body["missing_in_db"] == []
+    assert body["inactive_in_db"] == []
+
+
+def test_consistency_endpoint_inconsistent_reports_orphan(client, conns):
+    """一致性端点：注入孤儿 active 维度 → 端点可见 orphan_active_in_db。"""
+    mem_conn, _, _ = conns
+    memory_dao.upsert_dimension(mem_conn, {
+        "id": "ghost_dim2", "display_name": "幽灵2", "category": "动态",
+        "time_velocity": "dynamic", "ttl_days": 7, "description": "孤儿",
+    })
+    resp = client.get("/v1/admin/registry/consistency", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["consistent"] is False
+    assert "ghost_dim2" in body["orphan_active_in_db"]
+

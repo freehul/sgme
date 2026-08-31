@@ -137,6 +137,51 @@ def update_dimension_fields(conn: sqlite3.Connection, dim_id: str, updates: dict
             )
 
 
+def check_dimension_consistency(
+    conn: sqlite3.Connection, yaml_dim_ids: set[str]
+) -> dict:
+    """T-128：校验 DB 维度注册表与源 YAML 维度集的一致性（防 B81 漏停用复发）。
+
+    语义（YAML=种子，DB=运行时真相，T-2 v0.7 裁决）：
+    - YAML 声明「应当 active 的维度集」；DB active=1 集合应 == YAML 集
+    - 孤儿：DB active=1 但 YAML 未声明 → 仍在打标（脏数据来源），须告警 + 禁用
+    - 缺失：YAML 声明但 DB 完全无此行 → 导入遗漏，须告警 + 导入
+    - 未激活：YAML 声明但 DB active!=1 → 启用遗漏，须告警 + 启用
+    - DB 中 YAML 未声明且已停用（active=0）属预期（溯源保留），不告警
+
+    Args:
+        conn: memory.db 连接。
+        yaml_dim_ids: registry/dimensions.yaml 声明的维度 id 集合（YAML 为种子）。
+
+    Returns:
+        {
+          consistent: bool,
+          yaml_count, db_total_count, db_active_count: int,
+          orphan_active_in_db: list[str],   # 应禁用
+          missing_in_db: list[str],         # 应导入
+          inactive_in_db: list[str],        # 应启用
+        }
+    """
+    rows = list_dimensions(conn, active_only=False)
+    db_all = {r["id"]: r for r in rows}
+    db_active = {r["id"] for r in rows if r.get("active") == 1}
+    yaml_set = set(yaml_dim_ids)
+
+    orphan_active = sorted(db_active - yaml_set)
+    missing_in_db = sorted(yaml_set - set(db_all.keys()))
+    inactive_in_db = sorted(yaml_set & {r["id"] for r in rows if r.get("active") != 1})
+
+    return {
+        "consistent": not (orphan_active or missing_in_db or inactive_in_db),
+        "yaml_count": len(yaml_set),
+        "db_total_count": len(db_all),
+        "db_active_count": len(db_active),
+        "orphan_active_in_db": orphan_active,
+        "missing_in_db": missing_in_db,
+        "inactive_in_db": inactive_in_db,
+    }
+
+
 def delete_alias(conn: sqlite3.Connection, alias: str):
     """删除别名（返回 cursor 供调用方检查 rowcount）。"""
     return conn.execute("DELETE FROM dimension_alias WHERE alias=?", (alias,))
