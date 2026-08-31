@@ -43,6 +43,21 @@ def test_detect_clean_text_empty():
     assert guardrail.detect(None) == []
 
 
+def test_email_rule_no_npm_version_false_positive():
+    """2026-08-31 生产抽检实锤误报：pnpm@11.21.0 被 email 规则命中。
+
+    收紧后域名段必须以字母开头——npm 版本号（数字开头）不再误判，
+    真实邮箱（含子域名/后缀路径/数字前缀）仍命中。
+    """
+    assert "email" not in guardrail.detect("用 node24 执行 pnpm@11.21.0 安装")
+    assert "email" not in guardrail.detect("升级到 package@2.1.0")
+    assert "email" not in guardrail.detect("npm i @scope/pkg@1.0.0")
+    # 真实邮箱仍命中
+    assert "email" in guardrail.detect("联系 leo@example.com")
+    assert "email" in guardrail.detect("user.name+tag@mail.example.co.uk")
+    assert "email" in guardrail.detect("13812345678@qq.com")
+
+
 def test_mask():
     masked, hits = guardrail.mask("手机 13812345678 和邮箱 leo@example.com")
     assert "13812345678" not in masked and "leo@example.com" not in masked
