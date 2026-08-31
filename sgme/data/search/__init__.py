@@ -409,8 +409,12 @@ def _graph_candidates(
         from sgme.data import edge_dao
 
         agg: dict[str, float] = {}
+        excl = _graph_exclude_relations(cfg)
+        rw = _graph_relation_weights(cfg)
         for sid in seed_ids:
-            for n in edge_dao.neighbors(mem_conn, sid):
+            for n in edge_dao.neighbors(
+                mem_conn, sid, exclude_relations=excl, relation_weights=rw,
+            ):
                 agg[n["memory_id"]] = agg.get(n["memory_id"], 0.0) + n["weight"]
         nbrs = [(mid, w) for mid, w in agg.items() if mid not in seed_ids]
         if not nbrs:
@@ -680,6 +684,20 @@ def _graph_fill_only(cfg: dict | None) -> bool:
     """cfg 中 search.graph.fill_only 缺省 True（T-134 A/B 定夺：fill-only 语义，
     图候选只填空位、不干预直接命中——唯一同时满足两项验收的形态）。"""
     return bool(_graph_setting(cfg, "fill_only", True))
+
+
+def _graph_exclude_relations(cfg: dict | None) -> list[str] | None:
+    """T-137：search.graph.exclude_relations（缺省 ["contradicts"]——否定边不参与
+    联想召回，矛盾是负信号，纳入会污染结果）。"""
+    v = _graph_setting(cfg, "exclude_relations", ["contradicts"])
+    return list(v) if isinstance(v, (list, tuple)) and v else None
+
+
+def _graph_relation_weights(cfg: dict | None) -> dict[str, float] | None:
+    """T-137：search.graph.relation_weights（缺省 {"belongs_to": 0.3}——共现边
+    尺度压缩：LLM 置信 0-1 vs 场景数 1-N；语义边/supersedes 保持 1.0）。"""
+    v = _graph_setting(cfg, "relation_weights", {"belongs_to": 0.3})
+    return dict(v) if isinstance(v, dict) and v else None
 
 
 def _filter_by_dimensions(

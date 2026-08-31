@@ -49,15 +49,23 @@ def _p95(xs: list[float]) -> float:
 
 
 def _run_arm(mem_conn, gt: RealDbGt, *, graph_enabled: bool, graph_weight: float,
-             limit: int = 10, fill_only: bool = False) -> dict:
+             limit: int = 10, fill_only: bool = False,
+             exclude_relations: list[str] | None = None,
+             relation_weights: dict[str, float] | None = None) -> dict:
     """单臂：对每条 GT 跑 search_memories（BM25 + 可选图路），累计 recall@k / P95 延迟。
 
     逐条记录 hop kind（single / scene / supersession），供按子集聚合。
+    T-137 v2：exclude_relations / relation_weights 透传 search.graph（v1 臂传
+    []/None 即全边无差别——与 T-134 行为逐字节等价）。
     """
     cfg = {
         "search": {
             "vector": {"enabled": False},
-            "graph": {"enabled": graph_enabled, "weight": graph_weight, "fill_only": fill_only},
+            "graph": {
+                "enabled": graph_enabled, "weight": graph_weight, "fill_only": fill_only,
+                "exclude_relations": exclude_relations,
+                "relation_weights": relation_weights,
+            },
         }
     }
     per_query_recall: list = []
@@ -154,6 +162,152 @@ def _fmt_recall(rec: dict | None) -> str:
     return " / ".join(f"{rec.get(f'recall@{k}', 0.0):.4f}" for k in (1, 3, 5, 10))
 
 
+def inject_semantic_edges(mem_conn, *, n_similar: int = 300, n_contradicts: int = 30,
+                          seed: int = 0) -> dict:
+    """T-137：副本注入合成语义边（模拟 L1.5 提炼产物，source='l1_conflict'）。
+
+    生产语义边随提炼运行时产生（目前生产无），A/B 用合成边验证图召回 v2 对
+    语义边的处理机制：①similar 边纳入联想（weight=LLM 置信 0.6-0.95）②contradicts
+    否定边被 v2 过滤。幂等：先 DELETE source='l1_conflict' 再重插。
+    """
+    import random
+    rng = random.Random(seed)
+    mems = [r["memory_id"] for r in mem_conn.execute(
+        "SELECT memory_id FROM memories WHERE status='active' ORDER BY memory_id").fetchall()]
+    if len(mems) < 2:
+        return {"similar": 0, "contradicts": 0, "total": 0}
+    edge_dao.delete_edges_by_source(mem_conn, "l1_conflict")
+
+    def _rand_pair(exclude: set[tuple[str, str]]) -> tuple[str, str] | None:
+        for _ in range(200):
+            a, b = rng.sample(mems, 2)
+            key = (a, b) if a < b else (b, a)
+            if key not in exclude:
+                exclude.add(key)
+                return key
+        return None
+
+    seen: set[tuple[str, str]] = set()
+    n_sim = n_cont = 0
+    for _ in range(n_similar):
+        pair = _rand_pair(seen)
+        if not pair:
+            break
+        edge_dao.create_edge(mem_conn, pair[0], pair[1], "similar",
+                             weight=round(rng.uniform(0.6, 0.95), 3), source="l1_conflict")
+        n_sim += 1
+    for _ in range(n_contradicts):
+        pair = _rand_pair(seen)
+        if not pair:
+            break
+        edge_dao.create_edge(mem_conn, pair[0], pair[1], "contradicts",
+                             weight=round(rng.uniform(0.6, 0.9), 3), source="l1_conflict")
+        n_cont += 1
+    mem_conn.commit()
+    return {"similar": n_sim, "contradicts": n_cont, "total": n_sim + n_cont}
+
+
+def run_graph_ab_v2(
+    mem_conn,
+    *,
+    sample_n: int = 200,
+    multi_hop_ratio: float = 0.3,
+    seed: int = 0,
+    limit: int = 10,
+    graph_weight: float = DEFAULT_WEIGHT,
+    multi_hop_kind: str | None = None,
+    fill_only: bool = True,
+    n_semantic_similar: int = 300,
+    n_semantic_contradicts: int = 30,
+) -> dict:
+    """T-137：图召回 v1 vs v2 双臂 A/B（同图开基线，仅关系处理不同）。
+
+    - v1 臂：exclude_relations=[] + relation_weights=None（全边无差别纳入——
+      含 contradicts 否定边；与 T-134 行为逐字节等价）
+    - v2 臂：exclude_relations=["contradicts"] + relation_weights={"belongs_to": 0.3}
+      （否定边过滤 + 共现边尺度压缩，语义边 similar/causes 1.0）
+
+    验收（T-137）：「v2 相比 v1 在 T-129 基线上 multi-hop 类（scene/supersession）
+    再提升或持平」——对比 recall_scene / recall_supersession / 全量。
+    """
+    edges = ensure_edges(mem_conn)
+    sem = inject_semantic_edges(
+        mem_conn, n_similar=n_semantic_similar, n_contradicts=n_semantic_contradicts, seed=seed,
+    )
+    gt = build_realdb_gt(
+        mem_conn, sample_n=sample_n, multi_hop_ratio=multi_hop_ratio,
+        seed=seed, query_style="content",
+    )
+    gt = _subset_gt(gt, multi_hop_kind)
+    v1 = _run_arm(mem_conn, gt, graph_enabled=True, graph_weight=graph_weight,
+                  limit=limit, fill_only=fill_only,
+                  exclude_relations=[], relation_weights=None)
+    v2 = _run_arm(mem_conn, gt, graph_enabled=True, graph_weight=graph_weight,
+                  limit=limit, fill_only=fill_only,
+                  exclude_relations=["contradicts"], relation_weights={"belongs_to": 0.3})
+    return {
+        "query_count": len(gt.items),
+        "gt_source": gt.source,
+        "edges_total": edges,
+        "semantic_edges_injected": sem,
+        "graph_weight": graph_weight,
+        "multi_hop_kind": multi_hop_kind or "all",
+        "fill_only": fill_only,
+        "v1": v1,
+        "v2": v2,
+    }
+
+
+def _report_md_v2(result: dict, corpus: dict) -> str:
+    v1, v2 = result["v1"], result["v2"]
+    sem = result["semantic_edges_injected"]
+    lines = [
+        "# T-137 图召回 v2（纳入语义边）A/B 报告",
+        "",
+        f"- 生成时间：{datetime.now(timezone.utc).isoformat()}",
+        f"- 语料规模：{corpus.get('size')} 记忆 / 结构边 {result['edges_total']} / 合成语义边 {sem['total']}（similar {sem['similar']} + contradicts {sem['contradicts']}）",
+        f"- GT：{result['query_count']} 条（single {v2['count_single']} / scene {v2['count_scene']} / supersession {v2['count_supersession']}，"
+        f"source={result['gt_source']}，multi_hop_kind={result['multi_hop_kind']}）",
+        f"- 双臂口径：同图开（weight={result['graph_weight']}，fill_only={result['fill_only']}），仅关系处理不同",
+        f"  - v1：全边无差别（含 contradicts 否定边）",
+        f"  - v2：exclude contradicts + belongs_to×0.3（语义边 similar/causes 1.0）",
+        "",
+        "## recall@k（k=1/3/5/10：v2 vs v1）",
+        "",
+        "| 子集 | v1（全边） | v2（过滤+加权） |",
+        "|---|---|---|",
+        f"| 全量 | {_fmt_recall(v1['recall_at_k'])} | {_fmt_recall(v2['recall_at_k'])} |",
+        f"| scene（共现联想） | {_fmt_recall(v1['recall_scene'])} | {_fmt_recall(v2['recall_scene'])} |",
+        f"| supersession（live 后继） | {_fmt_recall(v1['recall_supersession'])} | {_fmt_recall(v2['recall_supersession'])} |",
+        f"| single | {_fmt_recall(v1['recall_single'])} | {_fmt_recall(v2['recall_single'])} |",
+        "",
+        "## 延迟与精度",
+        "",
+        f"- P95 检索延迟：v1 **{v1['p95_latency_ms']}ms** / v2 {v2['p95_latency_ms']}ms（差 {v2['p95_latency_ms'] - v1['p95_latency_ms']:+.1f}ms）",
+        f"- precision@1：v1 {v1['precision_at_1']} / v2 {v2['precision_at_1']}",
+        "",
+        "## 结论",
+        "",
+    ]
+    r5_v1 = v1["recall_at_k"].get("recall@5", 0.0)
+    r5_v2 = v2["recall_at_k"].get("recall@5", 0.0)
+    s5_v1 = (v1["recall_scene"] or {}).get("recall@5", 0.0)
+    s5_v2 = (v2["recall_scene"] or {}).get("recall@5", 0.0)
+    ok_not_degrade = r5_v2 >= r5_v1 - 1e-9
+    ok_scene = s5_v2 >= s5_v1 - 1e-9
+    if ok_not_degrade and ok_scene:
+        lines.append(
+            "✅ v2 相比 v1：全量 recall@5 不劣化、scene 类提升或持平 —— 符合 T-137"
+            "验收口径（multi-hop 类再提升或持平）。"
+        )
+    else:
+        lines.append(
+            "❌ v2 相比 v1 劣化（recall@5 下降或 scene 类下降）—— 需复查"
+            "exclude/weight 参数后重跑。"
+        )
+    return "\n".join(lines)
+
+
 def _report_md(result: dict, corpus: dict) -> str:
     off, on = result["graph_off"], result["graph_on"]
     lines = [
@@ -208,7 +362,7 @@ def _report_md(result: dict, corpus: dict) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="T-134 图召回 v1 A/B")
+    ap = argparse.ArgumentParser(description="T-134/T-137 图召回 A/B（on-off / v1-vs-v2）")
     ap.add_argument("--replica", default=None, help="真实 memory.db 副本路径（可写副本，非生产库）")
     ap.add_argument("--output", default="eval/results/ab_graph", help="报告输出目录")
     ap.add_argument("--sample", type=int, default=200)
@@ -220,6 +374,10 @@ def main() -> None:
                     default="all", help="聚焦多跳子集（scene=共现联想，图路直接受益）")
     ap.add_argument("--fill-only", action="store_true",
                     help="fill-only 语义：图候选只填空位、不干预直接命中")
+    ap.add_argument("--mode", choices=["on-off", "v1-vs-v2"], default="on-off",
+                    help="on-off=图开/关双臂（T-134）；v1-vs-v2=全边 vs 过滤+加权（T-137，注入合成语义边）")
+    ap.add_argument("--n-similar", type=int, default=300, help="T-137：注入合成 similar 边数")
+    ap.add_argument("--n-contradicts", type=int, default=30, help="T-137：注入合成 contradicts 边数")
     args = ap.parse_args()
 
     if args.replica:
@@ -235,23 +393,40 @@ def main() -> None:
         from eval.realdb import replica_corpus_stats
 
         corpus = replica_corpus_stats(mem_conn)
-        result = run_graph_ab(
-            mem_conn,
-            sample_n=args.sample,
-            multi_hop_ratio=args.multi_hop_ratio,
-            seed=args.seed,
-            limit=args.limit,
-            graph_weight=args.weight,
-            multi_hop_kind=None if args.multi_hop_kind == "all" else args.multi_hop_kind,
-            fill_only=args.fill_only,
-        )
+        kind = None if args.multi_hop_kind == "all" else args.multi_hop_kind
+        if args.mode == "v1-vs-v2":
+            result = run_graph_ab_v2(
+                mem_conn,
+                sample_n=args.sample,
+                multi_hop_ratio=args.multi_hop_ratio,
+                seed=args.seed,
+                limit=args.limit,
+                graph_weight=args.weight,
+                multi_hop_kind=kind,
+                fill_only=args.fill_only,
+                n_semantic_similar=args.n_similar,
+                n_semantic_contradicts=args.n_contradicts,
+            )
+            report_fn = _report_md_v2
+        else:
+            result = run_graph_ab(
+                mem_conn,
+                sample_n=args.sample,
+                multi_hop_ratio=args.multi_hop_ratio,
+                seed=args.seed,
+                limit=args.limit,
+                graph_weight=args.weight,
+                multi_hop_kind=kind,
+                fill_only=args.fill_only,
+            )
+            report_fn = _report_md
         out = Path(args.output)
         out.mkdir(parents=True, exist_ok=True)
         (out / "ab_report.json").write_text(
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        (out / "ab_report.md").write_text(_report_md(result, corpus), encoding="utf-8")
-        print(_report_md(result, corpus))
+        (out / "ab_report.md").write_text(report_fn(result, corpus), encoding="utf-8")
+        print(report_fn(result, corpus))
         print(f"\n报告已落盘：{out / 'ab_report.json'}")
     finally:
         mem_conn.close()

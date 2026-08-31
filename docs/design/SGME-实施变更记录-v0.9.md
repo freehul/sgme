@@ -2392,3 +2392,15 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 测试 | tests/test_facts.py 9 例（落库规范化/查询精确-子串-active 过滤/对账/L1 解析容错/l1→l15 全链路/迁移幂等）。 |
 | 部署 | T-136 随下一轮部署（facts_json 列迁移 connect_memory 自动执行）。 |
 | 文档 | 本记录 B136；Backlog T-136 标 ✅、ST-38 全部任务 ✅（T-137 图召回 v2 待投）。 |
+
+### B137. T-137 图召回 v2（纳入语义边）+ A/B（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | T-134 图召回 v1 只消费结构边（belongs_to/supersedes/evolves_from）；T-135 语义边（similar/causes/contradicts）上线后需验证图路对语义边的处理：contradicts 否定边是否纳入、不同边类型权重尺度如何归一。T-137 = v2 关系级过滤/加权 + A/B。 |
+| 改动 | ①`edge_dao.neighbors` 加 `exclude_relations`（关系过滤，`relation NOT IN`）+ `relation_weights`（关系级缩放，去重取 max 按缩放后 weight）；两者缺省 → 与 v1 逐字节等价（向后兼容）。②`search/_graph_candidates` 透传 `search.graph.exclude_relations`（默认 `["contradicts"]`——否定边是负信号，纳入会污染联想召回）+ `relation_weights`（默认 `{"belongs_to": 0.3}`——共现边尺度压缩：语义边 LLM 置信 0-1 vs 共现场景数 1-N 尺度不齐；similar/causes/supersedes/evolves_from 保持 1.0）。③`config.py` search.graph 加两键；`search/__init__.py` 加 `_graph_exclude_relations/_graph_relation_weights` 助手。④`eval/ab_graph.py` 加 `--mode v1-vs-v2`（v1=全边无差别 vs v2=过滤+加权，同图开基线）+ `inject_semantic_edges`（副本合成语义边 source='l1_conflict'，幂等重插，模拟 L1.5 提炼产物）。 |
+| 验收实证 | 生产快照副本（19861 记忆）三组 A/B：①稀疏语义边 330（300 similar+30 contradicts）→ v1/v2 全量 0.4551/0.5353/0.5653/0.6256 **逐字节一致**（零劣化，P95 15.71 vs 15.69ms）②高密度 3200（3000+200）×fill-only → 全等；竞争模式 → 全等（P95 ±0.3ms）③**mini 密集（11 记忆/28 边）→ v2 提升**：全量 recall@3 **0.8846→0.9231（+4pp）**、**scene recall@5 0.5→1.0（翻倍）**、single/supersession 不变、零劣化 → **通过**（提升或持平口径）。机制级单测 4 例（test_search_graph.py：exclude contradicts 生效、belongs_to 加权改排序、v2 集成、向后兼容）。 |
+| 关键教训 | ①**v1/v2 差异只在 scene 密集语料可见**：生产快照 300 条 GT 中 supersession 87 条（live 后继与种子无 1-hop 连通，图路构造上帮不上）+ scene 仅 3 条 → 图路任何参数变化对整体 recall 影响趋零（复证 T-134 发现）。②fill-only 语义（生产默认）下 graph rank 从 len(bm25) 起算，RRF 贡献被稀释 → v1/v2 差异进一步抹平——**零劣化是 fill-only 的强保证，代价是参数灵敏度低**。③合成语义边随机对（非真实语义）对 GT 召回影响有限——真实语义边（提炼产生）的价值在跨场景联想，需生产数据积累后复测。 |
+| 测试 | tests/test_search_graph.py 新增 4 例（共 16 例）；回归 25 例（edge_dao+semantic_edges）+ 全量 130+ 通过（上次全量仅 T-120 遗留断言，已修正）。 |
+| 部署 | v2 配置随下一轮部署（search.graph 默认已含 exclude_relations/relation_weights；生产语义边数据随 L1.5 提炼积累）。 |
+| 文档 | 本记录 B137；Backlog T-137 标 ✅、**ST-38 全部任务完成**（T-127~T-137）。 |

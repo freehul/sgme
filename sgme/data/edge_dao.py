@@ -106,13 +106,23 @@ def neighbors(
     memory_id: str,
     relation: str | None = None,
     limit: int | None = None,
+    exclude_relations: Iterable[str] | None = None,
+    relation_weights: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """1-hop 邻居（双向 from/to；T-134 图召回预留）。
 
     同一邻居出现多关系时取 weight 最高的那条（按 memory_id 去重）。
     返回按 (weight DESC, memory_id) 排序的 [{"memory_id", "relation", "weight"}, ...]。
+
+    v2（T-137）：`exclude_relations` 排除指定关系（如 contradicts 否定边不应参与
+    联想召回）；`relation_weights` 对边权重做关系级缩放（归一化不同边类型尺度：
+    语义边 LLM 置信 0-1 vs 共现边场景数 1-N）；两者缺省 → 与 v1 行为逐字节等价。
     """
     out: dict[str, dict[str, Any]] = {}
+    rel_conds: list[str] = []
+    excl = list(exclude_relations) if exclude_relations else []
+    if excl:
+        rel_conds.append("relation NOT IN (%s)" % ",".join("?" * len(excl)))
     for other_col, self_col in (("to_id", "from_id"), ("from_id", "to_id")):
         sql = (f"SELECT {other_col} AS nid, relation, weight FROM memory_edges "
                f"WHERE {self_col}=?")
@@ -120,13 +130,19 @@ def neighbors(
         if relation:
             sql += " AND relation=?"
             params.append(relation)
+        if rel_conds:
+            sql += " AND " + " AND ".join(rel_conds)
+            params.extend(excl)
         for r in conn.execute(sql, params):
             nid = r["nid"]
-            if nid not in out or r["weight"] > out[nid]["weight"]:
+            w = r["weight"]
+            if relation_weights and r["relation"] in relation_weights:
+                w = w * relation_weights[r["relation"]]
+            if nid not in out or w > out[nid]["weight"]:
                 out[nid] = {
                     "memory_id": nid,
                     "relation": r["relation"],
-                    "weight": r["weight"],
+                    "weight": w,
                 }
     lst = sorted(out.values(), key=lambda x: (-x["weight"], x["memory_id"]))
     if limit:

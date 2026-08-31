@@ -249,6 +249,10 @@ DEFAULT_SEARCH_CONFIG = {
                            # （fill-only 语义，只在直接命中稀疏时填空位、密集时零干预）——
                            # A/B 实测唯一同时满足「全量 recall@5 不劣化 + scene 类提升」的形态；
                            # False=与直接命中同台竞争（scene 增益更大但单跳 recall 劣化，弃用）
+        # T-137 图召回 v2（纳入语义边）：关系级过滤/加权（edge_dao.neighbors 透传）
+        "exclude_relations": ["contradicts"],  # 否定边不参与联想召回（矛盾是负信号，召回污染结果）
+        "relation_weights": {"belongs_to": 0.3},  # 共现边尺度压缩：LLM 置信 0-1 vs 场景数 1-N
+                            # （语义边 similar/causes 保持 1.0；supersedes/evolves_from 1.0）
     },
 }
 
