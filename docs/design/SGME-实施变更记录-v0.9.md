@@ -2326,3 +2326,17 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 验收 | 满足 Backlog T-130：用 T-129 基线 A/B，recall@k 不劣化（内容词保留）+ 自然语句类结果集噪声明显下探（纯停用词 distractor 被滤除）。 |
 | 运维影响 | 查询侧默认开启（`search.stoplist.enabled` 默认 True），属检索质量改进；下游 inject/图谱化读同一 search 路径，受益一致。生产部署随镜像带出。 |
 | 文档 | 本记录 B131；Backlog T-130 标 ✅（v1.2+）。 |
+
+### B132. T-131 存量 projects/tasks 标签治理执行：全量 LLM 分类 + 轻量重打标（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | T-127 停用 projects/tasks 后，存量标签 13,499/2,836 依 B81「存量保留」政策未动；其中 active 记忆去重 9,633 条**仅带 projects/tasks、无任何有效维度** → 检索/注入不可达。T-131 定策（用户拍板）：**仅重打标（轻量）**——保留 projects/tasks 标签、新增有效维度、零结构改动；执行方法：**先 dry-run 看分类再执行**；数据源：**admin API 只读拉取**。 |
+| 工具 | 新增 `scripts/t131_retag_classify.py`（pull 只读 admin API 拉全量 projects+tasks 去重缓存 tmp/t131_raw.json；classify 算缺口集+agnes-2.5-flash 批量提议补打维度；`--all` 全量模式；ASCII 源码、中文维度名/描述运行期从 registry/dimensions.yaml 加载）。前置 `scripts/sample_tag_distribution.py`（分布报告，commit 20e3758）。 |
+| 数据 | 拉取 active 记忆去重 **9,633**（projects 8,535 + tasks 2,144）；缺口集（仅 projects/tasks、无有效维度）= **2,076（21.6%）**。 |
+| 分类 | 全量 2,076 经 agnes-2.5-flash 104 批（--all --batch 20）：拟补打 **1,753**、LLM 判无相关维度 **323**（维持原样）；频次 tech_stack 1,110 > goals 276 > status 229 > focus 118 > skills 109 > ideas 89 > environment 72 > preferences 60 > style 59 > values 31 > habits 21 > identity 9 > social 1。提案存档 `eval/results/t131_proposals_full.json`（gitignored，随库可复现）。 |
+| 执行（SSH 直写） | 用户批「SSH 直写 memory_tags（免部署、备份+回滚）」：①备份 `memory.db.bak-t131-20260831041750`（/data/backups，182,124,544 字节，`PRAGMA wal_checkpoint(TRUNCATE)` + sqlite backup API，memories=26,048/active_dims=14/memory_tags=47,799 完整性）②全量提案 docker cp 入容器 /tmp/t131_proposals.json ③应用：INSERT INTO memory_tags（单事务、busy_timeout 30s、维度校验在 active 注册表、已存在跳重）→ **1,752 条记忆 / 2,183 行**（1 条 memory_id 已不在库跳过）④projects/tasks 行原样保留（零删除零结构改动）。 |
+| 验证 | DB 层：verify 脚本 2,183/2,183 行存在、**0 缺失**、projects 保留 1,560 / tasks 保留 888（与打标时一致性）；API 层独立复核（真实读路径 `GET /v1/admin/memories?dimension_id=`）：tech_stack active total **9,755**、goals 1,422、status 1,331、ideas 108；health 未受影响。 |
+| 回滚 | 精确 applied 清单持久化 `/data/backups/t131_applied.json`（1,752 条/2,183 行，容器 /tmp 与 /data/backups 双份 + 本地 tmp/t131_applied.json 存档）；回滚 = `DELETE FROM memory_tags WHERE memory_id=? AND dimension_id=?` 遍历该清单（rollback_retag.py 已备，幂等）；另整库备份可整体还原。 |
+| ⚠️ 遗留 | ①TTL 维度（status 7d / focus 30d / goals 90d）新标签使记忆**可检索**（search/维度过滤立即生效），但 inject 需记忆 updated_at 刷新后才出现——本次刻意**不动 updated_at**（最小改动），如需 TTL 续期另立任务 ②323 条 LLM 判无相关维度维持原 projects/tasks ③本次为**直写生产库**，无代码改动；`scripts/t131_retag_classify.py` 等工具代码**未部署 NAS**（T-127~T-132 同，随下次发布）④一次性直写脚本在 tmp/（backup_memory/apply_retag/verify_retag/rollback_retag，均 ASCII）。 |
+| 文档 | 本记录 B132；Backlog T-131 标 ✅（v1.2+）；分布报告 `eval/results/t131_distribution.md`、dry-run 提案 `eval/results/t131_dryrun_proposal.md`。 |
