@@ -239,6 +239,17 @@ DEFAULT_SEARCH_CONFIG = {
         "model": "text-embedding-nomic-embed-text-v1.5",
     },
     "rrf": {"k": 60},
+    # ST-38 T-134：图召回 v1（memory_edges 1-hop 邻居增量候选，独立权重键）
+    "graph": {
+        "enabled": True,   # 图路开关（A/B 双臂对照用；关闭时行为与 T-133 前逐字节等价）
+        "weight": 1.0,     # graph 路 RRF 贡献权重（独立配置键；1.0=与 bm25 rank0 同权，
+                           # A/B 实测最优：<1 排不进 top-10 无效果，>1.5 挤掉直接命中致 precision 劣化）
+        "top_n": 20,       # graph 候选上限（防邻居洪泛；final limit 仍由调用方截断）
+        "fill_only": True, # T-134 A/B 定夺（生产默认）：True=图候选 rank 从 len(bm25) 起算
+                           # （fill-only 语义，只在直接命中稀疏时填空位、密集时零干预）——
+                           # A/B 实测唯一同时满足「全量 recall@5 不劣化 + scene 类提升」的形态；
+                           # False=与直接命中同台竞争（scene 增益更大但单跳 recall 劣化，弃用）
+    },
 }
 
 # 数据目录（T-23：未设 SGME_HOME = 项目根，零回归；设置后跟随 $SGME_HOME）
@@ -659,6 +670,7 @@ def _merge_search_config(user_cfg: dict | None) -> dict:
     base = {
         "vector": dict(DEFAULT_SEARCH_CONFIG["vector"]),
         "rrf": dict(DEFAULT_SEARCH_CONFIG["rrf"]),
+        "graph": dict(DEFAULT_SEARCH_CONFIG["graph"]),
     }
     if not isinstance(user_cfg, dict):
         user_cfg = {}
@@ -666,6 +678,8 @@ def _merge_search_config(user_cfg: dict | None) -> dict:
         base["vector"].update(user_cfg["vector"])
     if isinstance(user_cfg.get("rrf"), dict):
         base["rrf"].update(user_cfg["rrf"])
+    if isinstance(user_cfg.get("graph"), dict):
+        base["graph"].update(user_cfg["graph"])
     # embedding 段兜底（providers.yaml）：search.vector.provider 引用优先，
     # 否则缺连接字段时取默认（volc-plan）补
     if not base["vector"].get("base_url") or not base["vector"].get("api_key_env"):
