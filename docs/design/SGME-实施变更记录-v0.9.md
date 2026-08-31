@@ -2192,3 +2192,123 @@ src git pull fb046fb → 92c9fee 两轮 build）后重放 apply **102/102 成功
 ai 63 / methodology 29 / creative 25 / github 23 等；检索 rrf 双路全绿、health 1.1.2 毫秒级
 （TTL 缓存生效实测 287ms vs 修复前 5.5s）；skills-hub bare 仓 sync to_remote 回推完成。
 遗留小项：GET /v1/skills 未透出 category 查询参数（数据层就绪，过滤入口待接线，随下版）。
+
+### B128. 维度裁剪 B81 未闭环收尾：生产停用 projects / tasks（T-127，2026-08-31）
+
+**背景**：B81（2026-08-18）执行「维度裁剪——项目池/待办池为专用落地点」时，改了四处：
+`registry/dimensions.yaml` 移除 projects/tasks + `aliases.yaml` 同步清理 + templates（work/coding/full）
+去对应 section 与 memory_types + 测试维度引用修正，并明写运维影响「维度移除后存量 projects/tasks 标签
+不再注入（历史保留）」。**但漏了生产 db 的 `active` 停用**。
+
+而 T-2（v0.7）裁决是「**YAML=种子，DB=真相**」，`memory_dao.py:33` 的 upsert 注释
+`-- active 不在此更新：保留 DB 现值（停用维度重启不复活）` 正是该裁决的实现——
+于是「yaml 删维度」≠「db 停用维度」，**裁剪在生产零生效，且静默无感知长达 13 天**。
+
+2026-08-31 生产实测影响面：
+- `projects` 标签 **13,499 条**（全库第一大维度）、`tasks` 2,836 条；
+- **近 7 天新打 projects 3,862 条**（维度排名第一，超过 tech_stack 3,769），占新记忆约 43%；08-30 仍新增 83/14 条；
+- 对照三池落点：`project_meta` 仅 2 行、`demands` 仅 114 行 → 13,499 条"项目记忆"永远进不了项目池；
+- 且 projects 标签记忆归档数 **0**（全库归档率 27.6%）——不参与 L1.5 冲突合并，**只增不减的孤儿数据**。
+
+**改动**：生产 db 停用两个废弃维度（`dimension_registry.active = 0`），不改代码、不改 yaml、不动存量标签。
+
+**执行要点（可复用）**：
+1. **热备份必须用 sqlite3 backup API，不能 `cp`**——生产库为 WAL 模式，直接 `cp` 会漏掉未 checkpoint 的事务。
+   做法：`PRAGMA wal_checkpoint(TRUNCATE)` + `sqlite3.connect(src).backup(dst)`。
+2. **走 HTTP API 免重启**。`cfg["dimensions"]` 是 `app.py:611`（`init_databases`，启动时一次）的**进程内快照**，
+   `engine/refine.py:142` 直接用它 → 若直改 db 而不重启，L1 提示词仍会注入旧维度清单。
+   正解：`PUT /v1/admin/registry/dimensions/{dim_id}` body `{"active": false}`
+   （`operations/registry.py:176 registry_update_dim` 内部改 db → commit → **`refresh_dimensions(cfg, mem_conn)` 即时回刷**，
+   源码注释「停用/启用即时生效」）。
+3. ⚠️ 停用函数名是 **`memory_dao.update_dimension_fields(conn, dim_id, {"active": False})`**（非 `set_dimension_active`）。
+4. 重启不会复活：`app.py:609` 的 `import_registry` 幂等 upsert 同样不改 active（T-2 裁决）。
+
+**停用前风险核查（grep 三路，确认零引用）**：
+- `templates/*.yaml`：coding / full / work 三模板的 memory_types 与 dimensions 均已无 projects/tasks（B81 已清）→ 不会查空；
+- `sgme/` 代码：`'projects'|"projects"|'tasks'|"tasks"` 硬编码引用**零命中**（排除测试）；
+- `adapters/`：无引用。
+
+**验证（API 层 + db 层双向）**：
+
+| 项 | 停用前 | 停用后 |
+|---|---|---|
+| `GET /v1/admin/registry?active_only=true` total | 16 | **14** |
+| `GET /v1/admin/registry?active_only=false` total | 16 | 16（停用项保留可溯源） |
+| db `active=1` count | 16 | **14** |
+| db projects/tasks active | 1 / 1 | **0 / 0** |
+| 存量标签 projects / tasks | 13,499 / 2,836 | 13,499 / 2,836（**未删**，符合 B81 存量保留政策） |
+| 08-31 起新打标 | — | **0 / 0** |
+| memories / memory_archive | 25,824 / 9,822 | 25,824 / 9,822（无变动） |
+| health | v1.1.3 ok | v1.1.3 ok |
+
+**备份**：`/data/data/memory.db.bak-t127-20260831`（180,445,184 字节，与源同尺寸；
+完整性校验 memories=25,824 / dims=16）。
+
+**回滚**：`PUT` body `{"active": true}` 即时恢复（双侧可逆），或备份库恢复。
+
+**运维影响**：
+- 新记忆**不再**打 projects/tasks 标签，L1 提示词 `{{dimensions}}` 清单由 16 → 14 项（提示词稍短，l1_extraction 单次调用省约 200 tokens）；
+- 存量 13,499 / 2,836 条标签**保留不动**，仍可被检索到（B81 既定政策），治理另立 T-131；
+- 防复发机制见 T-128（yaml ↔ db 维度一致性校验，差集告警）。
+
+**冒烟验证（2026-08-31 07:10，生产实证通过）**：
+
+停用后 4.5 小时内生产零新记忆（最新记忆 `created_at=2026-08-30T17:13:01Z`，早于停用时刻 18:38Z；
+近 24h 提炼 237 条全部发生在停用前），无法自然验证 → 执行可控冒烟：
+`POST /v1/append`（agent key，刻意含"新项目""下周要记得"的项目/待办语义）
+→ `POST /v1/admin/refine/trigger`（admin key，同步，**36.2s**，产出 4 条记忆）
+→ 查维度 → `POST /v1/memory/{id}/reject` 清理。
+
+| 冒烟产出记忆 | 维度标签 |
+|---|---|
+| 打算用 FastAPI + SQLite 做后端 | `tech_stack` |
+| **我准备启动一个新项目叫「星尘计划」** | **`goals`**（停用前会落 `projects`） |
+| 还得给 NAS 上的 SGME 加个备份校验 | `environment`, `goals` |
+| **下周要记得先把数据库 schema 定下来** | **`goals`**（停用前会落 `tasks`） |
+
+→ `projects` / `tasks` **均未出现**，`cfg` 回刷在生产实证**即时生效，无需重启**。
+
+**清理（不留污染）**：①4 条冒烟记忆全部 reject（status=rejected，原件保留）②冒烟新建的场景
+「星尘计划项目」reject ③⚠️ **冒烟的 update 动作污染了一个既有生产场景**「NAS 环境配置与部署规范」
+（正文尾部被追加"## 备份维护 / SGME 备份校验"）——无场景正文更新 API（只有 `/status`），
+故走 db：先存 `scene_versions` 快照 → 精确移除注入段落（242→201 字符）→ 解绑 `scene_memories`
+冒烟关联行。④L0 原文 `raw/sessions/a0885c3e-*.md` 保留（溯源根，设计如此）。
+
+**最终态核验**：`active=1` 维度 14 / 总数 16（停用项保留可溯源）；停用后 projects/tasks 打标 **0/0**；
+memories 25,828（+4 冒烟，均已 rejected）/ archive 9,822 无变动；存量标签 13,499 / 2,836 未删；
+scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
+
+⚠️ **遗留观察（非本次引入，未展开）**：被冒烟 update 的场景「NAS 环境配置与部署规范」heat=6、
+创建于 08-30 19:02，但 `scene_memories` **原本只关联 1 条记忆**（即冒烟那条，解绑后归 0）——
+历史 update 的 `memory_ids` 关联疑似未落库，属独立问题。另该场景正文残留一个残缺标题 `## 部`
+（无法判定是否本次 update 副产物，保守保留未动）。
+
+**文档**：本记录 B128；Backlog T-127 标 ✅（v1.2+）；关联分析见
+`docs/design/SGME-提炼提示词优化空间分析-v0.1.md` §一。
+
+### B129. T-128 维度注册表一致性校验（防 B81 漏停用复发）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | B81（2026-08-18 维度裁剪）删了 yaml 的 projects/tasks，但生产 db `active` 未停用，且 T-2「DB=真相」设计使该遗漏**静默无感知 13 天**（T-127 才止血）。根因链路见 B128。需一个**自动**机制，让「yaml 与 db 维度集漂移」在启动/周期即被感知，而非等脏数据累积。 |
+| 改动 | ① `sgme/data/memory_dao.py` 新增 `check_dimension_consistency(conn, yaml_dim_ids)`：DB active=1 集应 == YAML 声明集；产出三类差集——`orphan_active_in_db`（DB active 但 YAML 未声明，应禁用，即 T-127 复发形态）/ `missing_in_db`（YAML 声明但 DB 缺行，应导入）/ `inactive_in_db`（YAML 声明但 DB 停用，应启用）。DB 中 YAML 未声明且已停用者属溯源保留，不告警。② `sgme/operations/health.py` 新增 `publish_dimension_anomaly(mem_conn, report)`：复用 `signal.engine.publish` 的 `anomaly_warn` 通道（同源 `registry`，SSE/pull 消费端零改动），**进程级 30 分钟抑制窗口**防 10 分钟心跳刷屏。③ `sgme/server/app.py`：启动期（import_registry 后、cfg 回刷前，用原始 YAML 维度集）跑校验，不一致 → 日志告警 + 发布 anomaly_warn，并将 YAML 维度集存入 `cfg["_yaml_dimension_ids"]`；心跳任务每 10 分钟周期复核。④ `sgme/server/routes_registry.py` 新增 `GET /v1/admin/registry/consistency` 诊断端点（admin key）。 |
+| 测试 | `tests/test_operations_registry.py` 新增 5 例：健康态 consistent=True；注入孤儿 active 维度 → orphan_active_in_db 命中、停用后退出；YAML 多声明不存在维度 → missing_in_db；停用 goals → inactive_in_db；端点契约（7 键 + 一致态零差集）+ 端点可见孤儿。全部 `pytest` 通过（registry 集 45/45、health 集 21/21、import 检查通过）。 |
+| 实证 | 线上库只读复核（不部署）：当前（T-127 后）`consistent=True`、零差集；若 T-127 未执行（projects/tasks 仍 active），`orphan_active_in_db=['projects','tasks']` → 会触发告警。**证明本机制正是 T-127 复发的克星**。 |
+| 验收 | 满足 Backlog T-128 验收：人为置 db 有、yaml 无的 active 维度 → 启动产 anomaly_warn；正常态零告警。 |
+| 运维影响 | anomaly_warn 经既有 SSE/信号通道可达接入 agent；诊断端点供人工快速定位。无破坏性、无 schema 变更、存量数据零影响。 |
+| 文档 | 本记录 B129；Backlog T-128 标 ✅（v1.2+）。 |
+
+### B130. T-129 内部回归基线：生产库副本通路 + 中文检索 GT + recall@k（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 阶段二检索改动需 A/B 护栏，但业界标准评测（LoCoMo）延后至 Gen3 后（→ T-141）。用户定：用内部基线提前承担护栏职责。原 `eval/runner.py` 是纯离线（临时库 + case 自带 memories + 进程内直调 search），无法连真实库副本；`metrics.py` 缺 `recall@k`。需求：①连真实 `memory.db` 副本通路 ②用库内记忆由 LLM 反向生成中文 query（GT=记忆），**刻意构造多跳** ③补 `recall@k`（k=1/3/5/10）④**0 token**（不提炼、不嵌向量；边现成：9,822 `superseded_by` + 20,699 `scene_memories`）。 |
+| 前置（Task #1） | `recall@k` 指标先补：`eval/models.py` 增 `RecallAtK` dataclass（as_dict → recall@1/3/5/10/query_count）；`eval/metrics.py` 增 `compute_recall_at_k`/`aggregate_recall_at_k`；`eval/rrf.py` 的 `search()` 把 recall@k 接入参数环并填入 `RRFMetrics.recall_at_k`；`eval/reporter.py` 增 `### 召回率 @k（T-129 A/B 护栏）` 段（JSON + MD 均渲染）。 |
+| 改动 | ① 新增 `eval/realdb.py`：`snapshot_replica(src,dst)`（sqlite3 online backup 一致快照）/ `open_replica(path,readonly=True)` / `replica_corpus_stats(conn)`（记忆数+向量覆盖）/ `sample_memories(conn,n,seed)`（random.Random 确定性）/ `multi_hop_pairs(conn,limit,seed)`（读 scene 簇[成员均 live→相关集≥2] + supersession[相关集=live 后继]，边缺失静默跳过）/ `build_realdb_gt(conn,*,sample_n,multi_hop_ratio,seed,llm_fn,source)`（single_hop=抽样记忆 query=llm_fn、multi_hop=边相关集；`llm_fn` 可注入，留空用桩 `_stub_query_fn`）/ `make_mini_replica(tmp_dir,n,seed)`（合成完整 memory.db：含 FTS + 归档 mini#0→mini#1 + scene-tech-weekly 链 mini#2/3，供 CI 免 NAS）/ `RealDbGt`/`RealDbGtItem`/`MultiHopPair` dataclass（to_ground_truth 合并同 query、counts_by_hop、save/load）。② `eval/runner.py`：`_make_query_fn(self,mem_conn,vector_available)` 改为连接无关（原依赖 self.mem_conn/语料）；抽出 `_search_grid(self,mem_conn,ground_truth,*,vector_available,vector_count,corpus_size,banner_reason,gt_mode)` 核心（预warm 填 recall_cache → RRFGridSearch → 后算 recall 诊断 → 返回 RRFMetrics），`_run_rrf` 与 `run_realdb` 共用；新增 `run_realdb(gt,mem_conn,*,corpus_size,vector_available=False,...,gt_mode="realdb")` 校验 gt 为 RealDbGt、0 token（不打开 embed 缓存）。③ `eval/run.py`：增 `--realdb/--replica/--gt/--build-gt/--sample/--multi-hop-ratio/--seed/--self-test`；`_run_realdb` 解析副本（无 `--replica`+`--self-test`→`make_mini_replica`）、`open_replica` 只读、`replica_corpus_stats`、load 或 build GT、跑 `EvalRunner(cfg=None,rrf_skip_vector=True).run_realdb`、生成 EvalResult（rrf only，l1/l2 None）+ 报告落 `eval/results/`、`sys.exit(0)`。 |
+| ⚠️ 关键修正 | `make_mini_replica` 初版把 `scenes`/`scene_memories` INSERT 到 `wiki_conn` → 实测 `no such table: scenes`。根因：v0.7 三库拆分（B2）已把 scenes 系列由 wiki.db **迁入 memory.db**（见 `sgme/data/db.py:119` `MEMORY_DDL`），`init_databases` 只在 mem_conn 建这些表。改为 INSERT 到 `mem_conn` 后全绿。 |
+| 测试 | 新增 `tests/test_eval_realdb.py`（6 类 13 例）：mini 副本 FTS+边、sample 确定性/超额返回、multi_hop scene+supersession 并存、build_gt 形态+to_ground_truth、save/load 往返、run_realdb 端到端+可复现（两跑 recall@k 相等、query_count==len(gt.items)、conclusion==inconclusive_bm25_only）、数据零污染、报告 MD 渲染 recall。回归：`test_eval_recall_at_k.py`(7) + `test_eval_rrf.py` 无回归。**实跑：191 passed（eval 相关全集），71 passed（realdb+recall+rrf 三个文件）。** |
+| 实证（自测） | `.venv/Scripts/python.exe -m eval.run --realdb --self-test --output eval/results/realdb_self_test` → 副本 11 live 记忆 + scene/supersession 边；GT 13 query（11 single + 1 scene + 1 supersession，source=stub）；RRF 5 组合、12 query、`conclusion=inconclusive_bm25_only`（0 向量基线诚实结论，正是护栏意图）；recall@1=0.875 @3/5/10=0.9583；报告落 `eval/results/realdb_self_test/report.json` + `report.md`。 |
+| 验收 | 满足 Backlog T-129：命令可重复执行、结果可复现、基线数字落 `eval/results/`。 |
+| ⚠️ 延后决策（待用户拍板，未阻塞） | (a) **真实 LLM 生成 GT**：暂用桩 `_stub_query_fn`（jieba ≥2 字关键词拼问句，BM25 可召回但非自然语言形态）；生产态需注入真实 `llm_fn` 才能逼近 LoCoMo 自然语句质量、真正测出图召回增益。(b) **真实 NAS 副本**：暂未拷 `memory.db`，自测用 `make_mini_replica` 合成副本证明端到端+可复现；生产跑用 `--replica <真实副本>`（建议 `snapshot_replica` 在线备份快照保一致）。两项均不影响当前 0-token 链路与护栏可用性。 |
+| 运维影响 | 纯评测侧新增，不触生产服务；`make_mini_replica` 落 `eval/tmp/` 不污染 `data/`。部署 NAS 时本变更随镜像带出（CLI 仅在本地/CI 跑，不在服务进程内）。 |
+| 文档 | 本记录 B130；Backlog T-129 标 ✅（v1.2+）。 |
