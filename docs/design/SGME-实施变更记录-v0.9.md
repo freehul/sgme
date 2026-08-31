@@ -2441,3 +2441,18 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | T-116 评估结论 | active **268** < 300 上限（B117 收敛后 7 天 -1，**周净增长≈0**）；总 678（active 268 + archived 407 + expired 1 + rejected 2）；周新增 154 场景全有归档出口——场景级预筛（T-97）+ 自动 GC 生效。**超限触发条件未出现，批量合并不必要**，维持暂缓（观察条件：active 逼近 300 或净增速转正持续 2 周）。 |
 | 关键教训 | ①frontmatter 解析必须用完整 frontmatter 段（YAML 解析），**不能用前 N 字符截断正则**——长多行字段（compatibility 等）会把目标键挤出窗口造成假阴性误判 ②B125 检测口径（uncategorized）与当前库不一致时先对账现状再开工，避免为已消失的问题做无用功。 |
 | 文档 | Backlog T-123/T-116 标 ✅（附实测依据）。 |
+
+### B142. ST-40 业界标准评测（LoCoMo）基线落地（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | ST-40：用 LoCoMo 公开基准（10 会话 / 5,882 轮 / 1,536 QA）做真正「业界可比」的检索基线评测。此前审查意见两项阻断（LoCoMo 50 会话档不存在 / 检索无停用词过滤）已随 T-133~T-137 解决；本次落地 recall@k 双口径 + 方法学 + 英文语料适配结论。 |
+| 评测台 | 新增 eval/locomo.py（解析 locomo10.json → conversation/session/turn(dia_id)/QA，category 映射 1=multi_hop/2=temporal/3=open_domain/4=single_hop/5=adversarial）、eval/locomo_ingest.py（**零 token 灌库**：不走提炼，5,882 记忆秒级直灌独立 memory.db 副本 + dia_id↔memory_id 索引）、eval/locomo_eval.py（recall@1/3/5/10 分 category + J-score 端到端双口径 + 可配 arm）。tests/test_locomo.py 21 例全绿。 |
+| 方法学（关键） | ①**零 token 灌库**：直灌原始对话，不消耗 LLM，基线只测「检索」不测「提炼」。②**GT 用 dia_id→memory_id 映射**：QA.evidence 是 dia_id 列表，灌库时记录每个 chunk 含哪些 dia，反向解析相关记忆集。③**按 conversation 隔离检索**：dia_id 仅在单个 conversation 内唯一，10 会话共库必须按 conv 作用域过滤——否则相关集被放大 10 倍（实测 recall@10 从 0.55 崩到 0.08 的教训）。④GT 覆盖率 99.93%（1535/1536），仅 2 条畸形 evidence 未解析。 |
+| 基线结果（BM25，turn 粒度，0 token） | mem=5882；recall@1=0.3084 / @3=0.4582 / @5=0.5038 / @10=0.5451；P95 延迟 4.2ms；空结果 16 条。分类型 @10：single_hop=0.6361、temporal=0.6451、multi_hop=0.2457、open_domain=0.2830（multi_hop/open_domain 难类显著低于单跳）。 |
+| 英文语料适配（三臂对照，turn） | bm25(默认)=0.5451；bm25_nostop(关中文停用词表)=0.5067（**关掉反而降 0.038**，证明中英双语停用词表未误杀英文内容词，保留有益）；bm25_punct(过滤标点 token)=0.5484（+0.003，标点作为独立 OR token 轻微稀释，可忽略）。**结论：T-130 停用词过滤对英文语料安全，无需为 LoCoMo 特调。** |
+| 粒度对照（bm25）与方法论陷阱 | session(mem=272) r@10=0.8959 > window(mem=1283) 0.7712 > turn(mem=5882) 0.5451。**recall 随 chunk 变粗系统性上升≠检索变好，而是候选相关集缩小**——故统一以 **turn 粒度**为诚实口径，session/window 仅作对照。 |
+| 生产默认口径（hybrid = BM25+向量 RRF） | 评测中（后台向量化 5,882 条 bge-m3，预计 ~20min）。该臂验证「向量融合是否在英文语料上进一步抬升 recall@k」，结果将补录本表。 |
+| J-score 端到端 | judge_score 已实现（检索 top-k → LLM 生成答案 → 与 gold answer 比对），**因 AGNES LLM 频限（2026-09-01 00:11 UTC+8 重置）暂未跑**，待额度恢复后补录抽样 J-score。 |
+| 关键教训 | ①LoCoMo 的 dia_id 仅在 conversation 内唯一 → 多会话评测必须按 conv 隔离 GT 与检索，否则相关集污染。②evidence 存在 `D8:6; D9:17` 分号多 id、`D8: 6` 空格、畸形 token 等脏形态 → GT 解析需鲁棒正则（仅 `^D\d+:\d+$` 计入，其余降级忽略）。③零 token 灌库让 5,882 记忆基线评测成本≈0，可反复重跑。 |
+| 文档 | 本记录 B142；Backlog ST-40 标 ✅、T-141 关闭。 |

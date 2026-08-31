@@ -29,6 +29,8 @@
 
 # 评测运行产物（report.json/md 等；夹具在 eval/fixtures/ 单独跟踪，不受影响）
 /eval/results/
+# 评测中间副本（零 token 灌库生成的 memory.db 副本 + 索引，体积大且可重建）
+/eval/tmp/
 
 # 旧 .git 备份目录（2026-08-08 备份目录误入跟踪，2026-08-11 发布前移除）
 .git.bak-*/
