@@ -279,18 +279,29 @@ def embed_corpus(
     cfg: dict,
     *,
     limit: int | None = None,
-    workers: int = 1,
+    workers: int = 6,
+    batch_size: int = 32,
 ) -> dict:
-    """给副本语料补向量（带 eval 缓存，二次跑零网络）。
+    """Batch-embed the replica corpus via Ollama /v1/embeddings (input array).
 
-    `workers > 1` 时**并行跑网络请求、主线程串行写库**——sqlite 连接不是
-    线程安全的，绝不能把 `upsert_vector` 丢进线程池；embed 才是瓶颈
-    （本地 ollama bge-m3 串行 ~800ms/条，5,882 条要 2 小时；8 线程实测
-    ~380ms/条，降到 ~37 分钟，加速 2.1×）。
+    Why batching instead of per-item embedding:
+    - Ollama computes the whole batch in ONE forward pass (~3.5s for 16 texts
+      vs ~480ms/text serial) => ~10-40x faster on pure compute.
+    - Each batch is ONE HTTP request, which keeps us well under the gateway's
+      burst rate limit (the per-item path fired 8 concurrent requests and
+      tripped 429s).
+    - EmbedCache (sha256(text)+model) dedups across runs: vectors already
+      embedded by an earlier run are cache hits, so a resumed run only embeds
+      the remainder.
 
-    返回 {corpus_size, vector_count, coverage, available, elapsed_s, cache}。
-    任一条失败即熔断（沿 retrieval_gt 的硬约定：部分覆盖 = 向量通路不可用）。
+    sqlite is not thread-safe, so batches are embedded in worker threads but
+    ALL DB writes (upsert_vector + cache.put) happen on the main thread after
+    the pool returns. Any batch that exhausts retries aborts the run (partial
+    coverage = vector path unavailable, per retrieval_gt hard contract).
     """
+    import random
+
+    import httpx
     from sgme.data import memory_dao
     from sgme.data.search import vector as vector_mod
     from eval.embed_cache import EmbedCache
@@ -302,49 +313,69 @@ def embed_corpus(
     if limit:
         rows = rows[:limit]
     total = len(rows)
-    prev = vector_mod.set_embed_cache(EmbedCache(EmbedCache.default_path()))
-    ok = 0
-    failed_at: int | None = None
-    try:
-        model = ((cfg.get("search") or {}).get("vector") or {}).get("model", "")
-        if workers > 1:
-            from concurrent.futures import ThreadPoolExecutor
+    vec_cfg = (cfg.get("search") or {}).get("vector") or {}
+    model = vec_cfg.get("model", "")
+    base_url = (vec_cfg.get("base_url") or "").rstrip("/")
+    cache = EmbedCache(EmbedCache.default_path())
+    prev = vector_mod.set_embed_cache(cache)
 
-            BATCH = 64
-            for start in range(0, total, BATCH):
-                piece = rows[start:start + BATCH]
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    vecs = list(ex.map(lambda r: vector_mod.embed(r["content"], cfg, None), piece))
-                for i, (r, vec) in enumerate(zip(piece, vecs)):
-                    if vec is None:
-                        failed_at = start + i
-                        break
+    # Phase 1: serve cache hits directly (no network).
+    ok = 0
+    misses: list[tuple[int, str, str]] = []  # (row_idx, memory_id, text)
+    for i, r in enumerate(rows):
+        vec = cache.get(r["content"], model)
+        if vec is not None:
+            memory_dao.upsert_vector(
+                mem_conn, r["memory_id"],
+                vector_mod._serialize_vector(vec), model, dims=len(vec),
+            )
+            ok += 1
+        else:
+            misses.append((i, r["memory_id"], r["content"]))
+    mem_conn.commit()
+    logger.info("向量化: 缓存命中 %d / 待嵌入 %d（共 %d）", ok, len(misses), total)
+
+    # Phase 2: batch-embed misses (parallel batches, serial writes).
+    failed_at: int | None = None
+
+    def embed_batch(batch: list) -> list:
+        texts = [b[2] for b in batch]
+        for attempt in range(1, 7):
+            try:
+                r = httpx.post(
+                    f"{base_url}/embeddings",
+                    json={"model": model, "input": texts},
+                    timeout=120,
+                )
+                if r.status_code == 429:
+                    time.sleep(min(2.0 ** attempt, 16.0) + random.random())
+                    continue
+                r.raise_for_status()
+                data = {d["index"]: d["embedding"] for d in r.json()["data"]}
+                return [(batch[k][1], batch[k][2], data[k]) for k in range(len(batch))]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("batch embed 失败(尝试%d): %s", attempt, str(e)[:120])
+                time.sleep(min(2.0 ** attempt, 16.0) + random.random())
+        raise RuntimeError(f"batch embed 耗尽重试: {texts[0][:40]!r}")
+
+    if misses:
+        batches = [misses[s:s + batch_size] for s in range(0, len(misses), batch_size)]
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+            for res in ex.map(embed_batch, batches):
+                for memory_id, text, vec in res:
+                    cache.put(text, model, vec)
                     memory_dao.upsert_vector(
-                        mem_conn, r["memory_id"],
+                        mem_conn, memory_id,
                         vector_mod._serialize_vector(vec), model, dims=len(vec),
                     )
                     ok += 1
-                if failed_at is not None:
-                    break
                 mem_conn.commit()
                 logger.info("向量化进度 %d/%d（%.1f%%）", ok, total, ok * 100.0 / max(total, 1))
-        else:
-            for i, r in enumerate(rows):
-                if vector_mod.upsert_memory_vector(mem_conn, r["memory_id"], r["content"], cfg, None):
-                    ok += 1
-                    continue
-                failed_at = i
-                break
-    finally:
-        cache = vector_mod.set_embed_cache(prev)
 
-    cache_stats = {}
-    try:
-        from eval import embed_cache as ecm
-        if isinstance(cache, ecm.EmbedCache):
-            cache_stats = cache.stats_dict()
-    except Exception:
-        pass
+    vector_mod.set_embed_cache(prev)
+    cache_stats = cache.stats_dict()
 
     return {
         "corpus_size": total,
@@ -353,6 +384,7 @@ def embed_corpus(
         "available": bool(total) and ok == total,
         "failed_at": failed_at,
         "workers": max(1, workers),
+        "batch_size": batch_size,
         "elapsed_s": round(time.perf_counter() - t0, 1),
         "embed_cache": cache_stats,
     }
@@ -398,6 +430,57 @@ def _llm_call(prompt: str, llm_cfg: dict, client=None) -> str:
     except Exception as e:                      # LLMUnavailable / 限流 / 网络
         logger.warning("LLM 调用失败: %s", e)
         return ""
+
+
+def make_deepseek_llm_fn(
+    model: str = "deepseek-v4-flash",
+    api_key_env: str = "DEEPSEEK_API_KEY_SGME",
+    base_url: str = "https://api.deepseek.com/v1",
+    throttle_s: float = 0.25,
+    max_retry: int = 5,
+) -> Callable[[str], str]:
+    """Build an llm_fn(prompt)->str that calls DeepSeek directly.
+
+    Bypasses the agnes rate limit (the default refinement chain head) and
+    matches SGME production LLM (deepseek-v4-flash). Retries on 429 with
+    exponential backoff. Returns '' on persistent failure (judge_score treats
+    '' as an infra error, not a wrong answer).
+    """
+    import os
+    import random
+    import time
+
+    import httpx
+
+    key = os.environ.get(api_key_env) or os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
+        raise RuntimeError(f"missing API key env {api_key_env}")
+
+    def fn(prompt: str) -> str:
+        last_err = ""
+        if throttle_s > 0:
+            time.sleep(throttle_s)
+        for attempt in range(1, max_retry + 1):
+            try:
+                r = httpx.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+                    timeout=60,
+                )
+                if r.status_code == 429:
+                    last_err = "429"
+                    time.sleep(min(2.0 ** attempt, 16.0) + random.random())
+                    continue
+                r.raise_for_status()
+                return (r.json()["choices"][0]["message"]["content"] or "").strip()
+            except Exception as e:  # noqa: BLE001
+                last_err = str(e)[:120]
+                time.sleep(min(2.0 ** attempt, 16.0) + random.random())
+        logger.warning("deepseek llm_fn failed after %d retries: %s", max_retry, last_err)
+        return ""
+
+    return fn
 
 
 def judge_score(
@@ -600,8 +683,12 @@ def main() -> None:
     ap.add_argument("--jscore-sample", type=int, default=100)
     ap.add_argument("--jscore-seed", type=int, default=0)
     ap.add_argument("--jscore-arm", default=None, help="J-score 用哪个臂的检索结果（默认 arms 首个）")
-    ap.add_argument("--embed-workers", type=int, default=1,
-                    help="语料向量化并发数（本地 ollama 建议 8；1=串行）")
+    ap.add_argument("--jscore-llm", choices=["chain", "deepseek"], default="deepseek",
+                    help="J-score LLM backend: chain=agnes fallback (may be rate-limited) / deepseek=direct production LLM (bypass limit)")
+    ap.add_argument("--embed-workers", type=int, default=6,
+                    help="批量嵌入并发批数（每批 1 请求，规避突发限流）")
+    ap.add_argument("--embed-batch", type=int, default=32,
+                    help="每批文本数（Ollama 单次前向算整批）")
     ap.add_argument("--workdir", default="eval/tmp/locomo", help="灌库副本工作目录")
     ap.add_argument("--reuse", action="store_true", help="复用已存在的副本与索引（不重建）")
     ap.add_argument("--max-items", type=int, default=None, help="只跑前 N 条 QA（调试用）")
@@ -663,7 +750,8 @@ def main() -> None:
         for name in [a.strip() for a in args.arms.split(",") if a.strip()]:
             cfg = arm_cfg(name, base_cfg, scoped=scoped)
             if name == "hybrid":
-                vec_info = embed_corpus(conn, cfg, workers=max(1, args.embed_workers))
+                vec_info = embed_corpus(conn, cfg, workers=max(1, args.embed_workers),
+                                        batch_size=max(1, args.embed_batch))
                 logger.info("向量化: %s", vec_info)
                 if not vec_info.get("available"):
                     logger.warning("向量覆盖不全，hybrid 臂退化为单路 BM25")
@@ -682,10 +770,13 @@ def main() -> None:
 
             llm_cfg = llm_chain.load_config()
             arm_name = args.jscore_arm or next(iter(arms))
+            llm_fn = None
+            if args.jscore_llm == "deepseek":
+                llm_fn = make_deepseek_llm_fn()
             jscore = judge_score(
                 conn, gt, cfg=arm_cfg(arm_name, base_cfg, scoped=scoped), llm_cfg=llm_cfg,
                 sample_n=args.jscore_sample, top_k=args.limit, seed=args.jscore_seed,
-                scoped=scoped,
+                scoped=scoped, llm_fn=llm_fn,
             )
             logger.info("J-score = %s（%d 条）", jscore["j_score"], jscore["judged"])
 
