@@ -503,6 +503,21 @@ async def heartbeat_task(app) -> None:
             )
         except Exception as e:
             logger.exception("心跳任务异常: %s", e)
+        # T-128：维度注册表周期性一致性复核（与启动期同源，防漏停用复发）
+        try:
+            _yaml_ids = app.state.cfg.get("_yaml_dimension_ids")
+            if _yaml_ids:
+                from sgme.data import memory_dao as _mdao
+                _dr = _mdao.check_dimension_consistency(app.state.mem_conn, _yaml_ids)
+                if not _dr["consistent"]:
+                    logger.warning("维度注册表不一致（周期复核，T-128）: %s", _dr)
+                    try:
+                        from sgme.operations.health import publish_dimension_anomaly
+                        publish_dimension_anomaly(app.state.mem_conn, _dr)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("维度一致性周期 anomaly_warn 发布失败（不阻塞）: %s", e)
+        except Exception as e:
+            logger.exception("维度一致性周期复核异常: %s", e)
 
 
 async def update_check_task(app) -> None:
@@ -607,6 +622,23 @@ def create_app(
 
     # 启动时导入注册表（幂等；YAML 为种子，DB 为运行时真相）
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
+    # T-128：维度注册表一致性校验（防 B81 漏停用的复发）
+    # 必须在 cfg["dimensions"] 被 DB 回刷前，用原始 YAML 维度集比较
+    _yaml_dim_ids = {d["id"] for d in cfg["dimensions"]}
+    _dim_report = memory_dao.check_dimension_consistency(mem_conn, _yaml_dim_ids)
+    cfg["_yaml_dimension_ids"] = _yaml_dim_ids  # 供心跳周期复核使用
+    if not _dim_report["consistent"]:
+        logger.warning("维度注册表与 YAML 不一致（T-128，启动期）: %s", _dim_report)
+        try:
+            from sgme.operations.health import publish_dimension_anomaly
+            publish_dimension_anomaly(mem_conn, _dim_report)
+        except Exception as e:  # noqa: BLE001 —— 信号发布必须健壮，禁止上抛
+            logger.warning("维度一致性 anomaly_warn 发布失败（不阻塞）: %s", e)
+    else:
+        logger.info(
+            "维度注册表一致性校验通过（%d 维度，DB active=%d）",
+            _dim_report["yaml_count"], _dim_report["db_active_count"],
+        )
     # 从 DB 回刷 cfg["dimensions"]：包含 API 运行时新增/停用的维度，保证 L1 提示词与 DB 一致
     cfg["dimensions"] = memory_dao.list_dimensions(mem_conn, active_only=True)
 

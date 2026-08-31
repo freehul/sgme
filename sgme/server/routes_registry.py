@@ -32,6 +32,8 @@ from sgme.operations.registry import (
     registry_list,
     registry_update_dim,
 )
+from sgme.data import memory_dao
+from sgme import config as sgme_config
 from sgme.server.app import require_admin_key, run_operation
 
 router = APIRouter(prefix="/v1/admin/registry", tags=["registry"])
@@ -72,6 +74,22 @@ def list_registry(request: Request, _: str = Depends(require_admin_key), active_
     mem_conn = request.app.state.mem_conn
     data = run_operation(registry_list, mem_conn, active_only=active_only)
     return registry_http_payload(data)
+
+
+@router.get("/consistency")
+def check_registry_consistency(request: Request, _: str = Depends(require_admin_key)):
+    """维度注册表一致性诊断（T-128）：DB active 集 vs registry/dimensions.yaml。
+
+    返回 check_dimension_consistency 报告：consistent 布尔 + 三类差集
+    （orphan_active_in_db 应禁用 / missing_in_db 应导入 / inactive_in_db 应启用）。
+    不一致即意味着脏数据风险，应告警 + 治理。
+    """
+    mem_conn = request.app.state.mem_conn
+    yaml_dim_ids = request.app.state.cfg.get("_yaml_dimension_ids")
+    if not yaml_dim_ids:
+        # 兜底：启动期未初始化时直接读 YAML（覆盖异常部署情形）
+        yaml_dim_ids = {d["id"] for d in sgme_config.load_dimensions()}
+    return memory_dao.check_dimension_consistency(mem_conn, set(yaml_dim_ids))
 
 
 @router.get("/{dim_id}")
