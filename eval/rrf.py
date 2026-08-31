@@ -24,7 +24,8 @@ import math
 from itertools import product
 from typing import Any, Callable, Iterable, Sequence
 
-from eval.models import RRFMetrics
+from eval import metrics as eval_metrics
+from eval.models import RRFMetrics, RecallAtK
 
 logger = logging.getLogger("eval.rrf")
 
@@ -116,12 +117,15 @@ class RRFGridSearch:
 
         # query → 各参数组合下的 top-k 排序列表（用于 rank_sensitive_ratio）
         rankings: dict[str, list[tuple[str, ...]]] = {q: [] for q in queries}
+        # 逐组合聚合的 recall@k（与 self._results 同序，用于取最优组合的 recall）
+        combo_recalls: list[RecallAtK] = []
 
         combos: Iterable[tuple] = product(*value_lists) if param_names else [()]
         for combo in combos:
             params: dict[str, Any] = dict(zip(param_names, combo))
             main_scores: list[float] = []
             extra_scores: dict[int, list[float]] = {ek: [] for ek in extra_ks}
+            per_q_recall: list[dict[int, float]] = []
 
             for query_text in queries:
                 relevant = list(ground_truth.get(query_text) or [])
@@ -139,6 +143,11 @@ class RRFGridSearch:
                 main_scores.append(self._compute_ndcg(predicted, relevant, k))
                 for ek in extra_ks:
                     extra_scores[ek].append(self._compute_ndcg(predicted, relevant, ek))
+                # ★ T-129：顺带算 recall@k（与 NDCG 共用同一 predicted/relevant，
+                # 不额外召回；recall 对 rrf_k 的敏感性与 NDCG 同源，逐组合统计）
+                per_q_recall.append(
+                    eval_metrics.compute_recall_at_k(predicted, relevant, ks=(1, 3, 5, 10))
+                )
 
             entry: dict[str, Any] = dict(params)
             entry["ndcg10"] = round(_mean(main_scores), 4)   # 主 k（= 入参 k，默认 10）
@@ -146,16 +155,31 @@ class RRFGridSearch:
                 entry[f"ndcg{ek}"] = round(_mean(extra_scores[ek]), 4)
             entry["ndcg_k"] = k
             entry["query_count"] = len(queries)
+            combo_recalls.append(eval_metrics.aggregate_recall_at_k(per_q_recall))
+            entry["recall@1"] = combo_recalls[-1].recall_at_1
+            entry["recall@3"] = combo_recalls[-1].recall_at_3
+            entry["recall@5"] = combo_recalls[-1].recall_at_5
+            entry["recall@10"] = combo_recalls[-1].recall_at_10
             self._results.append(entry)
 
         # tie-break：NDCG 相同则取更小的 rrf_k（确定性，与字典/浮点顺序无关）
+        best_idx: int | None = None
         if self._results:
-            self._best = max(
-                self._results,
-                key=lambda r: (r["ndcg10"], -int(r.get("rrf_k", 0))),
+            best_idx = max(
+                range(len(self._results)),
+                key=lambda i: (
+                    self._results[i]["ndcg10"],
+                    -int(self._results[i].get("rrf_k", 0)),
+                ),
             )
+            self._best = self._results[best_idx]
 
         diag = self._diagnose(queries, rankings, meta)
+
+        # T-129：取最优组合（与 best_ndcg10 同 tie-break）的 recall@k 作为代表值
+        best_recall: RecallAtK | None = (
+            combo_recalls[best_idx] if (best_idx is not None and combo_recalls) else None
+        )
 
         metrics = RRFMetrics(
             best_ndcg10=float(self._best["ndcg10"]) if self._best else 0.0,
@@ -184,6 +208,7 @@ class RRFGridSearch:
             conclusion=diag["conclusion"],
             recommended_k=diag["recommended_k"],
             embed_cache=dict(meta.get("embed_cache") or {}),
+            recall_at_k=best_recall,
         )
 
         logger.info(

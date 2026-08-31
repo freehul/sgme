@@ -392,8 +392,12 @@ class EvalRunner:
         search_cfg["vector"] = vec_cfg
         return {**self.cfg, "search": search_cfg}
 
-    def _make_query_fn(self, corpus):
+    def _make_query_fn(self, mem_conn: sqlite3.Connection, vector_available: bool):
         """构造注入 `RRFGridSearch.search` 的 `query_fn`（带双路召回缓存）。
+
+        与之前 `_make_query_fn(self, corpus)` 的区别：不再依赖 `self.mem_conn`，
+        改为显式接收 `mem_conn` + `vector_available`，让「合成语料」(`_run_rrf`)
+        与「真实库副本」(`run_realdb`) 两条路径共用同一套召回缓存 + 融合逻辑。
 
         缓存 key = `(query_text, dims_key, limit)`，value = **两路原始结果**
         `(bm25_results, vec_results)`（不是融合结果——融合依赖 rrf_k，必须每次现算）。
@@ -407,8 +411,7 @@ class EvalRunner:
         from sgme.data.search import recall_routes
         from sgme.data.search.rrf import rrf_merge
 
-        mem_conn = self.mem_conn
-        search_cfg = self._search_cfg(corpus.vector_available)
+        search_cfg = self._search_cfg(vector_available)
         cache: dict[tuple, tuple[list[dict], list[dict]]] = {}
 
         # 全语料检索：不按维度过滤（GT 相关集是「同用例全部记忆」，维度过滤会误杀）
@@ -622,45 +625,19 @@ class EvalRunner:
         try:
             corpus = self._setup_retrieval_corpus(cases)
             ground_truth = retrieval_gt.to_ground_truth(corpus.queries)
-            query_fn = self._make_query_fn(corpus)
-
-            # ★ 预热 pass：网格搜索前遍历 query 填满 recall_cache
-            for query_text in ground_truth:
-                query_fn(query_text, {"rrf_k": 60})
-
-            # 预热后缓存已满 → 先算 route_overlap_jaccard，随 meta 一并交给 _diagnose
-            prewarm_diag = self._recall_diagnostics(
-                getattr(query_fn, "recall_cache", {})
-            )
-            grid = RRFGridSearch()
-            metrics = grid.search(
-                query_fn,
+            metrics = self._search_grid(
+                self.mem_conn,
                 ground_truth,
-                k=10,
-                extra_ks=(5,),
-                meta={
-                    "gt_mode": corpus.gt_mode,
-                    "vector_available": corpus.vector_available,
-                    "vector_count": corpus.vector_count,
-                    "vector_coverage": corpus.vector_coverage,
-                    "banner_reason": corpus.banner_reason,
-                    "corpus_size": corpus.size,
-                    "route_overlap_jaccard": float(
-                        prewarm_diag.get("route_overlap_jaccard", 0.0)
-                    ),
-                },
+                vector_available=corpus.vector_available,
+                vector_count=corpus.vector_count,
+                corpus_size=corpus.size,
+                banner_reason=corpus.banner_reason,
+                gt_mode=corpus.gt_mode,
             )
-
-            # 预热 + search 共用同一缓存，事后完整统计（含 vector_failed_at）回填
-            diagnostics = self._recall_diagnostics(
-                getattr(query_fn, "recall_cache", {})
-            )
+            # 合成语料路径：把 build_corpus 的熔断位置并入诊断（_search_grid 默认 None）
             if corpus.vector_failed_at is not None:
-                diagnostics["vector_failed_at"] = corpus.vector_failed_at
-            metrics.recall_diagnostics = diagnostics
-            metrics.route_overlap_jaccard = float(
-                diagnostics.get("route_overlap_jaccard", 0.0)
-            )
+                metrics.recall_diagnostics = dict(metrics.recall_diagnostics or {})
+                metrics.recall_diagnostics["vector_failed_at"] = corpus.vector_failed_at
         finally:
             if cache is not None:
                 sgme_vector.set_embed_cache(prev_hook)
@@ -669,6 +646,98 @@ class EvalRunner:
             metrics.embed_cache = cache.stats_dict()
             cache.close()
         return metrics
+
+    # ── 真实库副本回归基线（T-129） ──
+
+    def _search_grid(
+        self,
+        mem_conn: sqlite3.Connection,
+        ground_truth: dict[str, list[str]],
+        *,
+        vector_available: bool,
+        vector_count: int,
+        corpus_size: int,
+        banner_reason: str,
+        gt_mode: str,
+    ) -> RRFMetrics:
+        """核心：在给定 mem_conn 上跑 RRF 网格搜索 + 预热 + 诚实诊断，返回 RRFMetrics。
+
+        被 `_run_rrf`（合成语料）与 `run_realdb`（真实库副本）共用。
+        不负责 embed 缓存的开关（由调用方在外层管理，避免重复开闭）。
+        """
+        from eval.rrf import RRFGridSearch
+
+        query_fn = self._make_query_fn(mem_conn, vector_available)
+
+        # 预热 pass：填满 recall_cache（方案 C：grid.search 前先预热，
+        # 避免「未预热」伪装成「低重叠」）
+        for query_text in ground_truth:
+            query_fn(query_text, {"rrf_k": 60})
+
+        prewarm_diag = self._recall_diagnostics(
+            getattr(query_fn, "recall_cache", {})
+        )
+
+        grid = RRFGridSearch()
+        metrics = grid.search(
+            query_fn,
+            ground_truth,
+            k=10,
+            extra_ks=(5,),
+            meta={
+                "gt_mode": gt_mode,
+                "vector_available": vector_available,
+                "vector_count": vector_count,
+                "vector_coverage": round(vector_count / corpus_size, 4) if corpus_size else 0.0,
+                "banner_reason": banner_reason,
+                "corpus_size": corpus_size,
+                "route_overlap_jaccard": float(prewarm_diag.get("route_overlap_jaccard", 0.0)),
+            },
+        )
+
+        # 预热 + search 共用同一缓存，事后完整统计回填
+        diagnostics = self._recall_diagnostics(
+            getattr(query_fn, "recall_cache", {})
+        )
+        if corpus_size and vector_count:
+            diagnostics["vector_failed_at"] = None
+        metrics.recall_diagnostics = diagnostics
+        metrics.route_overlap_jaccard = float(diagnostics.get("route_overlap_jaccard", 0.0))
+        return metrics
+
+    def run_realdb(
+        self,
+        gt: Any,
+        mem_conn: sqlite3.Connection,
+        *,
+        corpus_size: int,
+        vector_available: bool = False,
+        vector_count: int = 0,
+        banner_reason: str = "realdb_bm25_baseline",
+        gt_mode: str = "realdb",
+    ) -> RRFMetrics:
+        """真实库副本回归基线（T-129 核心）：在副本 DB 上跑 RRF 网格搜索，产出 recall@k。
+
+        0-token：副本已含 FTS 索引 + 边，直接 recall_routes，不做任何嵌入/提炼。
+        gt：`RealDbGt`（来自 `eval.realdb`）。
+
+        vector_available 默认 False（BM25 基线；后续接真实 NAS 副本 +
+        缓存 query 嵌入时改 True，并传入对应 coverage）。
+        """
+        from eval.realdb import RealDbGt
+
+        if not isinstance(gt, RealDbGt):
+            raise TypeError(f"run_realdb 需要 RealDbGt，收到 {type(gt)!r}")
+        ground_truth = gt.to_ground_truth()
+        return self._search_grid(
+            mem_conn,
+            ground_truth,
+            vector_available=vector_available,
+            vector_count=vector_count,
+            corpus_size=corpus_size,
+            banner_reason=banner_reason,
+            gt_mode=gt_mode,
+        )
 
     # ── 注入效果评测（T-20，PRD §5.4） ──
 

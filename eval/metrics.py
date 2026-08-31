@@ -26,6 +26,7 @@ from eval.models import (
     L1Metrics,
     L2GroundTruth,
     L2Metrics,
+    RecallAtK,
 )
 
 logger = logging.getLogger("eval.metrics")
@@ -375,6 +376,81 @@ def compute_profile_quality(l1_f1: float, l2_hitrate: float) -> float:
     依据 PRD §5.3：ProfileQuality = L1_Dimension_F1 × L2_Section_HitRate
     """
     return l1_f1 * l2_hitrate
+
+
+# ── 检索召回率 @k（T-129 阶段二 A/B 护栏核心指标） ──
+
+def compute_recall_at_k(
+    predicted: list[str],
+    relevant: list[str],
+    ks: tuple[int, ...] = (1, 3, 5, 10),
+) -> dict[int, float]:
+    """计算单条 query 的 recall@k（多个截断位）。
+
+    predicted: 预测排序列表（去重、降序），如 RRF 融合后的 memory_id 序列
+    relevant: ground truth 相关文档 id 列表（顺序不重要，用集合判等）
+    ks: 截断位集合，默认 (1, 3, 5, 10)
+
+    语义：recall@k = (前 k 条中命中的相关文档数) / (相关文档总数)。
+    - 相关集为空 → 全部返回 0.0（无意义，调用方须保证 relevant 非空，
+      否则会污染均值，与 `_compute_ndcg` 空相关集返回 1.0 同理需规避）
+    - 同一相关文档在 predicted 中重复出现只计一次（集合去重）
+    - k 超过预测列表长度时，按「已命中数」截断计算（不会超 1.0）
+
+    返回 {k: recall@k}，与 `ks` 顺序无关（按值聚合）。
+    """
+    rel_set = set(relevant)
+    if not rel_set:
+        return {k: 0.0 for k in ks}
+
+    seen: set[str] = set()
+    hits_by_pos: list[int] = []   # hits_by_pos[i] = 前 i+1 条命中的去重相关数
+    cnt = 0
+    for pid in predicted:
+        if pid in rel_set and pid not in seen:
+            seen.add(pid)
+            cnt += 1
+        hits_by_pos.append(cnt)
+
+    total_rel = len(rel_set)
+    result: dict[int, float] = {}
+    for k in ks:
+        if k <= len(hits_by_pos):
+            result[k] = round(hits_by_pos[k - 1] / total_rel, 4)
+        else:
+            # k 超出预测长度：前 len 条已全部命中，剩余命中数不再增长
+            result[k] = round(cnt / total_rel, 4)
+    return result
+
+
+def aggregate_recall_at_k(
+    per_query: list[dict[int, float]],
+    ks: tuple[int, ...] = (1, 3, 5, 10),
+) -> RecallAtK:
+    """聚合多条 query 的 recall@k（逐 query 平均，与 aggregate_l1_metrics 同哲学）。
+
+    不平均各 query 的 recall@k 比率，而是先汇总分子分母再算整体——
+    避免「相关集仅 1 条的 query」与「相关集 5 条的 query」被等权稀释。
+    但 recall@k 的「分子=前 k 命中数/分母=相关集大小」本身已是比率，
+    此处按 query 平均比率即可得到无偏的宏观 recall@k（每个 query 贡献一条完整比率）。
+
+    per_query: 每条 query 的 {k: recall@k}（来自 compute_recall_at_k）
+    返回 RecallAtK（含 query_count = 有效 query 数）。
+    """
+    n = len(per_query)
+    if n == 0:
+        return RecallAtK()
+
+    def _mean(values: list[float]) -> float:
+        return round(sum(values) / len(values), 4) if values else 0.0
+
+    return RecallAtK(
+        recall_at_1=_mean([q.get(1, 0.0) for q in per_query]),
+        recall_at_3=_mean([q.get(3, 0.0) for q in per_query]),
+        recall_at_5=_mean([q.get(5, 0.0) for q in per_query]),
+        recall_at_10=_mean([q.get(10, 0.0) for q in per_query]),
+        query_count=n,
+    )
 
 
 # ── 聚合多个用例的度量 ──

@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 # 配置日志
@@ -104,12 +106,62 @@ def main() -> None:
         metavar=("REPORT_A", "REPORT_B"),
         help="A/B 对比两份 report.json（纯离线 diff）",
     )
+    parser.add_argument(
+        "--realdb",
+        action="store_true",
+        help="运行真实库副本回归基线（T-129）：在 memory.db 副本上做中文检索 recall@k",
+    )
+    parser.add_argument(
+        "--replica",
+        type=str,
+        default=None,
+        help="生产库 memory.db 副本路径（--realdb 用；缺省 + --self-test 时构建合成 mini 副本）",
+    )
+    parser.add_argument(
+        "--gt",
+        type=str,
+        default=None,
+        help="已构建的 GT json 路径（--realdb 用；跳过 GT 生成，直接跑基线）",
+    )
+    parser.add_argument(
+        "--build-gt",
+        action="store_true",
+        help="在副本上构建中文检索 GT 并随报告一起保存（--realdb 用）",
+    )
+    parser.add_argument(
+        "--sample",
+        type=int,
+        default=200,
+        help="single-hop 抽样记忆数（--realdb 用，默认 200）",
+    )
+    parser.add_argument(
+        "--multi-hop-ratio",
+        type=float,
+        default=0.3,
+        help="multi-hop 查询占比（--realdb 用，默认 0.3）",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="抽样 / 边选取随机种子（--realdb 用，保证可复现）",
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="无 --replica 时构建合成 mini 副本自测（CI / 端到端，无需真实 NAS 拷贝）",
+    )
 
     args = parser.parse_args()
 
     # A/B 对比模式
     if args.compare:
         _run_compare(args.compare[0], args.compare[1])
+        return
+
+    # 真实库副本回归基线（T-129）
+    if args.realdb:
+        _run_realdb(args)
         return
 
     # 基线评测模式
@@ -119,7 +171,7 @@ def main() -> None:
 
     # 无模式指定
     parser.print_help()
-    print("\n请指定 --baseline 或 --compare", file=sys.stderr)
+    print("\n请指定 --baseline / --compare / --realdb", file=sys.stderr)
     sys.exit(1)
 
 
@@ -243,6 +295,112 @@ def _run_baseline(args: argparse.Namespace) -> None:
     else:
         logger.warning("P0 指标不达标，退出码 1")
         sys.exit(1)
+
+
+def _run_realdb(args: argparse.Namespace) -> None:
+    """执行真实库副本回归基线（T-129）：副本上做中文检索 recall@k，0-token。"""
+    from eval.models import EvalResult, EvalSummary
+    from eval.realdb import (
+        RealDbGt,
+        build_realdb_gt,
+        make_mini_replica,
+        open_replica,
+        replica_corpus_stats,
+    )
+    from eval.reporter import generate_report_json, generate_report_md
+    from eval.runner import EvalRunner
+
+    # 1) 解析副本路径（无 --replica 自动改用合成 mini 副本自测）
+    if args.replica:
+        replica_path = Path(args.replica)
+        if not replica_path.is_absolute():
+            replica_path = PROJECT_ROOT / replica_path
+        if not replica_path.exists():
+            logger.error("副本不存在: %s", replica_path)
+            sys.exit(1)
+    else:
+        if not args.self_test:
+            logger.warning("未提供 --replica，自动改用合成 mini 副本自测（--self-test 等价）")
+        tmp_dir = PROJECT_ROOT / "eval" / "tmp" / "realdb_self_test"
+        replica_path = make_mini_replica(tmp_dir, n=12, seed=args.seed)
+        logger.info("合成 mini 副本: %s", replica_path)
+
+    conn = open_replica(replica_path, readonly=True)
+    try:
+        stats = replica_corpus_stats(conn)
+        logger.info(
+            "副本语料: 记忆=%d 向量=%d(覆盖=%.4f) 路径=%s",
+            stats["size"], stats["vector_count"], stats["vector_coverage"], replica_path,
+        )
+
+        # 2) GT：加载已有（--gt）或构建（--build-gt / 默认）
+        if args.gt:
+            gt_path = Path(args.gt)
+            if not gt_path.is_absolute():
+                gt_path = PROJECT_ROOT / gt_path
+            if not gt_path.exists():
+                logger.error("GT 文件不存在: %s", gt_path)
+                sys.exit(1)
+            gt = RealDbGt.load(gt_path)
+            logger.info("已加载 GT: %d 条 query（source=%s）", len(gt.items), gt.source)
+        else:
+            gt = build_realdb_gt(
+                conn,
+                sample_n=args.sample,
+                multi_hop_ratio=args.multi_hop_ratio,
+                seed=args.seed,
+                source="stub",
+            )
+            logger.info("已构建 GT: %d 条 query（single+multi，source=stub）", len(gt.items))
+            if args.build_gt or args.output:
+                out = Path(args.output) if args.output else PROJECT_ROOT / "eval" / "results" / "realdb"
+                if not out.is_absolute():
+                    out = PROJECT_ROOT / out
+                out.mkdir(parents=True, exist_ok=True)
+                gt.save(out / "realdb_gt.json")
+                logger.info("GT 已保存: %s", out / "realdb_gt.json")
+
+        # 3) 跑基线（0-token，BM25 基线；vector_available=False）
+        runner = EvalRunner(cfg=None, rrf_skip_vector=True)
+        metrics = runner.run_realdb(
+            gt, conn,
+            corpus_size=stats["size"],
+            vector_available=False,
+            vector_count=stats["vector_count"],
+            banner_reason="realdb_bm25_baseline",
+            gt_mode="realdb",
+        )
+
+        # 4) 报告
+        output_dir = Path(args.output) if args.output else PROJECT_ROOT / "eval" / "results" / "realdb"
+        if not output_dir.is_absolute():
+            output_dir = PROJECT_ROOT / output_dir
+
+        result = EvalResult(
+            run_id=f"realdb-{uuid.uuid4().hex[:8]}",
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            rrf=metrics,
+            summary=EvalSummary(),
+        )
+        json_path = generate_report_json(result, output_dir)
+        md_path = generate_report_md(result, output_dir)
+
+        rk = metrics.recall_at_k
+        print("\n" + "=" * 60)
+        print("SGME 真实库副本回归基线（T-129）")
+        print(f"  副本: {replica_path}")
+        print(f"  语料: 记忆={stats['size']} 向量={stats['vector_count']}"
+              f"(覆盖={stats['vector_coverage']:.4f})")
+        print(f"  GT query 数: {len(gt.items)}  分布={gt.counts_by_hop()}  conclusion={metrics.conclusion}")
+        if rk:
+            print(f"  recall@1={rk.recall_at_1:.4f} @3={rk.recall_at_3:.4f} "
+                  f"@5={rk.recall_at_5:.4f} @10={rk.recall_at_10:.4f} (n={rk.query_count})")
+        print(f"  报告: {json_path}")
+        print(f"  报告: {md_path}")
+        print("=" * 60)
+        sys.exit(0)
+    finally:
+        conn.close()
 
 
 def _run_compare(report_a: str, report_b: str) -> None:
