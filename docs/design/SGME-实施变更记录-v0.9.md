@@ -2355,3 +2355,16 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 生产预估（dry-run） | 复用 12:17 备份快照（182MB）本地 dry-run：superseded_pairs **9,859**（→supersedes+evolves_from 19,718 边）、scene_pairs_raw 93,530（8 个大场景被 per-scene top-100 截断）、belongs_to **16,816**（per-memory top-8）→ **总边 36,534**，远低于 20 万 cap，**无 anomaly**。 |
 | ⚠️ 遗留 | ①生产 backfill 未执行（需部署后或经 SSH 直写，随部署确认）②「update/merge 动作顺手写 supersedes 边」运行时钩子未做（T-133 AC 未含；可随 T-134 或后续补）③T-134 图召回消费本表（neighbors 已预留）。 |
 | 文档 | 本记录 B133；Backlog T-133 标 ✅、ST-38 转 🟡 进行中（v1.2+）。 |
+
+### B134. T-134 图召回 v1（fill-only 增量候选）+ 生产 A/B（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | T-133 结构边（memory_edges，36,534 边）上线后，检索侧接入图召回：BM25/向量原候选为种子 → 扩展 1-hop 邻居进 RRF，让「共现联想」类多跳 query（需 ≥2 条记忆）能召到不直接匹配的邻居。v0.2 拆步的核心目的 = 先廉价验证图价值，无增益即止损 T-135/T-136。 |
+| 改动 | ①`rrf.py::rrf_merge` 非破坏扩展：`graph_results` / `graph_weight`（独立配置键）/ `graph_rank_offset`（fill-only 语义），缺省时两路版本逐字节等价。②`data/search/_graph_candidates`：seed = BM25 ∪ 向量原候选 memory_id → `edge_dao.neighbors` 1-hop（双向），**排除 seed 防 RRF 自耦合**，邻居得分 = Σ 连到各 seed 的边权重，取 `search.graph.top_n`（默认 20），只取 active 记忆；无 memory_edges 表/无边/异常 → 空（降级不影响主检索）。③`search_memories` 集成：vec 或 graph 任一非空进 RRF，routes 追加 `"graph"`；fill_only=True 时 graph rank 从 `len(bm25)` 起算。④`config.search.graph` 默认 `{enabled:True, weight:1.0, top_n:20, fill_only:True}`。⑤`eval/ab_graph.py`（新）：图开/关双臂（纯 BM25，0-token），按 scene/supersession/single 拆分 recall@k + P95 延迟；`--multi-hop-kind/--fill-only/--weight/--replica`；副本自动 backfill 边。 |
+| 生产 A/B | 快照 19861 记忆 / 36534 边 / GT 200 条（stub，single 140 + supersession 58 + scene 2）全量 + scene 聚焦 3000 样本（41 条）。**竞争模式 weight=1.0**：scene recall@5 +47%（41 条）但全量 recall@3/5/10 -3%（单跳噪声挤占直接命中）→ 弃。**fill-only 模式**：全量 200 样本与图关**逐字节一致（零劣化）**；scene 41 条 recall@3 +12% / recall@5 +11%（0.1071→0.1193）/ recall@10 +18%，recall@1 与 precision@1 均不变（0.0517/0.4878），P95 +0.9~1.7ms（<100ms）。→ **通过 T-134 验收**（①不劣化+multi-hop 提升 ✓ ②延迟 ✓ ③报告落盘 eval/results/ab_graph_* ✓）。 |
+| 关键教训 | ①A/B 必须按 hop kind 拆分：supersession 型多跳（相关集=live 后继）与 bm25 种子**无 1-hop 连通**，图路按构造帮不上——混在一起会稀释 scene 增益信号（初版 multi-hop 0.1557 两臂全等即此）。②graph 进 RRF 的权重是「多跳受益 vs 单跳噪声」的天平：竞争模式（weight≥1）scene 增益大但全量劣化；fill-only（rank offset=len(bm25)）零劣化但增益减半——**fill-only 是唯一同时满足两项验收的形态**。③权重扫描（0.5/0.75/1.0/1.5/2.0 × top_n 3/5/10/20）实证：<1 排不进 top-10 无效果、>1.5 挤掉直接命中。 |
+| 测试 | `tests/test_search_graph.py` 12 例（种子去重/增量/active 过滤/降级/集成开-关-无边等价/权重排序/limit/rrf graph_weight+rank_offset/fill_only 不挤占）；回归 132 passed（rrf/realdb/operations/search_v04）。 |
+| 运维影响 | 生产默认开图（fill-only 安全形态）；memory_edges 空（未 backfill）时图路零贡献、routes 无 "graph"，与 T-133 前逐字节等价。部署需先跑 `scripts/oneoff/backfill_edges.py` 生产 backfill（36,534 边预估）再生效。 |
+| ⚠️ 遗留 | ①止损点裁决：fill-only 有净增益（scene 类）→ T-135（语义边）/T-136（三元组）保持可投，但增益中等且仅共现联想类生效，投入前建议扩样本/真实 LLM GT 复核（T-129 延后决策 a）②supersession 型多跳图路帮不上（需 2-hop 或语义边，属 v2）③生产 backfill 未执行。 |
+| 文档 | 本记录 B134；Backlog T-134 标 ✅、ST-38 转 🟡（T-135 待做）。A/B 报告：eval/results/ab_graph_prod / ab_graph_fill / ab_graph_fill_scene（gitignored，随库可复现）。 |
