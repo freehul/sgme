@@ -10,19 +10,29 @@ def rrf_merge(
     vector_results: list[dict],
     k: int = 60,
     id_key: str = "memory_id",
+    graph_results: list[dict] | None = None,
+    graph_weight: float = 1.0,
+    graph_rank_offset: int = 0,
 ) -> list[dict]:
-    """RRF 融合 BM25 + 向量两路结果。
+    """RRF 融合 BM25 + 向量（+ 可选 graph）路结果。
 
     - 每路结果按原顺序（rank=0 为第一条）
-    - score = Σ 1/(k + rank + 1)
+    - score = Σ 1/(k + rank + 1)；graph 路贡献乘以 ``graph_weight``
+      （ST-38 T-134：图召回增量邻居按独立配置键打折，防喧宾夺主）
+    - ``graph_rank_offset``：graph 路 rank 从该偏移起算（ST-38 T-134 fill-only 语义）——
+      设 ``len(bm25)`` 时图候选恒排在直接命中之后，只在直接命中稀疏时填空位，
+      密集时不干预（解决「多跳受益 vs 单跳噪声」矛盾，A/B 实证）
     - 同一 id（id_key 指定聚合键，场景检索传 "scene_id"）多路命中 → score 累加
     - 返回按 score DESC 排序的合并结果
-    - 每条结果含 {<id_key>, content, score, sources: [bm25|vector]}
+    - 每条结果含 {<id_key>, content, score, sources: [bm25|vector|graph]}
+
+    ``graph_results`` 为 None（缺省）→ 行为与两路版本逐字节等价（零破坏）。
     """
     # <id_key> → 聚合条目
     merged: dict[str, dict] = {}
 
-    def _ingest(results: list[dict], source_name: str) -> None:
+    def _ingest(results: list[dict], source_name: str, weight: float = 1.0,
+                rank_offset: int = 0) -> None:
         for rank, r in enumerate(results):
             mid = r.get(id_key)
             if not mid:
@@ -37,12 +47,14 @@ def rrf_merge(
                     "sources": [],
                 }
             entry = merged[mid]
-            entry["score"] += 1.0 / (k + rank + 1)
+            entry["score"] += weight / (k + rank_offset + rank + 1)
             if source_name not in entry["sources"]:
                 entry["sources"].append(source_name)
 
     _ingest(bm25_results, "bm25")
     _ingest(vector_results, "vector")
+    if graph_results:
+        _ingest(graph_results, "graph", weight=graph_weight, rank_offset=graph_rank_offset)
 
     # 按 score DESC 排序
     out = list(merged.values())

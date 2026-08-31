@@ -371,6 +371,78 @@ def recall_routes(
     return bm25_results, vec_results, routes
 
 
+def _graph_candidates(
+    mem_conn: sqlite3.Connection,
+    bm25_results: list[dict],
+    vec_results: list[dict],
+    cfg: dict | None,
+) -> list[dict]:
+    """图召回 v1（ST-38 T-134）：memory_edges 1-hop 邻居**增量**候选。
+
+    - seed = BM25 ∪ 向量原候选的 memory_id；
+    - 扩展各 seed 的 1-hop 邻居（edge_dao.neighbors，双向），
+      **排除已在原候选里的 seed**——种子进 RRF 会自耦合推高排序（v0.2 设计必答项），
+      graph 路只贡献「邻居中不在原候选里的」增量记忆；
+    - 邻居得分 = Σ 连到各 seed 的边权重（同邻居多 seed 累加，weight=共现场景数/
+      归档链语义）；按得分降序取 ``search.graph.top_n``；
+    - 只取 active 记忆（归档/软删不作为候选）。
+
+    Returns:
+        按得分降序的 [{memory_id, content, priority, updated_at, score}]；
+        图不可用（无 memory_edges 表 / 无边 / 异常）→ []，不影响主检索。
+    """
+    if not _graph_enabled(cfg):
+        return []
+    seed_ids = {
+        r["memory_id"] for r in bm25_results
+    } | {
+        r["memory_id"] for r in vec_results
+    }
+    if not seed_ids:
+        return []
+    try:
+        has_table = mem_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_edges'"
+        ).fetchone()
+        if not has_table:
+            return []
+        from sgme.data import edge_dao
+
+        agg: dict[str, float] = {}
+        for sid in seed_ids:
+            for n in edge_dao.neighbors(mem_conn, sid):
+                agg[n["memory_id"]] = agg.get(n["memory_id"], 0.0) + n["weight"]
+        nbrs = [(mid, w) for mid, w in agg.items() if mid not in seed_ids]
+        if not nbrs:
+            return []
+        nbrs.sort(key=lambda x: (-x[1], x[0]))
+        nbrs = nbrs[:_graph_top_n(cfg)]
+        ids = [mid for mid, _ in nbrs]
+        ph = ",".join("?" * len(ids))
+        rows = mem_conn.execute(
+            f"SELECT memory_id, content, priority, updated_at FROM memories "
+            f"WHERE memory_id IN ({ph}) AND status='active'",
+            ids,
+        ).fetchall()
+        by_id = {r["memory_id"]: r for r in rows}
+        out: list[dict] = []
+        for mid, w in nbrs:
+            r = by_id.get(mid)
+            if r is None:
+                continue  # 非 active / 已归档 → 不作为候选
+            out.append({
+                "memory_id": mid,
+                "content": r["content"],
+                "priority": r["priority"],
+                "updated_at": r["updated_at"],
+                "score": w,
+            })
+        return out
+    except Exception as e:
+        logger.warning("图召回候选不可用（该路空结果）: %s", e)
+        return []
+
+
 def search_memories(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -382,7 +454,7 @@ def search_memories(
     cfg: dict | None = None,
     client: httpx.Client | None = None,
 ) -> list[dict]:
-    """检索：FTS5 BM25 + 维度标签过滤 + 向量检索 + RRF 融合 + trace。
+    """检索：FTS5 BM25 + 维度标签过滤 + 向量检索 + 图召回（ST-38 T-134）+ RRF 融合 + trace。
 
     - dimensions 为空 → 仅 BM25 全文
     - dimensions 非空 → 标签过滤（match=any: OR; all: AND）+ BM25 排序
@@ -407,11 +479,27 @@ def search_memories(
         client=client,
     )
 
-    # RRF 融合：vec_results 非空 ⇔ 原实现进入融合分支
+    # RRF 融合：vec 或 graph 任一非空 ⇔ 进入融合分支（ST-38 T-134 图路并入）
+    # - 仅 vec：行为与原实现逐字节等价（graph_results=None）
+    # - 仅 graph（向量关闭）：BM25 + 图邻居融合（A/B 纯 BM25 臂即此形态）
+    graph_results = _graph_candidates(mem_conn, bm25_results, vec_results, cfg or {})
+    graph_active = bool(graph_results)
     results = bm25_results
-    if vec_results:
+    if vec_results or graph_results:
         rrf_k = _rrf_k(cfg or {})
-        results = rrf_mod.rrf_merge(bm25_results, vec_results, k=rrf_k)
+        # T-134 A/B：fill_only=True 时图候选 rank 从 len(bm25) 起算（只填空位、
+        # 不干预直接命中——解决「多跳受益 vs 单跳噪声」矛盾）
+        graph_offset = len(bm25_results) if _graph_fill_only(cfg or {}) else 0
+        results = rrf_mod.rrf_merge(
+            bm25_results,
+            vec_results,
+            k=rrf_k,
+            graph_results=graph_results or None,
+            graph_weight=_graph_weight(cfg or {}),
+            graph_rank_offset=graph_offset,
+        )
+    if graph_active and "graph" not in routes:
+        routes.append("graph")
 
     # T-89（2026-08-20）：内容去重 + limit 截断。
     # 1) 去重：同一事实被 L1 重复落库（不同 memory_id、相同 content）时全量召回
@@ -562,6 +650,36 @@ def _rrf_k(cfg: dict) -> int:
     search_cfg = cfg.get("search", {}) or {}
     rrf_cfg = search_cfg.get("rrf", {}) or {}
     return int(rrf_cfg.get("k", 60))
+
+
+def _graph_setting(cfg: dict | None, key: str, default):
+    """cfg 中 search.graph.<key> 取值（ST-38 T-134 图召回独立配置键）。"""
+    if not cfg:
+        return default
+    g = (cfg.get("search") or {}).get("graph") or {}
+    return g.get(key, default)
+
+
+def _graph_enabled(cfg: dict | None) -> bool:
+    """cfg 中 search.graph.enabled 缺省 True（A/B 双臂对照时关闭）。"""
+    return bool(_graph_setting(cfg, "enabled", True))
+
+
+def _graph_weight(cfg: dict | None) -> float:
+    """cfg 中 search.graph.weight 缺省 1.0（graph 路 RRF 贡献权重，独立配置键；
+    A/B 实测最优：1.0=与 bm25 rank0 同权）。"""
+    return float(_graph_setting(cfg, "weight", 1.0))
+
+
+def _graph_top_n(cfg: dict | None) -> int:
+    """cfg 中 search.graph.top_n 缺省 20（graph 候选上限，防邻居洪泛）。"""
+    return int(_graph_setting(cfg, "top_n", 20))
+
+
+def _graph_fill_only(cfg: dict | None) -> bool:
+    """cfg 中 search.graph.fill_only 缺省 True（T-134 A/B 定夺：fill-only 语义，
+    图候选只填空位、不干预直接命中——唯一同时满足两项验收的形态）。"""
+    return bool(_graph_setting(cfg, "fill_only", True))
 
 
 def _filter_by_dimensions(
