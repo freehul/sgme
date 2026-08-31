@@ -357,6 +357,7 @@ def search(
     client: httpx.Client | None = None,
     wiki_conn: sqlite3.Connection | None = None,
     skills_conn: sqlite3.Connection | None = None,
+    agent_id: str | None = None,
 ) -> OperationResult:
     """混合检索：记忆池（BM25+向量+RRF）+ wiki 场景（L2）+ wiki 知识库页面
     + L0 原始层会话（raw_files 索引，ST-33）+ 技能（git 源 SKILL.md，ST-36 M2，
@@ -419,6 +420,7 @@ def search(
                     include_sources=include_sources,
                     cfg=cfg,
                     client=client,
+                    agent_id=agent_id,  # T-140：多 Agent scope（默认 None=不过滤）
                 )
             )
         # 层 2：wiki 场景叙事文档（L2；"scenes" 为历史别名 scope，两者等价）

@@ -144,18 +144,20 @@ def inject_memories(
 def search_memories(
     payload: SearchRequest,
     request: Request,
-    _: str = Depends(require_agent_key),
+    auth_key: str = Depends(require_agent_key),
 ):
     """检索：四层（memory 记忆 + wiki 场景 + wiki_pages 知识库），标签过滤 + FTS5 BM25 + 向量 + RRF。
 
     v0.7：业务逻辑已下沉 ``sgme.operations.search``，本函数只做协议翻译；
     响应经 ``search_http_payload`` 投影为 HTTP 历史契约形态。
     T-34：wiki_pages 层经 wiki_conn 注入（wiki 扩展未挂载时为空结果，不影响整体）。
+    T-140：按鉴权 key 反查请求方 agent_id（多 Agent scope 隔离；默认全通）。
     """
     cfg = request.app.state.cfg
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     session_conn: sqlite3.Connection = request.app.state.session_conn
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
+    store: AgentKeyStore = request.app.state.key_store
 
     data = run_operation(
         search_operation,
@@ -171,6 +173,8 @@ def search_memories(
         wiki_conn=wiki_conn,
         # T-112：技能层走 skills.db（FTS5 + 持久化向量）；禁用时为 None，操作层回退内存索引
         skills_conn=getattr(request.app.state, "skills_conn", None),
+        # T-140：鉴权 key → 绑定 agent_id（未注册/主 key → "default"）
+        agent_id=store.resolve_agent_id(auth_key),
     )
     return search_http_payload(data)
 
