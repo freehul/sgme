@@ -2452,7 +2452,8 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 基线结果（BM25，turn 粒度，0 token） | mem=5882；recall@1=0.3084 / @3=0.4582 / @5=0.5038 / @10=0.5451；P95 延迟 4.2ms；空结果 16 条。分类型 @10：single_hop=0.6361、temporal=0.6451、multi_hop=0.2457、open_domain=0.2830（multi_hop/open_domain 难类显著低于单跳）。 |
 | 英文语料适配（三臂对照，turn） | bm25(默认)=0.5451；bm25_nostop(关中文停用词表)=0.5067（**关掉反而降 0.038**，证明中英双语停用词表未误杀英文内容词，保留有益）；bm25_punct(过滤标点 token)=0.5484（+0.003，标点作为独立 OR token 轻微稀释，可忽略）。**结论：T-130 停用词过滤对英文语料安全，无需为 LoCoMo 特调。** |
 | 粒度对照（bm25）与方法论陷阱 | session(mem=272) r@10=0.8959 > window(mem=1283) 0.7712 > turn(mem=5882) 0.5451。**recall 随 chunk 变粗系统性上升≠检索变好，而是候选相关集缩小**——故统一以 **turn 粒度**为诚实口径，session/window 仅作对照。 |
-| 生产默认口径（hybrid = BM25+向量 RRF） | 评测中（后台向量化 5,882 条 bge-m3，预计 ~20min）。该臂验证「向量融合是否在英文语料上进一步抬升 recall@k」，结果将补录本表。 |
-| J-score 端到端 | judge_score 已实现（检索 top-k → LLM 生成答案 → 与 gold answer 比对），**因 AGNES LLM 频限（2026-09-01 00:11 UTC+8 重置）暂未跑**，待额度恢复后补录抽样 J-score。 |
+| 生产默认口径（hybrid = BM25+向量 RRF） | mem=5882 → recall@1=0.3310 / @3=0.5136 / @5=0.6070 / @10=**0.6895**（较 BM25 +0.1444，+26.5%）；P95 574.2ms（向量检索开销）/ 均值 519.2ms，空结果 0 条（BM25 有 16 条，向量路补回 BM25 漏召的语义相关）；向量化 5,882 条 bge-m3：缓存命中 2488 + 批量嵌 3394，coverage=1.0，耗时 1175s（批量嵌入重写后约 20min）。**结论：向量融合在英文语料上显著抬升 recall 且消除空结果。** |
+| J-score 端到端 | 抽样 100 条（seed=0, top_k=10），DeepSeek(deepseek-v4-flash，正是生产 LLM) 作 judge 直连绕过 agnes 频限；判定 74 条（correct 56 / wrong 18 / no_context 26 / error 0），**J-score=0.7568**（分母=judged，no_context 与 error 不计入）；NO-CONTEXT 率 26.00%；分类 J-score：multi_hop=0.4091(22) / open_domain=0.0(7) / single_hop=0.6327(49) / temporal=0.7273(22)。难类（multi_hop/open_domain）仍显著偏低，为 LoCoMo 已知难题。 |
+| 边界（不可越过解读） | ①本通路零 token 直灌、不跑提炼 → 不产出 memory_edges，**图召回未参与评测**；②故数字仅能与「同样直灌口径」的基线横向比，**不等于 SGME 端到端生产效果**（生产链路含提炼+图召回，高低需另测）；③J-score 为抽样值（n=100）存在抽样误差。 |
 | 关键教训 | ①LoCoMo 的 dia_id 仅在 conversation 内唯一 → 多会话评测必须按 conv 隔离 GT 与检索，否则相关集污染。②evidence 存在 `D8:6; D9:17` 分号多 id、`D8: 6` 空格、畸形 token 等脏形态 → GT 解析需鲁棒正则（仅 `^D\d+:\d+$` 计入，其余降级忽略）。③零 token 灌库让 5,882 记忆基线评测成本≈0，可反复重跑。 |
 | 文档 | 本记录 B142；Backlog ST-40 标 ✅、T-141 关闭。 |
