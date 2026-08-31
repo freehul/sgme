@@ -224,6 +224,8 @@ def insert_memory(
     prompt_version: str | None = None,
     occurred_at: str | None = None,
     facts: Iterable[dict] | None = None,
+    valid_from: str | None = None,
+    valid_to: str | None = None,
 ) -> str:
     """插入一条记忆 + 标签 + 溯源。
 
@@ -237,6 +239,8 @@ def insert_memory(
       （vs created_at=提炼落库时刻）；缺省 None 时回退为 created_at
     - facts（T-136，2026-08-31）：原子事实三元组列表
       [{"subject":..., "predicate":..., "object":...}, ...]，序列化为 JSON 写 facts_json 列
+    - valid_from/valid_to（T-138，2026-08-31）：有效期间（事实何时开始/失效）；
+      NULL=永久有效；检索侧过期过滤见 search/_filter_expired
     - 返回 memory_id
     """
     mid = memory_id or _uuid()
@@ -250,12 +254,12 @@ def insert_memory(
             INSERT INTO memories
               (memory_id, content, content_seg, memory_type, priority, time_velocity,
                ttl_days, created_at, updated_at, agent_tag, prompt_version, occurred_at,
-               facts_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               facts_json, valid_from, valid_to)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (mid, content, segment(content), memory_type, priority, time_velocity,
              ttl_days, c_at, u_at, agent_tag, prompt_version, o_at,
-             _facts_to_json(facts)),
+             _facts_to_json(facts), valid_from, valid_to),
         )
         for dim_id in dimension_ids:
             conn.execute(
@@ -395,13 +399,16 @@ def archive_memory(
             INSERT OR REPLACE INTO memory_archive
               (memory_id, content, memory_type, priority, time_velocity, ttl_days,
                created_at, updated_at, agent_tag, prompt_version, archived_at, superseded_by,
-               occurred_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               occurred_at, facts_json, valid_from, valid_to)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (row["memory_id"], row["content"], row["memory_type"], row["priority"],
              row["time_velocity"], row["ttl_days"], row["created_at"], row["updated_at"],
              row["agent_tag"], row["prompt_version"], _now_iso(), superseded_by,
-             row["occurred_at"] if "occurred_at" in row.keys() else None),
+             row["occurred_at"] if "occurred_at" in row.keys() else None,
+             row["facts_json"] if "facts_json" in row.keys() else None,
+             row["valid_from"] if "valid_from" in row.keys() else None,
+             row["valid_to"] if "valid_to" in row.keys() else None),
         )
         # 标签、溯源与向量一并清除（归档行保留可溯源；archive 表无 FK 到 memories）
         conn.execute("DELETE FROM memory_tags WHERE memory_id=?", (memory_id,))

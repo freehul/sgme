@@ -438,6 +438,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_persona_tables(conn)
     _migrate_memory_edges_table(conn)
     _migrate_mem_facts_json(conn)
+    _migrate_mem_valid_period(conn)
     return conn
 
 
@@ -887,6 +888,21 @@ def _migrate_mem_facts_json(conn: sqlite3.Connection) -> None:
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
         if "facts_json" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN facts_json TEXT")
+    conn.commit()
+
+
+def _migrate_mem_valid_period(conn: sqlite3.Connection) -> None:
+    """老库迁移：memories/memory_archive 补 valid_from/valid_to 列（ST-39 T-138，2026-08-31）。
+
+    有效期间语义：事实何时开始/失效（occurred_at 已覆盖事件时刻）。NULL=永久有效，
+    天然向后兼容（存量记忆全部 NULL → 过滤零影响）。检索侧过滤见
+    sgme/data/search/_filter_expired。幂等：列已存在则无操作。
+    """
+    for table in ("memories", "memory_archive"):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        for col in ("valid_from", "valid_to"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
     conn.commit()
 
 
