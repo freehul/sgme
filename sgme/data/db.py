@@ -357,6 +357,29 @@ CREATE TABLE IF NOT EXISTS dream_reports (
 """
 
 
+# ---------- ST-38 T-133：记忆关系边 memory_edges（memory.db，独立 DDL 常量） ----------
+# 图纸：`SGME-记忆系统进化方案-v0.2.md` §T2-1（v0.2 新增 Phase 0 结构边）。
+# 关系集 ≤6：similar / causes / supersedes / belongs_to / contradicts / evolves_from。
+# source：'llm' | 'cooccur' | 'scene' | 'system'（v0.2 新增 system=结构性边，backfill 产物）。
+# valid_from / valid_to 预留（阶段三启用）。edge_id 由 DAO 确定性生成 `{from}::{to}::{relation}`（幂等可重跑）。
+# ⚠️ 刻意不加外键：记忆会被 Supersession 归档/软删（memory_archive），外键会阻塞归档
+#    或级联抹掉溯源（同 demands 先例，见 DEMANDS_DDL 注释）；存在性由 DAO/调用方软校验。
+MEMORY_EDGES_DDL = """
+CREATE TABLE IF NOT EXISTS memory_edges (
+  edge_id    TEXT PRIMARY KEY,
+  from_id    TEXT NOT NULL,
+  to_id      TEXT NOT NULL,
+  relation   TEXT NOT NULL,
+  weight     REAL NOT NULL DEFAULT 1.0,
+  valid_from TEXT,
+  valid_to   TEXT,
+  created_at TEXT NOT NULL,
+  source     TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_edges_from ON memory_edges(from_id, relation);
+CREATE INDEX IF NOT EXISTS idx_edges_to   ON memory_edges(to_id, relation);
+"""
+
+
 def _now_iso() -> str:
     """UTC ISO 8601 时间戳。"""
     from datetime import datetime
@@ -413,6 +436,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_signal_consumed_by(conn)
     _migrate_signal_acks_table(conn)
     _migrate_persona_tables(conn)
+    _migrate_memory_edges_table(conn)
     return conn
 
 
@@ -837,6 +861,17 @@ def _migrate_persona_tables(conn: sqlite3.Connection) -> None:
     """
     conn.executescript(PERSONA_TRAITS_DDL)
     conn.executescript(PERSONA_STATE_DDL)
+    conn.commit()
+
+
+def _migrate_memory_edges_table(conn: sqlite3.Connection) -> None:
+    """老库迁移：memory.db 建 memory_edges 关系边表（ST-38 T-133，2026-08-31）。
+
+    与 _migrate_demands_table 同模式：不进 MEMORY_DDL、不 bump SCHEMA_VERSION，
+    CREATE TABLE / CREATE INDEX 全部 IF NOT EXISTS 幂等，老库重启自动补建。
+    表内容（边）由 scripts/backfill_edges.py 一次性/周期 backfill 写入（source='system'）。
+    """
+    conn.executescript(MEMORY_EDGES_DDL)
     conn.commit()
 
 
