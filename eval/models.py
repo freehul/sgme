@@ -204,6 +204,35 @@ class RRFMetrics:
     recommended_k: Optional[int] = None  # 仅 discriminative=True 时非 None
     recall_diagnostics: dict = field(default_factory=dict)  # 根因数据：两路召回量/交集
     embed_cache: dict = field(default_factory=dict)         # embedding 缓存命中统计
+    # ── T-129 召回率 @k（阶段二 A/B 护栏核心指标）──
+    recall_at_k: Optional["RecallAtK"] = None                # recall@1/3/5/10 聚合（真实库副本基线专用）
+
+
+@dataclass
+class RecallAtK:
+    """检索召回率 @k（T-129 阶段二 A/B 护栏核心指标）。
+
+    recall@k = 前 k 条结果中命中「相关集」的查询占比（逐 query 平均）。
+    - 相关集非空是该指标有意义的硬前提（空相关集会污染均值，见 rrf._compute_ndcg）
+    - k 取 1/3/5/10：@1 看首条命中率，@10 看前 10 覆盖（与 NDCG@10 同截断位）
+    - 图召回（T-134）的增益主要靠 multi-hop 类 query 在 @5/@10 上体现
+    """
+
+    recall_at_1: float = 0.0
+    recall_at_3: float = 0.0
+    recall_at_5: float = 0.0
+    recall_at_10: float = 0.0
+    query_count: int = 0                 # 参与统计的查询数（相关集非空）
+
+    def as_dict(self) -> dict:
+        """转 JSON 友好 dict（字段名带 @ 便于报告直读）。"""
+        return {
+            "recall@1": self.recall_at_1,
+            "recall@3": self.recall_at_3,
+            "recall@5": self.recall_at_5,
+            "recall@10": self.recall_at_10,
+            "query_count": self.query_count,
+        }
 
 
 @dataclass

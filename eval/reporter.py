@@ -124,6 +124,7 @@ def _build_json_report(result: EvalResult) -> dict:
             "route_overlap_jaccard": rrf.route_overlap_jaccard,
             "conclusion": rrf.conclusion,
             "recommended_k": rrf.recommended_k,
+            "recall_at_k": rrf.recall_at_k.as_dict() if rrf.recall_at_k else None,
             "recall_diagnostics": rrf.recall_diagnostics,
             "embed_cache": rrf.embed_cache,
         }
@@ -451,6 +452,24 @@ def _build_rrf_section(rrf: RRFMetrics) -> list[str]:
                 "| " + " | ".join(cells) +
                 f" | {row.get('ndcg10', 0.0):.4f} | {row.get('ndcg5', 0.0):.4f} | {mark} |"
             )
+        lines.append("")
+
+    # T-129：召回率 @k 块（阶段二 A/B 护栏核心指标）
+    if rrf.recall_at_k is not None:
+        rk = rrf.recall_at_k
+        lines.append("### 召回率 @k（T-129 A/B 护栏）")
+        lines.append("")
+        lines.append("| 截断位 k | recall@k |")
+        lines.append("|----------|----------|")
+        lines.append(f"| @1 | {rk.recall_at_1:.4f} |")
+        lines.append(f"| @3 | {rk.recall_at_3:.4f} |")
+        lines.append(f"| @5 | {rk.recall_at_5:.4f} |")
+        lines.append(f"| @10 | {rk.recall_at_10:.4f} |")
+        lines.append(f"| 有效查询数 | {rk.query_count} |")
+        lines.append("")
+        lines.append("> recall@k = 前 k 条结果命中「相关集」的查询占比（逐 query 平均）。")
+        lines.append("> multi-hop 类 query 的 @5/@10 增益是图召回（T-134）的主要判据；")
+        lines.append("> 相关集非空是该指标有意义的前提。")
         lines.append("")
 
     # 诊断块
