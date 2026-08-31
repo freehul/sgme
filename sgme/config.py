@@ -254,6 +254,11 @@ DEFAULT_SEARCH_CONFIG = {
         "relation_weights": {"belongs_to": 0.3},  # 共现边尺度压缩：LLM 置信 0-1 vs 场景数 1-N
                             # （语义边 similar/causes 保持 1.0；supersedes/evolves_from 1.0）
     },
+    # ST-39 T-138：有效期间过滤（memories.valid_to 过期不召回；NULL=永久有效，
+    # 存量记忆全 NULL → 过滤零影响，T-129 基线天然无回归）
+    "valid_period": {
+        "enabled": True,
+    },
 }
 
 # 数据目录（T-23：未设 SGME_HOME = 项目根，零回归；设置后跟随 $SGME_HOME）

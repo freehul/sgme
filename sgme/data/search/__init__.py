@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -505,6 +506,11 @@ def search_memories(
     if graph_active and "graph" not in routes:
         routes.append("graph")
 
+    # ST-39 T-138：有效期间过滤（valid_to 过期不召回；NULL=永久有效零影响；
+    # 存量记忆全 NULL → 与 T-138 前行为一致，T-129 基线天然无回归）
+    if _valid_period_enabled(cfg or {}):
+        results = _filter_expired(mem_conn, results)
+
     # T-89（2026-08-20）：内容去重 + limit 截断。
     # 1) 去重：同一事实被 L1 重复落库（不同 memory_id、相同 content）时全量召回
     #    会稀释注入（实测注入 10 条记忆 4 对重复）——按 content 保留最优者；
@@ -698,6 +704,40 @@ def _graph_relation_weights(cfg: dict | None) -> dict[str, float] | None:
     尺度压缩：LLM 置信 0-1 vs 场景数 1-N；语义边/supersedes 保持 1.0）。"""
     v = _graph_setting(cfg, "relation_weights", {"belongs_to": 0.3})
     return dict(v) if isinstance(v, dict) and v else None
+
+
+def _valid_period_enabled(cfg: dict | None) -> bool:
+    """T-138：search.valid_period.enabled（缺省 True；存量记忆 valid_to 全 NULL
+    时过滤零影响，天然向后兼容）。"""
+    if not cfg:
+        return True
+    vp = (cfg.get("search") or {}).get("valid_period") or {}
+    return bool(vp.get("enabled", True))
+
+
+def _filter_expired(mem_conn: sqlite3.Connection, results: list[dict]) -> list[dict]:
+    """T-138：召回后统一过滤 valid_to 已过期记忆（NULL=永久有效，天然兼容）。
+
+    放 RRF 融合后、去重截断前——一处过滤覆盖 bm25/向量/图三路候选，
+    避免改分散 SQL（428/623/777/802/846 多处 status 过滤已够分散）。
+    ISO 字符串同格式（YYYY-MM-DDTHH:MM:SSZ）字典序 = 时间序。
+    """
+    if not results:
+        return results
+    ids = [r["memory_id"] for r in results]
+    ph = ",".join("?" * len(ids))
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    expired = {
+        r["memory_id"]
+        for r in mem_conn.execute(
+            f"SELECT memory_id FROM memories WHERE memory_id IN ({ph}) "
+            "AND valid_to IS NOT NULL AND valid_to < ?",
+            (*ids, now),
+        )
+    }
+    if not expired:
+        return results
+    return [r for r in results if r["memory_id"] not in expired]
 
 
 def _filter_by_dimensions(
