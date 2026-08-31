@@ -2404,3 +2404,30 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 测试 | tests/test_search_graph.py 新增 4 例（共 16 例）；回归 25 例（edge_dao+semantic_edges）+ 全量 130+ 通过（上次全量仅 T-120 遗留断言，已修正）。 |
 | 部署 | v2 配置随下一轮部署（search.graph 默认已含 exclude_relations/relation_weights；生产语义边数据随 L1.5 提炼积累）。 |
 | 文档 | 本记录 B137；Backlog T-137 标 ✅、**ST-38 全部任务完成**（T-127~T-137）。 |
+
+### B138. T-138 有效期间（valid_from/valid_to）+ 检索过期过滤（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | ST-39 治理补齐第一环：事实何时失效。occurred_at 已覆盖「事件发生时刻」，本次补「事实失效时刻」语义——过期事实不再被召回。 |
+| 改动 | ①`db.py _migrate_mem_valid_period`（memories+memory_archive 加 valid_from/valid_to TEXT 列，幂等不 bump SCHEMA_VERSION）。②`memory_dao.insert_memory` 加 valid_from/valid_to 参数（INSERT 列）；`archive_memory` 归档拷贝两列。③`search._filter_expired`：RRF 融合后统一过滤 `valid_to IS NOT NULL AND valid_to < now`（ISO 同格式字典序=时间序；**一处过滤覆盖 bm25/向量/图三路**，避免改分散 SQL）；`search.valid_period.enabled` 默认 True。 |
+| 关键设计 | NULL=永久有效 → 存量记忆全 NULL → 过滤零影响 → **T-129 基线天然无回归**（无需 A/B，语义上不可能改变既有行为）。 |
+| 测试 | test_valid_period.py 8 例（迁移幂等/过期过滤/NULL 兼容/开关关闭/向量图路径统一过滤/归档拷贝/默认 NULL）。相关回归 101 passed。 |
+
+### B139. T-139 Guardrail（写前+召回后敏感信息过滤层）（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | ST-39 第二环：敏感信息写前/召回后过滤。规则匹配优先（快，正则），LLM 方案兜底（慢，默认关留接口）。误脱敏可控是硬要求。 |
+| 改动 | ①新 `sgme/operations/guardrail.py`：规则集（身份证/手机号/银行卡/API 密钥/邮箱/内网 IP 正则——`宁少勿滥防误脱敏`）+ `detect`（命中规则名列表）/ `mask`（命中段→***）/ `decision`（block=拦截丢弃/mask=脱敏放行/pass）。②写前：`pipeline.persist_memories` 对提炼产物逐条 decision（block 丢弃记日志 / mask 改写 content + `_guardrail_masked` 标记）。③召回后：`search._filter_guardrail`（敏感记忆不返回，read_mode=filter）。④config 顶层 `guardrail` 段**默认 enabled=False**（灰度安全：行为与 T-139 前一致）；llm_fallback 接口预留。 |
+| 关键设计 | **默认关=误脱敏可控**：先观察规则命中率（用户可开 write_mode/read_mode 渐进灰度），而非默认开启改变行为。 |
+| 测试 | test_guardrail.py 10 例（规则命中/干净文本/mask/决策三模式/搜索过滤默认关/开/filter/off/单测）。 |
+
+### B140. T-140 多 Agent scope（灰度隔离）（v1.2+，2026-08-31）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | ST-39 第三环：多 Agent（Hermes/DSH/Trae/WorkBuddy）记忆隔离。memories.agent_tag 列已有基础（insert_memory 参数），缺的是「写侧打标链路」+「读侧按 agent 过滤」+「鉴权映射」。必须灰度 + 默认全通保留。 |
+| 改动 | ①写侧：`_resolve_file_agent(session_conn, file_id)` 查 raw_files.agent_id → `persist_memories(agent_tag=...)` 给提炼产物打标（refine_one/refine_many/async_refine_worker 三路；记忆显式携带 agent_tag 时保留）。②读侧：`search_memories`/`operations.search` 加 `agent_id` 参数 + `_filter_agent_scope`（可见规则：agent_tag IS NULL 无主全通 + 'default' 共享 + 同 agent；异 agent 隔离；请求方无身份默认 'default'）。③鉴权映射：`routes /v1/search` 由 `_ = Depends(require_agent_key)` 改为捕获 auth_key → `store.resolve_agent_id(auth_key)` 透传（注册 agt_* key → 绑定 agent；主 key → default）。④config 顶层 `agent_scope.enabled=False`（默认关=全通，共存不受影响）。 |
+| 关键设计 | 灰度三步：①默认关（全通，行为逐字节不变）②开启后 NULL 历史记忆仍全通（存量不丢可见性）③新记忆按来源 agent 打标积累后逐步收窄。 |
+| 测试 | test_agent_scope.py 7 例（可见性矩阵/无身份仅共享/默认关全通/开+agent 过滤/解析 raw agent/写侧打标+显式保留）。相关回归 101 passed。 |
