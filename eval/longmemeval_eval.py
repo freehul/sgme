@@ -1,0 +1,548 @@
+"""eval/longmemeval_eval.py — SGME 的 LongMemEval 业界标准评测台。
+
+替代 LoCoMo 成为 SGME 主评测标准（ST-40 演进）。协议对齐 gbrain 的
+`eval longmemeval`（src/commands/eval-longmemeval.ts）与 LongMemEval 官方：
+- 每题独立隔离库（重置后只灌该题 haystack，零跨题泄漏）
+- 检索 top-k → 按 answer_session_ids 算 session 级 recall
+- 可选 LLM 生成答案 → DeepSeek judge 算 J-score + token-F1
+
+图召回说明：LongMemEval 直灌原始会话、不跑提炼 → memory_edges 为空 →
+图召回正确休眠（贡献 0），与 gbrain 自身跑法一致，公平可比。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import re
+import sqlite3
+import sys
+import time
+from collections import Counter, defaultdict
+from datetime import datetime
+from pathlib import Path
+
+# 复用 SGME 真实接口；以下 LLM/嵌入帮手从原 locomo_eval.py 内联（LoCoMo 已移除，
+# 但这些函数是通用评测基础设施，LongMemEval 评测台继续使用，故就地保留）。
+from sgme import config as sgme_config
+from sgme.data import db as db_mod
+from sgme.data import memory_dao
+from sgme.data import search as search_mod
+from sgme.data.search import init_fts
+
+logger = logging.getLogger("eval.longmemeval")
+
+
+# ── 通用评测帮手（自 locomo_eval.py 内联，LoCoMo 移除后保留）──
+
+_ANSWER_PROMPT = """You are answering a question using ONLY the retrieved memory snippets from a long-term conversation memory system.
+
+Retrieved memories (may be empty or partially irrelevant):
+{context}
+
+Question: {question}
+
+Rules:
+- Answer using ONLY the retrieved memories. If the memories do not contain the answer, reply exactly: NO CONTEXT
+- Be concise: a short phrase or one sentence. Do NOT explain, do NOT add reasoning.
+- Preserve the original wording of dates, names, and numbers as they appear in the memories.
+
+Answer:"""
+
+_JUDGE_PROMPT = """You are an impartial judge evaluating a question-answering system.
+
+Question: {question}
+Gold answer: {gold}
+System answer: {pred}
+
+Decide whether the system answer is CORRECT with respect to the gold answer.
+- CORRECT: the system answer conveys the same key fact(s) as the gold answer (wording/tense/detail-level differences are fine).
+- WRONG: it contradicts the gold answer, states a different fact, or says the information is unavailable when the gold answer does exist.
+
+Reply with exactly one word, CORRECT or WRONG, on the first line. Optionally add a one-line reason on the second line."""
+
+
+def make_deepseek_llm_fn(
+    model: str = "deepseek-v4-flash",
+    api_key_env: str = "DEEPSEEK_API_KEY_SGME",
+    base_url: str = "https://api.deepseek.com/v1",
+    throttle_s: float = 0.25,
+    max_retry: int = 5,
+) -> "Callable[[str], str]":
+    """Build an llm_fn(prompt)->str that calls DeepSeek directly.
+
+    Bypasses the agnes rate limit (the default refinement chain head) and
+    matches SGME production LLM (deepseek-v4-flash). Retries on 429 with
+    exponential backoff. Returns '' on persistent failure.
+    """
+    import os
+    import random
+    import time
+
+    import httpx
+
+    key = os.environ.get(api_key_env) or os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
+        raise RuntimeError(f"missing API key env {api_key_env}")
+
+    def fn(prompt: str) -> str:
+        last_err = ""
+        if throttle_s > 0:
+            time.sleep(throttle_s)
+        for attempt in range(1, max_retry + 1):
+            try:
+                r = httpx.post(
+                    f"{base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+                    timeout=60,
+                )
+                if r.status_code == 429:
+                    last_err = "429"
+                    time.sleep(min(2.0 ** attempt, 16.0) + random.random())
+                    continue
+                r.raise_for_status()
+                return (r.json()["choices"][0]["message"]["content"] or "").strip()
+            except Exception as e:  # noqa: BLE001
+                last_err = str(e)[:120]
+                time.sleep(min(2.0 ** attempt, 16.0) + random.random())
+        logger.warning("deepseek llm_fn failed after %d retries: %s", max_retry, last_err)
+        return ""
+
+    return fn
+
+
+def embed_corpus(
+    mem_conn: sqlite3.Connection,
+    cfg: dict,
+    *,
+    limit: int | None = None,
+    workers: int = 6,
+    batch_size: int = 32,
+) -> dict:
+    """Batch-embed the corpus via Ollama /v1/embeddings (input array).
+
+    Used by the hybrid arm. EmbedCache (sha256(text)+model) dedups across runs.
+    """
+    import random
+
+    import httpx
+    from sgme.data import memory_dao
+    from sgme.data.search import vector as vector_mod
+    from eval.embed_cache import EmbedCache
+
+    t0 = time.perf_counter()
+    rows = mem_conn.execute(
+        "SELECT memory_id, content FROM memories WHERE status != 'rejected' ORDER BY memory_id"
+    ).fetchall()
+    if limit:
+        rows = rows[:limit]
+    total = len(rows)
+    vec_cfg = (cfg.get("search") or {}).get("vector") or {}
+    model = vec_cfg.get("model", "")
+    base_url = (vec_cfg.get("base_url") or "").rstrip("/")
+    cache = EmbedCache(EmbedCache.default_path())
+    prev = vector_mod.set_embed_cache(cache)
+
+    ok = 0
+    misses: list[tuple[int, str, str]] = []
+    for i, r in enumerate(rows):
+        vec = cache.get(r["content"], model)
+        if vec is not None:
+            memory_dao.upsert_vector(
+                mem_conn, r["memory_id"],
+                vector_mod._serialize_vector(vec), model, dims=len(vec),
+            )
+            ok += 1
+        else:
+            misses.append((i, r["memory_id"], r["content"]))
+    mem_conn.commit()
+
+    def embed_batch(batch: list) -> list:
+        texts = [b[2] for b in batch]
+        for attempt in range(1, 7):
+            try:
+                r = httpx.post(
+                    f"{base_url}/embeddings",
+                    json={"model": model, "input": texts},
+                    timeout=120,
+                )
+                if r.status_code == 429:
+                    time.sleep(min(2.0 ** attempt, 16.0) + random.random())
+                    continue
+                r.raise_for_status()
+                data = {d["index"]: d["embedding"] for d in r.json()["data"]}
+                return [(batch[k][1], batch[k][2], data[k]) for k in range(len(batch))]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("batch embed 失败(尝试%d): %s", attempt, str(e)[:120])
+                time.sleep(min(2.0 ** attempt, 16.0) + random.random)
+        raise RuntimeError(f"batch embed 耗尽重试: {texts[0][:40]!r}")
+
+    if misses:
+        batches = [misses[s:s + batch_size] for s in range(0, len(misses), batch_size)]
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+            for res in ex.map(embed_batch, batches):
+                for memory_id, text, vec in res:
+                    cache.put(text, model, vec)
+                    memory_dao.upsert_vector(
+                        mem_conn, memory_id,
+                        vector_mod._serialize_vector(vec), model, dims=len(vec),
+                    )
+                    ok += 1
+                mem_conn.commit()
+                logger.info("向量化进度 %d/%d（%.1f%%）", ok, total, ok * 100.0 / max(total, 1))
+
+    vector_mod.set_embed_cache(prev)
+    return {
+        "corpus_size": total,
+        "vector_count": ok,
+        "coverage": round(ok / total, 4) if total else 0.0,
+        "available": bool(total) and ok == total,
+        "workers": max(1, workers),
+        "batch_size": batch_size,
+        "elapsed_s": round(time.perf_counter() - t0, 1),
+    }
+
+DEFAULT_DATASET = r"D:/GitHubDownloads/LongMemEval/longmemeval_s.jsonl"
+DEFAULT_TOP_K = 8
+DEFAULT_OUT = "eval/results/longmemeval"
+FIXED_TS = "2026-01-01T00:00:00Z"
+
+
+# ── 数据集 ──
+
+def load_dataset(path: str) -> list[dict]:
+    raw = Path(path).read_text(encoding="utf-8")
+    t = raw.strip()
+    if t.startswith("["):
+        return json.loads(raw)
+    return [json.loads(l) for l in t.splitlines() if l.strip()]
+
+
+def render_session(turns: list, session_id: str, date: str | None = None) -> str:
+    """把一条 LongMemEval session（turn 列表）渲染成 markdown。
+
+    数据集 _s 变体：haystack_sessions[i] 是 turn 列表，session_id 在平行数组
+    haystack_session_ids[i]，故此处直接收 session_id 入参。
+    """
+    fm = ["---", "type: note"]
+    if date:
+        fm.append(f"date: {date}")
+    fm.append(f"session_id: {session_id}")
+    fm.extend(["---", ""])
+    body: list[str] = []
+    for turn in turns:
+        body.append(f"**{turn['role']}:** {turn['content']}")
+        body.append("")
+    return "\n".join(fm) + "\n".join(body)
+
+
+# ── 配置 ──
+
+def make_cfg(base: dict, *, vector: bool) -> dict:
+    cfg = json.loads(json.dumps(base))
+    cfg.setdefault("search", {})
+    # 基准眠图：LongMemEval 直灌无提炼 → 无边 → 图召回贡献 0，公平
+    cfg["search"]["graph"] = {"enabled": False}
+    cfg["search"]["vector"] = {
+        "enabled": bool(vector),
+        "base_url": os.environ.get("SGME_EMBED_BASE_URL", "http://192.168.10.10:11434/v1").rstrip("/"),
+        "model": os.environ.get("SGME_EMBED_MODEL", "bge-m3:latest"),
+    }
+    return cfg
+
+
+# ── 每题隔离库 ──
+
+def open_question_db(out_dir: Path, q: dict, dims, aliases, *, vector: bool, cfg: dict):
+    """重置并灌入单题 haystack；返回 (mem_conn, session_conn, wiki_conn)。"""
+    for name in ("memory.db", "session.db", "wiki.db"):
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(out_dir / name) + suffix)
+            if p.exists():
+                p.unlink()
+    mem_conn, session_conn, wiki_conn = db_mod.init_databases(out_dir)
+    memory_dao.import_registry(mem_conn, dims, aliases)
+    init_fts(mem_conn)
+    dates = q.get("haystack_dates") or []
+    sessions = q.get("haystack_sessions") or []
+    session_ids = q.get("haystack_session_ids") or []
+    n = 0
+    seen: set[str] = set()
+    for i, turns in enumerate(sessions):
+        sid = session_ids[i] if i < len(session_ids) else f"session_{i}"
+        if sid in seen:  # LongMemEval 部分题 haystack_session_ids 含重复 sid
+            continue
+        seen.add(sid)
+        content = render_session(turns, sid, dates[i] if i < len(dates) else None)
+        memory_dao.insert_memory(
+            mem_conn,
+            content=content,
+            memory_type="episodic",
+            priority=50,
+            time_velocity="static",
+            ttl_days=None,
+            dimension_ids=["social"],
+            sources=[(sid, "lme_session")],
+            agent_tag="longmemeval",
+            memory_id=sid,
+            created_at=FIXED_TS,
+            updated_at=FIXED_TS,
+            occurred_at=FIXED_TS,
+        )
+        n += 1
+    mem_conn.commit()
+    if vector:
+        embed_corpus(mem_conn, cfg, workers=6, batch_size=32)
+    return mem_conn, session_conn, wiki_conn
+
+
+# ── F1（token 级，复刻 LongMemEval 口径）──
+
+def _norm_tokens(s: str) -> list[str]:
+    s = (s or "").lower()
+    return re.findall(r"[a-z0-9]+|[一-鿿]", s)
+
+
+def token_f1(pred: str, gold: str) -> float:
+    pt, gt = _norm_tokens(pred), _norm_tokens(gold)
+    if not gt:
+        return 1.0 if not pt else 0.0
+    if not pt:
+        return 0.0
+    c_pred, c_gold = Counter(pt), Counter(gt)
+    overlap = sum((c_pred & c_gold).values())
+    prec = overlap / len(pt)
+    rec = overlap / len(gt)
+    return 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+
+
+# ── 主流程 ──
+
+def run(args) -> dict:
+    ds = load_dataset(args.dataset)
+    if args.limit and args.limit < len(ds):
+        ds = ds[: args.limit]
+    base_cfg = sgme_config.load_config()
+    dims = sgme_config.load_dimensions()
+    aliases = sgme_config.load_aliases()
+
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    vector_arm = "hybrid" in arms
+    out_dir = Path(args.output).resolve()
+    # 每轮运行独立临时目录，避免跨运行复用被旧进程锁定的库文件（WinError 32）
+    run_id = datetime.now().strftime("%Y%m%dT%H%M%S")
+    (out_dir / "tmp" / run_id).mkdir(parents=True, exist_ok=True)
+
+    llm_fn = None
+    if args.qa:
+        judge_base = args.judge_base_url or os.environ.get(
+            "SGME_JUDGE_BASE_URL", "https://api.deepseek.com/v1")
+        judge_key_env = args.judge_api_key_env or os.environ.get(
+            "SGME_JUDGE_KEY_ENV", "DEEPSEEK_API_KEY_SGME")
+        llm_fn = make_deepseek_llm_fn(
+            model=args.judge_model,
+            api_key_env=judge_key_env,
+            base_url=judge_base,
+            throttle_s=0.25,
+        )
+
+    # 指标累计
+    recall_by_type: dict[str, dict] = defaultdict(lambda: {"hit": 0, "total": 0})
+    j_by_type: dict[str, list] = defaultdict(list)   # 1/0/-1
+    f1_by_type: dict[str, list] = defaultdict(list)
+    n_qa = n_correct = n_wrong = n_noctx = n_err = 0
+
+    run_start = time.perf_counter()
+    cfg_cache: dict[str, dict] = {}
+    for qi, q in enumerate(ds, 1):
+        qtype = q.get("question_type", "unknown")
+        gt = set(q.get("answer_session_ids") or [])
+        q_out = out_dir / "tmp" / run_id / f"q{qi}"
+        q_out.mkdir(parents=True, exist_ok=True)
+
+        per_arm_recall: dict[str, bool] = {}
+        last_res = None
+        primary_res = None
+        for arm in arms:
+            vector = arm == "hybrid"
+            cache_key = "hybrid" if vector else "bm25"
+            if cache_key not in cfg_cache:
+                cfg_cache[cache_key] = make_cfg(base_cfg, vector=vector)
+            cfg = cfg_cache[cache_key]
+            mem_conn, sc, wc = open_question_db(q_out, q, dims, aliases, vector=vector, cfg=cfg)
+            try:
+                res = search_mod.search_memories(
+                    mem_conn, None, query=q["question"], limit=args.top_k,
+                    include_sources=False, cfg=cfg,
+                )
+                seen: set[str] = set()
+                retrieved: list[str] = []
+                for r in res:
+                    sid = r.get("memory_id")
+                    if sid and sid not in seen:
+                        seen.add(sid)
+                        retrieved.append(sid)
+                # 官方 LongMemEval session 级 recall：命中的答案 session 数 / 答案 session 总数
+                gt_sessions = set(gt)
+                recall_frac = (
+                    len(gt_sessions & set(retrieved)) / len(gt_sessions)
+                    if gt_sessions else 0.0
+                )
+                per_arm_recall[arm] = recall_frac
+                if arm == (args.primary or ("hybrid" if vector_arm else "bm25")):
+                    primary_res = res
+                last_res = res
+            finally:
+                sc.close(); wc.close(); mem_conn.close()
+
+        for arm, rfrac in per_arm_recall.items():
+            b = recall_by_type.setdefault(f"{arm}:{qtype}", {"hit": 0.0, "total": 0})
+            b["total"] += 1
+            b["hit"] += rfrac
+
+        # QA（用 primary 臂的检索结果生成答案）
+        if args.qa and llm_fn:
+            ctx_src = primary_res or last_res or []
+            context = "\n".join(
+                f"[{i + 1}] {r.get('content', '')}" for i, r in enumerate(ctx_src)
+            ) or "(no memories retrieved)"
+            pred = llm_fn(_ANSWER_PROMPT.format(context=context, question=q["question"])).strip()
+            pred_head = pred.splitlines()[0].strip() if pred else ""
+            gold = str(q.get("answer", ""))
+            n_qa += 1
+            f1 = token_f1(pred_head, gold)
+            f1_by_type[qtype].append(f1)
+            if not pred:
+                n_err += 1
+                j_by_type[qtype].append(-1)
+            elif pred_head.upper().startswith("NO CONTEXT"):
+                n_noctx += 1
+                j_by_type[qtype].append(0)
+            else:
+                jr = llm_fn(_JUDGE_PROMPT.format(
+                    question=q["question"], gold=gold, pred=pred_head,
+                )).strip()
+                jhead = ""
+                if jr:  # 鲁棒解析：thinking 模型首行可能是推理，搜首个 CORRECT/WRONG
+                    m = re.search(r"\b(CORRECT|WRONG)\b", jr.upper())
+                    jhead = m.group(1) if m else ""
+                if jhead == "CORRECT":
+                    n_correct += 1
+                    j_by_type[qtype].append(1)
+                elif jhead == "WRONG":
+                    n_wrong += 1
+                    j_by_type[qtype].append(0)
+                else:
+                    n_err += 1
+                    j_by_type[qtype].append(-1)
+
+        if qi % 25 == 0 or qi == len(ds):
+            el = int(time.perf_counter() - run_start)
+            logger.warning("[lme] %d/%d  elapsed=%ds", qi, len(ds), el)
+
+    # 汇总
+    def _recall(d):
+        return round(d["hit"] / d["total"], 4) if d["total"] else 0.0
+
+    def _jscore(marks):
+        valid = [m for m in marks if m >= 0]
+        if not valid:
+            return 0.0, 0
+        return round(sum(valid) / len(valid), 4), len(valid)
+
+    def _f1avg(vals):
+        return round(sum(vals) / len(vals), 4) if vals else 0.0
+
+    arms_recall: dict[str, dict] = {}
+    for k, d in sorted(recall_by_type.items()):
+        arms_recall[k] = {"recall@%d" % args.top_k: _recall(d), "hit": d["hit"], "total": d["total"]}
+
+    j_summary: dict[str, dict] = {}
+    for c, marks in sorted(j_by_type.items()):
+        js, judged = _jscore(marks)
+        j_summary[c] = {"j_score": js, "judged": judged, "f1": _f1avg(f1_by_type.get(c, []))}
+
+    result = {
+        "dataset": args.dataset,
+        "n_questions": len(ds),
+        "top_k": args.top_k,
+        "arms": arms,
+        "retrieval_recall_by_arm_type": arms_recall,
+        "qa": {
+            "enabled": bool(args.qa),
+            "n_qa": n_qa,
+            "correct": n_correct,
+            "wrong": n_wrong,
+            "no_context": n_noctx,
+            "errors": n_err,
+            "j_score": round(n_correct / n_qa, 4) if n_qa else 0.0,
+            "no_context_rate": round(n_noctx / n_qa, 4) if n_qa else 0.0,
+            "by_type": j_summary,
+        },
+        "elapsed_s": int(time.perf_counter() - run_start),
+    }
+    return result
+
+
+def report_md(result: dict) -> str:
+    L = ["# SGME · LongMemEval 业界标准评测报告", ""]
+    L.append(f"- 数据集：{result['dataset']}（{result['n_questions']} 题）")
+    L.append(f"- top-k：{result['top_k']} ｜ 臂：{', '.join(result['arms'])}")
+    L.append(f"- 图召回：休眠（直灌无提炼 → memory_edges 空，公平）")
+    L.append(f"- 耗时：{result['elapsed_s']}s")
+    L.append("")
+    L.append("## 检索 recall（session 级，按 answer_session_ids）")
+    L.append("")
+    L.append("| 臂 | 题型 | recall@%d | n |" % result["top_k"])
+    L.append("|---|---|---|---|")
+    for k, d in result["retrieval_recall_by_arm_type"].items():
+        arm, qtype = k.split(":", 1)
+        L.append(f"| {arm} | {qtype} | {d['recall@%d' % result['top_k']]} | {d['total']} |")
+    qa = result["qa"]
+    L.append("")
+    L.append("## QA（DeepSeek 生成 + judge）")
+    L.append("")
+    if qa["enabled"]:
+        L.append(f"- J-score：{qa['j_score']}（correct {qa['correct']} / wrong {qa['wrong']}）")
+        L.append(f"- NO CONTEXT 率：{qa['no_context_rate']} ｜ errors：{qa['errors']}")
+        L.append("")
+        L.append("| 题型 | J-score | judged | F1 |")
+        L.append("|---|---|---|---|")
+        for c, d in qa["by_type"].items():
+            L.append(f"| {c} | {d['j_score']} | {d['judged']} | {d['f1']} |")
+    else:
+        L.append("- 未启用（--qa）")
+    return "\n".join(L) + "\n"
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="SGME LongMemEval 评测台")
+    ap.add_argument("--dataset", default=DEFAULT_DATASET)
+    ap.add_argument("--output", default=DEFAULT_OUT)
+    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--arms", default="bm25,hybrid", help="bm25,hybrid")
+    ap.add_argument("--primary", default=None, help="QA 用哪条臂的检索结果")
+    ap.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
+    ap.add_argument("--qa", action="store_true", help="启用 LLM 生成 + judge")
+    ap.add_argument("--judge-model", default="deepseek-v4-flash")
+    ap.add_argument("--judge-base-url", default=None, help="LLM judge base_url (env SGME_JUDGE_BASE_URL)")
+    ap.add_argument("--judge-api-key-env", default=None, help="LLM judge api key env (env SGME_JUDGE_KEY_ENV)")
+    args = ap.parse_args()
+
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
+    result = run(args)
+    out_dir = Path(args.output).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "longmemeval_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (out_dir / "longmemeval_report.md").write_text(report_md(result), encoding="utf-8")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

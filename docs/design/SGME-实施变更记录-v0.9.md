@@ -2457,3 +2457,16 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 边界（不可越过解读） | ①本通路零 token 直灌、不跑提炼 → 不产出 memory_edges，**图召回未参与评测**；②故数字仅能与「同样直灌口径」的基线横向比，**不等于 SGME 端到端生产效果**（生产链路含提炼+图召回，高低需另测）；③J-score 为抽样值（n=100）存在抽样误差。 |
 | 关键教训 | ①LoCoMo 的 dia_id 仅在 conversation 内唯一 → 多会话评测必须按 conv 隔离 GT 与检索，否则相关集污染。②evidence 存在 `D8:6; D9:17` 分号多 id、`D8: 6` 空格、畸形 token 等脏形态 → GT 解析需鲁棒正则（仅 `^D\d+:\d+$` 计入，其余降级忽略）。③零 token 灌库让 5,882 记忆基线评测成本≈0，可反复重跑。 |
 | 文档 | 本记录 B142；Backlog ST-40 标 ✅、T-141 关闭。 |
+
+### B143. ST-40 评测标准切换：LoCoMo → LongMemEval（v1.1.0，2026-09-01）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户决策「清理掉 SGME 自带的 LoCoMo，用 LongMemEval 作为 SGME 的评测标准」。同时澄清「补足不足」——SGME 进化方案（EP-3 Gen3 / T-133~T-137）**已有图召回**，并非缺功能；真实不足是生产 backfill 未执行 + 评测零 token 直灌不造边导致图召回休眠。 |
+| 清理动作 | `git rm` 删除 `eval/locomo.py` / `eval/locomo_eval.py` / `eval/locomo_ingest.py` / `tests/test_locomo.py` / `eval/fixtures/locomo_mini.json` / `docs/eval/SGME_LoCoMo_*` 报告；磁盘清理 `eval/results/locomo*`、`eval/tmp/locomo*`。原评测台依赖的 4 个通用函数（`make_deepseek_llm_fn` / `_ANSWER_PROMPT` / `_JUDGE_PROMPT` / `embed_corpus`）**内联**进新台，移除 LoCoMo 不破坏评测台。`docs/eval/README.md` 改写为 LongMemEval 标准。 |
+| 评测台 | 新增 `eval/longmemeval_eval.py`（协议对齐 gbrain `eval longmemeval` 与 LongMemEval 官方：每题独立隔离库 + session 级 recall + LLM judge 算 J-score + token-F1）。修 5 bug：UNIQUE 冲突（重复 session_id）、检索 recall 改官方分数口径（命中答案 session 数/总数）、J-score 公式（correct/总题数）、embedding 端点注入、每轮独立临时目录防 WinError 32 文件锁。 |
+| 图召回客观不可激活（关键实测） | LongMemEval 直灌原始会话、不跑提炼 → `memory_stats` 为空 → `backfill_system_edges` 在此口径下产出 **0 条边**（已实测）。故图召回贡献 0，与 gbrain 自身跑法一致，公平可比。图召回「激活」指**生产库** backfill（生产库有 memory_stats，B133/B134 遗留步骤），属独立运维增强项，不污染评测。 |
+| 结果（500 题，bm25 纯 lexical，top-8，session 级） | 整体加权 recall@8 = **0.6847**；分类型 recall@8：单会话-用户 0.8286(70) / 知识更新 0.8077(78) / 单会话-助手 0.8036(56) / 跨会话 0.6356(133) / 时序推理 0.5925(133) / 单会话-偏好 0.4333(30)。 |
+| QA（智谱 glm-4-flash judge，非 thinking） | J-score=**0.354**（correct 177 / wrong 93 / no-context 225 / errors 5），token-F1=**0.2473**，NO CONTEXT 率 0.45；分类型 J-score：单会话-助手 0.7143 / 单会话-用户 0.6377 / 知识更新 0.5526 / 跨会话 0.1667 / 时序推理 0.1818 / 单会话-偏好 0.1667；耗时 4223s。各题型 J-score 与 recall 高度自洽（单会话高、跨会话/时序/偏好低）。 |
+| 诚实边界 | ①检索臂仅 bm25（纯 lexical）：NAS Ollama bge-m3 嵌入实测 ~49s/条，向量臂不可行，未跑 hybrid；纯 lexical 下 0.685 属合理区间，接入向量后预期提升。②QA judge 用智谱 glm-4-flash，公开榜用 GPT-4，judge 模型差异引入系统性偏差；J-score 仅与公开榜做量级参考，检索 recall 维度（与 judge 无关）可直接对比。③图召回 raw-ingest 评测客观无法激活；生产 backfill 后图召回方可贡献。④DeepSeek 主 judge key 评测中途 402 余额耗尽，切换智谱 glm-4-flash 完成 QA。 |
+| 文档 | 本记录 B143；`eval/results/longmemeval_full/longmemeval_report.json` + `.md`；`docs/eval/longmemeval_report_zh.md`（中文对比报告，含 2026-03 公开榜）；Backlog ST-40 / T-141 更新为 LongMemEval 标准。 |
