@@ -1,0 +1,752 @@
+{
+  "generated_at": "2026-09-01T12:33:56.471710+00:00",
+  "task": "ST-40 / T-141 LoCoMo",
+  "data_path": "D:\\GitHubDownloads\\LoCoMo\\data\\locomo10.json",
+  "conv_ids": [
+    "conv-26",
+    "conv-30",
+    "conv-41",
+    "conv-42",
+    "conv-43",
+    "conv-44",
+    "conv-47",
+    "conv-48",
+    "conv-49",
+    "conv-50"
+  ],
+  "corpus_stats": {
+    "conversations": 10,
+    "sessions": 272,
+    "turns": 5882,
+    "chars": 726756,
+    "qa_total": 1986,
+    "qa_with_evidence": 1982,
+    "qa_main": 1540,
+    "qa_main_with_evidence": 1536,
+    "qa_by_category": {
+      "adversarial": 446,
+      "multi_hop": 282,
+      "open_domain": 96,
+      "single_hop": 841,
+      "temporal": 321
+    }
+  },
+  "ingest_config": {
+    "granularity": "turn",
+    "window": 5,
+    "stride": 5,
+    "with_date": true,
+    "speaker_prefix": true,
+    "dimension_id": "social",
+    "agent_tag": "locomo",
+    "memory_type": "episodic",
+    "per_conv_agent_tag": true
+  },
+  "index": {
+    "memory_count": 5882,
+    "granularity": "turn"
+  },
+  "gt": {
+    "qa_total": 1536,
+    "qa_covered": 1535,
+    "coverage": 0.9993,
+    "unresolved_dia_count": 2,
+    "by_category": {
+      "multi_hop": 282,
+      "open_domain": 92,
+      "single_hop": 841,
+      "temporal": 320
+    }
+  },
+  "vector": null,
+  "scope": {
+    "scoped": true,
+    "mechanism": "T-140 agent_scope（agent_id=conv_id，灌库 agent_tag=conv_id）"
+  },
+  "arms": {
+    "bm25": {
+      "query_count": 1535,
+      "recall_at_k": {
+        "recall@1": 0.3084,
+        "recall@3": 0.4582,
+        "recall@5": 0.5038,
+        "recall@10": 0.5451,
+        "query_count": 1535
+      },
+      "by_category": {
+        "multi_hop": {
+          "recall@1": 0.0639,
+          "recall@3": 0.1473,
+          "recall@5": 0.2009,
+          "recall@10": 0.2457,
+          "query_count": 282
+        },
+        "open_domain": {
+          "recall@1": 0.1123,
+          "recall@3": 0.2298,
+          "recall@5": 0.2558,
+          "recall@10": 0.283,
+          "query_count": 92
+        },
+        "single_hop": {
+          "recall@1": 0.3809,
+          "recall@3": 0.5466,
+          "recall@5": 0.5987,
+          "recall@10": 0.6361,
+          "query_count": 841
+        },
+        "temporal": {
+          "recall@1": 0.3898,
+          "recall@3": 0.5654,
+          "recall@5": 0.5924,
+          "recall@10": 0.6451,
+          "query_count": 320
+        }
+      },
+      "p95_latency_ms": 8.83,
+      "mean_latency_ms": 4.23,
+      "empty_result_count": 16
+    }
+  },
+  "jscore": {
+    "sample_n": 100,
+    "judged": 61,
+    "correct": 44,
+    "wrong": 17,
+    "no_context": 39,
+    "errors": 0,
+    "j_score": 0.7213,
+    "j_score_denominator": "judged (correct+wrong) —— no_context 与 error 不计入分母",
+    "no_context_rate": 0.39,
+    "by_category": {
+      "multi_hop": {
+        "judged": 22,
+        "correct": 6,
+        "j_score": 0.2727,
+        "errors": 0
+      },
+      "open_domain": {
+        "judged": 7,
+        "correct": 0,
+        "j_score": 0.0,
+        "errors": 0
+      },
+      "single_hop": {
+        "judged": 49,
+        "correct": 26,
+        "j_score": 0.5306,
+        "errors": 0
+      },
+      "temporal": {
+        "judged": 22,
+        "correct": 12,
+        "j_score": 0.5455,
+        "errors": 0
+      }
+    },
+    "top_k": 10,
+    "seed": 0,
+    "details": [
+      {
+        "q": "What is something that Audrey often dresses up her dogs with?",
+        "gold": "Hats",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What type of jewelry does Audrey make?",
+        "gold": "Jewelry made from recycled objects",
+        "pred": "Jewelry out of recycled stuff (bottle caps, buttons, and broken jewelry).",
+        "verdict": "correct"
+      },
+      {
+        "q": "How does Melanie prioritize self-care?",
+        "gold": "by carving out some me-time each day for activities like running, reading, or playing the violin",
+        "pred": "When I look after myself, I'm able to better look after my family.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "What type of ice cream does Joanna mention that Nate makes and is delicious?",
+        "gold": "Coconut milk ice cream",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What were Deborah's mother's hobbies?",
+        "gold": "reading, traveling, art, cooking",
+        "pred": "reading was one of her hobbies",
+        "verdict": "wrong"
+      },
+      {
+        "q": "What aspect of \"The Witcher 3\" does John find immersive?",
+        "gold": "shaping the world with choices",
+        "pred": "The story and trying to make the right choices to shape the world.",
+        "verdict": "correct"
+      },
+      {
+        "q": "How did Audrey hear about the workshop on bonding with pets?",
+        "gold": "Saw a workshop flyer at the local pet store",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What year did Tim go to the Smoky Mountains?",
+        "gold": "2022",
+        "pred": "2022",
+        "verdict": "correct"
+      },
+      {
+        "q": "What did John receive for achieving second place in the tournament?",
+        "gold": "money and a trophy",
+        "pred": "some money",
+        "verdict": "wrong"
+      },
+      {
+        "q": "What is the topic of discussion between John and Tim on 11 December, 2023?",
+        "gold": "Academic achievements and sports successes",
+        "pred": "They discussed success stories, including John’s sports game and Tim’s English lit class analysis, on 11 December, 2023.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What did Jolene's mom stress the value of, which she wants to keep in mind for her engineering projects?",
+        "gold": "Helping others",
+        "pred": "Helping others",
+        "verdict": "correct"
+      },
+      {
+        "q": "When did Nate win a big Valorant tourney?",
+        "gold": "The Saturday before 7November, 2022",
+        "pred": "Nate won the final of a big Valorant tournament last Saturday, as of his message on 7 November, 2022.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What kind of project was Jolene working on in the beginning of January 2023?",
+        "gold": "electricity engineering project",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "When did Maria take up community work with her church friends?",
+        "gold": "August 4, 2023",
+        "pred": "Yesterday (as of her message on 5 August 2023)",
+        "verdict": "correct"
+      },
+      {
+        "q": "Why did Nate get a third turtle?",
+        "gold": "He saw another one at a pet store and wanted to get it",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "When did Maria receive a medal from the homeless shelter?",
+        "gold": "The week before 9 August 2023",
+        "pred": "Last week",
+        "verdict": "wrong"
+      },
+      {
+        "q": "What does Gina say about the dancers in the photo?",
+        "gold": "They look graceful",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "How did Evan get into painting?",
+        "gold": "His friend got him into it by gifting him a painting and giving him some advice. The painting inspired Evan.",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What is displayed on Joanna's cork board for motivation and creativity?",
+        "gold": "inspiring quotes, photos, and little keepsakes",
+        "pred": "quotes, photos, and little keepsakes.",
+        "verdict": "correct"
+      },
+      {
+        "q": "When did Jolene gift her partner a new console?",
+        "gold": "17 August, 2023",
+        "pred": "on the 17th",
+        "verdict": "correct"
+      },
+      {
+        "q": "Do all of Dave's car restoration projects go smoothly?",
+        "gold": "No",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What hobby did Evan start practicing a few years ago that he enjoys?",
+        "gold": "Watercolor painting",
+        "pred": "Painting.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What did Maria donate to a homeless shelter in December 2023?",
+        "gold": "old car",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What other exercises can help John with his basketball performance?",
+        "gold": "Sprinting, long-distance running, and boxing.",
+        "pred": "Physical therapy exercises.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "What did Jon say about creating a special experience for customers?",
+        "gold": "It's the key to making them feel welcome and coming back",
+        "pred": "Jon: \"Creating a special experience for customers is the key to making them feel welcome and coming back.\"",
+        "verdict": "correct"
+      },
+      {
+        "q": "What does Dave find satisfying about restoring old cars?",
+        "gold": "Transforming something old and beat-up into something beautiful",
+        "pred": "It's so satisfying to bring an old car back to life.",
+        "verdict": "correct"
+      },
+      {
+        "q": "When Gina has lost her job at Door Dash?",
+        "gold": "January, 2023",
+        "pred": "20 January 2023",
+        "verdict": "correct"
+      },
+      {
+        "q": "Who inspired Dave's passion for car engineering?",
+        "gold": "His Dad",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What is the main intention behind Tim wanting to attend the book conference?",
+        "gold": "to learn more about literature and create a stronger bond to it",
+        "pred": "To learn more about literature and create a stronger bond to it.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What impresses John about Japan?",
+        "gold": "Technologically advanced megacities and tasty street food",
+        "pred": "The megacities of this country impress me, everything there is so technologically advanced, the huge screens on the buildings are mesmerizing.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "Why did Deborah spend time in the garden?",
+        "gold": "to find comfort after losing a friend",
+        "pred": "To find some comfort after losing a friend.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What did Jon and Gina compare their entrepreneurial journeys to?",
+        "gold": "dancing together and supporting each other",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "How did \"The Alchemist\" impact John's perspective on following dreams?",
+        "gold": "made him think again about following dreams and searching for personal legends",
+        "pred": "It made him think again about following dreams and searching for his own personal legend, and helped motivate him to keep chasing his dreams and to trust the process.",
+        "verdict": "correct"
+      },
+      {
+        "q": "Does James live in Connecticut?",
+        "gold": "Likely yes",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What fantasy movies does Tim like?",
+        "gold": "Lord of the Rings, Harry Potter, and Star Wars.",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What electronic device could Evan gift Sam to help him keep up with his fitness goals?",
+        "gold": "fitness tracker",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "Where did Evan take his family for a road trip on 24 May, 2023?",
+        "gold": "Jasper",
+        "pred": "Jasper",
+        "verdict": "correct"
+      },
+      {
+        "q": "When did Nate take time off to chill with his pets?",
+        "gold": "The weekend of 22August, 2022.",
+        "pred": "10:57 am on 22 August, 2022",
+        "verdict": "wrong"
+      },
+      {
+        "q": "When did Jolene's parents give her first console?",
+        "gold": "when she was 10",
+        "pred": "When she was 10.",
+        "verdict": "correct"
+      },
+      {
+        "q": "When will John start his new job?",
+        "gold": "In July, 2022",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "Which year did Jolene and her partner start dating?",
+        "gold": "2020",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "How did Joanna celebrate after sharing her book with her writers group?",
+        "gold": "making a delicious treat",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "Which song motivates Caroline to be courageous?",
+        "gold": "Brave by Sara Bareilles",
+        "pred": "\"Brave\" by Sara Bareilles",
+        "verdict": "correct"
+      },
+      {
+        "q": "What are Jolene's favorite books?",
+        "gold": "Sapiens, Avalanche by Neal Stephenson",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "When did Caroline go to the adoption meeting?",
+        "gold": "The friday before 15 July 2023",
+        "pred": "Last Friday",
+        "verdict": "wrong"
+      },
+      {
+        "q": "What was Gina's favorite dancing memory?",
+        "gold": "Winning first place at a regionals dance competition",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What type of car did Dave work on during the workshop?",
+        "gold": "classic muscle car",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "Has Andrew moved into a new apartment for his dogs?",
+        "gold": "No",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What did Calvin receive as a gift from another artist?",
+        "gold": "a gold necklace with a diamond pendant",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What did Evan share with Sam after their hiking trip?",
+        "gold": "a photo of a man standing on a rock looking out over a valley",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What is Sam's persistent problem with his phone?",
+        "gold": "His new phone malfunctioning, particularly with the navigation app.",
+        "pred": "Its navigation app keeps malfunctioning, making getting around a bit of a challenge.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What fields would Caroline be likely to pursue in her educaton?",
+        "gold": "Psychology, counseling certification",
+        "pred": "counseling",
+        "verdict": "wrong"
+      },
+      {
+        "q": "Who did Evan meet on his trip to Canada, and who did he come back from Canada with?",
+        "gold": "Evan met the woman he fell in love with and returned with her.",
+        "pred": "Evan met an awesome Canadian woman and came back with his new SO.",
+        "verdict": "correct"
+      },
+      {
+        "q": "Where does James get his ideas from?",
+        "gold": "books, movies, dreams",
+        "pred": "From dreams, his favorite passions, trying new stuff, and a group bringing their own ideas.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "How long did John and his high school basketball teammates play together?",
+        "gold": "Four years",
+        "pred": "four years",
+        "verdict": "correct"
+      },
+      {
+        "q": "Which activity helps Nate escape and stimulates his imagination?",
+        "gold": "watching fantasy and sci-fi movies",
+        "pred": "fantasy and sci-fi movies",
+        "verdict": "correct"
+      },
+      {
+        "q": "What do Calvin and Dave use to reach their goals?",
+        "gold": "Hard work and determination",
+        "pred": "Working with different artists and crafting great sounds.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "Which two fantasy novels does Tim particularly enjoy writing about?",
+        "gold": "Harry Potter and Game of Thrones",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What style of guitars does Calvin own?",
+        "gold": "custom-made yellow guitar with an octopus on it, shiny purple guitar",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "Which  classical musicians does Melanie enjoy listening to?",
+        "gold": "Bach and Mozart",
+        "pred": "Bach and Mozart.",
+        "verdict": "correct"
+      },
+      {
+        "q": "When did Nate get his first two turtles?",
+        "gold": "2019",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "Which show did Deborah go to with a friend on 9 April, 2023?",
+        "gold": "an art show",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What do both Joanna and Nate appreciate the beauty of?",
+        "gold": "Nature",
+        "pred": "nature's beauty",
+        "verdict": "correct"
+      },
+      {
+        "q": "What flavor of ice cream did Nate make for his friend on 25 February, 2022?",
+        "gold": "chocolate and vanilla swirl",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What are Maria's dogs' names?",
+        "gold": "Coco, Shadow",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "Has Deborah tried surfing?",
+        "gold": "yes",
+        "pred": "Yes, Deborah discovered her love for surfing at the beach where she got married.",
+        "verdict": "correct"
+      },
+      {
+        "q": "Which countries did James visit in July 2022?",
+        "gold": "Canada, Greenland",
+        "pred": "Canada",
+        "verdict": "wrong"
+      },
+      {
+        "q": "When did Jon and Gina decide to collaborate to create dance content?",
+        "gold": "21 July 2023",
+        "pred": "5:44 pm on 21 July, 2023",
+        "verdict": "correct"
+      },
+      {
+        "q": "When did Jon start expanding his studio's social media presence?",
+        "gold": "April, 2023",
+        "pred": "1:26 pm on 3 April, 2023",
+        "verdict": "correct"
+      },
+      {
+        "q": "What challenge did John encounter during pre-season training?",
+        "gold": "fitting into the new team's style of play",
+        "pred": "Fitting into the new team's style of play was a challenge during pre-season.",
+        "verdict": "correct"
+      },
+      {
+        "q": "Which country were Jolene and her mother visiting in 2010?",
+        "gold": "France",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What kind of programs are John's siblings making?",
+        "gold": "basic games and stories",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "How does Gina describe the feeling that dance brings?",
+        "gold": "magical",
+        "pred": "The joy and thrill that dance brings - it's magical!",
+        "verdict": "correct"
+      },
+      {
+        "q": "What outdoor activities does John enjoy?",
+        "gold": "Hiking, surfing",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "How old are Deborah's cats?",
+        "gold": "Max is 8 years old and Luna is 5 years old",
+        "pred": "Max is 8 years old; Luna is 5 years old.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What kind of writing does Tim do?",
+        "gold": "comments on favorite books in a fantasy literature forum, articles on fantasy novels, studying characters, themes, and making book recommendations, writing a fantasy novel",
+        "pred": "Tim writes articles about fantasy novels for an online mag, studying characters, themes, and making book recommendations.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "When did Calvin attend a gala in Boston?",
+        "gold": "November 16, 2023",
+        "pred": "16 November 2023 (yesterday, as of 17 November 2023).",
+        "verdict": "correct"
+      },
+      {
+        "q": "When did John start boot camp with his family?",
+        "gold": "April.2023",
+        "pred": "Last month (as of 4 May 2023).",
+        "verdict": "correct"
+      },
+      {
+        "q": "What activities does Deborah pursue besides practicing and teaching yoga?",
+        "gold": "biking, going to art shows, running, organizing workshops to practice mindfulness and self-care, surfing, gardening",
+        "pred": "Spending time with the community, supporting my community, organizing a yoga event, meditation, and self-reflection.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "What tradition does Tim mention they love during Thanksgiving?",
+        "gold": "Prepping the feast and talking about what they're thankful for",
+        "pred": "Watching movies together during Thanksgiving.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "Did Jolene teach herself how to play the console?",
+        "gold": "yes",
+        "pred": "Yes, as a child she learned to play on her own.",
+        "verdict": "correct"
+      },
+      {
+        "q": "When did someone write Joanna a touching letter?",
+        "gold": "The week before 14August, 2022.",
+        "pred": "Last week (as of Joanna’s message on 14 August 2022).",
+        "verdict": "correct"
+      },
+      {
+        "q": "What health issue did Sam face that motivated him to change his lifestyle?",
+        "gold": "Weight problem",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "Which countries has Deborah traveled to?",
+        "gold": "Thailand, Brazil",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "How did Deborah's mom support her yoga practice when she first started?",
+        "gold": "attended classes with her",
+        "pred": "She'd often come to my classes with me.",
+        "verdict": "correct"
+      },
+      {
+        "q": "Which geographical locations has Tim been to?",
+        "gold": "California, London, the Smoky Mountains",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "When did James volunteer at an organization?",
+        "gold": "May 2022",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "When did Gina mention Shia Labeouf?",
+        "gold": " 23 July, 2023",
+        "pred": "6:46 pm on 23 July, 2023",
+        "verdict": "correct"
+      },
+      {
+        "q": "What outdoor activity did Jolene suggest doing together with Deborah?",
+        "gold": "Surfing",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What would be a good hobby related to his travel dreams for Tim to pick up?",
+        "gold": "Writing a travel blog.",
+        "pred": "Researching visa requirements for countries he wants to visit.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "What activities have been helping Jolene stay distracted during tough times?",
+        "gold": "Video games and spending time with her pet, Susie",
+        "pred": "Pets have been great company. Video games have also been a nice distraction.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What is Joanna's project called in the writers group?",
+        "gold": "\"Finding Home\"",
+        "pred": "\"Finding Home.\"",
+        "verdict": "correct"
+      },
+      {
+        "q": "What year did John start surfing?",
+        "gold": "2018",
+        "pred": "2018",
+        "verdict": "correct"
+      },
+      {
+        "q": "How does John describe the camping trip with Max?",
+        "gold": "Peaceful and awesome",
+        "pred": "John: \"Max and I had a blast on our camping trip last summer. We hiked, swam, and made great memories. It was a really peaceful and awesome experience.\"",
+        "verdict": "correct"
+      },
+      {
+        "q": "What pets wouldn't cause any discomfort to Joanna?",
+        "gold": "Hairless cats or pigs,since they don't have fur, which is one of the main causes of Joanna's allergy.",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What did the donations help John's community acquire on 16 August, 2023?",
+        "gold": "a brand new fire truck",
+        "pred": "a brand new fire truck",
+        "verdict": "correct"
+      },
+      {
+        "q": "What personality traits might Melanie say Caroline has?",
+        "gold": "Thoughtful, authentic, driven",
+        "pred": "Appreciative, friendly, and encouraging.",
+        "verdict": "wrong"
+      },
+      {
+        "q": "When Evan get back from a vacation with his SO?",
+        "gold": "August 13, 2023",
+        "pred": "NO CONTEXT",
+        "verdict": "no_context"
+      },
+      {
+        "q": "What advice did Evan give to Sam to avoid injuries while starting weightlifting?",
+        "gold": "Find a trainer",
+        "pred": "Find a trainer who can help you avoid injuries while you build your strength.",
+        "verdict": "correct"
+      },
+      {
+        "q": "What did Joanna share with her writers group in August 2022?",
+        "gold": "her book",
+        "pred": "Her book.",
+        "verdict": "correct"
+      }
+    ]
+  }
+}
