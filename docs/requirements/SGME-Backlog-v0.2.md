@@ -82,6 +82,15 @@
 | ST-39 | Story | 治理补齐（有效期间 / Guardrail / 多 Agent scope） | ✅ 已解决 | v1.2+ | ①过期事实不再被召回（T-138）②敏感信息写前/召回后过滤、误脱敏可控（T-139）③多 Agent 隔离灰度、默认保持当前全通行为（T-140）。**2026-08-31 完成并部署（B138~B140）**：T-138/T-139/T-140 全 ✅，全量回归绿；16:12 上线 NAS（valid 列迁移生效、hermes agent_tag 打标真实积累 13 条）；guardrail/agent_scope 默认关灰度；guardrail email 规则误报（pnpm@11.21.0）已修（34e6796，待部署） |
 | ST-40 | Story | 业界标准评测（LoCoMo 公开基准） | ✅ 已解决 | v1.2+ | recall@1/3/5/10 双口径落盘（B142）；英文语料适配结论落盘；零 token 灌库 + 按 conversation 隔离 GT 方法学。**2026-08-31 完成**：T-141 ✅（eval/locomo*.py 评测台 + 21 例单测），BM25 基线 recall@10=0.5451（turn）；hybrid 融合臂 recall@10=0.6895（+26.5%）、J-score=0.7568（DeepSeek judge 抽样 100，NO-CONTEXT 26%），全部实测落 B142 |
 
+### EP-4 分发与新用户体验（v1.2+，🔴 进行中）
+> 来源：2026-09-01 笔记本裸部署（非 Docker）新用户视角全流程验证 → `docs/reviews/SGME-笔记本裸部署验证-2026-09-01.md`（v1.1.3）
+> 目标：任意一台机器、任意安装形态都能跑起来，且第一次跑就知道下一步做什么。
+> 验证结论速览：源码部署（clone + `pip install -e .[dev]`）**全通**（安装 1m16s / 启动即建四库 / 中文路径 / SGME_HOME 重定向 / MCP 39 工具）；**`pip install .` 打包分发完全不可用（P0）**；另有 4 项 P1 体验缺口（无密钥静默空转、裸部署无 WebUI、空库停摆误报、refine 失败返回 HTTP 200）。
+
+| 编号 | 类型 | 标题 | 状态 | 版本 | AC |
+|------|------|------|------|------|----|
+| ST-41 | Story | 分发形态修复与新手首启体验 | 🔴 进行中 | v1.2+ | ①`pip install .`（wheel/sdist）安装后可正常启动，程序资源随包分发（T-142）②未配 LLM key 时首启有明确告警与引导，不再「静默空转」（T-143）③空库不误报提炼停摆（T-144）④裸部署 WebUI 口径在文档说清（T-145）⑤失败/冲突场景报错可自助（T-146）⑥文档与实现一致、依赖可复现（T-147） |
+
 ---
 
 ## Task / Bug 池
@@ -233,6 +242,12 @@
 | T-139 | Task | T3-2 Guardrail（写前 + 召回后过滤层） | ST-39 | ✅ 已解决 | v1.2+ | append / refine 写前 + search 召回后加过滤层；规则匹配优先（快），LLM 方案兜底（慢）。注意误脱敏。**落地（v1.2+，B139）**：新 `sgme/operations/guardrail.py`——规则集（身份证/手机号/银行卡/API 密钥/邮箱/内网 IP 正则）+ `detect`/`mask`/`decision`（block=拦截丢弃/mask=脱敏放行/pass）；`pipeline.persist_memories` 写前（block 丢 / mask 改 content）；`search._filter_guardrail` 召回后（敏感不返回）；config 顶层 `guardrail` 段**默认 enabled=False**（灰度：行为与 T-139 前一致，先观察规则命中率再开，误脱敏可控）；LLM 兜底接口预留（llm_fallback.enabled=False）。测试 10 例（test_guardrail.py） |
 | T-140 | Task | T3-3 多 Agent scope（灰度隔离） | ST-39 | ✅ 已解决 | v1.2+ | 涉及 `routes_admin.py` 鉴权 + `memories.agent_tag`（已有基础）。影响 Hermes/DSH/Trae/WorkBuddy 共存，**必须灰度 + 保留当前全通行为为默认**。**落地（v1.2+，B140）**：写侧 `persist_memories` 加 agent_tag 打标（`_resolve_file_agent` 查 raw_files.agent_id → memories.agent_tag，refine_one/many/async 三路；显式携带保留）；读侧 `search_memories`/`operations.search` 加 `agent_id` 参数 + `_filter_agent_scope`（可见规则：NULL 无主全通 + 'default' 共享 + 同 agent；异 agent 隔离）；`routes /v1/search` 按 X-API-Key `resolve_agent_id` 反查透传；config 顶层 `agent_scope.enabled=False`（**默认关=全通保留**）。测试 7 例（test_agent_scope.py） |
 | T-141 | Task | LoCoMo 公开基准评测（业界标准，✅ Gen3 完成后已执行） | ST-40 | ✅ 已解决 | v1.2+ | 2026-08-31 完成（commit e66a27e + 0ef5727）：eval/locomo*.py 评测台 + 21 例单测全绿；BM25 基线 recall@10=0.5451（turn）、hybrid 融合 recall@10=0.6895（+26.5%）、J-score=0.7568（DeepSeek judge 抽样 100）；B142 落盘；英文语料适配结论（T-130 停用词对英文安全）；零 token 灌库 + 按 conversation 隔离 GT 方法学。数据 locomo10.json（10 conversation / 5,882 turns / 1,536 QA）。 |
+| T-142 | Bug | **P0** wheel 打包缺失程序资源：`pip install .` 后启动即崩 | ST-41 | 🔴 当前任务池 | v1.2+ | 2026-09-01 裸部署实测（v1.1.3）：`FileNotFoundError: 配置文件不存在: ...\site-packages\config\llm.yaml`（config.py:379←load_llm_config←load_config←app.py:590）。根因：`PROJECT_ROOT = Path(__file__).parent.parent` 在 wheel 下指向 site-packages，而 pyproject `[tool.setuptools.packages.find] exclude` 排除 `config*/registry*/templates*/prompts*` 且无 package-data 声明 → 实测 wheel 内 sgme 包 **0 个 .yaml/.txt**。影响：PyPI 分发必崩（Docker 不受影响，因 COPY 源码布局）。修法三选一（待拍板）：①资源内迁 `sgme/resources/` + package-data（推荐）②保持目录 + data-files/package-data ③代码三级回退（包内 → ~/.sgme → CWD） |
+| T-143 | Task | **P1** 未配 LLM key「静默空转」：启动无告警 + 空态无引导 | ST-41 | 🔴 当前任务池 | v1.2+ | 实测：append 200 → refine **HTTP 200 但 status=error**（「LLM 全链失败: 全链降级失败，drop_batch」，memories_count=0）→ inject 3 个空块 → search 0 结果。启动日志**只有默认 key 告警，无模型 key 告警**；`health.missing_keys`（写了申请链接）需主动调用才可见。要求：启动打印模型 key 缺失告警 + 指向 `docs/guide/免费模型Key申请指南.md`；空结果响应回带引导（复用 coding/work 模式已有空态 note 机制） |
+| T-144 | Bug | **P1** 空库首次启动误报提炼停摆 | ST-41 | 🔴 当前任务池 | v1.2+ | 实测全新库 health：`refinement.stalled=true, heartbeat_ok=false, last_refined_at=null`（从未提炼即判停摆，新手误以为装坏；提炼一次后转 false）。要求：`last_refined_at IS NULL` 时 `stalled=false`，状态标 `never_refined` |
+| T-145 | Task | **P1** 裸部署无 WebUI（`/` 404），文档缺前端构建步骤 | ST-41 | 🔴 当前任务池 | v1.2+ | 实测裸部署 `/`、`/ui`、`/app` 全 404（WebUI 需 `cd ui && npm ci && npm run build` 生成 ui/dist；Docker 镜像内含）。README 有 9 张 WebUI 卖点图 + 「WebUI（含在镜像内）」表述，但快速开始未提裸部署需自行构建。要求：README 快速开始补「需要 WebUI？先构建前端（需 Node）」可选步骤 |
+| T-146 | Task | **P2** 报错友好度：refine 业务失败 HTTP 200 / 端口占用英文 winerror / 双 server 日志交错重复 | ST-41 | 🔴 当前任务池 | v1.2+ | ①`POST /v1/admin/refine/trigger` 全链失败返回 HTTP 200（失败在 body.status），客户端只查状态码会误判 → 改 HTTP 502/503 或文档显著标注必校验 body.status；②端口占用报 `ERROR: [Errno 10048] ... [winerror 10048]`，未提示 `SGME_PORT=xxxx` 换端口；③HTTP(9910)/MCP(9913) 共用 logger → 每条 INFO 打印两次，且 shutdown 行插在 startup complete 之前（看着像启动即退出） |
+| T-147 | Task | **P2** 文档漂移与依赖治理 | ST-41 | 🔴 当前任务池 | v1.2+ | ①README 第 105 行「**15 维度标签体系**」≠ 实际 14（registry/dimensions.yaml：identity/family/social/values/skills/tech_stack/preferences/habits/environment/style/focus/goals/status/ideas；启动日志「维度数=14」）——projects/tasks 维度移除后未同步；②pyproject 依赖全用 `>=` 未锁（本次装到 fastapi 0.141.1 / starlette 1.6 / numpy 2.5.2），上游 breaking change 直击新用户，建议加兼容上界或 lock 文件；③（环境类，文档提示）PyPI 经系统代理 SSL 失败（Clash 127.0.0.1:7897 → `SSLEOFError`），直连/国内镜像可通，README 可补一句排查提示 |
 
 ## 设计文档索引（依附关系）
 
