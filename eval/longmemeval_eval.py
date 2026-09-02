@@ -249,8 +249,8 @@ def make_cfg(base: dict, *, vector: bool) -> dict:
     cfg["search"]["graph"] = {"enabled": False}
     cfg["search"]["vector"] = {
         "enabled": bool(vector),
-        "base_url": os.environ.get("SGME_EMBED_BASE_URL", "http://192.168.10.10:11434/v1").rstrip("/"),
-        "model": os.environ.get("SGME_EMBED_MODEL", "bge-m3:latest"),
+        "base_url": os.environ.get("SGME_EMBED_BASE_URL", "http://localhost:8123/v1").rstrip("/"),
+        "model": os.environ.get("SGME_EMBED_MODEL", "text-embedding-bge-m3-legal-euro-r7"),
     }
     return cfg
 
@@ -324,6 +324,9 @@ def token_f1(pred: str, gold: str) -> float:
 
 def run(args) -> dict:
     ds = load_dataset(args.dataset)
+    off = getattr(args, "offset", 0) or 0
+    if off:
+        ds = ds[off:]
     if args.limit and args.limit < len(ds):
         ds = ds[: args.limit]
     base_cfg = sgme_config.load_config()
@@ -524,6 +527,7 @@ def main() -> None:
     ap.add_argument("--dataset", default=DEFAULT_DATASET)
     ap.add_argument("--output", default=DEFAULT_OUT)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--offset", type=int, default=0, help="起始题号，用于定向抽样特定题型")
     ap.add_argument("--arms", default="bm25,hybrid", help="bm25,hybrid")
     ap.add_argument("--primary", default=None, help="QA 用哪条臂的检索结果")
     ap.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
