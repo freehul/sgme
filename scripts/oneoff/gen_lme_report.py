@@ -171,14 +171,23 @@ def main() -> None:
         bnc, pnc = bqa["no_context_rate"], qa["no_context_rate"]
         L.append(f"| 检索 recall@{tk} | {round(bo.get('bm25', 0), 4)} | **{round(prim_overall, 4)}** | "
                  f"{'**+%.1f%%**' % ((prim_overall / bo['bm25'] - 1) * 100) if bo.get('bm25') else '—'} |")
-        L.append(f"| QA J-score | {round(bj * 100, 1)}% | **{round(pj * 100, 1)}%** | "
-                 f"{'**+%s pp**' % round((pj - bj) * 100, 1) if pj >= bj else '%s pp' % round((pj - bj) * 100, 1)} |")
-        L.append(f"| QA token-F1 | {round(bf * 100, 1)}% | **{round(pf * 100, 1)}%** | "
-                 f"{'**+%s pp**' % round((pf - bf) * 100, 1) if pf >= bf else '%s pp' % round((pf - bf) * 100, 1)} |")
-        L.append(f"| NO CONTEXT 率 | {round(bnc * 100, 1)}% | **{round(pnc * 100, 1)}%** | "
-                 f"{'**%s pp**' % round((pnc - bnc) * 100, 1)}（越低越好） |")
+        if qa["enabled"]:
+            L.append(f"| QA J-score | {round(bj * 100, 1)}% | **{round(pj * 100, 1)}%** | "
+                     f"{'**+%s pp**' % round((pj - bj) * 100, 1) if pj >= bj else '%s pp' % round((pj - bj) * 100, 1)} |")
+            L.append(f"| QA token-F1 | {round(bf * 100, 1)}% | **{round(pf * 100, 1)}%** | "
+                     f"{'**+%s pp**' % round((pf - bf) * 100, 1) if pf >= bf else '%s pp' % round((pf - bf) * 100, 1)} |")
+            L.append(f"| NO CONTEXT 率 | {round(bnc * 100, 1)}% | **{round(pnc * 100, 1)}%** | "
+                     f"{'**%s pp**' % round((pnc - bnc) * 100, 1)}（越低越好） |")
+        else:
+            L.append(f"| QA J-score | {round(bj * 100, 1)}% | 本次未测 | — |")
+            L.append(f"| QA token-F1 | {round(bf * 100, 1)}% | 本次未测 | — |")
+            L.append(f"| NO CONTEXT 率 | {round(bnc * 100, 1)}% | 本次未测 | — |")
         L.append("")
-        L.append("> 基线 = 2026-09-01 全量 500 题 bm25-only 评测（`eval/results/longmemeval_full`）。本次接入本地向量臂后，检索召回与端到端 QA 同步提升，NO CONTEXT 拒答率下降。")
+        if qa["enabled"]:
+            L.append("> 基线 = 2026-09-01 全量 500 题 bm25-only 评测（`eval/results/longmemeval_full`）。本次接入本地向量臂后，检索召回与端到端 QA 同步提升，NO CONTEXT 拒答率下降。")
+        else:
+            L.append("> 基线 = 2026-09-01 全量 500 题 bm25-only 评测（`eval/results/longmemeval_full`，含 QA）。")
+            L.append("> **本次为检索-only 复测（未加 `--qa`），故 QA 三项标注「本次未测」，不可用基线值与之相减。** 表中列出基线值仅供量级参考；QA 对比需等 hybrid 臂带 `--qa` 的全量复测完成后补充。")
         L.append("")
 
     # ── 五、公开榜对比 ──
@@ -188,7 +197,10 @@ def main() -> None:
     L.append("")
     L.append("| 系统 | J-Score (%) | F1 (%) | 检索臂 / judge |")
     L.append("|---|---|---|---|")
-    L.append(f"| **SGME (本次)** | **{round(qa['j_score']*100,1)}** | **{round(_overall_f1(qa)*100,1)}** | {primary} / {args.judge_model} |")
+    if qa["enabled"]:
+        L.append(f"| **SGME (本次)** | **{round(qa['j_score']*100,1)}** | **{round(_overall_f1(qa)*100,1)}** | {primary} / {args.judge_model} |")
+    else:
+        L.append(f"| **SGME (本次 QA)** | 未测 | 未测 | 检索-only 复测，未跑 judge |")
     L.append(f"| **SGME 检索 recall@{tk}** | **{round(prim_overall*100,1)}** | — | 与 judge 无关的核心检索指标 |")
     for name, js, f1 in LEADERBOARD:
         L.append(f"| {name} | {js} | {f1} | 公开榜 (GPT-4 judge) |")
@@ -196,7 +208,10 @@ def main() -> None:
     L.append("### 解读")
     L.append("")
     L.append(f"1. **检索维度（可直接对比）**：SGME {primary} 整体 session recall@{tk} = **{round(prim_overall*100,1)}%**。接入本地向量臂后较 bm25 纯 lexical 基线（{round(base_overall*100,1)}%）提升 **{lift*100:.1f}%**，跨会话/时序/偏好等难类型获益最大（见第二节分题型表）。")
-    L.append(f"2. **QA 维度（量级参考，非同比）**：端到端 J-score {round(qa['j_score']*100,1)}% / F1 {round(_overall_f1(qa)*100,1)}%。与公开榜 42.8–60.2% 区间相比仍有差距，主因是 **judge 模型差异**（{args.judge_model} vs GPT-4）；在同 judge 下复测方能直接相减。")
+    if qa["enabled"]:
+        L.append(f"2. **QA 维度（量级参考，非同比）**：端到端 J-score {round(qa['j_score']*100,1)}% / F1 {round(_overall_f1(qa)*100,1)}%。与公开榜 42.8–60.2% 区间相比仍有差距，主因是 **judge 模型差异**（{args.judge_model} vs GPT-4）；在同 judge 下复测方能直接相减。")
+    else:
+        L.append(f"2. **QA 维度（本次未测）**：本次复测未启用 `--qa`，故无 J-score / F1 可与公开榜对照。**检索 recall 仍是唯一可与公开榜间接对照的指标**（与 judge 无关）。QA 对比待 hybrid 臂带 `--qa` 的全量复测完成后补充。")
     L.append("3. **诚实边界**：① 图召回在本次 raw-ingest 评测中客观上无法激活（依赖提炼产物 `memory_stats`），生产环境 backfill 后图召回方可贡献，属后续运维增强项；② 嵌入模型 `text-embedding-bge-m3-legal-euro-r7` 为法律/欧洲语微调版，通用英文对话语料上非最优，换用原版 bge-m3 预期仍有小幅提升空间。")
     L.append("")
 
