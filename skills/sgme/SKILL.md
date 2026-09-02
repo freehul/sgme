@@ -118,9 +118,9 @@ DSH 桥接（sgme-bridge 0.2.0）新增 **wiki_page_add** 工具：创建知识�
 | 变量 | 用途 |
 |---|---|
 | AGNESAI_API_KEY | 提炼主链 agnes-2.5-flash（免费，$0/1M token；key 缺失时 health 的 model_config.missing_keys 会提示） |
-| SILICONFLOW_API_KEY | 提炼备用 deepseek-ai/DeepSeek-V4-Flash（免费）+ 向量检索硅基流动 BAAI/bge-m3（1024 维，免费；实名认证后零费用） |
+| SILICONFLOW_API_KEY | 提炼备用 THUDM/GLM-4-9B-0414（免费档；V4-Flash 转付费已移出 B144）+ 向量检索硅基流动 BAAI/bge-m3（1024 维，免费；实名认证后零费用） |
 
-**提炼降级链**（2026-08-22 agnes 主位；2026-08-29 zhipu 免费 Key 失效移出链，B121）：agnes(agnes-2.5-flash, 免费主) → siliconflow(deepseek-ai/DeepSeek-V4-Flash, 免费备) → rule drop_batch。
+**提炼降级链**（2026-08-22 agnes 主位；2026-08-29 zhipu 免费 Key 失效移出链 B121；2026-09-01 DeepSeek-V4-Flash 转付费移出链 B144）：agnes(agnes-2.5-flash, 免费主) → siliconflow(THUDM/GLM-4-9B-0414, 免费档备) → rule drop_batch。
 
 **向量健康检查**：health 的 vector.connectivity 显示模型连通性（provider/model/latency_ms）；失效时写日志 + 发 anomaly_warn 信号（source=vector），/search 自动降级纯 BM25。
 

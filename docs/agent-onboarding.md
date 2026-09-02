@@ -199,7 +199,7 @@ content 格式（首行必须）：
 - `refinement.queue_depth / stalled`：提炼水位是否健康
 - 数据源：`stats()` 看记忆/原始文件是否为空
 
-> **两个模型**：SGME 提炼靠 LLM（主链 agnes-2.5-flash，免费，`AGNESAI_API_KEY`；备用硅基流动 DeepSeek-V4-Flash，免费，`SILICONFLOW_API_KEY`；2026-08-29 zhipu 已移出降级链），语义检索靠向量 embedding（硅基流动 BAAI/bge-m3，`SILICONFLOW_API_KEY`）——缺了分别降级为「直存」/「纯 BM25」，`health` 里 `llm.available` / `vector.available` / `vector.connectivity` 会如实反映，哪个 false 补哪个。**Key 缺失时 `health` 的 `model_config.missing_keys` 会列出缺哪些**，按 [docs/guide/免费模型Key申请指南.md](guide/免费模型Key申请指南.md) 申请免费 Key（两平台各约 10 分钟、零充值）。
+> **两个模型**：SGME 提炼靠 LLM（主链 agnes-2.5-flash，免费，`AGNESAI_API_KEY`；备用硅基流动 THUDM/GLM-4-9B-0414，免费档，`SILICONFLOW_API_KEY`；zhipu 已移出降级链 B121、DeepSeek-V4-Flash 转付费移出 B144），语义检索靠向量 embedding（硅基流动 BAAI/bge-m3，`SILICONFLOW_API_KEY`）——缺了分别降级为「直存」/「纯 BM25」，`health` 里 `llm.available` / `vector.available` / `vector.connectivity` 会如实反映，哪个 false 补哪个。**Key 缺失时 `health` 的 `model_config.missing_keys` 会列出缺哪些**，按 [docs/guide/免费模型Key申请指南.md](guide/免费模型Key申请指南.md) 申请免费 Key（两平台各约 10 分钟、零充值）。
 
 **LLM 或数据源缺失时，主动提醒用户，表述提供商无关**（不要报任何品牌）：
 

@@ -89,7 +89,7 @@
 
 8. Supersession：旧值归档不删除（memory_archive 表），判等锚点 memory_id
 
-9. LLM 降级链：agnes（agnes-2.5-flash，免费主模型，2026-08-22 用户定优先）→ siliconflow（deepseek-ai/DeepSeek-V4-Flash，免费备用）→ rule drop_batch（2026-08-29 zhipu 免费 Key 失效移出链，B121）；模型名含 pro/reasoner/thinking 或命中 gemma-4-12b-qat 拒绝加载；免费 Key 申请见 docs/guide/免费模型Key申请指南.md
+9. LLM 降级链：agnes（agnes-2.5-flash，免费主模型，2026-08-22 用户定优先）→ siliconflow（THUDM/GLM-4-9B-0414，免费档备用；2026-09-01 B144：DeepSeek-V4-Flash 已转付费档移出，严禁写回）→ rule drop_batch（2026-08-29 zhipu 免费 Key 失效移出链，B121）；模型名含 pro/reasoner/thinking 或命中 gemma-4-12b-qat 拒绝加载；免费 Key 申请见 docs/guide/免费模型Key申请指南.md
 
 10. 密钥不落盘：只引用环境变量名；**API Key 铁律——禁止在代码/配置里硬编码密码**
 
