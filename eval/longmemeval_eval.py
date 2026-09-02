@@ -8,6 +8,9 @@
 
 图召回说明：LongMemEval 直灌原始会话、不跑提炼 → memory_edges 为空 →
 图召回正确休眠（贡献 0），与 gbrain 自身跑法一致，公平可比。
+refined 臂（--arms 含 refined）则走 SGME 完整生产链路（L0→L1 提炼→L1.5 落库），
+提炼用本地 LM Studio 推理（SGME_REFINE_MODEL，默认 qwen3.8-9b-distill），
+忠实于 LongMemEval「各系统用自己的方式 ingest 相同数据」协议——这才是完整能力评测。
 """
 from __future__ import annotations
 
@@ -30,6 +33,7 @@ from sgme.data import db as db_mod
 from sgme.data import memory_dao
 from sgme.data import search as search_mod
 from sgme.data.search import init_fts
+from sgme.engine import pipeline as sgme_pipeline  # append_l0 / refine_one（refined 臂走真实生产链路）
 
 logger = logging.getLogger("eval.longmemeval")
 
@@ -130,7 +134,10 @@ def embed_corpus(
     import httpx
     from sgme.data import memory_dao
     from sgme.data.search import vector as vector_mod
-    from eval.embed_cache import EmbedCache
+    try:
+        from eval.embed_cache import EmbedCache
+    except ImportError:  # 脚本按文件路径运行时 eval 包不可见，退化为直接导入
+        from embed_cache import EmbedCache
 
     t0 = time.perf_counter()
     rows = mem_conn.execute(
@@ -176,7 +183,7 @@ def embed_corpus(
                 return [(batch[k][1], batch[k][2], data[k]) for k in range(len(batch))]
             except Exception as e:  # noqa: BLE001
                 logger.warning("batch embed 失败(尝试%d): %s", attempt, str(e)[:120])
-                time.sleep(min(2.0 ** attempt, 16.0) + random.random)
+                time.sleep(min(2.0 ** attempt, 16.0) + random.random())
         raise RuntimeError(f"batch embed 耗尽重试: {texts[0][:40]!r}")
 
     if misses:
@@ -242,7 +249,7 @@ def render_session(turns: list, session_id: str, date: str | None = None) -> str
 
 # ── 配置 ──
 
-def make_cfg(base: dict, *, vector: bool) -> dict:
+def make_cfg(base: dict, *, vector: bool, arm: str = "bm25", refine_backend: str = "cloud") -> dict:
     cfg = json.loads(json.dumps(base))
     cfg.setdefault("search", {})
     # 基准眠图：LongMemEval 直灌无提炼 → 无边 → 图召回贡献 0，公平
@@ -252,7 +259,38 @@ def make_cfg(base: dict, *, vector: bool) -> dict:
         "base_url": os.environ.get("SGME_EMBED_BASE_URL", "http://localhost:8123/v1").rstrip("/"),
         "model": os.environ.get("SGME_EMBED_MODEL", "text-embedding-bge-m3-legal-euro-r7"),
     }
+    if arm == "refined" and refine_backend == "local":
+        _inject_local_refine(cfg)
+    # refine_backend == "cloud"：保留 base_cfg 默认 refinement 链（agnes→siliconflow→rule），
+    # 即 SGME 生产环境的真实提炼后端，faithful 且可靠；受 0.5 rps 节流。
     return cfg
+
+
+def _inject_local_refine(cfg: dict) -> None:
+    """refined 臂：把提炼链指向本地 LM Studio（8123 聊天端点），零云依赖。
+
+    背景：SGME 默认 refinement 链是 agnes→siliconflow→rule，免费云链被节流到
+    0.5 rps 且频繁 429（撞频率上限）。25,112 个 session 全量提炼需 14h+ 且当前
+    被限到 17:12 才重置。改用本地 LM Studio 推理（零限速、可并发），与 gbrain
+    协议「各系统用自己的方式 ingest 相同数据」完全兼容——这才是忠于协议的跑法，
+    而不是此前「零 token 直灌」的偷懒口径。
+    """
+    lm_base = os.environ.get("SGME_REFINE_BASE_URL", "http://localhost:8123/v1").rstrip("/")
+    lm_model = os.environ.get("SGME_REFINE_MODEL", "qwen3.8-9b-distill")
+    node = {
+        "provider": "lmstudio_local",
+        "model": lm_model,
+        "provider_type": "openai_compat",
+        "base_url": lm_base,
+        "context_window": int(os.environ.get("SGME_REFINE_CTX", "32768")),
+        "api_key_env": None,
+        "max_tokens": 4096,
+    }
+    cfg.setdefault("llm", {})
+    # 直接用本地节点 + rule 兜底（不回退云链，避免 429 干扰）
+    cfg["llm"]["chains"] = {"refinement": [node, {"provider": "rule"}]}
+    # 本地推理免节流（rps=0.5 会拖垮 2.5 万次提炼调用）
+    cfg["llm"].setdefault("rules", {})["throttle"] = {"enabled": False}
 
 
 # ── 每题隔离库 ──
@@ -298,6 +336,105 @@ def open_question_db(out_dir: Path, q: dict, dims, aliases, *, vector: bool, cfg
     if vector:
         embed_corpus(mem_conn, cfg, workers=6, batch_size=32)
     return mem_conn, session_conn, wiki_conn
+
+
+# ── refined 臂：走 SGME 完整生产链路（L0 → L1 提炼 → L1.5 落库 → 向量化）──
+
+def render_session_l0(turns: list, date: str | None, seq_base: int = 0) -> str:
+    """把 LongMemEval session 渲染成 SGME L0 原始格式（# {ISO} {role} 头）。
+
+    append_l0 / parse_body_messages 要求此格式；数据集 session 内无逐条时间戳，
+    这里按序号在 session 日期上递增合成（仅用于 L1 时序分块，不影响答案）。
+    """
+    lines: list[str] = []
+    # LongMemEval 日期形如 "2023-05-20 (Sat)"（带空格/星期），需截断到 YYYY-MM-DD
+    base = (date or "2026-01-01").split()[0].replace("/", "-")
+    for i, turn in enumerate(turns):
+        iso = f"{base}T{seq_base + i:02d}:00:00Z"
+        role = turn.get("role", "user")
+        lines.append(f"# {iso} {role}")
+        lines.append(turn.get("content", ""))
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def open_question_db_refined(out_dir: Path, q: dict, dims, aliases, *, cfg: dict):
+    """Refined 臂：跑完整 SGME 生产链路。
+
+    与 direct 臂（insert_memory 整块原文）不同，这里每条 session 走
+    append_l0 → refine_one（L1 提炼 + L1.5 落库），最终记忆库是 SGME 真实产物。
+    返回 (mem_conn, session_conn, wiki_conn, fileid2sid, stats)。
+
+    fileid2sid：file_id → session_id 映射，供召回计算把「记忆」还原回「来源 session」
+    （refined 臂记忆的 memory_id 是 UUID，不等于 session_id；direct 臂 memory_id==sid）。
+    """
+    for name in ("memory.db", "session.db", "wiki.db"):
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(out_dir / name) + suffix)
+            if p.exists():
+                p.unlink()
+    mem_conn, session_conn, wiki_conn = db_mod.init_databases(out_dir)
+    memory_dao.import_registry(mem_conn, dims, aliases)
+    init_fts(mem_conn)
+    dates = q.get("haystack_dates") or []
+    sessions = q.get("haystack_sessions") or []
+    session_ids = q.get("haystack_session_ids") or []
+    fileid2sid: dict[str, str] = {}
+    seen: set[str] = set()
+    n_sessions = n_refined = n_err = 0
+    for i, turns in enumerate(sessions):
+        sid = session_ids[i] if i < len(session_ids) else f"session_{i}"
+        if sid in seen:
+            continue
+        seen.add(sid)
+        n_sessions += 1
+        l0 = render_session_l0(turns, dates[i] if i < len(dates) else None)
+        try:
+            info = sgme_pipeline.append_l0(
+                session_key=sid,
+                started_at=FIXED_TS,
+                content=l0,
+                source_type="session",
+                ended_at=FIXED_TS,
+                agent_id=None,
+                metadata={"lme_session": True},
+                cfg=cfg,
+                mem_conn=mem_conn,
+                session_conn=session_conn,
+                agent_model=None,
+            )
+            fid = info.get("file_id")
+            if fid:
+                fileid2sid[fid] = sid
+                sgme_pipeline.refine_one(fid, mem_conn, session_conn, cfg)
+                n_refined += 1
+        except Exception as e:  # noqa: BLE001
+            n_err += 1
+            logger.warning("refined 提炼失败 session=%s: %s", sid, str(e)[:160])
+    mem_conn.commit()
+    embed = embed_corpus(mem_conn, cfg, workers=6, batch_size=32)
+    stats = {"sessions": n_sessions, "refined": n_refined, "errors": n_err, "embed": embed}
+    return mem_conn, session_conn, wiki_conn, fileid2sid, stats
+
+
+def _resolve_sessions(mem_conn, retrieved_ids: list[str], fileid2sid: dict) -> set[str]:
+    """memory_id → 来源 session 集合。
+
+    direct 臂：memory_id 即 session_id（memory_sources.source_ref==sid）。
+    refined 臂：memory_id 是 UUID，需经 memory_sources.source_ref(=file_id) → sid 映射。
+    统一返回命中 session 集合，召回计算与臂无关。
+    """
+    sids: set[str] = set()
+    for mid in retrieved_ids:
+        rows = mem_conn.execute(
+            "SELECT source_ref FROM memory_sources WHERE memory_id=?", (mid,)
+        ).fetchall()
+        if rows:
+            for (sr,) in rows:
+                sids.add(fileid2sid.get(sr, sr))
+        else:
+            sids.add(mid)  # 兜底：无 source 记录时直接用 memory_id
+    return sids
 
 
 # ── F1（token 级，复刻 LongMemEval 口径）──
@@ -361,22 +498,38 @@ def run(args) -> dict:
 
     run_start = time.perf_counter()
     cfg_cache: dict[str, dict] = {}
+
+    # refined 臂需要把 L0 原始文件写到运行级临时目录（避免污染 SGME 真实 raw_dir）
+    if "refined" in arms:
+        sgme_config.RAW_DIR = out_dir / "raw" / run_id
+        sgme_config.RAW_DIR.mkdir(parents=True, exist_ok=True)
+
     for qi, q in enumerate(ds, 1):
         qtype = q.get("question_type", "unknown")
         gt = set(q.get("answer_session_ids") or [])
         q_out = out_dir / "tmp" / run_id / f"q{qi}"
         q_out.mkdir(parents=True, exist_ok=True)
 
-        per_arm_recall: dict[str, bool] = {}
+        per_arm_recall: dict[str, float] = {}
         last_res = None
         primary_res = None
         for arm in arms:
-            vector = arm == "hybrid"
-            cache_key = "hybrid" if vector else "bm25"
+            vector = arm in ("hybrid", "refined")
+            cache_key = ("refined" if arm == "refined"
+                         else "hybrid" if arm == "hybrid"
+                         else "bm25")
             if cache_key not in cfg_cache:
-                cfg_cache[cache_key] = make_cfg(base_cfg, vector=vector)
+                cfg_cache[cache_key] = make_cfg(
+                    base_cfg, vector=vector, arm=arm, refine_backend=args.refine_backend)
             cfg = cfg_cache[cache_key]
-            mem_conn, sc, wc = open_question_db(q_out, q, dims, aliases, vector=vector, cfg=cfg)
+            fileid2sid: dict[str, str] = {}
+            stats = None
+            if arm == "refined":
+                mem_conn, sc, wc, fileid2sid, stats = open_question_db_refined(
+                    q_out, q, dims, aliases, cfg=cfg)
+            else:
+                mem_conn, sc, wc = open_question_db(
+                    q_out, q, dims, aliases, vector=vector, cfg=cfg)
             try:
                 res = search_mod.search_memories(
                     mem_conn, None, query=q["question"], limit=args.top_k,
@@ -385,18 +538,20 @@ def run(args) -> dict:
                 seen: set[str] = set()
                 retrieved: list[str] = []
                 for r in res:
-                    sid = r.get("memory_id")
-                    if sid and sid not in seen:
-                        seen.add(sid)
-                        retrieved.append(sid)
+                    mid = r.get("memory_id")
+                    if mid and mid not in seen:
+                        seen.add(mid)
+                        retrieved.append(mid)
                 # 官方 LongMemEval session 级 recall：命中的答案 session 数 / 答案 session 总数
+                # refined 臂 memory_id 是 UUID，需经 _resolve_sessions 还原到来源 session
+                hit_sids = _resolve_sessions(mem_conn, retrieved, fileid2sid)
                 gt_sessions = set(gt)
                 recall_frac = (
-                    len(gt_sessions & set(retrieved)) / len(gt_sessions)
+                    len(gt_sessions & hit_sids) / len(gt_sessions)
                     if gt_sessions else 0.0
                 )
                 per_arm_recall[arm] = recall_frac
-                if arm == (args.primary or ("hybrid" if vector_arm else "bm25")):
+                if arm == (args.primary or ("refined" if "refined" in arms else "hybrid" if vector_arm else "bm25")):
                     primary_res = res
                 last_res = res
             finally:
@@ -495,7 +650,9 @@ def report_md(result: dict) -> str:
     L = ["# SGME · LongMemEval 业界标准评测报告", ""]
     L.append(f"- 数据集：{result['dataset']}（{result['n_questions']} 题）")
     L.append(f"- top-k：{result['top_k']} ｜ 臂：{', '.join(result['arms'])}")
-    L.append(f"- 图召回：休眠（直灌无提炼 → memory_edges 空，公平）")
+    L.append(f"- 图召回：休眠（直灌无提炼 → memory_edges 空，公平；refined 臂另跑 L1/L1.5 提炼，但仍无 scenes → 图召回同为 0）")
+    if "refined" in result["arms"]:
+        L.append(f"- refined 臂提炼模型：本地 LM Studio（{os.environ.get('SGME_REFINE_MODEL', 'qwen3.8-9b-distill')}），零云依赖")
     L.append(f"- 耗时：{result['elapsed_s']}s")
     L.append("")
     L.append("## 检索 recall（session 级，按 answer_session_ids）")
@@ -528,7 +685,9 @@ def main() -> None:
     ap.add_argument("--output", default=DEFAULT_OUT)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--offset", type=int, default=0, help="起始题号，用于定向抽样特定题型")
-    ap.add_argument("--arms", default="bm25,hybrid", help="bm25,hybrid")
+    ap.add_argument("--arms", default="bm25,hybrid", help="bm25,hybrid,refined（refined=跑完整 L0→L1→L1.5 生产链路）")
+    ap.add_argument("--refine-backend", default="cloud", choices=["cloud", "local"],
+                    help="refined 臂提炼后端：cloud=SGME 生产链(agnes→siliconflow，可靠但限速0.5rps)；local=本地 LM Studio 9B(快但英文 L1 不可靠)")
     ap.add_argument("--primary", default=None, help="QA 用哪条臂的检索结果")
     ap.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     ap.add_argument("--qa", action="store_true", help="启用 LLM 生成 + judge")
