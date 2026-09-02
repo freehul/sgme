@@ -1227,7 +1227,7 @@ def build_mcp_server():
                 "manage": "memory_reject 纠错；stats/health 看引擎状态；config_get/config_update 读写配置",
             },
             "self_config": {
-                "requirement": "接入完成标准：你的身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等，按你的工具机制选择）中必须包含本模板（版本标记 SGME-ONBOARDING-v2）。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 docs/guide/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 DeepSeek-V4-Flash + bge-m3；2026-08-29 zhipu 已移出降级链，无需智谱 Key）。",
+                "requirement": "接入完成标准：你的身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等，按你的工具机制选择）中必须包含本模板（版本标记 SGME-ONBOARDING-v2）。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 docs/guide/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。",
                 "steps": [
                     "1. 自查：读你的身份文件，grep 标记「SGME-ONBOARDING」；",
                     "2. 已存在且版本 >= v1 → 配置已完成，跳过；",

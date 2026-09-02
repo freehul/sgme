@@ -13,6 +13,8 @@ providers:
     health_interval_s: 60
     vector_capable: false
 # volc-plan（火山方舟）已移除（2026-08-18 用户定：向量统一走硅基流动免费档）
+# ⚠️ 2026-09-01 实测（B144）：硅基流动 deepseek-ai/DeepSeek-V4-Flash 已转付费档（$0.13/M 输入），
+#    LLM 备用已改免费档 THUDM/GLM-4-9B-0414——严禁把 V4-Flash 写回降级链（会烧钱）
 # zhipu（智谱）段于 2026-08-29 删除：免费 key 失效，且降级链已移出 zhipu 节点（避免残留引用误触发付费）
   agnes:
     name: agnes
@@ -29,7 +31,7 @@ providers:
     vector_capable: false
   siliconflow:
     name: siliconflow
-    display_name: 硅基流动（向量，免费模型）
+    display_name: 硅基流动（免费档，向量+LLM 备用）
     base_url: https://api.siliconflow.cn/v1
     api_key_env: SILICONFLOW_API_KEY
     provider_type: openai_compat

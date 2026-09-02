@@ -22,8 +22,8 @@ chains:
     - provider: agnes          # 第一优先（2026-08-22 用户定）：Agnes 免费档，1-4s
       model: agnes-2.5-flash
       max_tokens: 16384
-    - provider: siliconflow    # 第二优先：硅基流动 deepseek-ai/DeepSeek-V4-Flash 免费，1-3s
-      model: deepseek-ai/DeepSeek-V4-Flash
+    - provider: siliconflow    # 第二优先：硅基流动免费档 THUDM/GLM-4-9B-0414（2026-09-01 B144：原 DeepSeek-V4-Flash 已转付费档移出，严禁写回）
+      model: THUDM/GLM-4-9B-0414
       max_tokens: 16384
     - provider: rule
       rule: drop_batch

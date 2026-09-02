@@ -2470,3 +2470,13 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | QA（智谱 glm-4-flash judge，非 thinking） | J-score=**0.354**（correct 177 / wrong 93 / no-context 225 / errors 5），token-F1=**0.2473**，NO CONTEXT 率 0.45；分类型 J-score：单会话-助手 0.7143 / 单会话-用户 0.6377 / 知识更新 0.5526 / 跨会话 0.1667 / 时序推理 0.1818 / 单会话-偏好 0.1667；耗时 4223s。各题型 J-score 与 recall 高度自洽（单会话高、跨会话/时序/偏好低）。 |
 | 诚实边界 | ①检索臂仅 bm25（纯 lexical）：NAS Ollama bge-m3 嵌入实测 ~49s/条，向量臂不可行，未跑 hybrid；纯 lexical 下 0.685 属合理区间，接入向量后预期提升。②QA judge 用智谱 glm-4-flash，公开榜用 GPT-4，judge 模型差异引入系统性偏差；J-score 仅与公开榜做量级参考，检索 recall 维度（与 judge 无关）可直接对比。③图召回 raw-ingest 评测客观无法激活；生产 backfill 后图召回方可贡献。④DeepSeek 主 judge key 评测中途 402 余额耗尽，切换智谱 glm-4-flash 完成 QA。 |
 | 文档 | 本记录 B143；`eval/results/longmemeval_full/longmemeval_report.json` + `.md`；`docs/eval/longmemeval_report_zh.md`（中文对比报告，含 2026-03 公开榜）；Backlog ST-40 / T-141 更新为 LongMemEval 标准。 |
+
+### B144. 降级链 LLM 备用换免档：DeepSeek-V4-Flash 转付费移出（v1.1.3，2026-09-01）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户令「把免费资源文档配进 SGME 降级链 + NAS 模型路由」。查证实测：①硅基流动 `deepseek-ai/DeepSeek-V4-Flash` 已转付费档（$0.13/M 输入，官方价格页）——降级链第二级在烧钱，必须换掉；②智谱 key（8-29 已移出链）与火山 key 实测均 401 失效；③硅基流动免费档 `THUDM/GLM-4-9B-0414` / `Qwen/Qwen2.5-7B-Instruct` 实测 200 可用（max_tokens 16384 接受、非思考型无 content 截断风险）。 |
+| 改动 | `config/llm.yaml` 链第二级 `deepseek-ai/DeepSeek-V4-Flash` → `THUDM/GLM-4-9B-0414`（保留 16384）；`config/providers.yaml` display_name 更新 + 顶部加「严禁把 V4-Flash 写回降级链」警示注释；`sgme/operations/llm.py` MODEL_KEY_MISSING_NOTICE、`sgme/mcp_server.py` onboarding requirement 文案同步；文档八处同步（AGENTS.md 第 9 条已获用户批准同步——2026-09-02 补记、架构 v1.0 §1/§24、runbook §4.2、双语 README、免费模型Key申请指南、agent-onboarding、skills/sgme + sgme-key SKILL.md）；测试锚点 `tests/test_config.py` + `tests/test_vector_connectivity.py` 断言更新。 |
+| 测试 | `test_fast.py config` = 94 passed / 0 failed；`test_fast.py llm` = 97 passed / 0 failed。顺带修复本机 venv 三个损坏的二进制包（pydantic_core / pywin32 / rpds-py force-reinstall，疑似磁盘迁移所致，与本次改动无关）。 |
+| 运维影响 | ①本机：重启 Gateway 生效（本次未重启，生产保持原链运行）；②NAS SGME 容器链在镜像内，随下次 push → GitHub Actions → NAS 拉取构建部署自动同步；③NAS LiteLLM :9950（AIRDT 路由）同日另做免费节点替换（见 NAS 侧记录，doc-light 死节点 zhipu → qwen2.5-7b-instruct）；④LongMemEval QA judge 的 zhipu 400 报错根因即此 key 失效（非限流），重跑需换 agnes 或有效 key。 |
+| 成本警示 | 硅基流动账户若仍有赠送额度，V4-Flash 调用会从额度扣费——生产容器未升级前降级链第二级仍指付费模型，升级前建议监控硅基账单。 |

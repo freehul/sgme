@@ -14,7 +14,7 @@ category: sgme
 
 ## 一句话
 
-两个免费 Key（各约 10 分钟，**全程零充值**）：LLM 提炼用 Agnes agnes-2.5-flash（免费主位），备用 + 向量用硅基流动（DeepSeek-V4-Flash 免费 / BAAI/bge-m3 1024 维调用零费用）。
+两个免费 Key（各约 10 分钟，**全程零充值**）：LLM 提炼用 Agnes agnes-2.5-flash（免费主位），备用 + 向量用硅基流动（GLM-4-9B-0414 免费 / BAAI/bge-m3 1024 维调用零费用）。
 
 ## 一、Agnes AI（LLM 提炼主位）
 
@@ -31,7 +31,7 @@ category: sgme
 3. 头像 →「API 密钥」→ 新建 → 复制保存
 4. 写入 `config/.env`：`SILICONFLOW_API_KEY=你的Key`
 
-免费说明：`deepseek-ai/DeepSeek-V4-Flash` 免费（LLM 第二优先）；`BAAI/bge-m3` 调用费用 0；向量模型 RPM 2000-10000、TPM 50万-1000万（宽裕）；不实名仅影响充值/开票。
+免费说明：`THUDM/GLM-4-9B-0414` 免费档（LLM 第二优先，B144：V4-Flash 转付费已移出）；`BAAI/bge-m3` 调用费用 0；向量模型 RPM 2000-10000、TPM 50万-1000万（宽裕）；不实名仅影响充值/开票。
 
 ## 三、生效与验证
 

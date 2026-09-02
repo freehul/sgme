@@ -97,8 +97,8 @@ def test_aliases_contain_known_mappings():
 def test_llm_config_has_refinement_chain():
     """LLM 配置含 refinement 链：首链 agnes 主模型 + 末链 rule drop_batch 兜底。
 
-    2026-08-29 链序（B121）：agnes(agnes-2.5-flash) → siliconflow(DeepSeek-V4-Flash)
-    → rule(drop_batch)；zhipu 免费节点已移出。
+    2026-09-01 链序（B144）：agnes(agnes-2.5-flash) → siliconflow(THUDM/GLM-4-9B-0414)
+    → rule(drop_batch)；zhipu 免费节点已移出（B121）、DeepSeek-V4-Flash 转付费移出（B144）。
     """
     cfg = config.load_config()
     chains = cfg["llm"]["chains"]
