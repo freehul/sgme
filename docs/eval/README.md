@@ -148,13 +148,48 @@ A question needs ~50 sessions, so:
 
 | scope | sessions | wall time |
 |---|---|---|
-| 1 question | ~50 | ~1 h |
-| 10 questions | ~500 | ~10 h |
-| 500 questions | 25,112 | **~8 days** |
+Throughput recalibrated 2026-09-02 by a 20-session live benchmark on the real
+cloud chain (agnes-2.5-flash, 0 errors): mean 42.6s / median 28.7s per session,
+3.45 LLM calls/session (L1 chunks 2.13 + L1.5 conflict adjudication ~1.3 as the
+memory store fills up), 4.45 memories/session. Full-500 extrapolation:
 
-Full-500 `refined` is therefore **not scheduled**. Status: arm is built and
-validated; full run deferred pending faster compute or a cheaper/faster
-refinement model.
+| Scope | sessions | serial wall time | API cost |
+|---|---|---|---|
+| 1 question | ~50 | ~24-36 min | 0 |
+| 100 questions | ~5,020 | ~1.7-2.5 days | 0 |
+| 500 questions | 25,112 | **~8.5-12.5 days** | **0** (free tier) |
+
+**Measured concurrency reality check (B146, 2 questions x 2 workers on the
+live chain): 3417s for both -> ~28.5 min/question throughput, only ~1.35x
+speedup vs serial (not 2x) — the free tier degrades under concurrent load.
+workers=2 full-500 therefore lands at ~10 days, barely better than serial;
+meaningful speedup requires the paid tier (DeepSeek-V4-Flash + 4 lanes ~2 days
+/ ~$80). The primary value of B146 is checkpoint/resume + per-question fault
+isolation for unattended multi-day runs, not raw speed.** Full cost model and
+benchmark data: `docs/eval/longmemeval_refined_cost_v0.1.md`.
+
+Full-500 `refined` is therefore **not scheduled** by default. Status: arm is
+built and validated; full run deferred pending a decision on wall-clock
+tolerance (checkpoint + concurrency now make it feasible without supervision).
+
+### Checkpoint / resume and question-level concurrency (B146)
+
+    # 2 concurrent questions; each question has its own isolated temp DBs
+    python -m eval.longmemeval_eval --arms refined --workers 2         --output eval/results/longmemeval_refined_full
+
+    # after an interruption: same command + --resume resumes from checkpoint
+    python -m eval.longmemeval_eval --arms refined --workers 2 --resume         --output eval/results/longmemeval_refined_full
+
+- Progress is checkpointed per question to `<output>/checkpoint.jsonl`; a
+  resumed run skips completed questions. The checkpoint's first line is a
+  config fingerprint (dataset/arms/top_k/qa/refine_backend/...) — any mismatch
+  discards the checkpoint automatically, so stale results can never be mixed in.
+- Per-question failures are recorded as error records and never kill the run;
+  `n_question_errors` in the report shows how many were skipped.
+- Why concurrency is safe here: questions are fully isolated (own SQLite files,
+  own raw dir); the LLM chain's token bucket is process-global and the measured
+  throttle wait is 0s (inference latency dominates), so 2-3 lanes stay well
+  under the agnes free-tier RPM limit.
 
 > **Open question (unresolved)**: on Q1 both direct-bm25 and refined scored
 > recall@8 = 0.0. Q1 ("What degree did I graduate with?") is a hard

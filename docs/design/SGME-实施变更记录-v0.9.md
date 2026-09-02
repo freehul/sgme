@@ -2497,3 +2497,14 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 报告生成器修复 | `scripts/oneoff/gen_lme_report.py`：QA 未启用时不再输出误导性的 `0.0%` 与 `-35.4 pp`（会把「未测」显示成「得 0 分」），改为「本次未测」+ 显式说明不可用基线值相减；第五节公开榜表改标注「未测」。 |
 | 文档 | 本记录 B145；`docs/eval/longmemeval_report_zh.md`（重生成，含 bm25 vs hybrid 对比表与提升%）；`docs/eval/README.md` 新增 refined 臂章节（调用方式/后端选型/算力阻塞表/样本量-耗时表）+ Artifacts 更新；Backlog T-141 补充 hybrid 复测与 refined 臂状态。 |
 | 附带发现（独立，不阻塞评测） | `sgme/data/search/__init__.py` 的 `_search_no_dims`(879) / `_search_with_dims` 末尾用 `[dict(r) for r in cur.fetchall()]`，**在连接未设 `row_factory` 时 `dict(tuple)` 会抛错**。⚠️ **定性更正（2026-09-02 晚复核）：这不是生产 bug**——生产 `mem_conn` 一律由 `sgme/data/db.py:391 _connect()` 创建，该函数已设 `conn.row_factory = sqlite3.Row`，故生产路径永不触发；项目内 `session_dao.py:75`（`get_raw_file`）与 `skills/indexer.py:202` 亦各自做了 tuple 兜底，说明「不依赖外部 row_factory」是项目既有约定，仅本模块未遵守。真实影响面：仅**绕过 db.py 裸 `sqlite3.connect` 后调用 `search_memories`** 的调用方（诊断脚本、第三方集成、单测）会撞。建议按既有约定补 tuple 兜底（低优先级健壮性增强，不影响本次评测任何数字）。 |
+
+### B146. LongMemEval 全量成本评估 + 评测台断点续跑/题级并发（v1.1.3，2026-09-02）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户令评估 refined 臂跑全量所需成本。基于数据集全量静态模拟（25,112 session / 246,930 turns / 254.9M 格式化字符 ≈ 63.7M tokens；L1 分块 chunk=5000/min4500 → **53,386 块**）+ 同机真实链路 20-session 微基准（agnes 免费链，0 错误）：**mean 42.6s / median 28.7s per session，3.45 calls/session**（L1.5 冲突裁决随库内记忆累积新增 ~1.3 次/session，此前静态模型低估），prompt 3,582 / completion 949 tokens/call，产出 4.45 记忆/session。结论：**全量 500 题 ≈ 8.5~12.5 天串行、API ¥0**；换 DeepSeek-V4-Flash+并发4 ≈ 2 天 ~¥580。报告：`docs/eval/longmemeval_refined_cost_v0.1.md`。 |
+| 关键发现 | ①**瓶颈是免费档推理延迟而非 0.5rps 节流**——单次调用 8s+ > 令牌桶 2s 间隔，throttle 等待实测 = 0s，并发 2~3 路（15~23 RPM）可近线性加速且不撞 agnes 免费 RPM 20~30；②当前脚本无断点续跑，崩溃即从头，12 天长跑不可行——**先落地 checkpoint 再谈全量**。 |
+| 改动 | `eval/longmemeval_eval.py` run() 重构为「单题纯函数 + 聚合」：`_process_question()`（单题全流程，独立临时库无共享状态）、`_aggregate()`（records → 最终 result，串行/并发/resume 共用）、`_run_one_safe()`（单题异常转 error 记录，不再炸全程）；新增 **`--workers N`**（题级并发，ThreadPoolExecutor，cfg 主线程预构建避免竞态）与 **`--resume`**（per-question checkpoint `<output>/checkpoint.jsonl`：meta 行=配置指纹 dataset/n/offset/arms/top_k/qa/refine_backend/primary，resume 指纹不一致自动弃用；半行 JSON 截断尾巴自动丢弃前缀保留）；QA 结果以 outcome(correct/wrong/noctx/err)+f1 入 checkpoint 可精确重放；report_md refined 行改为后端感知（cloud/local）。 |
+| 测试 | ①bm25 4 题 checkpoint 写入（meta+4 记录）✓；②--resume 命中 4 题跳过 elapsed=0s 结果一致 ✓；③--workers 2 并发 6 题 0 错误 ✓；④改 --top-k 指纹不一致 → 自动弃用全量重跑 ✓；⑤refined 臂 2 题 workers=2 真实验证 ✓（3417s，2/2 完成 0 错误，checkpoint 逐题落盘；--resume 复验命中 2 题跳过 elapsed=0s）。⚠️ 并发实测修正：2 路加速仅 ~1.35x（吞吐 ~28.5 min/题，workers=2 全量 ≈ 10 天，与串行几乎无差）——agnes 免费档并发下降速，显著加速需付费链；B146 的核心价值是断点续跑 + 单题故障隔离，不是并发提速。 |
+| 坑记录 | SGME_HOME 重定向到非标准目录时 `load_env_file` 只读 `$SGME_HOME/config/.env` → key 全空 → 全链 401 **假象**（agnes/siliconflow 均报鉴权失败、0 记忆、降级 drop_batch）。评测脚本重定向 SGME_HOME 前必须手动注入项目 `.env`（bench 脚本已内置 `_load_project_env()`）。 |
+

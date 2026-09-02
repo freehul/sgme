@@ -9,7 +9,7 @@
 图召回说明：LongMemEval 直灌原始会话、不跑提炼 → memory_edges 为空 →
 图召回正确休眠（贡献 0），与 gbrain 自身跑法一致，公平可比。
 refined 臂（--arms 含 refined）则走 SGME 完整生产链路（L0→L1 提炼→L1.5 落库），
-提炼用本地 LM Studio 推理（SGME_REFINE_MODEL，默认 qwen3.8-9b-distill），
+        L.append(f"- refined 臂提炼后端：{result.get('refine_backend', 'cloud')}（cloud=生产链 agnes→GLM-4-9B；local=LM Studio 9B）")
 忠实于 LongMemEval「各系统用自己的方式 ingest 相同数据」协议——这才是完整能力评测。
 """
 from __future__ import annotations
@@ -25,6 +25,8 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # 复用 SGME 真实接口；以下 LLM/嵌入帮手从原 locomo_eval.py 内联（LoCoMo 已移除，
 # 但这些函数是通用评测基础设施，LongMemEval 评测台继续使用，故就地保留）。
@@ -459,6 +461,238 @@ def token_f1(pred: str, gold: str) -> float:
 
 # ── 主流程 ──
 
+# ---------- B146: per-question checkpoint / resume / concurrency ----------
+
+def _fingerprint(args, arms, n):
+    # resume requires exact config match
+    return {
+        "dataset": str(Path(args.dataset).resolve()),
+        "n_questions": n,
+        "offset": args.offset or 0,
+        "arms": arms,
+        "top_k": args.top_k,
+        "qa": bool(args.qa),
+        "refine_backend": args.refine_backend,
+        "primary": args.primary,
+    }
+
+
+def _load_checkpoint(cp_path, fp):
+    # returns: list = valid records (truncated tail dropped); None = discard file
+    if not cp_path.exists():
+        return []
+    try:
+        lines = cp_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if not lines:
+        return []
+    try:
+        meta = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return None
+    if meta.get("fingerprint") != fp:
+        return None
+    records = []
+    for ln in lines[1:]:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            records.append(json.loads(ln))
+        except json.JSONDecodeError:
+            break
+    return records
+
+
+_CP_LOCK = threading.Lock()
+
+
+def _append_checkpoint(cp_path, fp, rec, *, new):
+    with _CP_LOCK:
+        if new:
+            cp_path.write_text(
+                json.dumps({"fingerprint": fp}, ensure_ascii=False) + "\n",
+                encoding="utf-8")
+        with cp_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+def _process_question(q, qi, args, arms, cfgs, dims, aliases, llm_fn, run_id, out_dir):
+    # one question = isolated temp DBs, no shared mutable state; thread-safe
+    qtype = q.get("question_type", "unknown")
+    qid = q.get("question_id") or f"idx{qi}"
+    gt = set(q.get("answer_session_ids") or [])
+    q_out = out_dir / "tmp" / run_id / f"q{qi}"
+    q_out.mkdir(parents=True, exist_ok=True)
+
+    per_arm_recall = {}
+    last_res = None
+    primary_res = None
+    for arm in arms:
+        vector = arm in ("hybrid", "refined")
+        cache_key = ("refined" if arm == "refined"
+                     else "hybrid" if arm == "hybrid"
+                     else "bm25")
+        cfg = cfgs[cache_key]
+        fileid2sid = {}
+        if arm == "refined":
+            mem_conn, sc, wc, fileid2sid, stats = open_question_db_refined(
+                q_out, q, dims, aliases, cfg=cfg)
+        else:
+            mem_conn, sc, wc = open_question_db(
+                q_out, q, dims, aliases, vector=vector, cfg=cfg)
+        try:
+            res = search_mod.search_memories(
+                mem_conn, None, query=q["question"], limit=args.top_k,
+                include_sources=False, cfg=cfg,
+            )
+            seen = set()
+            retrieved = []
+            for r in res:
+                mid = r.get("memory_id")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    retrieved.append(mid)
+            hit_sids = _resolve_sessions(mem_conn, retrieved, fileid2sid)
+            gt_sessions = set(gt)
+            recall_frac = (
+                len(gt_sessions & hit_sids) / len(gt_sessions)
+                if gt_sessions else 0.0
+            )
+            per_arm_recall[arm] = recall_frac
+            if arm == (args.primary or ("refined" if "refined" in arms else "hybrid" if "hybrid" in arms else "bm25")):
+                primary_res = res
+            last_res = res
+        finally:
+            sc.close(); wc.close(); mem_conn.close()
+
+    record = {"qid": qid, "qi": qi, "qtype": qtype,
+              "recall": per_arm_recall, "qa": None, "error": None}
+
+    if args.qa and llm_fn:
+        ctx_src = primary_res or last_res or []
+        context = "\n".join(
+            f"[{i + 1}] {r.get('content', '')}" for i, r in enumerate(ctx_src)
+        ) or "(no memories retrieved)"
+        pred = llm_fn(_ANSWER_PROMPT.format(context=context, question=q["question"])).strip()
+        pred_head = pred.splitlines()[0].strip() if pred else ""
+        gold = str(q.get("answer", ""))
+        f1 = token_f1(pred_head, gold)
+        if not pred:
+            outcome = "err"
+        elif pred_head.upper().startswith("NO CONTEXT"):
+            outcome = "noctx"
+        else:
+            jr = llm_fn(_JUDGE_PROMPT.format(
+                question=q["question"], gold=gold, pred=pred_head,
+            )).strip()
+            jhead = ""
+            if jr:
+                m = re.search(r"\b(CORRECT|WRONG)\b", jr.upper())
+                jhead = m.group(1) if m else ""
+            outcome = ("correct" if jhead == "CORRECT"
+                       else "wrong" if jhead == "WRONG" else "err")
+        record["qa"] = {"outcome": outcome, "f1": round(f1, 4)}
+    return record
+
+
+def _run_one_safe(q, qi, args, arms, cfgs, dims, aliases, llm_fn, run_id, out_dir):
+    # never let one question kill the whole long run
+    try:
+        return _process_question(q, qi, args, arms, cfgs, dims, aliases,
+                                 llm_fn, run_id, out_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[lme] question %s failed: %s",
+                       q.get("question_id") or f"idx{qi}", str(e)[:200])
+        return {"qid": q.get("question_id") or f"idx{qi}", "qi": qi,
+                "qtype": q.get("question_type", "unknown"),
+                "recall": {}, "qa": None, "error": str(e)[:200]}
+
+
+def _log_progress(done, total, run_start):
+    el = time.perf_counter() - run_start
+    eta = int(el / done * (total - done)) if done else 0
+    logger.warning("[lme] %d/%d  elapsed=%ds  eta=%ds", done, total, int(el), eta)
+
+def _aggregate(records, args, arms, total, elapsed, workers, resumed):
+    recall_by_type = defaultdict(lambda: {"hit": 0.0, "total": 0})
+    j_by_type = defaultdict(list)
+    f1_by_type = defaultdict(list)
+    n_qa = n_correct = n_wrong = n_noctx = n_err = 0
+    n_q_err = 0
+    for rec in records:
+        qtype = rec.get("qtype", "unknown")
+        if rec.get("error"):
+            n_q_err += 1
+            continue
+        for arm, rfrac in (rec.get("recall") or {}).items():
+            b = recall_by_type.setdefault(f"{arm}:{qtype}", {"hit": 0.0, "total": 0})
+            b["total"] += 1
+            b["hit"] += rfrac
+        qa = rec.get("qa")
+        if qa:
+            n_qa += 1
+            f1_by_type[qtype].append(qa.get("f1", 0.0))
+            outcome = qa.get("outcome", "err")
+            if outcome == "correct":
+                n_correct += 1
+                j_by_type[qtype].append(1)
+            elif outcome == "wrong":
+                n_wrong += 1
+                j_by_type[qtype].append(0)
+            elif outcome == "noctx":
+                n_noctx += 1
+                j_by_type[qtype].append(0)
+            else:
+                n_err += 1
+                j_by_type[qtype].append(-1)
+
+    def _recall(d):
+        return round(d["hit"] / d["total"], 4) if d["total"] else 0.0
+
+    def _jscore(marks):
+        valid = [m for m in marks if m >= 0]
+        if not valid:
+            return 0.0, 0
+        return round(sum(valid) / len(valid), 4), len(valid)
+
+    def _f1avg(vals):
+        return round(sum(vals) / len(vals), 4) if vals else 0.0
+
+    arms_recall = {}
+    for k, d in sorted(recall_by_type.items()):
+        arms_recall[k] = {"recall@%d" % args.top_k: _recall(d), "hit": d["hit"], "total": d["total"]}
+
+    j_summary = {}
+    for c, marks in sorted(j_by_type.items()):
+        js, judged = _jscore(marks)
+        j_summary[c] = {"j_score": js, "judged": judged, "f1": _f1avg(f1_by_type.get(c, []))}
+
+    return {
+        "dataset": args.dataset,
+        "n_questions": total,
+        "n_done": len(records),
+        "n_question_errors": n_q_err,
+        "top_k": args.top_k,
+        "arms": arms,
+        "refine_backend": getattr(args, "refine_backend", "cloud"),
+        "workers": workers,
+        "resumed": resumed,
+        "retrieval_recall_by_arm_type": arms_recall,
+        "qa": {
+            "enabled": bool(args.qa),
+            "n_qa": n_qa,
+            "correct": n_correct,
+            "wrong": n_wrong,
+            "no_context": n_noctx,
+            "errors": n_err,
+            "j_score": round(n_correct / n_qa, 4) if n_qa else 0.0,
+            "no_context_rate": round(n_noctx / n_qa, 4) if n_qa else 0.0,
+            "by_type": j_summary,
+        },
+        "elapsed_s": elapsed,
+    }
+
 def run(args) -> dict:
     ds = load_dataset(args.dataset)
     off = getattr(args, "offset", 0) or 0
@@ -466,16 +700,32 @@ def run(args) -> dict:
         ds = ds[off:]
     if args.limit and args.limit < len(ds):
         ds = ds[: args.limit]
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    out_dir = Path(args.output).resolve()
+    # per-run temp dir: avoid db files locked by an old process (WinError 32)
+    run_id = datetime.now().strftime("%Y%m%dT%H%M%S")
+    (out_dir / "tmp" / run_id).mkdir(parents=True, exist_ok=True)
+    cp_path = out_dir / "checkpoint.jsonl"
+    fp = _fingerprint(args, arms, len(ds))
+
     base_cfg = sgme_config.load_config()
     dims = sgme_config.load_dimensions()
     aliases = sgme_config.load_aliases()
 
-    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
-    vector_arm = "hybrid" in arms
-    out_dir = Path(args.output).resolve()
-    # 每轮运行独立临时目录，避免跨运行复用被旧进程锁定的库文件（WinError 32）
-    run_id = datetime.now().strftime("%Y%m%dT%H%M%S")
-    (out_dir / "tmp" / run_id).mkdir(parents=True, exist_ok=True)
+    # pre-build all arm cfgs on main thread (no cfg_cache race under workers>1)
+    cfgs = {}
+    for arm in arms:
+        key = ("refined" if arm == "refined"
+               else "hybrid" if arm == "hybrid" else "bm25")
+        if key not in cfgs:
+            cfgs[key] = make_cfg(
+                base_cfg, vector=(arm in ("hybrid", "refined")),
+                arm=arm, refine_backend=args.refine_backend)
+
+    # refined arm: redirect L0 raw files to run-level temp dir
+    if "refined" in arms:
+        sgme_config.RAW_DIR = out_dir / "raw" / run_id
+        sgme_config.RAW_DIR.mkdir(parents=True, exist_ok=True)
 
     llm_fn = None
     if args.qa:
@@ -490,162 +740,54 @@ def run(args) -> dict:
             throttle_s=0.25,
         )
 
-    # 指标累计
-    recall_by_type: dict[str, dict] = defaultdict(lambda: {"hit": 0, "total": 0})
-    j_by_type: dict[str, list] = defaultdict(list)   # 1/0/-1
-    f1_by_type: dict[str, list] = defaultdict(list)
-    n_qa = n_correct = n_wrong = n_noctx = n_err = 0
+    # resume: reuse checkpoint only when fingerprint matches
+    done_records = []
+    if getattr(args, "resume", False):
+        loaded = _load_checkpoint(cp_path, fp)
+        if loaded is None:
+            logger.warning("[lme] checkpoint fingerprint mismatch -> discard, full rerun")
+        else:
+            done_records = loaded
+            if loaded:
+                logger.warning("[lme] resume: %d questions from checkpoint, skipped", len(loaded))
+    done_qids = {r.get("qid") for r in done_records}
+
+    todo = []
+    for qi, q in enumerate(ds, 1):
+        qid = q.get("question_id") or f"idx{qi}"
+        if qid not in done_qids:
+            todo.append((qi, q))
 
     run_start = time.perf_counter()
-    cfg_cache: dict[str, dict] = {}
+    new_records = []
+    total = len(ds)
+    workers = max(1, int(getattr(args, "workers", 1) or 1))
+    cp_new = not done_records
 
-    # refined 臂需要把 L0 原始文件写到运行级临时目录（避免污染 SGME 真实 raw_dir）
-    if "refined" in arms:
-        sgme_config.RAW_DIR = out_dir / "raw" / run_id
-        sgme_config.RAW_DIR.mkdir(parents=True, exist_ok=True)
+    if workers == 1 or len(todo) <= 1:
+        for i, (qi, q) in enumerate(todo, 1):
+            rec = _run_one_safe(q, qi, args, arms, cfgs, dims, aliases,
+                                llm_fn, run_id, out_dir)
+            _append_checkpoint(cp_path, fp, rec, new=(cp_new and i == 1))
+            new_records.append(rec)
+            _log_progress(len(done_records) + i, total, run_start)
+    else:
+        logger.warning("[lme] concurrent mode workers=%d, todo=%d", workers, len(todo))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(_run_one_safe, q, qi, args, arms, cfgs, dims,
+                            aliases, llm_fn, run_id, out_dir): qi
+                for qi, q in todo
+            }
+            for i, fut in enumerate(as_completed(futs), 1):
+                rec = fut.result()
+                _append_checkpoint(cp_path, fp, rec, new=(cp_new and i == 1))
+                new_records.append(rec)
+                _log_progress(len(done_records) + i, total, run_start)
 
-    for qi, q in enumerate(ds, 1):
-        qtype = q.get("question_type", "unknown")
-        gt = set(q.get("answer_session_ids") or [])
-        q_out = out_dir / "tmp" / run_id / f"q{qi}"
-        q_out.mkdir(parents=True, exist_ok=True)
-
-        per_arm_recall: dict[str, float] = {}
-        last_res = None
-        primary_res = None
-        for arm in arms:
-            vector = arm in ("hybrid", "refined")
-            cache_key = ("refined" if arm == "refined"
-                         else "hybrid" if arm == "hybrid"
-                         else "bm25")
-            if cache_key not in cfg_cache:
-                cfg_cache[cache_key] = make_cfg(
-                    base_cfg, vector=vector, arm=arm, refine_backend=args.refine_backend)
-            cfg = cfg_cache[cache_key]
-            fileid2sid: dict[str, str] = {}
-            stats = None
-            if arm == "refined":
-                mem_conn, sc, wc, fileid2sid, stats = open_question_db_refined(
-                    q_out, q, dims, aliases, cfg=cfg)
-            else:
-                mem_conn, sc, wc = open_question_db(
-                    q_out, q, dims, aliases, vector=vector, cfg=cfg)
-            try:
-                res = search_mod.search_memories(
-                    mem_conn, None, query=q["question"], limit=args.top_k,
-                    include_sources=False, cfg=cfg,
-                )
-                seen: set[str] = set()
-                retrieved: list[str] = []
-                for r in res:
-                    mid = r.get("memory_id")
-                    if mid and mid not in seen:
-                        seen.add(mid)
-                        retrieved.append(mid)
-                # 官方 LongMemEval session 级 recall：命中的答案 session 数 / 答案 session 总数
-                # refined 臂 memory_id 是 UUID，需经 _resolve_sessions 还原到来源 session
-                hit_sids = _resolve_sessions(mem_conn, retrieved, fileid2sid)
-                gt_sessions = set(gt)
-                recall_frac = (
-                    len(gt_sessions & hit_sids) / len(gt_sessions)
-                    if gt_sessions else 0.0
-                )
-                per_arm_recall[arm] = recall_frac
-                if arm == (args.primary or ("refined" if "refined" in arms else "hybrid" if vector_arm else "bm25")):
-                    primary_res = res
-                last_res = res
-            finally:
-                sc.close(); wc.close(); mem_conn.close()
-
-        for arm, rfrac in per_arm_recall.items():
-            b = recall_by_type.setdefault(f"{arm}:{qtype}", {"hit": 0.0, "total": 0})
-            b["total"] += 1
-            b["hit"] += rfrac
-
-        # QA（用 primary 臂的检索结果生成答案）
-        if args.qa and llm_fn:
-            ctx_src = primary_res or last_res or []
-            context = "\n".join(
-                f"[{i + 1}] {r.get('content', '')}" for i, r in enumerate(ctx_src)
-            ) or "(no memories retrieved)"
-            pred = llm_fn(_ANSWER_PROMPT.format(context=context, question=q["question"])).strip()
-            pred_head = pred.splitlines()[0].strip() if pred else ""
-            gold = str(q.get("answer", ""))
-            n_qa += 1
-            f1 = token_f1(pred_head, gold)
-            f1_by_type[qtype].append(f1)
-            if not pred:
-                n_err += 1
-                j_by_type[qtype].append(-1)
-            elif pred_head.upper().startswith("NO CONTEXT"):
-                n_noctx += 1
-                j_by_type[qtype].append(0)
-            else:
-                jr = llm_fn(_JUDGE_PROMPT.format(
-                    question=q["question"], gold=gold, pred=pred_head,
-                )).strip()
-                jhead = ""
-                if jr:  # 鲁棒解析：thinking 模型首行可能是推理，搜首个 CORRECT/WRONG
-                    m = re.search(r"\b(CORRECT|WRONG)\b", jr.upper())
-                    jhead = m.group(1) if m else ""
-                if jhead == "CORRECT":
-                    n_correct += 1
-                    j_by_type[qtype].append(1)
-                elif jhead == "WRONG":
-                    n_wrong += 1
-                    j_by_type[qtype].append(0)
-                else:
-                    n_err += 1
-                    j_by_type[qtype].append(-1)
-
-        if qi % 25 == 0 or qi == len(ds):
-            el = int(time.perf_counter() - run_start)
-            logger.warning("[lme] %d/%d  elapsed=%ds", qi, len(ds), el)
-
-    # 汇总
-    def _recall(d):
-        return round(d["hit"] / d["total"], 4) if d["total"] else 0.0
-
-    def _jscore(marks):
-        valid = [m for m in marks if m >= 0]
-        if not valid:
-            return 0.0, 0
-        return round(sum(valid) / len(valid), 4), len(valid)
-
-    def _f1avg(vals):
-        return round(sum(vals) / len(vals), 4) if vals else 0.0
-
-    arms_recall: dict[str, dict] = {}
-    for k, d in sorted(recall_by_type.items()):
-        arms_recall[k] = {"recall@%d" % args.top_k: _recall(d), "hit": d["hit"], "total": d["total"]}
-
-    j_summary: dict[str, dict] = {}
-    for c, marks in sorted(j_by_type.items()):
-        js, judged = _jscore(marks)
-        j_summary[c] = {"j_score": js, "judged": judged, "f1": _f1avg(f1_by_type.get(c, []))}
-
-    result = {
-        "dataset": args.dataset,
-        "n_questions": len(ds),
-        "top_k": args.top_k,
-        "arms": arms,
-        "retrieval_recall_by_arm_type": arms_recall,
-        "qa": {
-            "enabled": bool(args.qa),
-            "n_qa": n_qa,
-            "correct": n_correct,
-            "wrong": n_wrong,
-            "no_context": n_noctx,
-            "errors": n_err,
-            "j_score": round(n_correct / n_qa, 4) if n_qa else 0.0,
-            "no_context_rate": round(n_noctx / n_qa, 4) if n_qa else 0.0,
-            "by_type": j_summary,
-        },
-        "elapsed_s": int(time.perf_counter() - run_start),
-    }
-    return result
-
-
+    elapsed = int(time.perf_counter() - run_start)
+    return _aggregate(done_records + new_records, args, arms, total,
+                      elapsed, workers, bool(done_records))
 def report_md(result: dict) -> str:
     L = ["# SGME · LongMemEval 业界标准评测报告", ""]
     L.append(f"- 数据集：{result['dataset']}（{result['n_questions']} 题）")
@@ -694,6 +836,10 @@ def main() -> None:
     ap.add_argument("--judge-model", default="deepseek-v4-flash")
     ap.add_argument("--judge-base-url", default=None, help="LLM judge base_url (env SGME_JUDGE_BASE_URL)")
     ap.add_argument("--judge-api-key-env", default=None, help="LLM judge api key env (env SGME_JUDGE_KEY_ENV)")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="question-level concurrency (isolated per-question DBs; 2-3 lanes safe for agnes RPM 20-30)")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume from <output>/checkpoint.jsonl (skip completed questions when fingerprint matches)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
