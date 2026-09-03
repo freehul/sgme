@@ -63,25 +63,46 @@ def _render_l1_text(template: str, conversation: str, dimensions: list[dict]) ->
 # ---------- JSON 解析与校验 ----------
 
 def _extract_json_array(text: str) -> list[dict]:
-    """从 LLM 输出中提取 JSON 数组（容忍前后多余文字 + ```json 代码块）。"""
-    text = text.strip()
-    # 去除 ```json ... ``` 包裹
-    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
-    # 直接解析整个文本
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        # 尝试找第一个 [ 到最后一个 ]
-        start = text.find("[")
-        end = text.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            raise
-        data = json.loads(text[start:end + 1])
-    if not isinstance(data, list):
-        raise ValueError(f"期望 JSON 数组，得到 {type(data).__name__}")
-    return data
+    """从 LLM 输出中提取 JSON 数组（强鲁棒：容忍思考块/代码块/前后废话/截断）。
+
+    本地 Qwen 思考模型可能：① 在 JSON 前后吐 <think:6124c78e>...</think:6124c78e> 推理块；
+    ② 用 ```json 包裹；③ 数组后附废话；④ 偶发截断/尾逗号。逐层兜底解析。
+    """
+    if not text or not text.strip():
+        raise ValueError("空输出，无法解析 JSON 数组")
+    # 1. 去除 <think:6124c78e>...</think:6124c78e> 思考块（Qwen 思考模型可能泄漏）
+    cleaned = re.sub(r"<\s*think\s*>.*?<\s*/\s*think\s*>", "", text,
+                     flags=re.DOTALL | re.IGNORECASE)
+    # 2. 剥离 markdown 代码块（含 ```json 或纯 ```）
+    fm = re.search(r"```(?:json)?\s*(.*?)```", cleaned, re.DOTALL)
+    candidate = (fm.group(1) if fm else cleaned).strip()
+
+    attempts = [candidate]
+    # 3. 退路 A：去除尾逗号（{,} / [,]）
+    attempts.append(re.sub(r",(\s*[}\]])", r"\1", candidate))
+    # 4. 退路 B：首个 [ 到最后一个 ]（容忍前后废话）
+    s, e = candidate.find("["), candidate.rfind("]")
+    if s != -1 and e > s:
+        attempts.append(candidate[s:e + 1])
+
+    for cand in attempts:
+        try:
+            data = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, list):
+            return data
+    # 5. 最后手段：逐对象 regex 提取（容错，最坏丢少量条目）
+    objs = re.findall(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", candidate, re.DOTALL)
+    items = []
+    for o in objs:
+        try:
+            items.append(json.loads(o))
+        except json.JSONDecodeError:
+            continue
+    if not items:
+        raise ValueError("无法从输出中提取 JSON 数组")
+    return items
 
 
 def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
