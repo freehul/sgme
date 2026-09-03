@@ -79,6 +79,10 @@ if ! echo "$TARGET_VERSION" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9]*$';
 fi
 
 # 已是最新（当前镜像 tag == 目标版本）则直接完成
+# ⚠️ 重要副作用（2026-09-03 实证）：版本号是唯一的更新触发器。
+#    **同一版本号内的 hotfix 提交不会触发任何重建** —— 镜像 tag 相同即短路退出，
+#    git pull / docker build 完全不执行，热修代码不会生效。
+#    ⇒ 发布 hotfix 必须 bump patch 版本号（1.1.3 → 1.1.4），否则更新请求会被静默"完成"。
 CURRENT_IMAGE=$(docker ps --format '{{.Image}}' --filter name=^/sgme$ 2>/dev/null | head -1)
 TARGET_NO_V="${TARGET_VERSION#v}"
 if echo "$CURRENT_IMAGE" | grep -qE ":${TARGET_NO_V}(-|:|$)" ; then
@@ -115,8 +119,11 @@ EOF
 }
 
 # 1. git pull（src 落后可能不止本次）
+# ⚠️ 必须带命令行级 -c safe.directory（protected config，优先级最高且必生效）：
+#    仓库级 / 全局配置在 cron 最小环境下可能读不到，会复现
+#    `fatal: detected dubious ownership`（2026-09-03 1.1.4 首次更新失败实证）
 log "git pull ($SRC)"
-if ! (cd "$SRC" && git pull "$UPSTREAM" "$BRANCH" >> "$LOG" 2>&1); then
+if ! (cd "$SRC" && git -c safe.directory="$SRC" pull "$UPSTREAM" "$BRANCH" >> "$LOG" 2>&1); then
   mark_failed "git pull 失败"
 fi
 

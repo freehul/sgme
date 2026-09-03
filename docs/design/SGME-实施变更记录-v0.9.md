@@ -2516,3 +2516,14 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 根因 | `sgme/engine/refine.py` 归一化阶段重塑记忆 dict 的**字段白名单漏 `facts`**：L1 提取输出的三元组在进入 L1.5 落库前被静默丢弃。定位过程：容器内直调 `extract_l1`（诊断脚本 stdin 注入 `docker exec -i`）facts 完全正常（4 三元组，质量高）→ 证明 prompt（working-34534605 含 facts 节）/LLM（agnes）/解析环环完好 → 断点唯在 refine 归一化层。**B136 为何漏测**：验收 `eval/check_facts.py` 直调 extract_l1 + 手动 store，`test_full_pipeline_facts_stored_and_queryable` 走 extract_l1 → resolve_conflicts 直连、绕过 refine_file 归一化层，全链集成漏测。 |
 | 修复 | ①`refine.py` 归一化 append 补 `"facts": rm.get("facts")`（一行）；②`tests/test_facts.py` 新增 `test_facts_survive_refine_file_normalization`：refine_file 全链（mock extract_l1 返回带 facts 记忆 + 真实 raw 文件组装）→ 断言归一化后 facts 存活 → l15 store → facts_dao 符号层命中，堵死漏测路径。test_facts 10 passed + test_engine/semantic_edges/edge_dao/search_graph 74 passed 全绿。 |
 | 部署 | commit 后推 nas；生产修复生效需重建镜像（NAS 自动更新代理或手动 SOP）。修复前生产冒烟记忆（SMK20260903 / file_id 8c07e361）遗留在生产库 1 条测试记忆，待更新验证后清理。 |
+
+### B148. NAS 自动更新代理三处运维坑修复（v1.1.4，2026-09-03）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | B147 hotfix 提交后触发生产自动更新，**连续两次失败**：① 首次（10:37）request.json 被消费但容器纹丝不动；② 二次（10:40）`git pull 失败` → 回滚 1.1.3。更新链从未被 hotfix 场景验证过。 |
+| 坑1 · 同版本号短路 | `sgme-host-updater.sh:84` 以「当前镜像 tag == target_version」判最新：1.1.3 → 1.1.3 直接 `rm` 请求退出，**git pull / docker build 完全不执行**，热修代码永远不生效。⇒ **hotfix 必须 bump patch 版本**（1.1.3 → 1.1.4）才是唯一可靠触发器。已在脚本该处加醒目注释。 |
+| 坑2 · cron 下 dubious ownership 复发 | 仓库级/全局 `safe.directory` 在 cron 最小环境下读不到 → `fatal: detected dubious ownership`（08-31 修过一次，本次复发）。修法：git pull 改命令行级 `git -c safe.directory="$SRC" pull`（protected config，优先级最高且必生效）。最小环境 `env -i HOME=... PATH=...` 复测通过。 |
+| 坑3 · sed -i 丢执行位 + root 属主 | 用 `sed -i` 改脚本后文件重建为 `-rwx------` → cron 调起 `Permission denied`；另容器 root 写的 `request.json` 属主 root，脚本以 LEO 运行时重写会被拒（目录属主 LEO 时可 `rm` 重建，但不可覆写）。处置：`chmod 755` + `chown -R LEO:Users data/update`。 |
+| 结果 | 11:57 更新成功 → **v1.1.4**（容器重建、版本确认通过、health ok）。生产实证：refine.py:210 含 `"facts": rm.get("facts")`；冒烟 append → 提炼 → `facts_json` 落库 4 三元组（赵六/任职于/杭州阿里巴巴西溪园区 等），**全库 facts 计数 0 → 1**，B147 修复在生产确认生效。 |
+| 备注 | 脚本在仓库 `scripts/sgme-host-updater.sh`（git 跟踪）与主机运行副本 `/vol1/1000/Docker/sgme/scripts/`（src 之外，pull 不覆盖）**两份**，修复后已双向同步（md5 `45316305...` 一致）。修改主机副本时勿用 `sed -i`（丢执行位）。 |
