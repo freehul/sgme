@@ -168,8 +168,8 @@ def test_config_persist_does_not_pollute_repo_config(app, client):
     """
     import hashlib
 
-    # 项目根真实配置（SGME_HOME 隔离下 DEFAULT_SGME_CONFIG 已重定向，须显式指项目根）
-    repo_cfg = sgme_config.PROJECT_ROOT / "config" / "sgme.yaml"
+    # 项目根真实配置（SGME_HOME 隔离下 DEFAULT_SGME_CONFIG 已重定向，须显式指包内默认模板）
+    repo_cfg = sgme_config.RESOURCE_ROOT / "config" / "sgme.yaml"
     assert repo_cfg.exists(), f"真实配置文件缺失: {repo_cfg}"
     before = hashlib.sha256(repo_cfg.read_bytes()).hexdigest()
     # 多段更新（含 backup.dir），会触发 _persist；若隔离失效将写回真实配置

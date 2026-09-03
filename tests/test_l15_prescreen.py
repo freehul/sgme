@@ -59,9 +59,9 @@ def _ps_cfg(enabled=True, vector_top_k=50, dimension_top_n=50):
 def test_load_config_exposes_l15_prescreen():
     """load_config 组装结果含 l15.prescreen（T-25：sgme.yaml 透传 + 默认兜底）。"""
     from sgme import config as sgme_config
-    # SGME_HOME 隔离下默认路径已重定向到 tmp，显式指项目根真实配置验证透传
+    # SGME_HOME 隔离下默认路径已重定向到 tmp，显式指包内真实配置验证透传
     cfg = sgme_config.load_config(
-        sgme_path=sgme_config.PROJECT_ROOT / "config" / "sgme.yaml"
+        sgme_path=sgme_config.RESOURCE_ROOT / "config" / "sgme.yaml"
     )
     l15_cfg = cfg.get("l15", {})
     assert "prescreen" in l15_cfg

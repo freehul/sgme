@@ -2,12 +2,12 @@
 # 多阶段构建：Stage 1 WebUI（node:20-alpine）→ Stage 2 运行时（python:3.11-slim，Debian bookworm，glibc 2.36，兼容 manylinux wheel）
 #
 # 布局约定（对齐 sgme/config.py T-23 标准安装布局）：
-# - 程序资源（sgme 包 / config/llm.yaml / config/providers.yaml / registry / templates / prompts / roles / ui/dist）在镜像内 /app
+# - 程序资源（sgme 包 / sgme/resources/{config,registry,templates,prompts} / roles / ui/dist）在镜像内 /app
 # - 用户数据（data / raw / logs / config/sgme.yaml / config/.env）经 SGME_HOME=/data 落到挂载卷
 # - 密钥（DEEPSEEK_API_KEY / VOLC_API_KEY / SGME_ADMIN_KEY / SGME_AGENT_KEY）从环境变量注入（env_file，不入镜像）
 #
 # sgme.yaml 语义（2026-08-16 T-72）：SGME_HOME 设置后运行时只读 $SGME_HOME/config/sgme.yaml，
-# 镜像内 /app/config/sgme.yaml 仅作「首次启动模板」——entrypoint 在空卷首次启动时物化到 /data/config/，
+# 镜像内 /app/sgme/resources/config/sgme.yaml 仅作「首次启动模板」——entrypoint 在空卷首次启动时物化到 /data/config/，
 # 用户可编辑后重启生效（含生产调优：l15 prescreen 开启 + fallback: skip_conflict 防全量召回烧钱）。
 
 # ---- Stage 1: WebUI 构建 ----
@@ -44,13 +44,10 @@ RUN pip install --no-cache-dir \
 
 # ---- 程序（sgme 包 + 程序资源，不包含用户数据）----
 # 注意：不 pip install 项目——保留 sgme/ 于 /app，使 PROJECT_ROOT=/app，
-# 程序资源（config/llm.yaml 等）能正确定位；python -m sgme 从 /app 运行。
+# 程序资源（sgme/resources/config/llm.yaml 等）能正确定位；python -m sgme 从 /app 运行。
+# T-142：config/registry/templates/prompts 已内迁至 sgme/resources/，随 COPY sgme/ 一并进入镜像。
 COPY sgme/ sgme/
-# config/ 内含：llm.yaml + providers.yaml（程序资源，运行时读取）+ sgme.yaml（首次启动模板）
-COPY config/ config/
-COPY registry/ registry/
-COPY templates/ templates/
-COPY prompts/ prompts/
+# roles/ 属运行时用户数据（ROLES_DIR=$SGME_HOME/roles），镜像内置角色供首次启动物化
 COPY roles/ roles/
 # 技能模块自有技能树（SKILL.md）：烘焙进镜像，每次重建自动带出；
 # 并初始化为 git 仓（写侧 MCP 工具 store.write_skill 等需 git 提交）

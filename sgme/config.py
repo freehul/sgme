@@ -1,6 +1,8 @@
 """SGME 配置加载：启动时读取 config/llm.yaml + registry/*.yaml。
 
-输出统一字典供各模块使用。所有 YAML 路径相对项目根目录（AGENTS.md 同级）。
+输出统一字典供各模块使用。T-142 起程序资源（config/registry/templates/prompts）
+内迁至 sgme/resources/（包内，随 wheel 分发）；只读资源经 RESOURCE_ROOT 取，
+可写配置（sgme.yaml/.env/llm.yaml/providers.yaml）经 _config_overlay_dir() 取。
 """
 
 from __future__ import annotations
@@ -27,20 +29,52 @@ SGME_HOME = Path(_env_home).expanduser() if _env_home else None
 USER_ROOT = SGME_HOME if SGME_HOME is not None else PROJECT_ROOT
 _USER_ROOT = USER_ROOT
 
-# 默认配置文件路径（相对项目根）
-DEFAULT_LLM_CONFIG = PROJECT_ROOT / "config" / "llm.yaml"
-# 供应商连接层（v0.7 §13.1：与 llm.yaml 编排层分离；缺失时回退内联兼容）
-DEFAULT_PROVIDERS_CONFIG = PROJECT_ROOT / "config" / "providers.yaml"
-DEFAULT_DIMENSIONS_FILE = PROJECT_ROOT / "registry" / "dimensions.yaml"
-DEFAULT_ALIASES_FILE = PROJECT_ROOT / "registry" / "aliases.yaml"
+# ---------- T-142 修复 wheel 打包崩溃 ----------
+# 原 config/registry/templates/prompts 位于项目根同级顶层目录，被 pyproject exclude
+# 且未声明 package-data → wheel 不携带 → pip install . 后启动报
+# FileNotFoundError: config/llm.yaml。现统一内迁至 sgme/resources/（包内），
+# 随 wheel 分发；运行时只读资源从 RESOURCE_ROOT 取，
+# 可写配置（sgme.yaml/.env/llm.yaml/providers.yaml）走 _config_overlay_dir() 覆盖目录。
+PKG_DIR = Path(__file__).resolve().parent
+RESOURCE_ROOT = PKG_DIR / "resources"
+
+
+def _config_overlay_dir() -> Path:
+    """可写配置覆盖目录（sgme.yaml/.env/llm.yaml/providers.yaml 运行时落盘位置）。
+
+    解析优先级（与 T-23 标准安装布局一致）：
+      1. SGME_HOME 设置 → $SGME_HOME/config（Docker/NAS/显式重定向，挂载卷可持久化）
+      2. 源码开发态（项目根含 pyproject.toml/.git）→ 沿用项目根 config/（零回归，
+         不污染包内只读资源）
+      3. 只读安装（wheel/pip 安装到 site-packages）→ ~/.sgme/config（用户主目录，可写）
+    """
+    if SGME_HOME is not None:
+        return SGME_HOME / "config"
+    # 源码开发态判定：项目根存在 pyproject.toml 或 .git
+    is_repo = (PROJECT_ROOT / "pyproject.toml").exists() or (PROJECT_ROOT / ".git").exists()
+    if is_repo:
+        return PROJECT_ROOT / "config"
+    return Path.home() / ".sgme" / "config"
+
+
+# 只读程序资源（随包分发，sgme/resources/ 内）
+BUNDLE_LLM_CONFIG = RESOURCE_ROOT / "config" / "llm.yaml"
+BUNDLE_PROVIDERS_CONFIG = RESOURCE_ROOT / "config" / "providers.yaml"
+# 默认读取路径 = 包内默认；测试可 monkeypatch DEFAULT_* 重定向到临时文件
+DEFAULT_LLM_CONFIG = BUNDLE_LLM_CONFIG
+DEFAULT_PROVIDERS_CONFIG = BUNDLE_PROVIDERS_CONFIG
+DEFAULT_DIMENSIONS_FILE = RESOURCE_ROOT / "registry" / "dimensions.yaml"
+DEFAULT_ALIASES_FILE = RESOURCE_ROOT / "registry" / "aliases.yaml"
 # 检索术语别名表（ST-19：查询端旧术语 → 标准术语归一化；与维度别名表语义不同）
-DEFAULT_TERM_ALIASES_FILE = PROJECT_ROOT / "registry" / "term_aliases.yaml"
+DEFAULT_TERM_ALIASES_FILE = RESOURCE_ROOT / "registry" / "term_aliases.yaml"
 # 关系类型注册表（T-14：wiki_links.rel_type 枚举权威来源，DB 不做 CHECK 约束）
-DEFAULT_RELATIONS_FILE = PROJECT_ROOT / "registry" / "relations.yaml"
-# 用户配置（sgme.yaml/.env 跟随 SGME_HOME；llm/registry 属程序资源，不跟随）
-DEFAULT_SGME_CONFIG = _USER_ROOT / "config" / "sgme.yaml"
+DEFAULT_RELATIONS_FILE = RESOURCE_ROOT / "registry" / "relations.yaml"
+# 可写用户配置（sgme.yaml/.env）跟随覆盖目录，不进包内只读资源
+DEFAULT_SGME_CONFIG = _config_overlay_dir() / "sgme.yaml"
+# 包内默认 sgme.yaml 模板（随 wheel 分发；覆盖目录缺失时回退，保证零回归 + 首次启动可用）
+BUNDLE_SGME_CONFIG = RESOURCE_ROOT / "config" / "sgme.yaml"
 # 密钥文件（gitignore；Gateway 自持，不依赖外部应用/服务环境注入）
-SECRETS_FILE = _USER_ROOT / "config" / ".env"
+SECRETS_FILE = _config_overlay_dir() / ".env"
 
 
 def load_env_file() -> None:
@@ -398,6 +432,19 @@ def load_llm_config(
       4. 引用未知供应商且节点无内联 base_url → ValueError（rule 节点除外）
     """
     cfg_path = Path(path) if path else DEFAULT_LLM_CONFIG
+    # T-142：未显式重定向（含测试 monkeypatch DEFAULT_LLM_CONFIG）时才考虑运行时覆盖目录。
+    # 覆盖文件损坏/结构非法时回退包内默认，避免启动崩溃（NAS 旧布局遗留无效 llm.yaml 等）。
+    if path is None and cfg_path == BUNDLE_LLM_CONFIG:
+        ov = _config_overlay_dir() / "llm.yaml"
+        if ov.exists() and ov.stat().st_size > 0:
+            try:
+                _ov = _read_yaml(ov)
+                if isinstance(_ov, dict) and "chains" in _ov and "rules" in _ov:
+                    cfg_path = ov
+                else:
+                    logger.warning("覆盖 llm.yaml 缺 chains/rules，回退包内默认: %s", ov)
+            except Exception as e:
+                logger.warning("覆盖 llm.yaml 读取失败，回退包内默认: %s (%s)", ov, e)
     raw = _read_yaml(cfg_path)
     if not isinstance(raw, dict) or "chains" not in raw or "rules" not in raw:
         raise ValueError(f"LLM 配置缺失必要字段: {cfg_path}")
@@ -425,6 +472,18 @@ def load_providers_config(path: Path | str | None = None) -> dict:
     结构校验：必须含顶层 `providers` 字典，每个供应商节点必须含 base_url。
     """
     cfg_path = Path(path) if path else DEFAULT_PROVIDERS_CONFIG
+    # T-142：未显式重定向时才考虑运行时覆盖目录（sentinel 守卫，测试 monkeypatch 不受影响）
+    if path is None and cfg_path == BUNDLE_PROVIDERS_CONFIG:
+        ov = _config_overlay_dir() / "providers.yaml"
+        if ov.exists() and ov.stat().st_size > 0:
+            try:
+                _ov = _read_yaml(ov)
+                if isinstance(_ov, dict) and isinstance(_ov.get("providers"), dict):
+                    cfg_path = ov
+                else:
+                    logger.warning("覆盖 providers.yaml 缺 providers 段，回退包内默认: %s", ov)
+            except Exception as e:
+                logger.warning("覆盖 providers.yaml 读取失败，回退包内默认: %s (%s)", ov, e)
     if not cfg_path.exists():
         return {}
     raw = _read_yaml(cfg_path)
@@ -457,23 +516,31 @@ def write_providers_config(providers: dict[str, dict], path: Path | str | None =
     Returns:
         写入的文件路径。
     """
-    cfg_path = Path(path) if path else DEFAULT_PROVIDERS_CONFIG
-    for name, p in providers.items():
-        if not isinstance(p, dict):
-            raise ValueError(f"供应商 {name!r} 配置必须是字典: {cfg_path}")
-        if "base_url" not in p:
-            raise ValueError(f"供应商 {name!r} 缺 base_url: {cfg_path}")
-    # 读现有文件，保留 providers 之外的段（embedding 等）
+    # T-142：未重定向（含测试 monkeypatch DEFAULT_PROVIDERS_CONFIG）→ 写到可写覆盖目录，
+    # 不写包内只读默认；读现有段优先覆盖目录，否则包内默认（保留 embedding 等其余段）
+    if path is not None:
+        cfg_path = Path(path)
+    elif DEFAULT_PROVIDERS_CONFIG == BUNDLE_PROVIDERS_CONFIG:
+        cfg_path = _config_overlay_dir() / "providers.yaml"
+    else:
+        cfg_path = Path(DEFAULT_PROVIDERS_CONFIG)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
     data: dict = {"providers": providers}
-    if cfg_path.exists():
+    src = cfg_path if cfg_path.exists() else BUNDLE_PROVIDERS_CONFIG
+    if src.exists():
         try:
-            existing = _read_yaml(cfg_path)
+            existing = _read_yaml(src)
             if isinstance(existing, dict):
                 for k, v in existing.items():
                     if k != "providers":
                         data[k] = v
         except Exception:
             pass  # 文件损坏 → 仅写 providers（不丢主数据）
+    for name, p in providers.items():
+        if not isinstance(p, dict):
+            raise ValueError(f"供应商 {name!r} 配置必须是字典: {cfg_path}")
+        if "base_url" not in p:
+            raise ValueError(f"供应商 {name!r} 缺 base_url: {cfg_path}")
     cfg_path.write_text(
         yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False),
         encoding="utf-8",
@@ -513,11 +580,20 @@ def write_llm_config(chains: dict[str, list[dict]], path: Path | str | None = No
     Returns:
         写入的文件路径。
     """
-    cfg_path = Path(path) if path else DEFAULT_LLM_CONFIG
+    # T-142：未重定向（含测试 monkeypatch DEFAULT_LLM_CONFIG）→ 写到可写覆盖目录，
+    # 不写包内只读默认；读现有段优先覆盖目录，否则包内默认（保留 rules 等其余段）
+    if path is not None:
+        cfg_path = Path(path)
+    elif DEFAULT_LLM_CONFIG == BUNDLE_LLM_CONFIG:
+        cfg_path = _config_overlay_dir() / "llm.yaml"
+    else:
+        cfg_path = Path(DEFAULT_LLM_CONFIG)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
     data: dict = {}
-    if cfg_path.exists():
+    src = cfg_path if cfg_path.exists() else BUNDLE_LLM_CONFIG
+    if src.exists():
         try:
-            existing = _read_yaml(cfg_path)
+            existing = _read_yaml(src)
             if isinstance(existing, dict):
                 data = existing
         except Exception:
@@ -629,6 +705,10 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
     目前识别顶层 `l2` 与 `search` 字段，其余字段忽略。
     """
     cfg_path = Path(path) if path else DEFAULT_SGME_CONFIG
+    # T-142：覆盖目录（SGME_HOME/config 或 ~/.sgme/config）优先；缺失时回退包内默认模板，
+    # 保证源码开发态 / 首次 wheel 安装读到与旧 repo/config/sgme.yaml 同内容的默认配置（零回归）
+    if not path and not cfg_path.exists() and BUNDLE_SGME_CONFIG.exists():
+        cfg_path = BUNDLE_SGME_CONFIG
     if not cfg_path.exists():
         return {
             "l2": dict(DEFAULT_L2_CONFIG),
