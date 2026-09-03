@@ -122,9 +122,29 @@ EOF
 # ⚠️ 必须带命令行级 -c safe.directory（protected config，优先级最高且必生效）：
 #    仓库级 / 全局配置在 cron 最小环境下可能读不到，会复现
 #    `fatal: detected dubious ownership`（2026-09-03 1.1.4 首次更新失败实证）
-log "git pull ($SRC)"
-if ! (cd "$SRC" && git -c safe.directory="$SRC" pull "$UPSTREAM" "$BRANCH" >> "$LOG" 2>&1); then
-  mark_failed "git pull 失败"
+# ⚠️ 2026-09-04 复发（新形态，1.1.5 首次更新失败）：报错对象是**裸仓**而非 src。
+#    src 已在白名单，但 pull 经本地路径远端拉起 upload-pack 子进程打开裸仓时仍被拒
+#    （fatal: detected dubious ownership in repository at '/vol1/1000/git/sgme.git'）。
+#    ⇒ 远端为本地路径（绝对路径或 file://）时，必须把裸仓一并加入白名单。
+#    -c 通过 GIT_CONFIG_PARAMETERS 传递给子进程，故对 upload-pack 同样生效。
+UPSTREAM_URL=$(cd "$SRC" && git remote get-url "$UPSTREAM" 2>/dev/null)
+SAFE_ARGS=(-c "safe.directory=$SRC")
+case "$UPSTREAM_URL" in
+  /*)       SAFE_ARGS+=(-c "safe.directory=$UPSTREAM_URL") ;;
+  file://*) SAFE_ARGS+=(-c "safe.directory=${UPSTREAM_URL#file://}") ;;
+esac
+log "git pull ($SRC) upstream=$UPSTREAM_URL"
+PULL_OK=0
+for attempt in 1 2; do
+  if (cd "$SRC" && git "${SAFE_ARGS[@]}" pull "$UPSTREAM" "$BRANCH" >> "$LOG" 2>&1); then
+    PULL_OK=1
+    break
+  fi
+  log "git pull 第 $attempt 次失败，10s 后重试（推送后瞬时属主态多可自愈）"
+  sleep 10
+done
+if [ "$PULL_OK" -ne 1 ]; then
+  mark_failed "git pull 失败（已重试 1 次）"
 fi
 
 # 2. docker build 新镜像（后台可能 3-5 分钟，重试一次网络抖动）
