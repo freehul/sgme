@@ -31,7 +31,12 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sgme*"]
-exclude = ["tests*", "scripts*", "docs*", "config*", "registry*", "templates*", "prompts*"]
+exclude = ["tests*", "scripts*", "docs*"]
+
+# T-142：程序资源内迁至 sgme/resources/，随 wheel 一并分发（否则 pip install . 后启动报
+# FileNotFoundError: config/llm.yaml）。仅打包 yaml/txt 资源，密钥 .env 已被 .gitignore 排除。
+[tool.setuptools.package-data]
+sgme = ["resources/**/*.yaml", "resources/**/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

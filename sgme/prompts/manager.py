@@ -96,7 +96,7 @@ class VersionedSource(Protocol):
 class PromptStore:
     """提示词版本管理器（文件型 VersionedSource 实现）。"""
 
-    PROMPTS_ROOT: Path = config.PROJECT_ROOT / "prompts"
+    PROMPTS_ROOT: Path = config.RESOURCE_ROOT / "prompts"
     MANIFEST_PATH: Path = PROMPTS_ROOT / "manifest.yaml"
 
     def __init__(self, prompts_root: Path | str | None = None):

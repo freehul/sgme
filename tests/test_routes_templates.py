@@ -30,7 +30,7 @@ AGENT_KEY = "test-agent-key"
 ADMIN_HEADERS = {"X-API-Key": ADMIN_KEY}
 AGENT_HEADERS = {"X-API-Key": AGENT_KEY}
 
-REAL_TEMPLATES_DIR = sgme_config.PROJECT_ROOT / "templates"
+REAL_TEMPLATES_DIR = sgme_config.RESOURCE_ROOT / "templates"
 BUILTIN_NAMES = ("coding", "daily", "full", "work")
 
 

@@ -287,7 +287,8 @@ def load_labels(registry_path: str | Path | None = None) -> dict[str, str]:
     默认从 registry/dimensions.yaml 读取。
     """
     if registry_path is None:
-        registry_path = PROJECT_ROOT / "registry" / "dimensions.yaml"
+        # T-142：registry 已内迁至 sgme/resources/（包内）
+        registry_path = PROJECT_ROOT / "sgme" / "resources" / "registry" / "dimensions.yaml"
 
     yaml_path = Path(registry_path)
     if not yaml_path.exists():

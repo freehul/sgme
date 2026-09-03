@@ -26,7 +26,7 @@ from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs
 from sgme.profile import template as template_mod
 
 # 真实内置模板源目录（只读复制样本用）
-REAL_TEMPLATES_DIR = sgme_config.PROJECT_ROOT / "templates"
+REAL_TEMPLATES_DIR = sgme_config.RESOURCE_ROOT / "templates"
 BUILTIN_NAMES = ("coding", "daily", "full", "work")
 
 

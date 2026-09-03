@@ -14,7 +14,7 @@ import yaml
 
 from sgme import config
 
-TEMPLATES_DIR = config.PROJECT_ROOT / "templates"
+TEMPLATES_DIR = config.RESOURCE_ROOT / "templates"
 
 # 单条记忆 token 估算（§4 校验规则 5）
 AVG_ITEM_TOKENS = 30

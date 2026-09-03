@@ -42,7 +42,7 @@ def templates_dir(tmp_path, monkeypatch):
     td = tmp_path / "templates"
     td.mkdir()
     # 复制真实模板到 tmp
-    src = config.PROJECT_ROOT / "templates"
+    src = config.RESOURCE_ROOT / "templates"
     for f in src.glob("*.yaml"):
         (td / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setattr(template, "TEMPLATES_DIR", td)

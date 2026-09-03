@@ -71,13 +71,15 @@ def test_sgme_home_redirects_user_paths(reload_config, tmp_path: Path):
     assert mod.SECRETS_FILE == home / "config" / ".env"
 
 
-def test_sgme_home_keeps_program_resources_at_project_root(reload_config, tmp_path: Path):
-    """程序资源（llm.yaml/providers.yaml/registry）必须留在项目根，不跟随重定向。"""
+def test_sgme_home_program_resources_in_package(reload_config, tmp_path: Path):
+    """程序资源（llm.yaml/providers.yaml/registry）内迁至 sgme/resources/（包内），不跟随重定向。"""
     home = tmp_path / "sgme-home"
     mod = reload_config(SGME_HOME=str(home))
-    assert mod.DEFAULT_LLM_CONFIG == mod.PROJECT_ROOT / "config" / "llm.yaml"
-    assert mod.DEFAULT_PROVIDERS_CONFIG == mod.PROJECT_ROOT / "config" / "providers.yaml"
-    assert mod.DEFAULT_DIMENSIONS_FILE == mod.PROJECT_ROOT / "registry" / "dimensions.yaml"
+    assert mod.DEFAULT_LLM_CONFIG == mod.RESOURCE_ROOT / "config" / "llm.yaml"
+    assert mod.DEFAULT_PROVIDERS_CONFIG == mod.RESOURCE_ROOT / "config" / "providers.yaml"
+    assert mod.DEFAULT_DIMENSIONS_FILE == mod.RESOURCE_ROOT / "registry" / "dimensions.yaml"
+    # 重定向只影响用户配置（sgme.yaml/.env），不影响程序资源
+    assert mod.DEFAULT_SGME_CONFIG == home / "config" / "sgme.yaml"
 
 
 def test_sgme_home_load_config_paths_and_creates_data(reload_config, tmp_path: Path):
