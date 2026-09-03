@@ -306,9 +306,11 @@ def _inject_local_refine(cfg: dict) -> None:
         "base_url": lm_base,
         "context_window": int(os.environ.get("SGME_REFINE_CTX", "32768")),
         "api_key_env": None,
-        "max_tokens": 4096,
-        # Qwen3.6 是思考模型：不关思考会把 token 预算烧在 reasoning_content，
-        # 导致 content 空串（评测拿不到提炼三元组/judge 结果）。显式关思考。
+        "max_tokens": 16384,
+        # Qwen3.6 是思考模型：无论是否 enable_thinking:false，本 uncensored 变体
+        # 仍会先思考 ~14K 字符再输出 JSON。思考 token 与 max_tokens 共用预算，
+        # 4096 会中途截断 JSON（报 "Expecting ',' delimiter"）。实测 8192 可完整吐出，
+        # 这里给 16384 留足余量，防大块提炼被截断。
         "extra_body": {"enable_thinking": False},
     }
     cfg.setdefault("llm", {})
@@ -769,7 +771,7 @@ def run(args) -> dict:
             base_url=judge_base,
             throttle_s=0.0 if is_local else 0.25,
             disable_thinking=is_local,
-            max_tokens=4096,
+            max_tokens=8192,
             allow_no_key=is_local,
             timeout_s=1800,
         )
