@@ -1,0 +1,121 @@
+{
+  "dataset": "D:/GitHubDownloads/LongMemEval/longmemeval_s.jsonl",
+  "n_questions": 500,
+  "top_k": 8,
+  "arms": [
+    "bm25",
+    "hybrid"
+  ],
+  "retrieval_recall_by_arm_type": {
+    "bm25:knowledge-update": {
+      "recall@8": 0.8077,
+      "hit": 63.0,
+      "total": 78
+    },
+    "bm25:multi-session": {
+      "recall@8": 0.6356,
+      "hit": 84.53333333333333,
+      "total": 133
+    },
+    "bm25:single-session-assistant": {
+      "recall@8": 0.8036,
+      "hit": 45.0,
+      "total": 56
+    },
+    "bm25:single-session-preference": {
+      "recall@8": 0.4333,
+      "hit": 13.0,
+      "total": 30
+    },
+    "bm25:single-session-user": {
+      "recall@8": 0.8286,
+      "hit": 58.0,
+      "total": 70
+    },
+    "bm25:temporal-reasoning": {
+      "recall@8": 0.5925,
+      "hit": 78.80000000000001,
+      "total": 133
+    },
+    "hybrid:knowledge-update": {
+      "recall@8": 0.9423,
+      "hit": 73.5,
+      "total": 78
+    },
+    "hybrid:multi-session": {
+      "recall@8": 0.8108,
+      "hit": 107.83333333333333,
+      "total": 133
+    },
+    "hybrid:single-session-assistant": {
+      "recall@8": 1.0,
+      "hit": 56.0,
+      "total": 56
+    },
+    "hybrid:single-session-preference": {
+      "recall@8": 0.5333,
+      "hit": 16.0,
+      "total": 30
+    },
+    "hybrid:single-session-user": {
+      "recall@8": 0.9143,
+      "hit": 64.0,
+      "total": 70
+    },
+    "hybrid:temporal-reasoning": {
+      "recall@8": 0.7816,
+      "hit": 103.95,
+      "total": 133
+    }
+  },
+  "qa": {
+    "enabled": true,
+    "n_qa": 500,
+    "correct": 192,
+    "wrong": 131,
+    "no_context": 174,
+    "errors": 3,
+    "j_score": 0.384,
+    "no_context_rate": 0.348,
+    "by_type": {
+      "knowledge-update": {
+        "j_score": 0.4675,
+        "judged": 77,
+        "f1": 0.3012
+      },
+      "multi-session": {
+        "j_score": 0.2273,
+        "judged": 132,
+        "f1": 0.0928
+      },
+      "single-session-assistant": {
+        "j_score": 0.875,
+        "judged": 56,
+        "f1": 0.7207
+      },
+      "single-session-preference": {
+        "j_score": 0.2667,
+        "judged": 30,
+        "f1": 0.0409
+      },
+      "single-session-user": {
+        "j_score": 0.6957,
+        "judged": 69,
+        "f1": 0.5734
+      },
+      "temporal-reasoning": {
+        "j_score": 0.1579,
+        "judged": 133,
+        "f1": 0.1632
+      }
+    }
+  },
+  "elapsed_s": 5203,
+  "overall_recall@8": 0.8426,
+  "overall_recall_by_arm": {
+    "bm25": 0.6847,
+    "hybrid": 0.8426
+  },
+  "judge_model": "glm-4-flash",
+  "embed_model": "text-embedding-bge-m3-legal-euro-r7"
+}
