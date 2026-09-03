@@ -2527,3 +2527,15 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 坑3 · sed -i 丢执行位 + root 属主 | 用 `sed -i` 改脚本后文件重建为 `-rwx------` → cron 调起 `Permission denied`；另容器 root 写的 `request.json` 属主 root，脚本以 LEO 运行时重写会被拒（目录属主 LEO 时可 `rm` 重建，但不可覆写）。处置：`chmod 755` + `chown -R LEO:Users data/update`。 |
 | 结果 | 11:57 更新成功 → **v1.1.4**（容器重建、版本确认通过、health ok）。生产实证：refine.py:210 含 `"facts": rm.get("facts")`；冒烟 append → 提炼 → `facts_json` 落库 4 三元组（赵六/任职于/杭州阿里巴巴西溪园区 等），**全库 facts 计数 0 → 1**，B147 修复在生产确认生效。 |
 | 备注 | 脚本在仓库 `scripts/sgme-host-updater.sh`（git 跟踪）与主机运行副本 `/vol1/1000/Docker/sgme/scripts/`（src 之外，pull 不覆盖）**两份**，修复后已双向同步（md5 `45316305...` 一致）。修改主机副本时勿用 `sed -i`（丢执行位）。 |
+
+### B149. 中文分词静默降级修复：jieba 在 Python 3.12+ 全线失效（2026-09-03）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 巡检 LongMemEval 全量评测 stderr 时发现 **8,250 条** `segment: jieba 不可用，降级 bigram-v1`，自 00:15 起持续覆盖整场运行。 |
+| 根因 | Python **3.12 移除了 `pkgutil.ImpImporter`**；jieba **0.42.1（最新发行版）** 间接依赖它的 `pkg_resources` → `import jieba` 必抛 `AttributeError: module 'pkgutil' has no attribute 'ImpImporter'` → `sgme/segment.py` 的 `try/except` 把它当普通 ImportError **静默降级 bigram-v1**。本地评测环境 `.venv` = Python 3.13.14 中招；**生产容器 Python 3.11.16 + jieba 0.42.1 完全正常（生产无此问题）**。 |
+| 危害 | 降级后写入侧与查询侧**仍同口径**（故不报错、检索不崩），但中文 BM25 召回质量受损，且**几乎不可观测**——仅 stderr 留告警行，`fts_meta.segmenter` 记为 `bigram-v1`。设计文档要求「禁止静默降级后用旧口径凑合」，实际却无告警升级机制。 |
+| 修复 | `sgme/segment.py` 懒加载点（`_ensure_jieba`）加兼容 shim：`if not hasattr(pkgutil, "ImpImporter"): pkgutil.ImpImporter = pkgutil.zipimporter`。保持「模块 import 时不得触发 jieba 词典构建」的硬约束（shim 在 try 内、懒加载点执行）。实测 3.13 下 `current_segmenter_id()` 由 `bigram-v1` 恢复为 `jieba-0.42.1`。 |
+| 测试 | 新增 `tests/test_segment.py`（3 项）：①3.12+ 上不得降级为 bigram-v1；②分词对空/None/纯英文/中英混合输入不抛错且结果确定；③口径标识必须与实际模式一致（jieba 模式下中文不得切成单字）。test_segment 3 passed + `test_search_stoplist/scenes_fts/migrations/wiki_columns/search_graph/facts` 56 passed 全绿（jieba 激活未破坏既有断言）。 |
+| ⚠️ 踩坑 | **shim 顺序敏感**：必须先调用 `_ensure_jieba()` 再 `import jieba`。若直接 `import jieba`（如测试里先写 `pytest.importorskip("jieba")`），shim 尚未生效，jieba 会连带 `pkg_resources` 在同一处炸掉并报同样错误，极易误判为「shim 无效」。 |
+| 遗留决策 | 正在跑的 **LongMemEval 全量 500 题（当前 26/500、约 13.5 小时）整场在 bigram-v1 口径下运行**，结果与生产（jieba 口径）不可比。FTS 索引口径不同 ⇒ **checkpoint 不可跨分词器复用**（`fts_meta.segmenter` 口径漂移检测的设计前提）。需决定：重启全量（沉没 13.5h）or 继续跑完再抽样校准。 |

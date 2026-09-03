@@ -38,6 +38,15 @@ def _ensure_jieba() -> bool:
     if _jieba_ready:
         return True
     try:
+        # Python 3.12+ 兼容 shim：jieba 0.42.1（最新发行版）内部依赖
+        # `pkgutil.ImpImporter`，该 API 已于 3.12 移除 → 直接 import 必抛
+        # AttributeError 而静默降级 bigram-v1（全量评测曾因此整场以降级口径跑，
+        # 写入与查询两侧仍同口径故不报错，但检索质量受损且不可观测）。
+        # 补一个 zipimporter 别名即可恢复 jieba；已在 3.13 实测通过。
+        import pkgutil
+        if not hasattr(pkgutil, "ImpImporter"):
+            pkgutil.ImpImporter = pkgutil.zipimporter  # type: ignore[attr-defined]
+
         import jieba  # 首次调用才 import（模块 import 时不得触发词典构建）
         jieba.initialize()  # 显式构建词典（首次约 1~2s）
         _jieba_ready = True
