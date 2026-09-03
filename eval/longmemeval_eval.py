@@ -75,12 +75,22 @@ def make_deepseek_llm_fn(
     base_url: str = "https://api.deepseek.com/v1",
     throttle_s: float = 0.25,
     max_retry: int = 5,
+    disable_thinking: bool = False,
+    max_tokens: int = 4096,
+    allow_no_key: bool = False,
+    timeout_s: float = 1800,
 ) -> "Callable[[str], str]":
-    """Build an llm_fn(prompt)->str that calls DeepSeek directly.
+    """Build an llm_fn(prompt)->str that calls an OpenAI-compatible endpoint.
 
-    Bypasses the agnes rate limit (the default refinement chain head) and
-    matches SGME production LLM (deepseek-v4-flash). Retries on 429 with
-    exponential backoff. Returns '' on persistent failure.
+    Default targets DeepSeek (SGME production LLM), but also drives local
+    LM Studio endpoints (Qwen 等) for zero-cloud eval runs. Retries on 429
+    with exponential backoff. Returns '' on persistent failure.
+
+    Local-model notes:
+    - allow_no_key: LM Studio 不需要 key，缺失时回退 "not-required"。
+    - disable_thinking: Qwen3.x 是思考模型，不关会把 token 预算烧在
+      reasoning_content 导致 content 空串；本地跑必须关。
+    - timeout_s: 本地 9 tok/s 生成长输出单请求常 >120s，必须抬高。
     """
     import os
     import random
@@ -90,19 +100,29 @@ def make_deepseek_llm_fn(
 
     key = os.environ.get(api_key_env) or os.environ.get("DEEPSEEK_API_KEY")
     if not key:
-        raise RuntimeError(f"missing API key env {api_key_env}")
+        if allow_no_key:
+            key = "not-required"
+        else:
+            raise RuntimeError(f"missing API key env {api_key_env}")
 
     def fn(prompt: str) -> str:
         last_err = ""
         if throttle_s > 0:
             time.sleep(throttle_s)
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        }
+        if disable_thinking:
+            payload["enable_thinking"] = False
         for attempt in range(1, max_retry + 1):
             try:
                 r = httpx.post(
                     f"{base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json={"model": model, "messages": [{"role": "user", "content": prompt}]},
-                    timeout=60,
+                    json=payload,
+                    timeout=timeout_s,
                 )
                 if r.status_code == 429:
                     last_err = "429"
@@ -287,11 +307,19 @@ def _inject_local_refine(cfg: dict) -> None:
         "context_window": int(os.environ.get("SGME_REFINE_CTX", "32768")),
         "api_key_env": None,
         "max_tokens": 4096,
+        # Qwen3.6 是思考模型：不关思考会把 token 预算烧在 reasoning_content，
+        # 导致 content 空串（评测拿不到提炼三元组/judge 结果）。显式关思考。
+        "extra_body": {"enable_thinking": False},
     }
     cfg.setdefault("llm", {})
     # 直接用本地节点 + rule 兜底（不回退云链，避免 429 干扰）
     cfg["llm"]["chains"] = {"refinement": [node, {"provider": "rule"}]}
-    # 本地推理免节流（rps=0.5 会拖垮 2.5 万次提炼调用）
+    # 本地推理：免云节流 + 放宽超时（9 tok/s 生成长输出单请求常 >120s）
+    cfg["llm"]["rules"] = {
+        "throttle": {"rps": 100, "burst": 100},
+        "timeout_s": 1800,
+        "max_retries": 3,
+    }
     cfg["llm"].setdefault("rules", {})["throttle"] = {"enabled": False}
 
 
@@ -729,15 +757,21 @@ def run(args) -> dict:
 
     llm_fn = None
     if args.qa:
-        judge_base = args.judge_base_url or os.environ.get(
-            "SGME_JUDGE_BASE_URL", "https://api.deepseek.com/v1")
+        judge_base = (args.judge_base_url or os.environ.get(
+            "SGME_JUDGE_BASE_URL", "https://api.deepseek.com/v1")).rstrip("/")
         judge_key_env = args.judge_api_key_env or os.environ.get(
             "SGME_JUDGE_KEY_ENV", "DEEPSEEK_API_KEY_SGME")
+        # 非 DeepSeek 云端即视为本地 LM Studio：关思考 + 免 key + 长超时 + 无 sleeps
+        is_local = judge_base != "https://api.deepseek.com/v1"
         llm_fn = make_deepseek_llm_fn(
             model=args.judge_model,
             api_key_env=judge_key_env,
             base_url=judge_base,
-            throttle_s=0.25,
+            throttle_s=0.0 if is_local else 0.25,
+            disable_thinking=is_local,
+            max_tokens=4096,
+            allow_no_key=is_local,
+            timeout_s=1800,
         )
 
     # resume: reuse checkpoint only when fingerprint matches
