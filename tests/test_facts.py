@@ -214,3 +214,79 @@ def test_migrate_facts_json_idempotent(tmp_path, cfg):
     cols = [r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()]
     assert "facts_json" in cols
     conn.close()
+
+
+# ---------- 全链回归：refine_file 归一化不得丢 facts（2026-09-03 生产实证修复） ----------
+
+@pytest.fixture
+def session_conn(tmp_path):
+    from sgme.data import db as _db
+    conn = _db.connect_session(tmp_path)
+    yield conn
+    conn.close()
+
+
+def test_facts_survive_refine_file_normalization(monkeypatch, mem_conn, session_conn, cfg, tmp_path):
+    """回归（B147）：refine.py 归一化重塑 dict 的字段白名单此前漏 facts →
+    L1 产出的三元组在进入 l15 落库前被静默丢弃，生产 facts_json 全 NULL
+    （冒烟实证 0 条；test_full_pipeline_facts_stored_and_queryable 因绕过
+    refine_file 归一化层而未拦住）。修复后全链 facts 必须存活。"""
+    from sgme import config as sgme_config
+    from sgme.engine import refine as refine_mod
+    from sgme.data import session_dao
+    from sgme.raw import store as raw_store
+
+    # 隔离 raw/ 目录（仿 test_e2e_v04）
+    rd = tmp_path / "raw"
+    rd.mkdir(exist_ok=True)
+    monkeypatch.setattr(sgme_config, "RAW_DIR", rd)
+    monkeypatch.setattr(raw_store, "config", sgme_config)
+
+    fid = "f-facts-norm-regression"
+    msgs = [{"timestamp": "2026-09-03T02:00:00Z", "role": "user",
+             "content": "王五住在上海市浦东新区，在字节跳动做后端工程师"}]
+    raw_store.write_new_file(
+        file_id=fid, session_key="sess_facts_norm",
+        started_at="2026-09-03T02:00:00Z",
+        agent_id="test", first_messages=msgs,
+    )
+    session_dao.insert_raw_file(
+        session_conn, file_id=fid, path=raw_store.relative_path(fid),
+        session_key="sess_facts_norm", started_at="2026-09-03T02:00:00Z",
+        agent_id="test", status="new", size=raw_store.file_size(fid),
+    )
+
+    # mock L1：返回带 facts 的 raw 记忆（facts 是本测试的断言焦点）
+    raw_with_facts = [{
+        "content": "王五住在上海市浦东新区，在字节跳动做后端工程师",
+        "dimensions": ["goals"],
+        "memory_type": "persona",
+        "priority": 80,
+        "time_velocity": "static",
+        "source_message_ids": [1],
+        "facts": [{"subject": "王五", "predicate": "任职于", "object": "字节跳动"}],
+    }]
+    monkeypatch.setattr(
+        refine_mod.l1, "extract_l1",
+        lambda *a, **k: (raw_with_facts, "mock",
+                         {"stage": "l1_extraction", "version": "working-TEST"}),
+    )
+
+    # Act：refine_file 全链（含归一化白名单重塑）
+    result = refine_mod.refine_file(fid, mem_conn, session_conn, cfg)
+
+    assert result.memories, "归一化后应至少剩 1 条记忆"
+    assert result.memories[0].get("facts"), "归一化白名单必须透传 facts"
+
+    # 继续走 l15 store → 落库 → 符号层可查
+    l15_body = json.dumps([{
+        "new_memory_index": 0, "candidate_ids": [], "action": "store", "reason": "r",
+    }])
+    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    res = l15.resolve_conflicts(
+        result.memories, mem_conn, cfg, client=_mock_llm_client(l15_body),
+    )
+    assert len(res.stored) == 1
+    assert facts_dao.count_facts(mem_conn) == {"facts_total": 1, "memories_with_facts": 1}
+    hits = facts_dao.query_facts(mem_conn, subject="王五", predicate="任职于")
+    assert len(hits) == 1 and hits[0]["object"] == "字节跳动"
