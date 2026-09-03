@@ -2508,3 +2508,11 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 测试 | ①bm25 4 题 checkpoint 写入（meta+4 记录）✓；②--resume 命中 4 题跳过 elapsed=0s 结果一致 ✓；③--workers 2 并发 6 题 0 错误 ✓；④改 --top-k 指纹不一致 → 自动弃用全量重跑 ✓；⑤refined 臂 2 题 workers=2 真实验证 ✓（3417s，2/2 完成 0 错误，checkpoint 逐题落盘；--resume 复验命中 2 题跳过 elapsed=0s）。⚠️ 并发实测修正：2 路加速仅 ~1.35x（吞吐 ~28.5 min/题，workers=2 全量 ≈ 10 天，与串行几乎无差）——agnes 免费档并发下降速，显著加速需付费链；B146 的核心价值是断点续跑 + 单题故障隔离，不是并发提速。 |
 | 坑记录 | SGME_HOME 重定向到非标准目录时 `load_env_file` 只读 `$SGME_HOME/config/.env` → key 全空 → 全链 401 **假象**（agnes/siliconflow 均报鉴权失败、0 记忆、降级 drop_batch）。评测脚本重定向 SGME_HOME 前必须手动注入项目 `.env`（bench 脚本已内置 `_load_project_env()`）。 |
 
+### B147. 生产全面验证 + facts 全链断裂修复（v1.1.3，2026-09-03）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户问「生产库目前能正常使用最新版带来的功能便利吗」→ 全面验证生产：health v1.1.3 ok（LLM agnes ✓ / bge-m3 向量 23,486 / 提炼心跳 ✓ / 无缺 key）；skills total=403 ✓；search routes 含 graph ✓（`["bm25","vector","rrf","graph"]`，检索 rank1 命中冒烟记忆）；memory_edges ~36.6k（belongs_to 16,854 + supersedes/evolves_from 各 9,859 + 语义边 23 条持续增长）。**发现 facts_json 全库 0 条**——T-136 原子事实在生产形同虚设。 |
+| 根因 | `sgme/engine/refine.py` 归一化阶段重塑记忆 dict 的**字段白名单漏 `facts`**：L1 提取输出的三元组在进入 L1.5 落库前被静默丢弃。定位过程：容器内直调 `extract_l1`（诊断脚本 stdin 注入 `docker exec -i`）facts 完全正常（4 三元组，质量高）→ 证明 prompt（working-34534605 含 facts 节）/LLM（agnes）/解析环环完好 → 断点唯在 refine 归一化层。**B136 为何漏测**：验收 `eval/check_facts.py` 直调 extract_l1 + 手动 store，`test_full_pipeline_facts_stored_and_queryable` 走 extract_l1 → resolve_conflicts 直连、绕过 refine_file 归一化层，全链集成漏测。 |
+| 修复 | ①`refine.py` 归一化 append 补 `"facts": rm.get("facts")`（一行）；②`tests/test_facts.py` 新增 `test_facts_survive_refine_file_normalization`：refine_file 全链（mock extract_l1 返回带 facts 记忆 + 真实 raw 文件组装）→ 断言归一化后 facts 存活 → l15 store → facts_dao 符号层命中，堵死漏测路径。test_facts 10 passed + test_engine/semantic_edges/edge_dao/search_graph 74 passed 全绿。 |
+| 部署 | commit 后推 nas；生产修复生效需重建镜像（NAS 自动更新代理或手动 SOP）。修复前生产冒烟记忆（SMK20260903 / file_id 8c07e361）遗留在生产库 1 条测试记忆，待更新验证后清理。 |

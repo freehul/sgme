@@ -205,6 +205,9 @@ def refine_file(
             "occurred_at": occ,
             # ST-18 替代联动：L1 supersedes 声明透传（pipeline 落库后触发旧主体记忆标记）
             "supersedes": rm.get("supersedes", []),
+            # T-136 facts 透传（2026-09-03 修复）：此前归一化白名单漏 facts →
+            # L1 产出的三元组在落库前被丢弃，生产 facts_json 全 NULL（冒烟实证）
+            "facts": rm.get("facts"),
         })
 
     result.memories = normalized_memories
