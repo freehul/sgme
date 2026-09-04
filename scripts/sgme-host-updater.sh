@@ -28,6 +28,11 @@
 # =============================================================================
 set -u
 
+# ⚠️ cron 最小环境下 HOME 可能缺失或异常，导致 git 读不到 ~/.gitconfig 的
+#    safe.directory 白名单（2026-09-04 1.1.5 连续两次更新失败的成因链之一）。
+#    显式钉死为 /etc/passwd 中 LEO 的 home，保证全局配置可见。
+export HOME=/home/LEO
+
 # ---- 可配置路径（与部署 runbook 对齐）----
 SRC=/vol1/1000/Docker/sgme/src
 COMPOSE_DIR=/vol1/1000/Docker/sgme
@@ -37,6 +42,8 @@ LOCK=/vol1/1000/Docker/sgme/logs/updater.lock
 REQUEST_FILE="$DATA_DIR/update/request.json"
 UPSTREAM=origin
 BRANCH=main
+# 裸仓兜底：remote get-url 解析失败时仍保证白名单覆盖（见第 1 步）
+BARE_REPO_FALLBACK=/vol1/1000/git/sgme.git
 
 TS() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "$(TS) $*" >> "$LOG"; }
@@ -127,13 +134,17 @@ EOF
 #    （fatal: detected dubious ownership in repository at '/vol1/1000/git/sgme.git'）。
 #    ⇒ 远端为本地路径（绝对路径或 file://）时，必须把裸仓一并加入白名单。
 #    -c 通过 GIT_CONFIG_PARAMETERS 传递给子进程，故对 upload-pack 同样生效。
-UPSTREAM_URL=$(cd "$SRC" && git remote get-url "$UPSTREAM" 2>/dev/null)
 SAFE_ARGS=(-c "safe.directory=$SRC")
+# ⚠️ remote get-url 自身也会触发属主校验：失败时 stdout 为空、错误在 stderr。
+#    必须给它也带 -c，且把 stderr 记进日志（此前的 2>/dev/null 把根因吞掉了）。
+UPSTREAM_URL=$(cd "$SRC" && git "${SAFE_ARGS[@]}" remote get-url "$UPSTREAM" 2>>"$LOG")
 case "$UPSTREAM_URL" in
   /*)       SAFE_ARGS+=(-c "safe.directory=$UPSTREAM_URL") ;;
   file://*) SAFE_ARGS+=(-c "safe.directory=${UPSTREAM_URL#file://}") ;;
+  *)        log "⚠️ remote get-url 返回空/异常，兜底使用 $BARE_REPO_FALLBACK"
+            SAFE_ARGS+=(-c "safe.directory=$BARE_REPO_FALLBACK") ;;
 esac
-log "git pull ($SRC) upstream=$UPSTREAM_URL"
+log "git pull ($SRC) upstream=$UPSTREAM_URL safe=[${SAFE_ARGS[*]}]"
 PULL_OK=0
 for attempt in 1 2; do
   if (cd "$SRC" && git "${SAFE_ARGS[@]}" pull "$UPSTREAM" "$BRANCH" >> "$LOG" 2>&1); then
