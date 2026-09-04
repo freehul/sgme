@@ -445,23 +445,47 @@ def load_llm_config(
                     logger.warning("覆盖 llm.yaml 缺 chains/rules，回退包内默认: %s", ov)
             except Exception as e:
                 logger.warning("覆盖 llm.yaml 读取失败，回退包内默认: %s (%s)", ov, e)
-    raw = _read_yaml(cfg_path)
-    if not isinstance(raw, dict) or "chains" not in raw or "rules" not in raw:
-        raise ValueError(f"LLM 配置缺失必要字段: {cfg_path}")
-    # 供应商连接表（v0.7 §13.1）
-    providers = load_providers_config(providers_path)
-    if providers:
-        for chain_name, nodes in raw.get("chains", {}).items():
-            if not isinstance(nodes, list):
-                continue
-            for node in nodes:
-                if isinstance(node, dict):
-                    _merge_provider_into_node(node, providers, chain_name)
-        # T-43：连接表随配置保留（动态链构造 resolve_refinement_chain 用）
-        raw["providers"] = providers
-    # 白名单校验：命中 deny_prefixes/deny_exact 的模型拒绝加载（铁律 #9）
-    from sgme.llm.chain import validate_models
-    validate_models(raw)
+    def _build(cfg: Path) -> dict:
+        """读取 + 合并供应商连接表 + 白名单校验；任一步 ValueError 由调用方决策。"""
+        _raw = _read_yaml(cfg)
+        if not isinstance(_raw, dict) or "chains" not in _raw or "rules" not in _raw:
+            raise ValueError(f"LLM 配置缺失必要字段: {cfg}")
+        # 供应商连接表（v0.7 §13.1）
+        providers = load_providers_config(providers_path)
+        if providers:
+            for chain_name, nodes in _raw.get("chains", {}).items():
+                if not isinstance(nodes, list):
+                    continue
+                for node in nodes:
+                    if isinstance(node, dict):
+                        _merge_provider_into_node(node, providers, chain_name)
+            # T-43：连接表随配置保留（动态链构造 resolve_refinement_chain 用）
+            _raw["providers"] = providers
+        # 白名单校验：命中 deny_prefixes/deny_exact 的模型拒绝加载（铁律 #9）
+        from sgme.llm.chain import validate_models
+
+        validate_models(_raw)
+        return _raw
+
+    try:
+        raw = _build(cfg_path)
+    except ValueError as e:
+        # T-142 后续（2026-09-04 生产实证）：覆盖层的历史 llm.yaml 可能引用
+        # providers.yaml 中已移除的供应商（如 NAS 遗留 zhipu 单链），合并即抛错
+        # → 服务启动崩溃 → 自动更新健康验证失败并回滚。
+        # 覆盖层属用户可编辑数据，配置漂移不应导致服务不可用：降级为
+        #「警告 + 回退包内默认」，保证与升级前行为一致。
+        # 包内默认自身非法则照常抛出（属发布缺陷，必须暴露而非掩盖）。
+        if cfg_path == BUNDLE_LLM_CONFIG:
+            raise
+        logger.warning(
+            "覆盖 llm.yaml 与当前供应商表不兼容（%s），回退包内默认配置: %s -> %s",
+            e,
+            cfg_path,
+            BUNDLE_LLM_CONFIG,
+        )
+        cfg_path = BUNDLE_LLM_CONFIG
+        raw = _build(cfg_path)
     return raw
 
 
