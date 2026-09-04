@@ -45,6 +45,15 @@ BRANCH=main
 # 裸仓兜底：remote get-url 解析失败时仍保证白名单覆盖（见第 1 步）
 BARE_REPO_FALLBACK=/vol1/1000/git/sgme.git
 
+# ⚠️ docker 配置目录隔离（2026-09-04 1.1.6 首次更新失败实证）：
+#    ERROR: open /home/LEO/.docker/buildx/activity/default: permission denied
+#    该文件属 root（root cron 的 nas_watchdog.sh / 群晖 Container Manager 等以 root
+#    调 docker CLI 时会重建它），本脚本以 LEO 运行 → 写不进 → buildx 初始化失败。
+#    改用 LEO 专属、位于持久卷下的独立目录，与 root 侧彻底不交叉。
+#    cli-plugins 位于 /usr/libexec/docker/cli-plugins，不受 DOCKER_CONFIG 影响。
+export DOCKER_CONFIG="$DATA_DIR/.docker"
+mkdir -p "$DOCKER_CONFIG" 2>/dev/null
+
 TS() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "$(TS) $*" >> "$LOG"; }
 
