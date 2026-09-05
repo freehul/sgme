@@ -35,6 +35,11 @@ class _FakeClient:
 
     def __init__(self):
         self.posts: List[Dict[str, Any]] = []
+        self.closed = False  # B152：对齐 httpx.Client.is_closed 接口
+
+    @property
+    def is_closed(self) -> bool:
+        return self.closed
 
     def post(self, url: str, **kwargs) -> _FakeResponse:
         self.posts.append({"url": url, **kwargs})
@@ -239,3 +244,124 @@ def test_prefetch_scene_only_no_memory(monkeypatch):
 
     assert "相关记忆" not in out
     assert "# 相关场景（L2 匹配）" in out
+
+
+# ---------- B152: client 生命周期（closed 后自动重建 + 关闭线程安全） ----------
+
+
+class _ClosedAwareClient:
+    """模拟 httpx.Client 关闭行为：closed=True 后所有请求抛 RuntimeError。
+
+    同时记录 close() 调用次数与并发标记，用于验证关闭的线程安全性。
+    """
+
+    def __init__(self):
+        self.posts: List[Dict[str, Any]] = []
+        self.closed = False
+        self.close_calls = 0
+        self.close_concurrent = False  # close() 执行期间再进 close() 即置位
+
+    @property
+    def is_closed(self) -> bool:
+        return self.closed
+
+    def post(self, url: str, **kwargs) -> _FakeResponse:
+        if self.closed:
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+        self.posts.append({"url": url, **kwargs})
+        return _FakeResponse(200)
+
+    def get(self, url: str, **kwargs) -> _FakeResponse:
+        if self.closed:
+            raise RuntimeError("Cannot send a request, as the client has been closed.")
+        return _FakeResponse(200)
+
+    def close(self) -> None:
+        if self.closed:
+            self.close_concurrent = True
+            return
+        self.closed = True
+        self.close_calls += 1
+
+
+def _provider_with_closed_client(monkeypatch) -> SGMEProvider:
+    """provider + 已关闭的假客户端 + 探活恒真。"""
+    fake = _ClosedAwareClient()
+    fake.closed = True  # 模拟 shutdown() 关闭后的状态
+    p = SGMEProvider()
+    p._session_key = "hermes-test-session"
+    p._client = fake
+    p._available = True
+    p._probe_at = 0.0
+    monkeypatch.setattr(p, "_probe", lambda: True)
+    p._fake = fake  # type: ignore[attr-defined]
+    return p
+
+
+def test_trigger_refine_recovers_after_client_closed(monkeypatch):
+    """B152：client 被 shutdown 关闭后，_trigger_refine 应自动重建 client 并成功发送。
+
+    复现生产症状（2026-09-05，341 次/天）：on_session_end 的后台线程拿 client 引用
+    → agent 拆卸 shutdown() 关闭 client → 线程用已关闭 client 发请求报
+    "Cannot send a request, as the client has been closed."。
+    拦截 httpx.Client 构造器让重建返回可控桩（测试零网络）。
+    """
+    import adapters.hermes as hermes_mod
+
+    p = _provider_with_closed_client(monkeypatch)
+    old = p._fake
+    p._session_id = "s-recover"
+    assert old.closed is True
+
+    rebuilt = _ClosedAwareClient()
+    monkeypatch.setattr(hermes_mod.httpx, "Client", lambda **kwargs: rebuilt)
+
+    p._trigger_refine()
+
+    # client 已重建（不复用已关闭的旧 client），请求从新 client 发出
+    assert p._client is rebuilt
+    assert old.closed is True  # 旧 client 保持关闭，未被复用
+    assert len(rebuilt.posts) == 1
+    assert "/v1/admin/refine/trigger_async" in rebuilt.posts[0]["url"]
+
+
+def test_append_delta_recovers_after_client_closed(monkeypatch):
+    """B152：client 已关闭时 _append_delta 同样自动重建（L0 捕获不因 shutdown 丢消息）。"""
+    import adapters.hermes as hermes_mod
+
+    p = _provider_with_closed_client(monkeypatch)
+    old = p._fake
+    p._session_id = "s-append"
+    rebuilt = _ClosedAwareClient()
+    monkeypatch.setattr(hermes_mod.httpx, "Client", lambda **kwargs: rebuilt)
+    msgs = [
+        {"role": "user", "content": "你好", "ts": "2026-09-05T10:00:00Z"},
+        {"role": "assistant", "content": "你好呀", "ts": "2026-09-05T10:00:01Z"},
+    ]
+
+    p._append_delta(msgs)
+
+    assert p._client is rebuilt
+    assert len(rebuilt.posts) == 1
+
+
+def test_shutdown_is_idempotent_and_concurrent_safe(monkeypatch):
+    """B152：shutdown() 幂等 + 并发安全（消灭 WinError 10038 套接字竞争）。"""
+    p = SGMEProvider()
+    fake = _ClosedAwareClient()
+    p._client = fake
+
+    # 并发 shutdown ×3
+    threads = [threading.Thread(target=p.shutdown) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert fake.close_calls == 1  # 只关一次
+    assert fake.close_concurrent is False  # 无并发重入
+    assert p._client is None
+
+    # 再次 shutdown 幂等
+    p.shutdown()
+    assert fake.close_calls == 1

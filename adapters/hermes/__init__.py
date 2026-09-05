@@ -121,6 +121,7 @@ class SGMEProvider(MemoryProvider):
         self._session_id: str = ""
         self._hermes_home: str = ""
         self._client: Optional[httpx.Client] = None
+        self._client_lock = threading.Lock()  # B152：client 创建/关闭互斥（防并发 close 套接字竞争）
         self._session_key: str = ""
         self._started_at: str = ""
         self._lock = threading.Lock()
@@ -137,17 +138,24 @@ class SGMEProvider(MemoryProvider):
         return "sgme"
 
     def _http(self) -> Optional[httpx.Client]:
-        """懒创建 httpx 客户端（trust_env=False 防 Clash 劫持 localhost）。"""
+        """懒创建 httpx 客户端（trust_env=False 防 Clash 劫持 localhost）。
+
+        B152（2026-09-05）：is_closed 检测——client 被 shutdown()（agent 拆卸时序）
+        关闭后自动重建。原实现只判 None：后台线程在 shutdown 前拿到 client 引用，
+        关闭后再发请求报 "Cannot send a request, as the client has been closed."
+        （生产 341 次/天，2026-09-05 实锤）。
+        """
         if not _HAS_HTTPX:
             return None
-        if self._client is None:
-            try:
-                self._client = httpx.Client(
-                    timeout=self.timeout, trust_env=False,
-                )
-            except Exception:
-                return None
-        return self._client
+        with self._client_lock:
+            if self._client is None or self._client.is_closed:
+                try:
+                    self._client = httpx.Client(
+                        timeout=self.timeout, trust_env=False,
+                    )
+                except Exception:
+                    return None
+            return self._client
 
     def _probe(self) -> bool:
         """探测 SGME Gateway 可达性（结果带 TTL 缓存）。
@@ -687,7 +695,11 @@ class SGMEProvider(MemoryProvider):
     # ---------- 生命周期 ----------
 
     def shutdown(self) -> None:
-        if self._client is not None:
+        """关闭客户端。B152（2026-09-05）：加锁幂等——并发 close 同一 httpx client
+        会触发套接字竞争（WinError 10038），关一次 + 置 None 即可。"""
+        with self._client_lock:
+            if self._client is None:
+                return
             try:
                 self._client.close()
             except Exception:
