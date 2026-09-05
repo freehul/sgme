@@ -2569,3 +2569,16 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | ⚠️ 踩坑 | ①更新脚本在**仓库与 NAS 主机运行副本各一份**（`/vol1/1000/Docker/sgme/scripts/`），主机侧跑的是副本；改完必须 `cp` 同步（勿用 `sed -i`，会丢执行位）。②`request.json` 一旦被标记 `failed`，脚本门控 `status != pending` 就**不再自动重试**，必须人工重置为 pending。③诊断容器启动失败时旧容器已被 `compose up` 替换，须用 `docker run --rm` 手动起临时容器（同 env/volumes、不映射端口）才能抓到启动日志。④发版前也要拉一次 src：脚本是主机侧的，**不需要 bump 版本**即可生效（bump 只影响镜像 tag）。 |
 | 遗留（✅ 同日闭环） | **生产覆盖层 `/data/config/llm.yaml` 过时配置已归档**（原为 2026-08-20 的 zhipu 单链，靠 B151 回退逻辑兜底）。用户拍板 **方案①**：`mv llm.yaml llm.yaml.bak-20260904`（md5 归档前后一致 `28bd8efe…`，数据零丢失）→ `docker restart sgme` → entrypoint 物化出包内默认副本。实测：覆盖层与 `/app/sgme/resources/config/llm.yaml` md5 **完全一致**（`86ab7b88…`），**重启后日志零告警**（此前每次启动必打回退告警），skills 403 未变、health 正常、链仍为 agnes → siliconflow → rule。⚠️ 认知沉淀：因 entrypoint 恒定物化（`if [ ! -f ]`），**方案①与②殊途同归**——覆盖层最终都是包内默认副本，差别只在归档保留了旧配置可回溯。另发现（非本次缺陷）：有客户端把 MCP 请求打到 HTTP 端口 9910 得 404，正确端点是 **9913/mcp**（实测 403 = 端点存活、鉴权在拦），属客户端配置问题。详见 **Backlog T-150（✅ 已解决）**。 |
 | 关联 | Backlog T-142（✅ 已解决并上生产）、新增 T-150；`scripts/sgme-host-updater.sh`（三处加固）；`sgme/config.py`（`load_llm_config` 容错）；`tests/test_config_home.py`（+2 回归）。 |
+
+### B152. Hermes 适配器 httpx client 生命周期修复：closed 不重建 + 并发 close 竞争（T-151，2026-09-05）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户报「Hermes 今天 4000+ 提交的更新，SGME 要不要跟着改」→ 查证结论：SGME 数据流不经过 Hermes 数据库（捕获 = memory_manager.sync_all 内存消息对象 → HTTP /v1/append，不读 state.db；接口契约未变），**引擎侧无需适配**。但排查 agent.log 发现适配器层两个存量 bug（8-27 起实锤，与本次 Hermes 更新无关）。 |
+| 症状 | ①`sgme refine trigger 异常: Cannot send a request, as the client has been closed.` 每天 341 次（每 5 分钟规律出现，紧随 Hermes 日志 `OpenAI client closed (agent_close)` 之后）；②偶发 `sgme refine trigger 异常: [WinError 10038] 在一个非套接字上尝试了一个操作`。 |
+| 根因① | `SGMEProvider._http()` 懒创建只判 `self._client is None`：`on_session_end` 的后台提炼线程在 agent 拆卸**前**拿到 client 引用，拆卸流程 `shutdown_all()` 关闭 client **后**线程才发请求 → 用已关闭 client 报 RuntimeError。client 关闭态下 `_client` 非 None，懒创建永不触发。 |
+| 根因② | `shutdown()` 无锁：多个后台线程（sync_turn 的 daemon 线程）与拆卸流程并发对同一 httpx client 调 `close()`，httpx 关闭非线程安全 → 套接字竞争 WinError 10038。 |
+| 修复 | ①`_http()` 增加 `is_closed` 检测：`if self._client is None or self._client.is_closed` 时重建，创建/关闭共用新 `_client_lock`（threading.Lock）互斥；②`shutdown()` 同锁保护 + 幂等（None 直接返回）。 |
+| 测试 | `tests/test_hermes_adapter.py` +3：`test_trigger_refine_recovers_after_client_closed` / `test_append_delta_recovers_after_client_closed`（拦截 `httpx.Client` 构造器使重建返回可控桩，**零网络**）/ `test_shutdown_is_idempotent_and_concurrent_safe`（3 线程并发 shutdown 只关一次）。TDD 红→绿全程。 |
+| 部署 | `adapters/hermes/` 改后需同步 Hermes 部署副本（`$HERMES_HOME/plugins/sgme/`，install.py 产物），下次网关重启生效。 |
+| 关联 | Backlog T-151；Hermes 侧独立问题（插件加载器并发锁补丁被 9-05 更新覆盖）已在 Hermes 源码重打（`plugins/plugin_loader.py` LOCAL PATCH 2026-09-05，RLock 串行化 exec_module），该文件 Hermes 更新会覆盖、更新后需重打（与 8-07 的 memory/__init__.py 补丁同性质，本次打在更底层、覆盖全部插件加载路径）。 |
