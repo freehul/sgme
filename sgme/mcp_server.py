@@ -344,8 +344,21 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
-    def search(query: str, limit: int = 5) -> str:
-        """混合检索：BM25 + 向量 + RRF，带溯源。"""
+    def search(
+        query: str,
+        limit: int = 5,
+        scopes: list[str] | None = None,
+        dimensions: list[str] | None = None,
+        match: str = "any",
+        include_sources: bool = True,
+    ) -> str:
+        """混合检索：BM25 + 向量 + RRF，带溯源。
+
+        scopes: 检索层列表，None → ["memory"]（记忆池）；可含 "wiki"/"skills"/"sessions" 等。
+        dimensions: 维度标签过滤（可选，如 ["goals", "status"]）。
+        match: "any"=命中任一维度 / "all"=全部命中（缺省 any）。
+        include_sources: 是否展开溯源 trace（缺省 True）。
+        """
         from sgme.operations.search import mcp_payload as search_mcp_payload
         from sgme.operations.search import search as search_operation
         import json
@@ -361,7 +374,10 @@ def build_mcp_server():
             cfg,
             query=query,
             limit=min(limit, 20),
-            scopes=["memory"],
+            scopes=scopes,
+            dimensions=dimensions,
+            match=match,
+            include_sources=include_sources,
         )
         return json.dumps(search_mcp_payload(data), ensure_ascii=False)
 
@@ -621,11 +637,15 @@ def build_mcp_server():
         append: bool = True,
         author: str | None = None,
         description: str | None = None,
+        title: str | None = None,
+        category: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         """按 page_id 更新/追加 wiki 页面（自进化写回主通道，W3）。
 
         append=true（默认）：追加到正文末尾（ADD-only + entry hash 去重幂等，
         content 同 hash 重复提交返回 noop）；description 默认不动（显式传才更新）。
+        title/category/tags：页面级元数据，显式传才更新（与 HTTP PATCH 对齐）。
         """
         import json
         import sqlite3
@@ -638,6 +658,7 @@ def build_mcp_server():
         data = _op_json(
             update_page_operation, conn, page_id,
             content=content, append=append, author=author, description=description,
+            title=title, category=category, tags=tags,
         )
         return json.dumps(data, ensure_ascii=False)
 
@@ -739,11 +760,13 @@ def build_mcp_server():
         priority: int | None = None,
         project_id: str | None = None,
         source_ref: str | None = None,
+        origin_idea_id: str | None = None,
     ) -> str:
         """新建待办/需求（跨项目统一待办池，backlog 化）。
 
-        可指定 project_id 标记所属项目（过滤查询用）；时间戳（加入/完成）
-        由服务端自动落库。状态流转走 HTTP API（PUT /v1/admin/demands/{id}/status）。
+        可指定 project_id 标记所属项目（过滤查询用）；可指定 origin_idea_id 从创意升格
+        （与 HTTP 行为对齐）。时间戳（加入/完成）由服务端自动落库。状态流转走 HTTP API
+        （PUT /v1/admin/demands/{id}/status）。
         """
         import json
 
@@ -758,6 +781,7 @@ def build_mcp_server():
                 **({"priority": priority} if priority is not None else {}),
                 **({"project_id": project_id} if project_id is not None else {}),
                 **({"source_ref": source_ref} if source_ref is not None else {}),
+                **({"origin_idea_id": origin_idea_id} if origin_idea_id is not None else {}),
             },
         )
         return json.dumps(data, ensure_ascii=False)
