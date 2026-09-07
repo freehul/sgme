@@ -32,6 +32,7 @@ from sgme import config as sgme_config
 from sgme import __version__  # FastAPI 文档页版本（单源 sgme.__version__，B123）
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
+from sgme.operations.llm import model_keys_notice
 
 
 # ---------- 统一错误结构 ----------
@@ -660,6 +661,13 @@ def create_app(
         print(f"[SGME auth] 警告：使用默认 admin key（{DEFAULT_ADMIN_KEY}），生产请设置 SGME_ADMIN_KEY")
     if store.agent_key == DEFAULT_AGENT_KEY:
         print(f"[SGME auth] 警告：使用默认 agent key（{DEFAULT_AGENT_KEY}），生产请设置 SGME_AGENT_KEY")
+
+    # T-143①（2026-09-07）：模型 Key 缺失启动告警——未配 LLM key 时不再静默空转
+    # （before：append 成功但 refine 全链降级失败、inject/search 空结果，新手无从排查）。
+    # model_keys_notice 只列出缺失项（LLM 提炼链与向量 key 分开判）+ 申请指南路径，
+    # 全配齐时返回空字符串 → 零噪音；与 dev key 告警并列，均只在缺失时可见。
+    if (missing_key_notice := model_keys_notice(cfg)):
+        logger.warning("模型 Key 缺失告警：%s", missing_key_notice)
 
     @asynccontextmanager
     def _skills_bootstrap(

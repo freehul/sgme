@@ -373,6 +373,8 @@ def health(
             "stalled": heartbeat["stalled"],
             "stalled_hours": raw_refinement.get("stalled_hours"),
             "heartbeat_ok": heartbeat["heartbeat_ok"],
+            # T-144：空库首启 → "never_refined"；正常 → "ok"；停摆 → "stalled"
+            "state": raw_refinement.get("state"),
         },
         # —— MCP 历史形态：engine 原始透传，勿加工 ——
         "refinement_raw": raw_refinement,

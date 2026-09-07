@@ -41,10 +41,11 @@ HTTP_REFINEMENT_KEYS = [
     "stalled",
     "stalled_hours",
     "heartbeat_ok",
+    "state",  # T-144：空库首启 never_refined / 正常 ok / 停摆 stalled（只增不改既有字段）
 ]
 MCP_TOP_KEYS = ["status", "version", "llm", "refinement"]
 # MCP 的 refinement 是 engine check_refinement_stalled 的原始返回
-MCP_REFINEMENT_KEYS = ["stalled", "last_refined_at", "stalled_hours", "threshold_hours"]
+MCP_REFINEMENT_KEYS = ["stalled", "last_refined_at", "stalled_hours", "threshold_hours", "state"]
 
 
 # ---------- fixtures ----------
@@ -198,6 +199,7 @@ def test_data_http_shape_complete(conns, cfg, mock_llm):
     assert 7080 <= data["refinement"]["watermark_age_sec"] <= 7320
     assert data["refinement"]["queue_depth"] == 0
     assert data["refinement"]["stalled"] is False
+    assert data["refinement"]["state"] == "ok"
     assert data["refinement"]["heartbeat_ok"] is True
     assert data["status"] == "ok"
     assert data["version"] == SGME_VERSION  # 单源：health 常量 = sgme.__version__（B123）
@@ -217,7 +219,11 @@ def test_watermark_helper_computes_seconds():
 # ---------- 3. last_refined_at 为 None ----------
 
 def test_watermark_none_when_no_refined_record(conns, cfg, mock_llm):
-    """无任何 refined 记录 → last_refined_at=None，watermark_age_sec=None（不抛异常）。"""
+    """无任何 refined 记录 → last_refined_at=None，watermark_age_sec=None（不抛异常）。
+
+    T-144：空库首启**不再**判停摆——stalled=False、state="never_refined"、
+    heartbeat_ok=True（LLM 可用时），不发异常信号。
+    """
     # Arrange：库中无 raw_files 行
     mem_conn, session_conn, _ = conns
 
@@ -227,9 +233,10 @@ def test_watermark_none_when_no_refined_record(conns, cfg, mock_llm):
     # Assert
     assert data["refinement"]["last_refined_at"] is None
     assert data["refinement"]["watermark_age_sec"] is None
-    # 无提炼记录按 engine 口径视为停摆
-    assert data["refinement"]["stalled"] is True
-    assert data["refinement"]["heartbeat_ok"] is False
+    # T-144：无提炼记录（空库）不再视为停摆
+    assert data["refinement"]["stalled"] is False
+    assert data["refinement"]["state"] == "never_refined"
+    assert data["refinement"]["heartbeat_ok"] is True
 
 
 @pytest.mark.parametrize("bad", [None, ""])
@@ -353,15 +360,21 @@ def test_http_and_mcp_agree_on_shared_fields(client, mcp, conns):
 # ---------- 7. 副作用保留：anomaly_warn ----------
 
 def test_health_still_publishes_anomaly_warn(conns, cfg, mock_llm):
-    """心跳异常（无 refined 记录 → stalled）时仍发布 anomaly_warn 信号。"""
+    """心跳异常（refined_at 超 24h 水位 → stalled）时仍发布 anomaly_warn 信号。
+
+    T-144 后空库不再触发停摆，故改用真停摆场景（25h 前）验证告警副作用保留。
+    """
     # Arrange
     mem_conn, session_conn, _ = conns
+    _insert_raw_file(session_conn, "f-stalled", refined_at=_iso(25))
     before = _count_anomaly_warns(mem_conn)
 
     # Act
     res = health(mem_conn, session_conn, cfg)
 
     # Assert
+    assert res.data["refinement"]["stalled"] is True
+    assert res.data["refinement"]["state"] == "stalled"
     assert res.data["refinement"]["heartbeat_ok"] is False
     assert _count_anomaly_warns(mem_conn) > before
 
