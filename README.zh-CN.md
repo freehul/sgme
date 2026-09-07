@@ -62,11 +62,11 @@ SGME 不只会被动等你来问。你的记忆更新、情绪波动、待办到
 
 <img src="assets/selling-point-03-unified-search.png" alt="多源统一检索" width="800"/>
 
-### 本地技能仓库 skill hub——你的技能，统一管理
+### 技能管理 skills 模块——你的技能，统一管理
 
-你自己积累的 skill（提示词、工作流、模板）统一存放，本机直接读写，NAS 上自动同步。换设备不丢技能。
+你自己积累的 skill（提示词、工作流、模板）统一收进 SGME 的 skills 模块，与记忆、知识库平级：git 真源（写侧带准入门禁与查重）+ skills.db 索引，四级披露按需加载，支持本机读写、NAS 自动同步、跨设备不丢。安装 SGME = 同时接管记忆、知识库、技能库三件套。
 
-<img src="assets/selling-point-05-skillhub.png" alt="本地技能仓库" width="800"/>
+<img src="assets/selling-point-05-skillhub.png" alt="技能管理 skills 模块" width="800"/>
 
 ### 共享知识库——你的 AI 们共同书写的 wiki
 
@@ -102,7 +102,7 @@ SGME 不只会被动等你来问。你的记忆更新、情绪波动、待办到
 
 - **记忆标记**：AI 记错了？标记「不采用」并备注指正，数据保留不删除，可随时撤销
 - **自动管理记忆有效期**：过时的记忆自动退出注入（比如过期的项目状态），保留可溯源，不会拿旧情报误导 AI
-- **15 维度标签体系**：身份、项目、技术栈、偏好……自动分类，维度可动态扩展，别名自动归一（「Python」和「python」是同一个）
+- **14 维度标签体系**：身份、家庭/社交、价值观、技能、技术栈、偏好、习惯、环境、风格、关注点、目标、状态、创意……自动分类，维度可动态扩展，别名自动归一（「Python」和「python」是同一个）
 - **冲突提炼**：同一件事说了两遍自动合并，说了矛盾的版本自动发现并裁决
 - **混合检索**：BM25 关键词 + 向量语义 + 标签过滤三重融合，不装向量库也能跑
 - **内置评测框架**：提炼质量用数据证明（L1 F1、检索排序调优），不是靠信任
@@ -184,6 +184,8 @@ dsh plugin --profile web add github:freehul/sgme
 
 **批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 失败不立即重试（交服务端 batch_scan 兜底）；永远 async 模式
 
+**技能获取（B114 后 skills 为独立模块，MUST）**：需要 SGME 未内置的专业能力时，先 `skill_search(query)` 检索、命中后 `skill_get(name)` 拉全文注入再执行——**禁止未检索就声称具备技能或硬凑步骤**；经验回写按归属口诀选通道（跟技能走的坑 `skill_put` 进技能本体，世界知识走 `wiki_evolve_trigger` 进 wiki）。
+
 **向量引擎接入**（`health()` 返回 `vector.available=false` 或 `vector.connectivity=false` 时执行）：本地优先、云端免费降级——推荐本地 Ollama 或 LM Studio 跑 `bge-m3`（1024 维；云端硅基流动 `BAAI/bge-m3` 免费自动兜底，同维度切换不重灌索引）。探测 `curl http://127.0.0.1:11434/api/tags`（Ollama）/ `curl http://127.0.0.1:1234/v1/models`（LM Studio）→ 缺模型则 `ollama pull bge-m3`（或 LM Studio 搜索下载）→ 在 `config/sgme.yaml` 写 `search.vector` 段（`base_url` / `model: bge-m3` / `fallbacks`）并重启 SGME → 再 `health()` 直到 `vector.connectivity=true`。不推荐 llama.cpp（模型状态无人维护，清理显存后即失联）。
 
 **完整工具清单与用法**：见 [docs/agent-onboarding.md](docs/agent-onboarding.md)，或连上 MCP 后调 `agent_onboarding` 工具
@@ -237,8 +239,8 @@ sgme/
 ├── profile/         # 模板引擎（template / inject / tier0 摘要）
 ├── log/             # 统一日志（get_logger 唯一入口，控制台+JSON 双格式）
 ├── refinery/        # 知识提炼引擎（ingest/extract/validate/output，服务 wiki）
-├── skills/          # 技能管理模块（索引 source_dirs 的 SKILL.md，skills.enabled）
-├── skills_hub/      # 技能仓库扩展（map/copy 双模式，skills_hub.enabled）
+├── skills/          # 技能管理模块（git 真源 source_dirs + skills.db 索引 + 写侧门禁；skills.enabled；与 memory/wiki 平级）
+├── skills_hub/      # 技能仓库扩展（map/copy 双模式；B114 后仅保留 git 同步职责，skills_hub.enabled）
 ├── wiki/            # wiki 知识库扩展（/v1/wiki/* 端点，wiki.enabled）
 ├── signal/          # 信号引擎（事件发布 / SSE / pull 游标）
 ├── backup/          # 备份恢复（快照分层 / 冷归档 / 异地副本）

@@ -67,7 +67,7 @@ asyncio.run(main())
 
 ## 3. 连接即发现：agent_onboarding 工具
 
-连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 29 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
+连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 39 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
 
 **自助配置（2026-08-13，接入完成标准）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v1`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
 
@@ -78,7 +78,7 @@ asyncio.run(main())
 
 > 目的：接入从「人复制 README 提示词」变为「agent 连接后自助配置」——换 Agent 零成本：不管工具的文件机制差异，只要求结果（下个会话起 SGME 纪律生效）。
 
-**MCP 18 工具清单与用途**（PR#7 + T-22 补 wiki 三工具 + W3/W4 补 wiki_page_update/wiki_evolve_trigger）：
+**MCP 39 工具清单与用途**（2026-09-07 与 `ONBOARDING_TOOLS` 清单程序化对账一致；PR#7 起逐步扩充，含三池/信号/角色/技能九工具）：
 
 | 工具 | 用途 | 一句话用法 |
 |---|---|---|
@@ -101,9 +101,19 @@ asyncio.run(main())
 | `health` | 健康检查：LLM 可用性/提炼水位/心跳/向量 | 就绪检查必调 |
 | `config_get` | 读取运行时配置（l1/l2/refine/search/backup） | `config_get(section='refine')` |
 | `config_update` | 更新配置段（热生效 + 落盘） | 跨机部署远程设配置 |
+| `idea_add` | 创意池写入（用户主动提出的创意） | `idea_add(title, content)` |
+| `demand_create` | 待办池写入（跨项目统一待办，可带 project_id；支持 origin_idea_id 升格） | `demand_create(title, project_id?)` |
+| `project_register` | 项目池登记（用户主动立项的项目元数据） | `project_register(name, ...)` |
+| `signal_pull` | 拉取未消费信号（care_*/memory_updated/anomaly_warn） | 对话开始 `signal_pull()` |
+| `signal_claim` | 原子认领信号（谁消费谁标记，防重复打扰） | `signal_claim(event_id)` |
+| `signal_ack` | 信号消费回执（claimed/acked/failed） | 关怀完成后 `signal_ack(event_id)` |
+| `signal_clear` | 清理已消费信号游标 | `signal_clear(subscriber_id)` |
+| `role_list` | 列出可用角色（换皮不换芯） | 对话开始 `role_list()` |
+| `role_assemble` | 组装角色人设并按其说话 | `role_assemble(role_id)` |
+| `role_active_get` / `role_active_set` | 查看/切换当前生效角色 | `role_active_get()` |
 | `skill_*` | 技能管理九工具：skill_list/skill_coldstart/skill_search/skill_digest/skill_get/skill_materialize/skill_put/skill_delete/skill_rename（B114 补齐 list/coldstart/写侧） | `skill_search(query)` / `skill_get(name)` / `skill_materialize(name, dest_dir)` |
 
-**自进化（W4，2026-08-16）**：会话自动触发经验回写——踩坑/新流程由 LLM 提炼后追加到知识库手册「踩坑记录」章节（category=skill/<domain>），多 agent 共享；手册内容以 wiki 为准，本地不缓存副本。
+**自进化（W4，2026-08-16；B114 后双通道）**：会话经验回写按「归属口诀」选通道——世界知识/通用经验走 `wiki_evolve_trigger`（LLM 提炼后追加到 wiki 手册页，多 agent 共享）；**跟技能本体走的坑直接 `skill_put` 更新该技能的 SKILL.md**（技能真源在 skills 模块 git 仓，已不寄居 wiki）。
 
 ## 4. 记忆写入与消费节奏（五条铁律）
 
