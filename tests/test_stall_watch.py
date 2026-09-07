@@ -3,12 +3,13 @@
 覆盖（对应任务验收）：
 1. 正常推进不告警：窗口内 refine 且 last_refined_seq 推进 → stalled=False、不发 anomaly_warn
 2. 水位停滞告警（时间水位）：refined_at 超阈值 → stalled=True + anomaly_warn 落库
-3. 无记录视为停摆：空库 → stalled=True
+3. 空库首启**不算停摆**（T-144）：无 refined 记录 → stalled=False +
+   state="never_refined"、heartbeat_ok=True、不发 anomaly_warn
 4. 人为停摆可检测（序号水位空转）：refined_at 新鲜但窗口内全部 last_refined_seq ≤ 0
    → stalled=True + anomaly_warn 落库（这是纯时间水位检测不到的停摆形态）
 5. anomaly_warn 载荷携带序号水位细节（seq_stalled / window_refined_count / window_max_seq）
 6. 契约回归：check_refinement_stalled 返回字段集合不变
-   （stalled / last_refined_at / stalled_hours / threshold_hours）
+   （stalled / last_refined_at / stalled_hours / threshold_hours + T-144 新增 state）
 7. /v1/health 响应契约不变（HTTP 顶层与 refinement 字段逐字段保持）
 """
 from __future__ import annotations
@@ -38,8 +39,9 @@ HTTP_REFINEMENT_KEYS = [
     "stalled",
     "stalled_hours",
     "heartbeat_ok",
+    "state",  # T-144：只增不改既有字段（never_refined / ok / stalled）
 ]
-STALLED_CONTRACT_KEYS = ["stalled", "last_refined_at", "stalled_hours", "threshold_hours"]
+STALLED_CONTRACT_KEYS = ["stalled", "last_refined_at", "stalled_hours", "threshold_hours", "state"]
 
 
 # ---------- fixtures ----------
@@ -185,10 +187,15 @@ def test_time_watermark_stall_warns(conns, cfg, llm_ok_client):
     assert _count_anomaly_warns(mem_conn) > before
 
 
-# ---------- 3. 无记录视为停摆 ----------
+# ---------- 3. 空库首启不算停摆（T-144） ----------
 
 def test_no_records_is_stalled(conns, cfg, llm_ok_client):
-    """无任何 refined 记录 → stalled=True（视为停摆）+ anomaly_warn 落库。"""
+    """无任何 refined 记录 → **不算停摆**（T-144）：stalled=False、
+    state="never_refined"、heartbeat_ok=True、不发 anomaly_warn。
+
+    语义变更（2026-09-07）：全新库从未提炼是「未开始」而非「坏了」，
+    空库首启误报装坏会赶走新手；提炼一次后转常规时间/序号水位判定。
+    """
     # Arrange：空库
     mem_conn, session_conn, _ = conns
     before = _count_anomaly_warns(mem_conn)
@@ -198,11 +205,13 @@ def test_no_records_is_stalled(conns, cfg, llm_ok_client):
     heartbeat = health_mod.check_heartbeat(mem_conn, session_conn, cfg, client=llm_ok_client)
 
     # Assert
-    assert refine_info["stalled"] is True
+    assert refine_info["stalled"] is False
+    assert refine_info["state"] == "never_refined"
     assert refine_info["last_refined_at"] is None
     assert refine_info["stalled_hours"] is None
-    assert heartbeat["heartbeat_ok"] is False
-    assert _count_anomaly_warns(mem_conn) > before
+    assert heartbeat["heartbeat_ok"] is True
+    assert heartbeat["stalled"] is False
+    assert _count_anomaly_warns(mem_conn) == before
 
 
 # ---------- 4. 人为停摆可检测（序号水位空转） ----------
@@ -267,17 +276,18 @@ def test_anomaly_payload_carries_seq_detail(conns, cfg, llm_ok_client):
 
 # ---------- 6. 契约回归：check_refinement_stalled 字段集合不变 ----------
 
-@pytest.mark.parametrize("scenario", ["healthy", "time_stall", "seq_stall"])
+@pytest.mark.parametrize("scenario", ["healthy", "time_stall", "seq_stall", "never_refined"])
 def test_stalled_contract_keys_unchanged(conns, scenario):
-    """三种状态下返回字段集合与顺序均保持冻结契约。"""
+    """四种状态下返回字段集合与顺序均保持冻结契约（state 为 T-144 只增字段）。"""
     # Arrange
     _mem_conn, session_conn, _ = conns
     if scenario == "healthy":
         _insert_raw_file(session_conn, "f-ok", refined_at=_iso(1), seq=1)
     elif scenario == "time_stall":
         _insert_raw_file(session_conn, "f-old", refined_at=_iso(25), seq=1)
-    else:  # seq_stall：refined_at 新鲜但 seq 空转
+    elif scenario == "seq_stall":  # refined_at 新鲜但 seq 空转
         _insert_raw_file(session_conn, "f-spin", refined_at=_iso(1), seq=0)
+    # else never_refined：空库，不插入任何行
 
     # Act
     result = health_mod.check_refinement_stalled(session_conn)
@@ -286,8 +296,13 @@ def test_stalled_contract_keys_unchanged(conns, scenario):
     assert list(result.keys()) == STALLED_CONTRACT_KEYS
     if scenario == "healthy":
         assert result["stalled"] is False
+        assert result["state"] == "ok"
+    elif scenario == "never_refined":
+        assert result["stalled"] is False
+        assert result["state"] == "never_refined"
     else:
         assert result["stalled"] is True
+        assert result["state"] == "stalled"
 
 
 def test_heartbeat_return_carries_seq_fields(conns, cfg, llm_ok_client):

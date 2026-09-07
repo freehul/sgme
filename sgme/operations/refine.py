@@ -64,8 +64,10 @@ HTTP 与 MCP 的 refine_trigger 响应形态**本就不同**，v0.7 抽取时不
    ERR_INTERNAL 失败结果。与 health（探测类、异常原样上抛）不同：
    refine 是**写操作**，失败必须显式可编程处理（v0.7 决策，见测试⑤）。
 4. refine_file 的**业务失败**（``status="error"``，如 L0 解析失败）**不吞**——
-   照 v0.6 作为响应字段透传（status/error 键），因为那是「提炼失败」的
-   业务结果而非崩溃，200 响应形态保持不变。
+    照 v0.6 作为响应字段透传（status/error 键），因为那是「提炼失败」的
+    业务结果而非崩溃，200 响应形态保持不变。
+    （T-143②：单文件失败时若模型 Key 缺失，响应额外附 ``note`` 可行动引导——
+    应用 ``model_keys_notice`` 缺失时才加，齐全零噪音，成功路径不挂。）
 
 依赖：只调 ``sgme.engine.pipeline``（提炼编排唯一出口）+ 
 ``sgme.data.session_dao``（存在性预检）。engine 是只读禁区，不改。
@@ -80,6 +82,7 @@ from typing import Any
 from sgme.engine import pipeline as pipeline_mod
 from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult, result_from_exception
 from sgme.operations.health import watermark_age_sec
+from sgme.operations.llm import model_keys_notice
 from sgme.data import refine_dao, session_dao, stats_dao
 
 logger = logging.getLogger("sgme.operations.refine")
@@ -148,7 +151,7 @@ def refine_trigger(
                 file_id, mem_conn, session_conn, cfg,
             )
             # —— HTTP 历史形态：键序即 v0.6 响应体顺序，勿调整 ——
-            return OperationResult.succeed({
+            resp: dict[str, Any] = {
                 "triggered": "file",
                 "file_id": file_id,
                 "status": result.status,
@@ -158,7 +161,13 @@ def refine_trigger(
                 "error": result.error,
                 "l15": l15_stats,
                 "prompt_versions": result.prompt_versions,
-            })
+            }
+            # T-143②：单文件提炼失败且模型 Key 缺失 → 附可行动引导 note。
+            # model_keys_notice 缺失才非空（齐全零噪音）；成功路径不挂 note
+            # （成功即最好的引导），故既有 FILE_RESPONSE_KEYS 契约不受影响。
+            if result.status == "error" and (notice := model_keys_notice(cfg)):
+                resp["note"] = notice
+            return OperationResult.succeed(resp)
 
         pairs = pipeline_mod.refine_many(limit, mem_conn, session_conn, cfg)
         return OperationResult.succeed({

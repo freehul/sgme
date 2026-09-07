@@ -126,8 +126,13 @@ def check_refinement_stalled(
     - 时间水位：查 raw_files 表 MAX(refined_at)，计算距今小时数，超阈值 → stalled
     - 序号水位（T-12 补齐）：窗口内（最近 threshold_hours 小时）有 refine 动作
       但无任何 last_refined_seq 推进（全部 ≤ 0）→ 提炼空转，同样视为停摆
-    - 无任何 refined 记录视为停摆（stalled=True，stalled_hours=None）
-    - 返回字段（契约冻结，不得增删）：stalled / last_refined_at / stalled_hours / threshold_hours
+    - 空库（raw_files 无任何 refined 记录）→ **不算停摆**（T-144：全新库首启
+      从未提炼即判停摆会让新手误以为装坏），状态标记 ``state="never_refined"``、
+      ``stalled=False``；提炼一次后转常规时间/序号水位判定
+    - 返回字段（契约冻结：既有字段不得删改，仅 T-144 新增 ``state``）：
+      stalled / last_refined_at / stalled_hours / threshold_hours / state
+    - ``state`` 取值：``"never_refined"``（全空）／ ``"ok"``（水位正常）／
+      ``"stalled"``（时间超阈值 / 时间戳解析失败 / 序号水位空转 任一停摆态）
     """
     cur = session_conn.execute(
         "SELECT MAX(refined_at) AS last FROM raw_files WHERE refined_at IS NOT NULL"
@@ -136,12 +141,13 @@ def check_refinement_stalled(
     last_refined = row["last"] if row else None
 
     if not last_refined:
-        # 无提炼记录 → 视为停摆
+        # 空库/从未提炼 → 不算停摆（T-144：全新库首启不误报装坏）
         return {
-            "stalled": True,
+            "stalled": False,
             "last_refined_at": None,
             "stalled_hours": None,
             "threshold_hours": threshold_hours,
+            "state": "never_refined",
         }
 
     last_dt = _parse_iso(last_refined)
@@ -152,6 +158,7 @@ def check_refinement_stalled(
             "last_refined_at": last_refined,
             "stalled_hours": None,
             "threshold_hours": threshold_hours,
+            "state": "stalled",
         }
 
     delta_hours = (_now_dt() - last_dt).total_seconds() / 3600.0
@@ -167,6 +174,7 @@ def check_refinement_stalled(
         "last_refined_at": last_refined,
         "stalled_hours": round(delta_hours, 2),
         "threshold_hours": threshold_hours,
+        "state": "ok" if not stalled else "stalled",
     }
 
 
