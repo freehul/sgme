@@ -1,7 +1,8 @@
 """T15 测试：提炼可观测性增强（health 模块 + /v1/health 扩展字段）。
 
 覆盖：
-- check_refinement_stalled：1h 前 → False；25h 前 → True；无记录 → True（停摆）
+- check_refinement_stalled：1h 前 → False；25h 前 → True；无记录 → False
+  （state="never_refined"，T-144：空库首启不算停摆）
 - check_llm_available：mock httpx 200 → True；mock ConnectError → False
 - check_heartbeat：全部正常 → ok=True 不发 anomaly_warn；
   停滞 → ok=False 发 anomaly_warn；
@@ -119,7 +120,7 @@ def _insert_raw_file(session_conn, file_id: str, refined_at: str | None, status:
 # ---------- 1. check_refinement_stalled ----------
 
 def test_check_refinement_stalled_ok(session_conn):
-    """refined_at 在 1 小时前 → stalled=False。"""
+    """refined_at 在 1 小时前 → stalled=False，state="ok"。"""
     # Arrange
     _insert_raw_file(session_conn, "f-ok", refined_at=_iso(1))
 
@@ -128,6 +129,7 @@ def test_check_refinement_stalled_ok(session_conn):
 
     # Assert
     assert result["stalled"] is False
+    assert result["state"] == "ok"
     assert result["last_refined_at"] == _iso(1) or result["last_refined_at"] is not None
     assert result["stalled_hours"] is not None
     assert 0 <= result["stalled_hours"] <= 2
@@ -135,7 +137,7 @@ def test_check_refinement_stalled_ok(session_conn):
 
 
 def test_check_refinement_stalled_true(session_conn):
-    """refined_at 在 25 小时前 → stalled=True。"""
+    """refined_at 在 25 小时前 → stalled=True，state="stalled"。"""
     # Arrange
     _insert_raw_file(session_conn, "f-stalled", refined_at=_iso(25))
 
@@ -144,18 +146,20 @@ def test_check_refinement_stalled_true(session_conn):
 
     # Assert
     assert result["stalled"] is True
+    assert result["state"] == "stalled"
     assert result["last_refined_at"] is not None
     assert result["stalled_hours"] > 24
     assert result["threshold_hours"] == 24
 
 
 def test_check_refinement_stalled_no_records(session_conn):
-    """无任何 refined 记录 → stalled=True（视为停摆）。"""
+    """无任何 refined 记录 → 不算停摆（T-144：stalled=False，state="never_refined"）。"""
     # Act（session_conn 为空库）
     result = health_mod.check_refinement_stalled(session_conn, threshold_hours=24)
 
     # Assert
-    assert result["stalled"] is True
+    assert result["stalled"] is False
+    assert result["state"] == "never_refined"
     assert result["last_refined_at"] is None
     assert result["stalled_hours"] is None
     assert result["threshold_hours"] == 24
@@ -399,6 +403,8 @@ def test_health_endpoint_returns_full_fields(client):
     assert "stalled" in body["refinement"]
     assert "heartbeat_ok" in body["refinement"]
     assert "stalled_hours" in body["refinement"]
+    # T-144：新增 state 字段（never_refined / ok / stalled）
+    assert "state" in body["refinement"]
 
 
 def test_health_endpoint_no_key_401(tmp_path, cfg, raw_dir, monkeypatch):

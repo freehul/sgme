@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -513,14 +513,28 @@ def test_e2e_signal_flow_memory_updated(client, monkeypatch):
 
 
 def test_e2e_signal_flow_anomaly_warn(client, monkeypatch):
-    """check_heartbeat 检测异常时发布 anomaly_warn 信号（/v1/health 触发）。"""
+    """check_heartbeat 检测异常（提炼水位停滞）时发布 anomaly_warn 信号（/v1/health 触发）。"""
     app = client.app
     mem_conn = app.state.mem_conn
+    session_conn = app.state.session_conn
 
-    # Arrange：制造停滞场景（无任何 refined 记录 → stalled=True）
-    # app fixture 已 mock check_llm_available 返回 available=True，
-    # 但 check_refinement_stalled 会因无 refined_at 记录返回 stalled=True，
-    # 触发 anomaly_warn 发布。
+    # Arrange：制造真停摆场景（T-144 后空库不再判停摆，故不能用空库触发）——
+    # refined_at 设置为 25 小时前（超 24h 水位阈值 → stalled=True）。
+    # app fixture 已 mock check_llm_available 返回 available=True。
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    session_conn.execute(
+        """
+        INSERT INTO raw_files
+          (file_id, path, session_key, agent_id, started_at, ended_at,
+           refined_at, last_refined_seq, status, size)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+        """,
+        ("f-e2e-stalled", "raw/sessions/f-e2e-stalled.md", "sess_e2e_stalled", "test",
+         "2026-08-04T10:00:00Z", None, old_ts, 1, "refined", 100),
+    )
+    session_conn.commit()
     # 先确认当前无 anomaly_warn
     initial_warns = _count_signal_events(mem_conn, "anomaly_warn")
 
@@ -528,8 +542,9 @@ def test_e2e_signal_flow_anomaly_warn(client, monkeypatch):
     r = client.get("/v1/health")
     assert r.status_code == 200, r.text
     body = r.json()
-    # 无 refined 记录 → stalled=True
+    # 水位停滞（refined_at 25h 前）→ stalled=True
     assert body["refinement"]["stalled"] is True
+    assert body["refinement"]["state"] == "stalled"
     assert body["refinement"]["heartbeat_ok"] is False
 
     # Assert：signal_events 出现 anomaly_warn
