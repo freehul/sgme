@@ -290,7 +290,7 @@ def refine_trigger(
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     session_conn: sqlite3.Connection = request.app.state.session_conn
 
-    return run_operation(
+    data = run_operation(
         refine_trigger_operation,
         mem_conn,
         session_conn,
@@ -298,6 +298,15 @@ def refine_trigger(
         file_id=payload.file_id,
         limit=payload.limit,
     )
+    # T-146①：单文件提炼业务失败（status=error，典型为 LLM 全链失败）→ HTTP 503，
+    # 客户端只查状态码不再误判成功；失败详情仍在 error body（含 note 引导，T-143②）。
+    # 批量路径保持 200（部分成功语义，每项自带 status）。
+    if payload.file_id and data.get("status") == "error":
+        raise api_error(
+            "ERR_LLM_UNAVAILABLE",
+            str(data.get("error") or "提炼失败（LLM 全链不可用）"),
+        )
+    return data
 
 
 @router.post("/v1/admin/refine/trigger_async")

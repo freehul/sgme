@@ -20,8 +20,17 @@
     logger = get_logger("sgme.engine.pipeline")
     logger.info("pipeline 启动")               # 走统一 handler
 
-也可从配置 dict 解析后展开调用：
+    也可以从配置 dict 解析后展开调用：
     setup(**parse_logging_config(load_config()))
+
+T-146③ 幂等与双打印防御：
+    - setup() 每次调用先摘除上一轮自己安装的 handler（``_MANAGED_HANDLERS``），
+      不会重复添加——多次 create_app / 重载配置不会让每条日志打 N 遍。
+    - uvicorn 自带 ``uvicorn`` / ``uvicorn.error`` / ``uvicorn.access`` logger
+      （propagate=False、自带 handler），与 ``sgme.*``（走 root 统一 handler）
+      天然分流，互不叠加；同进程第二个 uvicorn 实例（MCP :9913）的
+      ``uvicorn.Config(log_level=warning)`` 构造只重建 uvicorn 自名 logger，
+      不会向 root 或 ``sgme.*`` 追加 handler（实测验证，B154）。
 """
 
 from __future__ import annotations
