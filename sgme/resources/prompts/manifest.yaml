@@ -19,6 +19,10 @@ stages:
     active: '@working'
     ab:
       enabled: false
+  facts_batch_extraction:
+    active: '@working'
+    ab:
+      enabled: false
 versions:
   tier0_summary:
   - version: v001
