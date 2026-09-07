@@ -34,7 +34,8 @@
 
 响应结构（历史契约差异，v0.8 待统一，现在**不得**合并）
 ------------------------------------------------------
-- HTTP：``{"results": [...], "meta": {"routes": [...], "rrf_k": 60}}``
+- HTTP：``{"results": [...], "meta": {"routes": [...], "rrf_k": 60}}``；
+  空结果时 ``meta`` 追加 ``note`` 可行动引导（T-143②，缺失模型 Key 时叠加申键说明）
   - ``results``：先 memory 层后 wiki 层，按 scopes 顺序拼接
   - ``meta.routes``：各结果 ``routes`` 的去重并集（保序），无命中时回退 ``["bm25"]``
 - MCP：``{"results": [...]}`` —— **没有 meta**，且只查 memory 层
@@ -69,6 +70,7 @@ import httpx
 from sgme.data import search as search_mod
 from sgme.data import session_dao
 from sgme.operations.errors import ERR_INTERNAL, InvalidArgs, OperationResult
+from sgme.operations.llm import model_keys_notice
 from sgme.operations.session import _resolve_raw_path as _resolve_l0_raw_path
 from sgme.wiki import fts as wiki_fts
 
@@ -81,8 +83,29 @@ META_RRF_K: int = 60
 # scopes 缺省值：与 v0.6 SearchRequest 的 pydantic 缺省一致（HTTP 侧）。
 DEFAULT_SCOPES: list[str] = ["memory", "skills"]
 
+# T-143②：搜索空结果的通用可行动引导（HTTP meta.note 用；缺失模型 Key 时
+# 由 _search_empty_note 叠加 model_keys_notice 申键说明，同 inject 的追加语义）。
+SEARCH_EMPTY_NOTE: str = (
+    "此检索无命中：可先通过 POST /v1/append 沉淀会话并触发提炼"
+    "（POST /v1/admin/refine/trigger），记忆落库后再检索；"
+    "或更换关键词 / 检查维度标签后重试。"
+)
+
 # 词边界守卫（ASCII 字母数字）：防别名替换误伤派生词（daemons 不触发 daemon）
 _WORD_BOUNDARY = r"(?<![A-Za-z0-9]){alias}(?![A-Za-z0-9])"
+
+
+def _search_empty_note(cfg: dict[str, Any]) -> str:
+    """拼装搜索空结果引导：通用检索提示 + （可选）模型 Key 缺失申键说明。
+
+    T-143②：空命中时 HTTP ``meta.note`` 带可行动引导；模型 Key 缺失时叠加
+    ``model_keys_notice``（与 inject 的 note 追加同源），齐全时只留检索自身
+    提示（零噪音）。
+    """
+    notice = model_keys_notice(cfg)
+    if not notice:
+        return SEARCH_EMPTY_NOTE
+    return f"{SEARCH_EMPTY_NOTE}\n{notice}"
 
 
 def normalize_query_terms(query: str, term_aliases: dict[str, str]) -> str:
@@ -389,6 +412,8 @@ def search(
           按 scopes 顺序）
         - routes: 各结果 routes 的去重并集（保序；可能为空列表）
         - rrf_k: HTTP meta 用的 RRF k（历史硬编码 60，见模块 docstring）
+        - note: 零命中时才追加的空结果可行动引导（T-143②，含可选模型 Key
+          缺失申键说明；有命中时无该键）
 
     Raises:
         InvalidArgs: query 非字符串 / scopes 非字符串列表（→ ERR_INVALID_ARGS）。
@@ -452,33 +477,43 @@ def search(
         # 状态码不变；错误码统一收敛到 operations 层）
         return OperationResult.fail(ERR_INTERNAL, f"检索失败: {e}")
 
-    # 聚合实际命中的 routes（取并集、保序——v0.6 路由逐行等价）
+    # —— 聚合实际命中的 routes（取并集、保序——v0.6 路由逐行等价） ——
     routes_seen: list[str] = []
     for r in results:
         for rt in r.get("routes", []):
             if rt not in routes_seen:
                 routes_seen.append(rt)
 
-    return OperationResult.succeed(
-        {
-            "results": results,
-            "routes": routes_seen,
-            "rrf_k": META_RRF_K,
-        }
-    )
+    # —— T-143②：空结果附可行动引导（HTTP meta.note，MCP 不投影） ——
+    # 有命中的超集保持 v0.6 三键形态（info 超集契约冻结），不挂 note；
+    # 零命中才追加 note 键（拼装搜索引导 + 可选模型 Key 缺失申键说明）。
+    data: dict[str, Any] = {
+        "results": results,
+        "routes": routes_seen,
+        "rrf_k": META_RRF_K,
+    }
+    if not results:
+        data["note"] = _search_empty_note(cfg)
+
+    return OperationResult.succeed(data)
 
 
 def http_payload(data: dict[str, Any]) -> dict[str, Any]:
     """投影为 HTTP ``POST /v1/search`` 的历史契约形态（v0.6 逐字段等价）。
 
     ``meta.routes`` 无命中时回退 ``["bm25"]``（v0.6 路由 ``routes_seen or ["bm25"]``）。
+    ``meta.note``（T-143②）：仅当空结果引导存在时追加（成功路径 meta 保持
+    历史两键契约不变）。
     """
+    meta: dict[str, Any] = {
+        "routes": data["routes"] or ["bm25"],
+        "rrf_k": data["rrf_k"],
+    }
+    if data.get("note"):
+        meta["note"] = data["note"]
     return {
         "results": data["results"],
-        "meta": {
-            "routes": data["routes"] or ["bm25"],
-            "rrf_k": data["rrf_k"],
-        },
+        "meta": meta,
     }
 
 
