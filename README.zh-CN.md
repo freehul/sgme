@@ -130,9 +130,16 @@ python -m sgme
 # Key 缺失时 /v1/health 的 model_config.missing_keys 会列出缺哪些——按 docs/guide/免费模型Key申请指南.md 申请免费 Key 即可。
 #   AGNESAI_API_KEY=<agnes>   SILICONFLOW_API_KEY=<硅基流动key>
 
-# 4. 运行测试
+# 4.（可选）构建 WebUI 管理面板——需要 Node.js
+#    如果只用 HTTP/MCP API，或通过 Docker / Windows 服务部署（已内置前端），可跳过
+cd ui && npm ci && npm run build && cd ..
+
+# 5. 运行测试
 pytest tests/ -q
 ```
+
+> **pip 报 SSL 错误（SSLEOFError）？** 如果你的网络经过代理（如 Clash），安装前先关闭代理直连，
+> 或使用国内镜像：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple`
 
 详见 [docs/runbook.md](docs/runbook.md)（运维手册：启动/环境变量/验证命令）。
 
@@ -252,6 +259,7 @@ templates/           # 预定义 4 模式模板（daily/coding/work/full）
 prompts/             # 提炼提示词（含 MIT 来源标注）
 registry/            # 维度注册表 + 别名表
 config/              # 运行时配置
+ui/                  # Vue 3 + Vite 前端（cd ui && npm ci && npm run build → ui/dist，由 FastAPI 静态托管）
 ```
 
 ## 设计文档

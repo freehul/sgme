@@ -135,9 +135,17 @@ python -m sgme
 #   docs/guide/免费模型Key申请指南.md (Agnes agnes-2.5-flash 免费 / 硅基流动 bge-m3 零费用).
 #   AGNESAI_API_KEY=<agnes>   SILICONFLOW_API_KEY=<siliconflow>
 
-# 4. Run tests
+# 4. (Optional) Build the WebUI management panel — requires Node.js
+#    Not needed if you only use the HTTP/MCP API, or if you deploy via Docker / Windows service
+#    (both include the pre-built UI)
+cd ui && npm ci && npm run build && cd ..
+
+# 5. Run tests
 pytest tests/ -q
 ```
+
+> **pip SSL error (SSLEOFError)?** If you are behind a system proxy (e.g. Clash), either disable it
+> before installing or use a China mirror: `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple`
 
 See [docs/runbook.md](docs/runbook.md) for the operations manual (startup / environment variables / verification commands).
 
@@ -257,6 +265,7 @@ templates/           # predefined 4-mode templates (daily/coding/work/full)
 prompts/             # refinement prompts (with MIT source attribution)
 registry/            # dimension registry + alias table
 config/              # runtime configuration
+ui/                  # Vue 3 + Vite frontend (cd ui && npm ci && npm run build → ui/dist, served by FastAPI)
 ```
 
 ## Design Docs
