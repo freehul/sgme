@@ -2582,3 +2582,15 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 测试 | `tests/test_hermes_adapter.py` +3：`test_trigger_refine_recovers_after_client_closed` / `test_append_delta_recovers_after_client_closed`（拦截 `httpx.Client` 构造器使重建返回可控桩，**零网络**）/ `test_shutdown_is_idempotent_and_concurrent_safe`（3 线程并发 shutdown 只关一次）。TDD 红→绿全程。 |
 | 部署 | `adapters/hermes/` 改后需同步 Hermes 部署副本（`$HERMES_HOME/plugins/sgme/`，install.py 产物），下次网关重启生效。 |
 | 关联 | Backlog T-151；Hermes 侧独立问题（插件加载器并发锁补丁被 9-05 更新覆盖）已在 Hermes 源码重打（`plugins/plugin_loader.py` LOCAL PATCH 2026-09-05，RLock 串行化 exec_module），该文件 Hermes 更新会覆盖、更新后需重打（与 8-07 的 memory/__init__.py 补丁同性质，本次打在更底层、覆盖全部插件加载路径）。 |
+
+### B153. 三模块平级文档对齐 + skills 写侧测试契约修复（T-153，2026-09-07）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | WorkBuddy 技能库审计报告（skills-audit-2026-09-07）查证任务升级：用户要求「清理设计文档，统一 memory/wiki/skills 三模块平级理念，检测 skills 模块工作是否正常」。生产实测：NAS `/v1/skills` 200（40 技能，source=git）、`/v1/wiki/pages` category=skill/* active=0（B114 去 wiki 化彻底执行，superseded 归档池 425 页合规保留）、health v1.1.6 ok——**模块运行正常**。 |
+| 症状 | `tests/test_routes_skills.py` 2 用例失败（09-05 全量回归已记录的存量）：`test_skills_crud_flow`（PUT 裸正文 400≠200）、`test_skills_delete_idempotent`（ghost 删除 404≠200）。 |
+| 根因 | 用例是 B114 之前的旧契约：夹具只配 `skills_hub` 未配 `skills.source_dirs` → `load_config` 回落 B150 资源包默认 `/app/cache/skills/`（非空字符串列表）→ 治理版写侧的「未配置才回退旧 hub」前提不再成立，PUT/DELETE 被治理版接管（frontmatter 门禁 400 / 不存在 404），旧断言全崩。**代码行为正确，测试过时**。 |
+| 修复 | ①夹具显式 `cfg["skills"]={"enabled": False, "source_dirs": []}` 钉住「旧 hub 兼容回退」语义；②新增 2 用例钉治理版主契约：裸正文 → 400 + `error.details.violations` 清单、合规 SKILL.md → 200 + 落盘 + commit、ghost 删除 → 404。19→21 passed。 |
+| 文档对齐 | 架构 v1.0：§3.2 扩展模块表 4→5 补 skills 行 + 三模块平级声明（memory/wiki/skills 平级，统一检索 scopes 并列召回）、§11 skills-hub 头部历史定位注记（B114 后仅保留 git 同步职责）、约束 13 补 skills；wiki 渐进式披露 v0.3、Skills 管理 v0.2 头部加现行架构注记（寄居 wiki / skills.db 暂缓建库表述分别被 B114/B120 取代，原文不删）；README 中英：skill hub 卖点段改「技能管理 skills 模块」口径、目录树注释更新、15→14 维度勘误（T-147①顺带闭环）、「给 AI Agent 的话」补技能获取规则（skill_search→skill_get，禁未检索硬凑）；agent-onboarding.md：工具数 29/18 → **39**（与 ONBOARDING_TOOLS 程序化对账一致）、工具清单补三池/信号/角色 11 工具、自进化改双通道表述（技能坑走 skill_put，世界知识走 wiki_evolve_trigger）。 |
+| ⚠️ 踩坑 | ①Backlog T-152 验收句「53 个工具」系登记笔误（实际 39，已勘误）——工具数以 `ONBOARDING_TOOLS` 清单与 `@mcp.tool` 程序化对账为准，勿手工数；②`/v1/wiki/pages` 返回的 `total` 是**按 status 统计的全库计数**（不随 category 过滤），category 过滤结果以 `pages` 列表为准——曾因此误判「wiki 残留 184 技能页」，实为 0；③patch 工具写代码块内换行内容时会丢换行（目录树两行挤一行），写完必须回读目检。 |
+| 关联 | Backlog T-153（✅）、T-147①（15→14 维度，顺带闭环）；测试 `tests/test_routes_skills.py`。 |

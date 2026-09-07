@@ -62,11 +62,11 @@ A single search endpoint recalls from the memory pool, the knowledge base, and y
 
 <img src="assets/selling-point-03-unified-search.png" alt="Unified search" width="800"/>
 
-### Skill hub — your skills, managed in one place
+### Skills module — your skills, managed in one place
 
-All your self-built skills (prompts, workflows, templates) live in one place: direct read/write locally, auto-sync to NAS. Switch devices without losing your skills.
+All your self-built skills (prompts, workflows, templates) live in SGME's skills module — a peer of memory and wiki: git-backed source of truth (write-side lint gate + dedup) + skills.db index, four-level disclosure on demand, local read/write, NAS auto-sync, no skill lost across devices. Installing SGME = taking over the memory / wiki / skills trio at once.
 
-<img src="assets/selling-point-05-skillhub.png" alt="Skill hub" width="800"/>
+<img src="assets/selling-point-05-skillhub.png" alt="Skills module" width="800"/>
 
 ### Shared knowledge — a wiki your AIs write together
 
@@ -102,7 +102,7 @@ Runs on a single machine with Python + SQLite. No GPU, no external database serv
 
 - **Memory marking**: AI got it wrong? Mark a memory as "rejected" with a correction note — data is kept, never deleted, and can be undone anytime
 - **Automatic memory expiry**: stale memories automatically leave injection (e.g. outdated project states) while remaining traceable — no misleading your AI with old intel
-- **15-dimension tag system**: identity, projects, tech stack, preferences... auto-categorized, dimensions dynamically extensible, aliases auto-normalized ("Python" and "python" are the same)
+- **14-dimension tag system**: identity, family/social, values, skills, tech stack, preferences, habits, environment, style, focus, goals, status, ideas... auto-categorized, dimensions dynamically extensible, aliases auto-normalized ("Python" and "python" are the same)
 - **Conflict resolution**: duplicate facts auto-merge; contradictory versions are detected and adjudicated
 - **Hybrid retrieval**: BM25 keyword + vector semantic + label filtering, fused — works even without a vector database
 - **Built-in evaluation framework**: extraction quality proven with data (L1 F1, retrieval ranking tuning), not trust
@@ -189,6 +189,8 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 
 **Batch refine discipline**: batches of ≥20 files must be split (≤20 per batch) with 30–60s between batches; never retry a 429 immediately (server-side batch_scan will catch up); always use async mode
 
+**Skill acquisition (B114+: skills is a standalone module, MUST)**: when you need a capability SGME doesn't have built in, first `skill_search(query)`, then `skill_get(name)` for the full text before executing — **never claim a skill or improvise steps without searching**; write lessons back via the ownership rule (skill-specific pitfalls → `skill_put` into the skill itself; general world knowledge → `wiki_evolve_trigger` into the wiki).
+
 **Vector Engine Setup** (when `health()` reports `vector.available=false` / `vector.connectivity=false`): local-first, cloud fallback — prefer a local Ollama or LM Studio running `bge-m3` (1024-dim; cloud fallback `BAAI/bge-m3` on siliconflow is free and automatic, same dims → no index rebuild on switch). Probe `curl http://127.0.0.1:11434/api/tags` (Ollama) or `curl http://127.0.0.1:1234/v1/models` (LM Studio) → if no `bge-m3`, run `ollama pull bge-m3` (or download it in LM Studio) → write the `search.vector` block (`base_url`, `model: bge-m3`, `fallbacks`) into `config/sgme.yaml` and restart SGME → re-run `health()` until `vector.connectivity=true`. llama.cpp is NOT recommended (model state unmanaged, lost after VRAM cleanup).
 
 **Full tool list & usage**: see [docs/agent-onboarding.md](docs/agent-onboarding.md), or call the `agent_onboarding` tool once connected via MCP
@@ -242,8 +244,8 @@ sgme/
 ├── profile/         # template engine (template / inject / tier0 summary)
 ├── log/             # unified logging (get_logger is the sole entry; console + JSON dual format)
 ├── refinery/        # knowledge refinement engine (ingest/extract/validate/output; serves wiki)
-├── skills/          # skills management module (index source_dirs SKILL.md; skills.enabled)
-├── skills_hub/      # skill-hub extension (map/copy dual mode; skills_hub.enabled)
+├── skills/          # skills management module (git-backed source_dirs + skills.db index + write-side gate; skills.enabled; peer of memory/wiki)
+├── skills_hub/      # skill-hub extension (map/copy dual mode; git-sync duty only since B114; skills_hub.enabled)
 ├── wiki/            # wiki knowledge-base extension (/v1/wiki/* endpoints; wiki.enabled)
 ├── signal/          # signal engine (event publishing / SSE / pull cursor)
 ├── backup/          # backup & restore (snapshot tiers / cold archive / off-site copies)

@@ -2,6 +2,7 @@
 
 > 版本：v0.3（修订稿：v0.2 已吸收审查意见；v0.3 修正 W1 迁移机制实现偏差）
 > 日期：2026-08-16 ｜ 审查人：用户（对照 wiki_dao.py / wiki/fts.py / operations/wiki.py / operations/search.py / migrations/0001 / mcp_server.py 逐条核对）
+> ⚠️ **现行架构注记（2026-09-07）**：本文档「技能手册统一入 wiki_pages（D1）」「统一搜索过滤 skill（D4）」「skills_hub 禁用（D7）」等**技能寄居 wiki** 的设计，已被 B114（2026-08-28）技能去 wiki 化**取代**——技能真源已迁 skills 模块（git 真源 + skills.db 索引），wiki 现零技能页（active 口径实测）。现行口径以《SGME-架构设计-v1.0》§3.2/§30.11 + 《SGME-Skills管理模块设计-v0.2》为准（memory/wiki/skills 三模块平级）；本文档的知识库部分（渐进式披露/FTS/自进化）仍然有效，原文保留不删。
 > 地位：改造方案，审查修订后待确认；确认后按任务清单实施。
 > 关联：docs/requirements/SGME-Backlog-v0.2.md（需求锚）、docs/design/SGME-架构设计-v0.9.md（架构依据）、docs/design/SGME-实施变更记录-v0.9.md（实施记录）、docs/research/wiki-kb-benchmark/（调研，AIRDT 仓库）
 > 决策背景：wiki 设计决策已入 wiki（NAS 9910，page_id wiki渐进式披露共享知识库-设计决策-v0-1-45810444）

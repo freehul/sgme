@@ -34,7 +34,7 @@ SGME 是单用户 Agent 记忆引擎 Server：把 Agent 会话提炼为标签化
 10. **密钥不落盘**：只引用环境变量名；API Key 铁律——禁止在代码/配置里硬编码密码
 11. **提炼健康自检**：refined_at / last_refined_seq 水位推进，停摆产 anomaly_warn
 12. **文档是第一公民**：改设计先改 docs，代码与文档不一致视为缺陷
-13. **核心最小化**：SGME 核心仅包含记忆引擎必需模块；可选功能（wiki 知识库、skills-hub、外部适配器）作为扩展模块独立管理，禁用时核心功能零影响
+13. **核心最小化**：SGME 核心仅包含记忆引擎必需模块；可选功能（wiki 知识库、skills 技能管理、skills-hub、外部适配器）作为扩展模块独立管理，禁用时核心功能零影响
 
 ---
 
@@ -59,14 +59,17 @@ SGME 是单用户 Agent 记忆引擎 Server：把 Agent 会话提炼为标签化
 | **operations/** | 统一操作层 | 收敛 HTTP+MCP 的参数校验+调用+错误处理 |
 | **refinery/** | 知识提炼引擎 | ingest + extract + validate，服务 wiki 提炼 |
 
-### 3.2 扩展模块（4 个，可禁用）
+### 3.2 扩展模块（5 个，可禁用）
 
 | 模块 | 职责 | 开关 |
 |------|------|------|
 | **wiki/** | 知识库管理（wiki.db + 实时渲染 + 按需导出） | `wiki.enabled` |
+| **skills/** | 技能管理模块（ST-36：git 真源 + 四级披露 + 写侧门禁；B114 起技能真源归此，wiki 不再承载技能） | `skills.enabled` |
 | **adapters/** | 官方 Agent 适配器（hermes / dsh） | 各 adapter 独立 install.py |
-| **skills-hub/** | 用户自有技能仓库（map/copy 双模式） | `skills_hub.enabled` |
+| **skills-hub/** | 用户自有技能仓库（map/copy 双模式；B114 后仅保留 git 同步职责，技能读写已收口 skills 模块） | `skills_hub.enabled` |
 | **mcp_server.py** | MCP 协议入口（无适配 Agent 的通用接入） | `SGME_MCP_DISABLED=1` |
+
+> **三模块平级（2026-09-07 口径）**：memory（memory.db，记忆池）/ wiki（wiki.db，知识库）/ skills（git 真源 + skills.db 索引，技能库）是 SGME 对外提供的三个平级数据模块——各自带 enabled 开关、独立连接层与端点族（/v1/search、/v1/wiki/*、/v1/skills*）。统一检索按 scopes 并列召回（可选 "memory"/"wiki"/"skills"/"sessions"；HTTP 缺省 ["memory","skills"]，wiki 层按需指定）。技能不寄居 wiki（B114 已去桥接）。
 
 ### 3.3 模块依赖图
 
@@ -410,6 +413,8 @@ GET  /v1/wiki/raw/{hash}           # 下载原件
 ---
 
 ## 11. skills-hub 模块（扩展）
+
+> **历史定位注记（2026-09-07，B114 后口径）**：本节描述的 skills-hub（map/copy 双模式 git 同步仓）曾是技能管理主入口；ST-36 Skills 管理模块落地（§30.11）后，技能真源/检索/写侧治理已全部收口 `sgme/skills/` 模块，skills-hub **仅保留 git 同步职责**（sync 端点与 copy 模式远端同步），写侧 API 在 `skills.source_dirs` 已配置时由治理版接管。三模块平级口径见 §3.2。
 
 ### 11.1 定位
 
