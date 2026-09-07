@@ -47,6 +47,11 @@ def app(tmp_path, monkeypatch, raw_dir):
         "mode": "map",
         "path": str(tmp_path / "skills"),
     }
+    # 治理版 skills 模块 source_dirs 显式置空：钉住「旧 hub 兼容回退」契约。
+    # 不置空会读到资源包默认 /app/cache/skills/（B150 起随包分发，非空），
+    # 写侧被治理版接管（门禁 400 / 删除不存在 404），下方旧契约用例全崩
+    # （2026-09-07 实锤；T-153）。
+    cfg["skills"] = {"enabled": False, "source_dirs": []}
 
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
@@ -153,6 +158,55 @@ def test_skills_put_empty_content(app, client):
         json={"content": "   "},
     )
     assert resp.status_code == 400
+
+
+# ---------- 治理版写侧主路径（skills.source_dirs 已配置，B114 后主路径；T-153） ----------
+
+def _gov_git_init(d):
+    """治理版 store 落盘后要在目录内 commit，测试目录需自带 git 仓。"""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=str(d), check=True)
+    subprocess.run(["git", "config", "user.email", "test@sgme.local"], cwd=str(d), check=True)
+    subprocess.run(["git", "config", "user.name", "SGME Test"], cwd=str(d), check=True)
+
+
+def _gov_cfg(app, tmp_path):
+    """给当前 app 挂一个临时 git 技能仓，返回该目录。"""
+    hub = tmp_path / "gov_hub"
+    hub.mkdir()
+    _gov_git_init(hub)
+    app.state.cfg["skills"] = {"enabled": True, "source_dirs": [str(hub)], "budget": 40}
+    return hub
+
+
+def test_governed_put_rejects_bare_body_with_violations(app, client, tmp_path):
+    """治理版接管（source_dirs 非空）：无 frontmatter 裸正文 → 400 + violations 清单。"""
+    _gov_cfg(app, tmp_path)
+    resp = client.put(
+        "/v1/admin/skills/my-skill",
+        headers=ADMIN_HEADERS,
+        json={"content": "# 我的技能\n\n你好，世界。"},
+    )
+    assert resp.status_code == 400
+    violations = resp.json()["error"]["details"]["violations"]
+    assert any("description" in v for v in violations)
+
+
+def test_governed_put_and_delete_roundtrip(app, client, tmp_path):
+    """治理版主路径：合规 SKILL.md 写入 200 → 落盘 + commit；删除不存在 → 404。"""
+    hub = _gov_cfg(app, tmp_path)
+    content = (
+        "---\nname: my-skill\ndescription: 测试技能——治理版写入链路\n"
+        "category: test\n---\n\n# 我的技能\n\n你好，世界。\n"
+    )
+    resp = client.put("/v1/admin/skills/my-skill", headers=ADMIN_HEADERS,
+                      json={"content": content})
+    assert resp.status_code == 200, resp.text
+    assert (hub / "my-skill" / "SKILL.md").is_file()
+    # 治理版契约：删除不存在的技能 → 404（区别于旧 hub 兼容回退的幂等 200）
+    resp = client.delete("/v1/admin/skills/ghost", headers=ADMIN_HEADERS)
+    assert resp.status_code == 404
 
 
 # ---------- 未启用 ----------
