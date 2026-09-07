@@ -2594,3 +2594,16 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 文档对齐 | 架构 v1.0：§3.2 扩展模块表 4→5 补 skills 行 + 三模块平级声明（memory/wiki/skills 平级，统一检索 scopes 并列召回）、§11 skills-hub 头部历史定位注记（B114 后仅保留 git 同步职责）、约束 13 补 skills；wiki 渐进式披露 v0.3、Skills 管理 v0.2 头部加现行架构注记（寄居 wiki / skills.db 暂缓建库表述分别被 B114/B120 取代，原文不删）；README 中英：skill hub 卖点段改「技能管理 skills 模块」口径、目录树注释更新、15→14 维度勘误（T-147①顺带闭环）、「给 AI Agent 的话」补技能获取规则（skill_search→skill_get，禁未检索硬凑）；agent-onboarding.md：工具数 29/18 → **39**（与 ONBOARDING_TOOLS 程序化对账一致）、工具清单补三池/信号/角色 11 工具、自进化改双通道表述（技能坑走 skill_put，世界知识走 wiki_evolve_trigger）。 |
 | ⚠️ 踩坑 | ①Backlog T-152 验收句「53 个工具」系登记笔误（实际 39，已勘误）——工具数以 `ONBOARDING_TOOLS` 清单与 `@mcp.tool` 程序化对账为准，勿手工数；②`/v1/wiki/pages` 返回的 `total` 是**按 status 统计的全库计数**（不随 category 过滤），category 过滤结果以 `pages` 列表为准——曾因此误判「wiki 残留 184 技能页」，实为 0；③patch 工具写代码块内换行内容时会丢换行（目录树两行挤一行），写完必须回读目检。 |
 | 关联 | Backlog T-153（✅）、T-147①（15→14 维度，顺带闭环）；测试 `tests/test_routes_skills.py`。 |
+
+### B154. 新手首启体验六项修复：T-143/144/145/146/147 批量闭环（ST-41 收官，2026-09-07）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 主人令「剩下的任务完成，并行开发」——Backlog 未关闭 8 条（ST-41 五子项 + T-148 待拍板 + T-149 方向待细化）。派 opencode CLI 三路并行（免费模型零 token），T-148（需主人拍板三项决策）与 T-149（大方向工程）未在本批。 |
+| T-144（opencode 交付） | `check_refinement_stalled` 空库（`last_refined_at IS NULL`）→ `stalled=False` + 新增 `state="never_refined"` 字段（既有字段契约冻结）；时间解析失败/超时/seq 空转 → `state="stalled"`，正常 → `state="ok"`；operations/health.py HTTP 块透传 `state`。anomaly 相关测试从空库场景改 25h 真停摆场景。 |
+| T-143（opencode 交付） | ①启动告警：create_app 内 dev key 告警旁，`model_keys_notice(cfg)` 非空 → `logger.warning`（含缺哪些 Key + `docs/guide/免费模型Key申请指南.md` 路径），齐全零噪音；②空态引导：refine 单文件失败 `status=error` 且缺 Key → 响应附 `note`；搜索零命中 → 追加 note（`http_payload` 条件写入 `meta["note"]`），有命中保持历史契约。 |
+| T-145/T-147（opencode 交付） | README 中英快速开始补可选前端构建步骤（`cd ui && npm ci && npm run build`）+ 目录树补 `ui/` 行；pip SSL（Clash SSLEOFError）排障提示；pyproject 主依赖全部加 `<next-major` 上界（fastapi 0.141.1 等实测版本为基准），`pip install --dry-run` 验证通过；T-147① 15→14 维度已于 B153 顺带闭环。 |
+| T-146（主代理亲自——opencode 两轮均卡死） | ①`/v1/admin/refine/trigger` 单文件业务失败（status=error，典型 LLM 全链失败）从 200 改抛 `ERR_LLM_UNAVAILABLE`→**HTTP 503**（批量保持 200 部分成功语义，每项自带 status）；②`__main__.py` 捕获端口占用 errno 10048/98 → 中文可行动提示（`SGME_PORT` 换端口 / 停旧进程命令）+ `SystemExit(1)`；③日志双打印：动态+静态实测（双 uvicorn Config 构造、root/sgme.* handler 计数）确认 uvicorn 自名 logger `propagate=False` 天然分流、**不向 root 叠加 handler**，防御结论写入 `sgme/log/__init__.py` 模块文档（setup 幂等 + 分流机制注记）。 |
+| 测试 | 新增 `tests/test_t143_t144_startup_guidance.py`（8 用例：空库 health/启动 caplog/refine error note/search 空结果 note/齐全零噪音排除）+ `tests/test_t146_error_friendliness.py`（6 用例：503/批量 200 边界/端口提示文案/OSError 分支/双 uvicorn handler 不叠加/setup 幂等）；受影响回归 test_engine/test_health_v04/test_stall_watch/test_operations_health/test_server/test_log/test_operations_config 全绿：**141 passed（t143 面）+ 54 passed（t146 面）**。 |
+| ⚠️ 踩坑 | ①opencode 派单 cwd 与工作目录语义：oc-task 传 worktree 路径后，模型仍以绝对路径引用**主仓**文件（任务书写的必读路径全是主仓）→ t143/t145 改动落到主仓而非 worktree——分组提交时需把 diff 导 patch 应用回 worktree 再撤主仓（本次 t143 即此流程）；②opencode 会话被权限系统拒绝（read /tmp）后**静默挂起**（session list 显示 updated 但无新事件、无退出）——任务书必须写明「只在项目目录内读写、卡住如实汇报」；③RefineResult.anomaly_warn 类型是 bool 非 None，mock 时传 None 会被 Pyright 拦。 |
+| 关联 | Backlog ST-41（✅ 六项全闭环）、T-143/144/145/146/147（✅）、T-148（🔴 待主人拍板）、T-149（🔴 待办）；提交 91df067（docs）/1a14317（t143）/7af5115（t146）。 |
