@@ -872,3 +872,59 @@ def test_mcp_skill_put_admin_key_writes(tmp_path, monkeypatch, raw_dir):
         assert (skills_dir / "demo" / "SKILL.md").exists()
     finally:
         gen.close()
+
+
+# ---------- T-155：MCP 同步工具移出事件循环（anyio.to_thread 包装） ----------
+
+# 抽样工具：覆盖「无参同步」(health/stats)、「带 ctx 注入」(signal_claim/skill_put)、「重 I/O」(skill_search)
+_T155_SAMPLE_TOOLS = ("health", "stats", "skill_search", "signal_claim")
+
+
+def test_mcp_sync_tools_wrapped_off_event_loop(mcp):
+    """同步工具注册后必须是 async 包装（事件循环不再被同步 I/O 阻塞），原件保留在 __wrapped__。"""
+    import inspect
+
+    tools = mcp._tool_manager._tools  # noqa: SLF001——FastMCP 内部注册表，协议层 Tool 不含 fn
+    for name in _T155_SAMPLE_TOOLS:
+        assert name in tools, f"抽样工具 {name} 不在工具集"
+    # Tool.fn 是注册的最终可调用：包装后应为协程函数
+    for name in _T155_SAMPLE_TOOLS:
+        fn = tools[name].fn
+        assert inspect.iscoroutinefunction(fn), f"{name} 未包装为 async（仍在事件循环上同步执行）"
+        wrapped = getattr(fn, "__wrapped__", None)
+        assert wrapped is not None, f"{name} 缺 __wrapped__（丢失原同步实现）"
+        assert not inspect.iscoroutinefunction(wrapped), f"{name} 的 __wrapped__ 应为原同步函数"
+        assert fn.__name__ == name, f"{name} 包装后 __name__ 漂移: {fn.__name__}"
+
+
+def test_mcp_tool_call_still_works_after_wrap(mcp):
+    """包装后 call_tool 直调层不回归：health/stats/refine_status 返回可解析 JSON。"""
+    for name in ("health", "stats", "refine_status"):
+        text, _ = _call(mcp, name, {})
+        data = json.loads(text)
+        assert isinstance(data, dict), f"{name} 返回异常: {text[:200]}"
+        assert "error" not in data, f"{name} 返回错误: {data}"
+
+
+def test_mcp_signal_claim_ctx_injection_survives_wrap(tmp_path, monkeypatch, raw_dir):
+    """T-155 回归守卫：包装后 Context 注入不丢——signal_claim 经注册 key 反查 agent_id（PR#2 语义）。"""
+    from sgme.signal import engine as signal_engine
+
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        key = app.state.key_store.register_agent("ctxagent", [])
+        event_id = signal_engine.publish(
+            event_type="anomaly_warn", source="t155-test",
+            payload={"component": "test"}, mem_conn=app.state.mem_conn,
+        )
+        body = _mcp_call_tool(client, None, "signal_claim", {"event_id": event_id}, api_key=key)
+        assert body is not None and "result" in body, body
+        res = body["result"]
+        assert res.get("isError") is not True, res
+        text = "".join(c.get("text", "") for c in res.get("content", []))
+        data = json.loads(text)
+        assert data.get("claimed") is True, data
+        assert data.get("agent_id") == "ctxagent", f"ctx 注入丢失（key 反查失败）: {data}"
+    finally:
+        gen.close()
