@@ -2630,3 +2630,13 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 运维影响 | 随下次发版部署；容器重启 connect_skills 自动迁移 + rebuild，无需人工干预。迁移后 FTS 全文路恢复：技能名搜索（如「docker」「buildx」）直接命中，BM25 10× 名字加权真正生效；检索 routes 标记从 `skills_bm25`（向量单路）恢复为 `skills_rrf`（双路融合）。部署前置：T-154 裸仓同步缺口仍需手动补 fetch。 |
 | ⚠️ 踩坑 | ①FTS5 外部内容表（content=）的列名引用是**延迟解析**——建表不校验主表列存在性，错误推迟到触发器执行/全表扫描才爆，schema 变更后必须用真实写入路径冒烟（不能只看建库无报错）；②本地测试 3 个失败系终端用了系统 python 而非项目 venv（jieba 缺失降级 bigram 分词），命令统一走 `.venv/Scripts/python.exe`。 |
 | 关联 | 待办池 7c903a31（skills_fts 缺陷修复）；Backlog T-156；B120/T-112（缺陷引入）。 |
+
+### B157. T-154 裸仓同步缺口根治：updater 自动快进 + 同步工作流 tag 触发（v1.1.9+，2026-09-08）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | B154 发版实锤（2026-09-08 早）：v1.1.7 发布时 NAS updater 连续两轮「版本不一致」回滚——`sgme-host-updater.sh` 只 `git pull` 本地裸仓，而裸仓自身 `refs/heads/main` 只在人工 fetch Gitee 时才推进（且裸仓 refspec `+refs/heads/*:refs/remotes/gitee/*` 只写远程跟踪 ref，fetch 不动自身分支）。Gitee 有新提交时 updater 拿旧码构建 → 版本一致性校验失败 → 回滚空转。v1.1.9 发版时又人工补了一次 fetch，债不清不行。 |
+| 改动 | ①`scripts/sgme-host-updater.sh` 加 0.5 节裸仓同步块：从 src 的 `remote get-url origin` 解析裸仓路径（file:// 剥前缀，非本地路径回退 `BARE_REPO_FALLBACK`）→ fetch gitee main（gitee 缺失回退 github，双缺跳过维持人工流程）→ `merge-base --is-ancestor` FF 校验 → `update-ref refs/heads/main FETCH_HEAD` 推进 + fetch --tags；**非 FF 只告警不硬写**（人工介入裁决，与「原件不删」纪律对齐）。B150 踩坑④适用：该脚本是主机侧运行副本，改完 cp/scp 同步即生效，**不需要 bump 版本**。②`.github/workflows/sync-gitee.yml` 的 on.push 加 `tags: ["**"]`——tag 推送也同步 Gitee（releases/latest 的 Gitee tag 源不再断粮；T-154 验收项②）。 |
+| 验证 | ①`bash -n` 语法过；②双场景沙箱（三仓结构 origin/bare/src）：FF 场景裸仓正确快进 PASS；真分叉场景（origin main 与 bare main 互不包含）正确拒绝推进 PASS——首轮场景2 用例构造错误（cX 从 c2 长出实为 FF）误报 FAIL，重构用例后确认逻辑正确；③生产端到端：本地推探针提交 ca3773f → Actions 同步 Gitee（40s）→ NAS 上以真实裸仓+真实 gitee remote 执行同步块 → 裸仓自动快进 `d082311→ca3773f`，日志含 FF 校验与推进记录；④NAS 运行副本部署：先备份（.bak-t154-<ts>）→ scp → chmod +x → sha256 与仓库副本一致（724f263b）。 |
+| 运维影响 | 下次发版全自动化：push → Actions 同步 Gitee（含 tag）→ updater 更新前自动快进裸仓 → build 正确版本 → 部署。人工 fetch 补偿步骤正式退役。边界提醒：非 FF（裸仓被人手推过/历史分叉）时 updater 会告警并按裸仓现状构建——版本一致性校验仍会拦截，属预期安全网。 |
+| 关联 | Backlog T-154（✅ B157）；B154（缺口发现与首次人工补偿）；B150（脚本双副本纪律）。 |
