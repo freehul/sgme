@@ -226,16 +226,27 @@ def run_batch_llm(
     expected_ids: list[str],
     client=None,
     dry_run: bool = False,
+    rows_ref: list[dict] | None = None,
+    prompt_text: str = "",
+    retry_round: int = 0,
 ) -> tuple[list[dict], list[dict], list[str], int]:
-    """对一批调用批量抽取（含坏 JSON 重试 1 次）。
+    """对一批调用批量抽取（含坏 JSON 重试 + 空产出重试 + 空条目降级单抽）。
 
     返回 (ok, dropped, errors, tokens_used)。dry_run=True 时不调 LLM，直接返回空结果。
+
+    T-148 门禁实测（2026-09-08）三层容错：
+    - 坏 JSON → 重试（MAX_PARSE_ATTEMPTS）
+    - 全空 facts / 未命中任何 id → 重试
+    - 部分空 facts（同批其他条正常）= LLM 长列表偷懒 → 空条目降级单条重抽
+      （单条上下文几乎不偷懒：4 空批单抽 3 修复）；retry_round=1 时不再降级防递归
     """
     if dry_run:
         return [], [], ["dry-run：不调 LLM"], 0
     rules = cfg.get("rules", {})
     last_err: list[str] = []
     tokens = 0
+    ok: list[dict] = []
+    dropped: list[dict] = []
     for _attempt in range(MAX_PARSE_ATTEMPTS):
         try:
             # call_openai_compatible 返回 (text, usage) 二元组（provider.py 实测口径）
@@ -246,14 +257,31 @@ def run_batch_llm(
             return [], [], [f"LLM 调用失败: {e}"], tokens
         tokens += int((usage or {}).get("total_tokens") or 0)
         ok, dropped, errors = parse_batch_response(text, expected_ids)
-        # T-148 门禁实测（2026-09-08）：合法 JSON 但全部空 facts / 未命中任何 id 的
-        # 「批量偷懒」响应也必须重试——50 条门禁实测 3/50 样本中招（单条法均有产出）
         if not errors and any(item.get("facts") for item in ok):
-            return ok, dropped, [], tokens
+            # 部分空 facts（同批其他条正常）= 长列表偷懒 → 空条目降级单条重抽
+            empty_items = [item for item in ok if not (item.get("facts") or [])]
+            if empty_items and len(ok) > 1 and retry_round == 0 and rows_ref and prompt_text:
+                for item in empty_items:
+                    mid0 = item["memory_id"]
+                    row0 = next((r for r in rows_ref if r["memory_id"] == mid0), None)
+                    if row0 is None:
+                        continue
+                    sub_prompt = build_batch_prompt([row0], prompt_text)
+                    sub_ok, _d, _e, sub_tok = run_batch_llm(
+                        cfg, node, sub_prompt, [mid0],
+                        client=client, rows_ref=[row0], prompt_text=prompt_text,
+                        retry_round=1,
+                    )
+                    tokens += sub_tok
+                    if sub_ok and sub_ok[0].get("facts"):
+                        item["facts"] = sub_ok[0]["facts"]
+            if any(item.get("facts") for item in ok):
+                return ok, dropped, [], tokens
         if not errors:
             errors = ["批量响应全部空 facts（疑似偷懒），重试"]
         last_err = errors
     return ok, dropped, last_err, tokens
+
 
 
 def _args() -> argparse.Namespace:
@@ -263,7 +291,7 @@ def _args() -> argparse.Namespace:
     )
     p.add_argument("--input", required=True, help="输入 JSONL：{memory_id, content} 行")
     p.add_argument("--output", required=True, help="输出 JSONL：{memory_id, facts:[...]} 行")
-    p.add_argument("--batch-size", type=int, default=20, help="每批条数（默认 20）")
+    p.add_argument("--batch-size", type=int, default=5, help="每批条数（默认 5；T-148 实测 20 条/批长列表偷懒率高）")
     p.add_argument("--model", default="", help="LLM 模型名（覆盖降级链首节点；默认取配置）")
     p.add_argument("--api-key-env", default="", help="API Key 环境变量名（默认取配置）")
     p.add_argument("--dry-run", action="store_true", help="不调 LLM，只校验管道")
@@ -311,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         ids = [r["memory_id"] for r in batch]
         ok, dropped, errors, tokens = run_batch_llm(
             cfg, node, prompt, ids, client=None, dry_run=args.dry_run,
+            rows_ref=batch, prompt_text=prompt_text,
         )
         tokens_total += tokens
         for rec in ok:
@@ -335,7 +364,7 @@ def _args_from(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
-    p.add_argument("--batch-size", type=int, default=20)
+    p.add_argument("--batch-size", type=int, default=5)
     p.add_argument("--model", default="")
     p.add_argument("--api-key-env", default="")
     p.add_argument("--dry-run", action="store_true")
