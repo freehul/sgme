@@ -26,14 +26,60 @@ stats → storage.stats_dao；config → sgme.config。依赖方向：mcp_server
 """
 from __future__ import annotations
 
+import functools
+import inspect
+import json
 import logging
 import os
 from typing import Any, Callable, Dict
 
-from starlette.middleware.base import BaseHTTPMiddleware
+import anyio
 from mcp.server.fastmcp import Context
 
 logger = logging.getLogger("sgme.mcp")
+
+
+def tool(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """同步 MCP 工具包装器（T-155：把同步执行移出事件循环）。
+
+    背景：MCP Python SDK 1.29.x（func_metadata.call_fn_with_arg_validation）
+    对同步工具**直接在事件循环线程上执行**（无线程池）——SGME 30+ 个工具全是
+    同步函数做 SQLite I/O，慢查询（如 skill_search 实测 19.7s）会冻结整个
+    9913 端口（连鉴权中间件的 403 都无法返回），即 MCP 9913 周期性僵死
+    的可观测形态。
+
+    方案：注册前把同步函数包成 async def，经 ``anyio.to_thread.run_sync``
+    丢到线程池执行；``functools.wraps`` 保留原签名/annotations/__wrapped__，
+    使 FastMCP 的 ``_is_async_callable`` 判 async、``find_context_parameter``
+    （get_type_hints 跟踪 __wrapped__）照常注入 Context——工具内 ctx 反查
+    agent_id 的既有语义（PR#2）不受影响。async 工具原样透传（本项目暂无）。
+
+    线程安全前提：mem/session/wiki/skills 连接均经 db.init_databases 以
+    check_same_thread=False 创建（sgme/data/db.py），跨线程共享是既有事实
+    （HTTP 通道 threadpool 同样共用）。
+    """
+    if inspect.iscoroutinefunction(fn):
+        return fn
+
+    @functools.wraps(fn)
+    async def _run(*args: Any, **kwargs: Any) -> Any:
+        return await anyio.to_thread.run_sync(
+            lambda: fn(*args, **kwargs), limiter=_get_tool_io_limiter()
+        )
+
+    return _run
+
+
+# 工具线程池限速器：SGME 是单用户本地服务，容量 20 足够（防极端并发打满默认 40 线程）。
+# CapacityLimiter 绑定事件循环（anyio 4.x），须延迟到首次工具调用时在循环内创建。
+_TOOL_IO_LIMITER: anyio.CapacityLimiter | None = None
+
+
+def _get_tool_io_limiter() -> anyio.CapacityLimiter:
+    global _TOOL_IO_LIMITER
+    if _TOOL_IO_LIMITER is None:
+        _TOOL_IO_LIMITER = anyio.CapacityLimiter(20)
+    return _TOOL_IO_LIMITER
 
 # 允许外部注入 app 状态（create_app 时设置）
 _app_state: Dict[str, Any] = {}
@@ -76,38 +122,59 @@ def _require_admin(ctx: "Context | None" = None) -> tuple[bool, str]:
     return False, "需要管理员 Key（SGME_ADMIN_KEY）才能执行写侧操作"
 
 
-class ApiKeyMiddleware(BaseHTTPMiddleware):
-    """MCP streamable-http 传输层鉴权中间件（PR#1，2026-08-11）。
+class ApiKeyMiddleware:
+    """MCP streamable-http 传输层鉴权中间件（PR#1，2026-08-11；T-155 改纯 ASGI）。
 
     与 HTTP 通道 require_agent_key 同规则、同设施（AgentKeyStore.is_agent）：
     - X-API-Key 缺失或无效 → 403 ERR_FORBIDDEN
     - env agent key / admin key / 注册 agt_* key → 放行
-    - 校验通过后把 key 存入 request.state.api_key（工具内反查溯源用，PR#2）
+    - 校验通过后把 key 写入 scope["state"]["api_key"]（工具内反查溯源用，PR#2；
+      Starlette Request.state 与 ASGI scope["state"] 共享同一 dict——HTTP 与
+      MCP 同进程共享连接已是既有事实，scope state 不引入新的共享面）
 
-    动机：FastMCP 1.28 的 AuthSettings 是 OAuth 模型（需外部授权服务器），
-    不适用 API key 场景；mcp.run() 自托管会忽略 streamable_http_app 上
-    附加的中间件（LibreChat 踩坑实录），故 mount_mcp 改为手动 uvicorn
-    跑 streamable_http_app() + 本中间件。
+    T-155（2026-09-08）：弃用 starlette BaseHTTPMiddleware 基类——它对每个请求
+    起 anyio 任务并经内存流桥接响应，与 SSE 长流（streamable-http 全部响应是
+    EventSourceResponse）组合是社区已知死锁高危形态（任务组收尾互相等待）。
+    纯 ASGI 只在 scope 上写一个键、403 直接经 send 下发，零桥接零死锁面。
     """
     def __init__(self, app, key_store):
-        super().__init__(app)
+        self.app = app
         self._key_store = key_store
 
-    async def dispatch(self, request, call_next):
-        key = request.headers.get("X-API-Key")
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        # 与 BaseHTTPMiddleware 版对齐：逐头取一次 X-API-Key（http.headers 是小写键重复列表）
+        headers = scope.get("headers") or []
+        key = None
+        for h_name, h_value in headers:
+            if h_name == b"x-api-key":
+                key = h_value.decode("latin-1")
+                break
         if not self._key_store.is_agent(key):
-            from fastapi.responses import JSONResponse
-            return JSONResponse(
-                status_code=403,
-                content={"error": {
+            # 鉴权失败：先发响应开始再发 body（ASGI 契约），鉴权拦截不透传任何上游字节
+            body = json.dumps(
+                {"error": {
                     "code": "ERR_FORBIDDEN",
                     "message": "缺失或无效的 X-API-Key：请携带 Agent Key"
                                "（环境变量 SGME_AGENT_KEY 或经 /v1/admin/agents 注册）",
                 }},
-            )
-        # 供工具内 resolve_agent_id 反查（PR#2）
-        request.state.api_key = key
-        return await call_next(request)
+                ensure_ascii=False,
+            ).encode("utf-8")
+            await send({
+                "type": "http.response.start",
+                "status": 403,
+                "headers": [
+                    (b"content-type", b"application/json; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode("latin-1")),
+                ],
+            })
+            await send({"type": "http.response.body", "body": body})
+            return
+        # 供工具内 resolve_agent_id 反查（PR#2）——Request.state 即 scope["state"] 视图
+        scope.setdefault("state", {})["api_key"] = key
+        await self.app(scope, receive, send)
 
 
 def run_mcp_server(mcp, key_store, host: str = "127.0.0.1", port: int = 9913) -> None:
@@ -178,7 +245,7 @@ def _patch_lenient_notifications() -> None:
     logger.info("MCP 通知宽容补丁已生效（未知通知类型静默接受）")
 
 
-# agent_onboarding（ST-23①）的能力清单：与下方 @mcp.tool 一一对应。
+# agent_onboarding（ST-23①）的能力清单：与下方 @tool（包装后注册）一一对应。
 # 测试会断言本清单与 list_tools() 实际工具集一致，防止清单与实现漂移。
 ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "agent_onboarding", "description": "连接即发现：SGME 版本/能力清单/快速上手指引（本工具）"},
@@ -289,6 +356,7 @@ def build_mcp_server():
     # ---------- 记忆核心 ----------
 
     @mcp.tool()
+    @tool
     def append(session_key: str, started_at: str, content: str, source_type: str = "session", agent_id: str | None = None, ctx: Context | None = None) -> str:
         """L0 捕获：写入原始会话（幂等）。content 需 # {ISO时间戳} {role} 格式。
 
@@ -332,6 +400,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def inject(mode: str = "daily", max_tokens: int = 800) -> str:
         """记忆注入：按模式模板查询记忆池，返回注入块（画像视图）。"""
         from sgme.operations.inject import inject as inject_operation
@@ -344,6 +413,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def search(
         query: str,
         limit: int = 5,
@@ -382,6 +452,7 @@ def build_mcp_server():
         return json.dumps(search_mcp_payload(data), ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def memory_get(memory_id: str) -> str:
         """单条记忆详情（内容/维度/TTL + 溯源 + 归档链）。
 
@@ -405,6 +476,7 @@ def build_mcp_server():
         return json.dumps(get_mcp_payload(data), ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def memory_reject(memory_id: str, reason: str | None = None) -> str:
         """标记记忆「不采用」：用户纠错，不删除、可恢复（memory_id + 纠错理由）。
 
@@ -427,6 +499,7 @@ def build_mcp_server():
     # ---------- 管理 ----------
 
     @mcp.tool()
+    @tool
     def refine_trigger(file_id: str | None = None, limit: int = 50, async_mode: bool = True) -> str:
         """触发提炼。async_mode=true 用后台线程立即返回（推荐）；false 同步等待完成。
 
@@ -449,6 +522,7 @@ def build_mcp_server():
         return json.dumps(refine_mcp_payload(data), ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def refine_batch(file_ids: list[str] | None = None, limit: int = 50, async_mode: bool = True) -> str:
         """批量文件提炼：显式文件列表，或不传 file_ids 扫全部未提炼（status=new）。
 
@@ -476,6 +550,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def refine_status() -> str:
         """提炼进度：待提炼/已完成/失败计数 + 提炼水位 + 最近失败。
 
@@ -494,6 +569,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def stats() -> str:
         """统计：记忆数/维度分布/原始文件状态/水位。
 
@@ -518,6 +594,7 @@ def build_mcp_server():
         return json.dumps(mcp_payload(data), ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def health() -> str:
         """健康检查：LLM 可用性/提炼水位/心跳。
 
@@ -542,6 +619,7 @@ def build_mcp_server():
         return json.dumps(mcp_payload(data), ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def wiki_search(query: str, limit: int = 5) -> str:
         """检索 wiki 知识库（wiki_pages 知识页面，FTS5 BM25 + LIKE 兜底）。
 
@@ -563,6 +641,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def wiki_pages(category: str | None = None, limit: int = 20, offset: int = 0) -> str:
         """wiki 页面列表（updated_at 降序；category 可选过滤；不含正文）。
 
@@ -583,6 +662,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def wiki_page(page_id: str) -> str:
         """wiki 页面详情（标题/正文全文/分类/标签/来源/更新时间）。"""
         import json
@@ -597,6 +677,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def wiki_page_add(
         title: str,
         content: str,
@@ -631,6 +712,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def wiki_page_update(
         page_id: str,
         content: str,
@@ -663,6 +745,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def wiki_evolve_trigger(
         session_key: str | None = None,
         min_rounds: int = 5,
@@ -690,6 +773,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def config_get(section: str | None = None) -> str:
         """读取 SGME 运行时配置（section 可选：l1/l2/refine/search/backup）。
 
@@ -712,6 +796,7 @@ def build_mcp_server():
         return json.dumps(config_get_mcp_payload(data), ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def config_update(section: str, values: dict) -> str:
         """更新 SGME 配置段（热生效 + 落盘 sgme.yaml）。SCSM 经此接口远程设置。
 
@@ -736,6 +821,7 @@ def build_mcp_server():
     # ---------- 创意 / 待办 / 项目（2026-08-13 用户定：用户主动驱动，agent 执行） ----------
 
     @mcp.tool()
+    @tool
     def idea_add(content: str, priority: int | None = None, source_ref: str | None = None) -> str:
         """人工添加创意（用户主动提出才记录，提炼 LLM 不再自动打标）。
 
@@ -754,6 +840,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def demand_create(
         title: str,
         content: str | None = None,
@@ -787,6 +874,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def project_register(
         project_id: str,
         path: str | None = None,
@@ -813,6 +901,7 @@ def build_mcp_server():
     # ---------- 信号消费（ST-27 T-60：agent 成为消费者，谁消费谁标记） ----------
 
     @mcp.tool()
+    @tool
     def signal_pull(signal_type: str | None = None, limit: int = 20) -> str:
         """拉取未消费关怀信号（type=care_* 等，ST-27）。
 
@@ -832,6 +921,7 @@ def build_mcp_server():
         return json.dumps({"signals": items, "total": len(items)}, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def signal_claim(event_id: str, ctx: Context | None = None) -> str:
         """原子认领信号（谁消费谁标记，ST-27）。
 
@@ -861,6 +951,7 @@ def build_mcp_server():
         )
 
     @mcp.tool()
+    @tool
     def signal_ack(
         event_id: str,
         status: str,
@@ -897,6 +988,7 @@ def build_mcp_server():
         )
 
     @mcp.tool()
+    @tool
     def signal_clear(
         signal_type: str | None = None,
         subscriber_id: str | None = None,
@@ -936,6 +1028,7 @@ def build_mcp_server():
     # ---------- 角色模板（ST-29：agent 发现并调用角色，换皮不换芯） ----------
 
     @mcp.tool()
+    @tool
     def role_list() -> str:
         """列出可用角色模板（ST-29）：管家/伴侣/朋友/导师，含人设摘要。
 
@@ -956,6 +1049,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def role_assemble(role_id: str, inject_mode: str | None = None) -> str:
         """装配角色沟通提示词（ST-29）：角色卡 system_prompt + care_policy + 画像。
 
@@ -986,6 +1080,7 @@ def build_mcp_server():
         }, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def role_active_get() -> str:
         """读取当前沟通角色（ST-29）；未设置返回 role_id=null。"""
         import json
@@ -996,6 +1091,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def role_active_set(role_id: str) -> str:
         """设置当前沟通角色（ST-29，换皮不换芯：只换角色，记忆池不动）。
 
@@ -1018,6 +1114,7 @@ def build_mcp_server():
         return not section.get("enabled", True)
 
     @mcp.tool()
+    @tool
     def skill_search(query: str, limit: int = 5) -> str:
         """技能检索（ST-36 M2）：BM25+向量融合 → [{name,score,source}]，先搜后取。"""
         import json
@@ -1040,6 +1137,7 @@ def build_mcp_server():
         return json.dumps(hits, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def skill_digest(name: str) -> str:
         """技能摘要 L1（ST-36 M2）：frontmatter+骨架+uses 清单——审核媒介，先看再取全文。"""
         import json
@@ -1055,6 +1153,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def skill_get(name: str, section: str | None = None) -> str:
         """技能全文 L2（ST-36 M2）：显式注入正文；section 给定时只回该节（省 token）。"""
         import json
@@ -1070,6 +1169,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def skill_materialize(name: str, dest_dir: str) -> str:
         """技能物化 L3（ST-36 M2）：字节保真落盘 dest_dir/<name>/SKILL.md，返回 path+sha256。
 
@@ -1093,6 +1193,7 @@ def build_mcp_server():
     # ---------- 技能：L0 列表 / 冷启动 / 写侧管理（ST-36，补全 MCP 缺口） ----------
 
     @mcp.tool()
+    @tool
     def skill_list(offset: int = 0, limit: int | None = None) -> str:
         """技能 L0 索引列表（ST-36）：name/description/category/tags，支持分页浏览全量。"""
         import json
@@ -1107,6 +1208,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def skill_coldstart() -> str:
         """技能冷启动包（ST-36 M5）：索引全量+热集全文+SGME操作手册，新 agent 一次拉取即刻可用。"""
         import json
@@ -1121,6 +1223,7 @@ def build_mcp_server():
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
+    @tool
     def skill_put(name: str, content: str, ctx: Context | None = None) -> str:
         """写入/覆盖技能（ST-36 M3 写侧）：content 为 SKILL.md 全文（自动解析 frontmatter）。
 
@@ -1162,6 +1265,7 @@ def build_mcp_server():
         )
 
     @mcp.tool()
+    @tool
     def skill_delete(name: str, hard: bool = False, force: bool = False, ctx: Context | None = None) -> str:
         """删除技能（ST-36 M3 写侧）：默认软删（deprecated 标记）；hard=True 物理删；有入向 uses 引用需 force=True。需管理员 Key（请求级校验）。"""
         import json
@@ -1194,6 +1298,7 @@ def build_mcp_server():
         )
 
     @mcp.tool()
+    @tool
     def skill_rename(name: str, new_name: str, ctx: Context | None = None) -> str:
         """改名（ST-36 M3 写侧，墓碑制）：写新名副本 + 旧位置留 superseded_by 墓碑 + 登记。需管理员 Key（请求级校验）。"""
         import json
@@ -1225,13 +1330,14 @@ def build_mcp_server():
     # ---------- 连接即发现（ST-23①） ----------
 
     @mcp.tool()
+    @tool
     def agent_onboarding() -> str:
         """连接即发现（self-serve）：SGME 版本、能力清单（全部工具）、快速上手指引。
 
         ST-23①：agent 连接后先调本工具即可完成接入——无需人工配置即可
         知道「我是谁 / 能干什么 / 怎么开始」。版本取 ``sgme.__version__``
         （新工具无历史契约，版本保持最新即可）；能力清单为 ONBOARDING_TOOLS
-        （与 @mcp.tool 一一对应，测试断言防漂移）；指引覆盖
+        （与 @tool 一一对应，测试断言防漂移）；指引覆盖
         注册（append 即接入）/ 提炼（refine_trigger/refine_batch/refine_status）/
         回忆（search/inject）三条主线。
         """
