@@ -213,12 +213,14 @@ def run_batch_llm(
             return [], [], [f"LLM 调用失败: {e}"], tokens
         tokens += int((usage or {}).get("total_tokens") or 0)
         ok, dropped, errors = parse_batch_response(text, expected_ids)
-        if not errors:
+        # T-148 门禁实测（2026-09-08）：合法 JSON 但全部空 facts / 未命中任何 id 的
+        # 「批量偷懒」响应也必须重试——50 条门禁实测 3/50 样本中招（单条法均有产出）
+        if not errors and any(item.get("facts") for item in ok):
             return ok, dropped, [], tokens
-        # 解析失败（坏 JSON）：记录错误并重试一次（外层循环带纠错提示？——
-        # 批量接口复用单次调用，不做提示词重拼，仅重试取新输出）
+        if not errors:
+            errors = ["批量响应全部空 facts（疑似偷懒），重试"]
         last_err = errors
-    return [], [], last_err, tokens
+    return ok, dropped, last_err, tokens
 
 
 def _args() -> argparse.Namespace:

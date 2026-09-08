@@ -239,7 +239,7 @@ def test_run_gate_with_stub_and_report(tmp_path):
     def stub(method, batch):
         return gate._stub_results(method, batch)
 
-    per = gate.run_gate(rows, None, None, _FakeStore(), dry=True, stub=stub)
+    per, _single_map, _batch_map = gate.run_gate(rows, None, None, _FakeStore(), dry=True, stub=stub)
     agg = gate.aggregate_f1(per)
     assert agg["f1"] == 1.0
 
