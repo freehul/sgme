@@ -24,6 +24,9 @@ services:
       SGME_PORT: "9910"
       # 时区（日志/日报/备份定时用本地时区）
       TZ: Asia/Shanghai
+    # T-155：SYS_PTRACE 允许容器内 py-spy 抓栈（MCP 9913 僵死取证，正常运行为零开销能力位）
+    cap_add:
+      - SYS_PTRACE
     env_file:
       - docker.env   # 密钥（不入 git）：DEEPSEEK_API_KEY / VOLC_API_KEY / SGME_ADMIN_KEY / SGME_AGENT_KEY
     volumes:
@@ -31,7 +34,10 @@ services:
     healthcheck:
       # 2026-08-29 B123：urlopen 内层 timeout 必须大于 /v1/health 实际延迟（内部
       # 同步探测 LLM 首链，agnes 实测 5.5s）——曾为 3s 必然超时误判 unhealthy
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9910/v1/health', timeout=25).status==200 else 1)"]
+      # T-155：健康判据双探针——9910 health 200 且 9913 MCP 无 key POST /mcp 秒回 403。
+      # 此前只探 9910，MCP 独立线程僵死（TCP 通、应用层不回包）时容器仍 healthy，
+      # 自动重启永不触发（2026-09-07/08 实锤）。403 语义：403=应用层活着，超时=僵死。
+      test: ["CMD", "python", "-c", "import urllib.request,urllib.error,sys\ntry:\n    urllib.request.urlopen('http://127.0.0.1:9910/v1/health', timeout=25)\nexcept Exception:\n    sys.exit(1)\nreq = urllib.request.Request('http://127.0.0.1:9913/mcp', data=b'{}', headers={'Content-Type': 'application/json'})\ntry:\n    urllib.request.urlopen(req, timeout=10)\nexcept urllib.error.HTTPError:\n    sys.exit(0)\nexcept Exception:\n    sys.exit(1)\nsys.exit(0)"]
       interval: 30s
       timeout: 30s
       retries: 3
