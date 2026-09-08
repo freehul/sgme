@@ -3,6 +3,7 @@ name: Sync to Gitee
 on:
   push:
     branches: [main]
+    tags: ["**"] # T-154：tag 推送也要同步 Gitee（releases/latest 依赖 Gitee tag 源）
   workflow_dispatch:
 
 jobs:
