@@ -36,8 +36,10 @@ services:
       # 同步探测 LLM 首链，agnes 实测 5.5s）——曾为 3s 必然超时误判 unhealthy
       # T-155：健康判据双探针——9910 health 200 且 9913 MCP 无 key POST /mcp 秒回 403。
       # 此前只探 9910，MCP 独立线程僵死（TCP 通、应用层不回包）时容器仍 healthy，
-      # 自动重启永不触发（2026-09-07/08 实锤）。403 语义：403=应用层活着，超时=僵死。
-      test: ["CMD", "python", "-c", "import urllib.request,urllib.error,sys\ntry:\n    urllib.request.urlopen('http://127.0.0.1:9910/v1/health', timeout=25)\nexcept Exception:\n    sys.exit(1)\nreq = urllib.request.Request('http://127.0.0.1:9913/mcp', data=b'{}', headers={'Content-Type': 'application/json'})\ntry:\n    urllib.request.urlopen(req, timeout=10)\nexcept urllib.error.HTTPError:\n    sys.exit(0)\nexcept Exception:\n    sys.exit(1)\nsys.exit(0)"]
+      # 自动重启永不触发（2026-09-07/08 实锤）。403=应用层活着；任何异常/超时=非零退出=unhealthy。
+      # ⚠️ 必须保持单行：群晖 compose 执行链会把多行标量折叠成单行致 SyntaxError（2026-09-08 实锤），
+      # 故用 http.client 低层读状态码（无 try/except，异常自然非零退出）。
+      test: ["CMD", "python", "-c", "import http.client,sys;c=http.client.HTTPConnection('127.0.0.1',9910,timeout=25);c.request('GET','/v1/health');r1=c.getresponse().status;c.close();m=http.client.HTTPConnection('127.0.0.1',9913,timeout=10);m.request('POST','/mcp',body='{}',headers={'Content-Type':'application/json'});r2=m.getresponse().status;m.close();sys.exit(0 if r1==200 and r2==403 else 1)"]
       interval: 30s
       timeout: 30s
       retries: 3
