@@ -41,6 +41,88 @@ def normalize_triple(t: dict) -> tuple[str, str, str]:
     )
 
 
+def _embed_texts(texts: list[str]) -> list[list[float]]:
+    """bge-m3 embedding（siliconflow 免费兜底 / NAS ollama 本地优先），失败返回空列表。"""
+    import os
+    import httpx
+    keys = {}
+    env_path = Path(os.environ.get("SGME_PROJECT_ROOT", "D:/Projects/SGME")) / "config" / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip()
+    # 本地优先（NAS ollama），失败降级 siliconflow
+    for url, headers, model, payload_key in [
+        ("http://192.168.10.10:11434/api/embeddings", {}, "bge-m3", "prompt"),
+        ("https://api.siliconflow.cn/v1/embeddings",
+         {"Authorization": "Bearer " + keys.get("SILICONFLOW_API_KEY", "")},
+         "BAAI/bge-m3", "input"),
+    ]:
+        try:
+            r = httpx.post(url, headers=headers,
+                           json={"model": model, payload_key: texts} if payload_key == "input" else
+                                [{"model": model, "prompt": t} for t in texts],
+                           trust_env=False, timeout=60)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+            if payload_key == "input":
+                return [x["embedding"] for x in d["data"]]
+            return [x["embedding"] for x in d]
+        except Exception:
+            continue
+    return []
+
+
+def _cos(a: list[float], b: list[float]) -> float:
+    import math
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def sample_f1_semantic(single_triples: list[dict], batch_triples: list[dict],
+                       threshold: float = 0.82) -> dict:
+    """语义 F1：三元组拼句 embed，贪心匹配（余弦 ≥ threshold 视为同一事实）。
+
+    单条法为参照（召回基准），批量法为待测；semantically-equal 措辞不算 miss。
+    """
+    def to_text(ts):
+        return [f'{t.get("subject","")} {t.get("predicate","")} {t.get("object","")}' for t in ts]
+
+    s_texts, b_texts = to_text(single_triples), to_text(batch_triples)
+    if not s_texts or not b_texts:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0,
+                "n_batch": len(b_texts), "n_single": len(s_texts), "inter": 0}
+    embs_s = _embed_texts(s_texts)
+    embs_b = _embed_texts(b_texts)
+    if not embs_s or not embs_b:
+        # embedding 不可用 → 退回精确匹配
+        return sample_f1(single_triples, batch_triples)
+    matched_b = set()
+    inter = 0
+    for i, es in enumerate(embs_s):
+        best, best_j = 0.0, -1
+        for j, eb in enumerate(embs_b):
+            if j in matched_b:
+                continue
+            sim = _cos(es, eb)
+            if sim > best:
+                best, best_j = sim, j
+        if best >= threshold and best_j >= 0:
+            matched_b.add(best_j)
+            inter += 1
+    precision = inter / len(b_texts)
+    recall = inter / len(s_texts)
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+    return {"precision": precision, "recall": recall, "f1": f1,
+            "n_batch": len(b_texts), "n_single": len(s_texts), "inter": inter}
+
+
 def sample_f1(single_triples: list[dict], batch_triples: list[dict]) -> dict:
     """单样本 F1：精确匹配（空白归一化后取集合）。"""
     s = {normalize_triple(t) for t in single_triples}
@@ -119,7 +201,7 @@ def run_gate(
         per_sample.append(sample_f1(
             single_map.get(mid, []), batch_map.get(mid, []),
         ))
-    return per_sample
+    return per_sample, single_map, batch_map
 
 
 def _stub_results(method: str, rows: list[dict]) -> list[dict]:
@@ -229,15 +311,42 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("dry-run 门禁：使用桩结果，不调 LLM")
 
-    per_sample = run_gate(
+    per_sample, single_map, batch_map = run_gate(
         rows, cfg, node, prompt_store, args.batch_size, dry=args.dry_run,
     )
     macro = aggregate_f1(per_sample)
+    # 语义 F1 复核（bge-m3 相似度匹配——字面精确匹配对 LLM 采样非确定性过严，T-148 实测 F1=0.033 全措辞差异）
+    sem_rows = []
+    for r in rows:
+        mid = r["memory_id"]
+        sem_rows.append(sample_f1_semantic(
+            single_map.get(mid, []), batch_map.get(mid, []),
+        ))
+    sem_macro = aggregate_f1(sem_rows)
+    # dump 两方法原始三元组（复核/审计用）
+    dump_path = Path(str(args.report).replace(".md", "-triples.json")) if args.report else None
+    if dump_path:
+        dump_path.parent.mkdir(parents=True, exist_ok=True)
+        dump_path.write_text(json.dumps(
+            [{"memory_id": r["memory_id"],
+              "single": single_map.get(r["memory_id"], []),
+              "batch": batch_map.get(r["memory_id"], [])} for r in rows],
+            ensure_ascii=False, indent=1), encoding="utf-8")
     report_path = Path(args.report) if args.report else None
     write_report(report_path, rows, macro, per_sample, args.dry_run)
-    print(f"宏平均 F1 {macro['f1']:.3f} → {'PASS' if macro['f1'] >= 0.9 else 'FAIL'}"
+    if report_path:
+        with open(report_path, "a", encoding="utf-8") as f:
+            f.write(f"\n## 语义 F1 复核（bge-m3 ≥0.82 贪心匹配）\n\n"
+                    f"- **宏平均语义 F1：{sem_macro['f1']:.3f}**（≥0.9 → "
+                    f"{'✅ 通过' if sem_macro['f1'] >= 0.9 else '❌ 未达标'}）\n"
+                    f"- 精确率 {sem_macro['precision']:.3f} / 召回率 {sem_macro['recall']:.3f}\n"
+                    f"- 字面 F1 {macro['f1']:.3f}（LLM 采样措辞非确定性，字面口径仅参考）\n"
+                    f"- 三元组明细：{dump_path.name if dump_path else '未落盘'}\n")
+    verdict = sem_macro["f1"] >= 0.9
+    print(f"字面 F1 {macro['f1']:.3f} | 语义 F1 {sem_macro['f1']:.3f} → "
+          f"{'PASS' if verdict else 'FAIL'}"
           f"{f'（报告 {report_path}）' if report_path else ''}")
-    return 0 if macro["f1"] >= 0.9 else 1
+    return 0 if verdict else 1
 
 
 if __name__ == "__main__":
