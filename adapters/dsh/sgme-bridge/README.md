@@ -12,7 +12,7 @@
 | **自动捕获** | session-sync 监听会话事件，每轮对话自动 `append` 落盘（零 LLM 成本） |
 | **记忆检索** | `memory_search` 检索 L1.5 标签化记忆池（带溯源） |
 | **知识库检索** | `wiki_search` 检索 L2 场景知识库（比记忆更精炼） |
-| **技能按需注入** | `skill_search` / `skill_digest` / `skill_get` / `skill_list` / `skill_coldstart` 五工具（v0.4.0）——对齐 SGME 1.1.0 范式：403 个技能不预载，按需检索 → 拉全文注入 |
+| **技能按需注入** | `skill_search` / `skill_digest` / `skill_get` / `skill_list` / `skill_coldstart` 五工具（v0.4.0）——对齐 SGME 1.1.0 范式：技能不预载，按需检索 → 拉全文注入 |
 | **主动关怀** | `signal_pull` / `signal_claim` / `signal_ack` 三工具，消费 SGME 关怀信号——信号消费 = 主动关怀，谁消费谁标记 |
 | **DSH 规则注入** | 读取 `~/.dsh/dsg-rules/rules.md` 注册为 `dsg:rules` system section（order -70）——身份/铁律/SGME手册/偏好/环境进稳定层，前缀缓存全命中（v0.2，2026-08-16） |
 
@@ -112,7 +112,7 @@ syncOnTurnEnd: true
 - `wiki_page_add(title, content, category, tags)` — 新建知识库页面（幂等 upsert）。
 
 **技能层（5，v0.4.0 新增，对齐 SGME 1.1.0 范式）**
-- `skill_search(query, limit)` — 检索 SGME 技能库（403 个技能），只返回技能名与触发描述；
+- `skill_search(query, limit)` — 检索 SGME 技能库，只返回技能名与触发描述；
 - `skill_digest(name)` — 技能摘要：字段 + 正文骨架 + uses 依赖，执行前审核用；
 - `skill_get(name, section)` — 拉技能全文注入上下文（section 可只取一节省 token）；
 - `skill_list(limit, offset)` — 分页浏览技能库索引；
