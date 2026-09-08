@@ -135,6 +135,112 @@ class TestDaoBasics:
 # ---------- FTS 检索（停用词 + name 加权 + category 过滤） ----------
 
 
+class TestFtsNameSegColumn:
+    """B156 缺陷回归：skills_fts 要求主表 name_seg 分词列，但 T-112 建表漏建。
+
+    生产实证（2026-09-08，NAS 容器 v1.1.8）：FTS5 外部内容表定义含 name_seg
+    列而 skills 主表没有 → ①技能 UPDATE/DELETE 触发器报 no such column
+    （更新即炸）②任何全表扫描 FTS（count/rebuild）同炸 ③触发器把未分词的
+    new.name 塞进 name_seg 位，BM25 的 10× 名字加权形同虚设。
+    修复：迁移补 name_seg 列（写入时算分词）+ 触发器改用真实分词列。
+    """
+
+    def test_skills_table_has_name_seg(self, conn):
+        """主表必须有 name_seg 列（FTS 外部内容表与触发器依赖它）。"""
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(skills)").fetchall()}
+        assert "name_seg" in cols, f"skills 表缺 name_seg 列，实有: {sorted(cols)}"
+
+    def test_upsert_populates_name_seg_tokenized(self, conn):
+        """name_seg 必须是 jieba 分词串（空格分隔），不是技能原名。"""
+        rec = _rec("docker-buildx-ops", "export DOCKER_CONFIG 隔离 buildx 权限",
+                   description="buildx 权限拒绝修复")
+        skills_dao.upsert_skill(conn, rec)
+        conn.commit()
+        row = conn.execute(
+            "SELECT name_seg FROM skills WHERE name='docker-buildx-ops'"
+        ).fetchone()
+        assert row is not None
+        # 分词口径：jieba 保留英文原词、中文切开、空格分隔
+        assert row["name_seg"] == "docker - buildx - ops" or row["name_seg"].count(" ") >= 1
+        assert row["name_seg"] != "docker-buildx-ops"  # 不是未分词原名
+
+    def test_full_scan_fts_no_name_seg_error(self, conn):
+        """全表扫描 FTS 虚表不再报 no such column（修复前必炸）。"""
+        for rec in (_rec("alpha", "内容甲"), _rec("beta", "内容乙")):
+            skills_dao.upsert_skill(conn, rec)
+        conn.commit()
+        n = conn.execute("SELECT count(*) FROM skills_fts").fetchone()[0]
+        assert n == 2
+
+    def test_update_and_delete_trigger_with_name_seg(self, conn):
+        """技能 UPDATE/DELETE 走触发器同步 FTS 不报错，且 FTS 行数守恒。"""
+        rec = _rec("gamma", "初始内容")
+        skills_dao.upsert_skill(conn, rec)
+        conn.commit()
+        assert conn.execute("SELECT count(*) FROM skills_fts").fetchone()[0] == 1
+
+        # UPDATE（修复前：触发器 skills_au 报 no such column）
+        conn.execute("UPDATE skills SET content='更新内容' WHERE name='gamma'")
+        conn.commit()
+        assert conn.execute("SELECT count(*) FROM skills_fts").fetchone()[0] == 1
+
+        # DELETE（修复前：触发器 skills_ad 同炸）
+        conn.execute("DELETE FROM skills WHERE name='gamma'")
+        conn.commit()
+        assert conn.execute("SELECT count(*) FROM skills_fts").fetchone()[0] == 0
+
+    def test_fts_name_weighted_hits(self, conn):
+        """BM25 名字加权生效：按技能名搜，目标技能排第一（name 10× 走分词列）。"""
+        skills_dao.upsert_skill(conn, _rec("docker-buildx-ops", "构建隔离说明",
+                                           description="buildx 权限修复"))
+        skills_dao.upsert_skill(conn, _rec("unrelated-skill", "docker buildx 顺带提及"))
+        conn.commit()
+        hits = skills_dao.fts_search(conn, "docker-buildx-ops", limit=5)
+        assert hits, "应有命中"
+        assert hits[0]["name"] == "docker-buildx-ops"
+
+    def test_migrate_legacy_db_without_name_seg(self, tmp_path):
+        """旧库迁移回归：模拟生产 skills.db（有数据、无 name_seg 列）→
+        connect_skills 幂等补列 + 回填分词，存量技能可检索。"""
+        import sqlite3 as sq3
+
+        db_path = tmp_path / "skills.db"
+        legacy = sq3.connect(str(db_path))
+        # 按 T-112 缺陷形态手工建旧表（无 name_seg）+ 旧 FTS
+        legacy.executescript(
+            """
+            CREATE TABLE skills (
+              name TEXT PRIMARY KEY, sha256 TEXT NOT NULL,
+              description TEXT NOT NULL DEFAULT '', description_seg TEXT,
+              category TEXT, tags TEXT, version TEXT, pattern TEXT,
+              source TEXT, origin_path TEXT, content TEXT NOT NULL,
+              content_seg TEXT, content_len INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT, synced_at TEXT);
+            CREATE VIRTUAL TABLE skills_fts USING fts5(
+              name_seg, description_seg, content_seg, name UNINDEXED,
+              content='skills', content_rowid='rowid');
+            INSERT INTO skills (name, sha256, description, content, content_len)
+              VALUES ('legacy-skill', 'sha-x', '旧技能描述', '旧技能正文内容', 6);
+            """
+        )
+        legacy.commit()
+        legacy.close()
+
+        # 迁移 + 回填后可检索
+        c2 = db_mod.connect_skills(tmp_path)
+        try:
+            cols = {r["name"] for r in c2.execute("PRAGMA table_info(skills)").fetchall()}
+            assert "name_seg" in cols
+            row = c2.execute(
+                "SELECT name_seg FROM skills WHERE name='legacy-skill'"
+            ).fetchone()
+            assert row["name_seg"], "旧数据 name_seg 应已回填分词"
+            hits = skills_dao.fts_search(c2, "旧技能", limit=5)
+            assert hits and hits[0]["name"] == "legacy-skill"
+        finally:
+            c2.close()
+
+
 class TestFtsSearch:
     def test_stopwords_filtered(self):
         # 虚词与口语填料必须被剔除，实词保留

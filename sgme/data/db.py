@@ -492,10 +492,17 @@ def connect_skills(data_dir: str | Path | None = None) -> sqlite3.Connection:
     d = Path(data_dir) if data_dir else config.DATA_DIR
     conn = _connect(d / "skills.db")
     _ensure_schema(conn, SKILLS_DDL, SCHEMA_VERSION, "skills_v1")
+    # 老库迁移（B156）：先补 name_seg 列并回填，再建 FTS/触发器
+    # （外部内容表与触发器都引用 name_seg，顺序不能反）
+    migrated = _migrate_skills_name_seg(conn)
     # FTS5 虚表 + 同步触发器（幂等；与 wiki 的 init_wiki_fts 同职责，
     # 但技能库体量小且无需历史重建，直接在连接时就绪，避免调用方漏调）
     conn.executescript(SKILLS_FTS_DDL)
     conn.executescript(SKILLS_FTS_TRIGGERS)
+    if migrated:
+        # 刚补列/回填过 → 旧 FTS 索引可能被坏触发器污染过（name_seg 位塞的是
+        # 未分词原名），全量重建一次外部内容索引（407 条毫秒级，非热路径）
+        conn.execute("INSERT INTO skills_fts(skills_fts) VALUES('rebuild')")
     conn.commit()
     return conn
 
@@ -518,6 +525,7 @@ SKILLS_DDL = """
 CREATE TABLE IF NOT EXISTS skills (
   name TEXT PRIMARY KEY,
   sha256 TEXT NOT NULL,
+  name_seg TEXT,
   description TEXT NOT NULL DEFAULT '',
   description_seg TEXT,
   category TEXT,
@@ -566,21 +574,81 @@ CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(
 """
 
 SKILLS_FTS_TRIGGERS = """
-CREATE TRIGGER IF NOT EXISTS skills_ai AFTER INSERT ON skills BEGIN
+DROP TRIGGER IF EXISTS skills_ai;
+DROP TRIGGER IF EXISTS skills_ad;
+DROP TRIGGER IF EXISTS skills_au;
+CREATE TRIGGER skills_ai AFTER INSERT ON skills BEGIN
     INSERT INTO skills_fts(rowid, name_seg, description_seg, content_seg, name)
-    VALUES (new.rowid, new.name, new.description_seg, new.content_seg, new.name);
+    VALUES (new.rowid, new.name_seg, new.description_seg, new.content_seg, new.name);
 END;
 CREATE TRIGGER IF NOT EXISTS skills_ad AFTER DELETE ON skills BEGIN
     INSERT INTO skills_fts(skills_fts, rowid, name_seg, description_seg, content_seg, name)
-    VALUES ('delete', old.rowid, old.name, old.description_seg, old.content_seg, old.name);
+    VALUES ('delete', old.rowid, old.name_seg, old.description_seg, old.content_seg, old.name);
 END;
 CREATE TRIGGER IF NOT EXISTS skills_au AFTER UPDATE ON skills BEGIN
     INSERT INTO skills_fts(skills_fts, rowid, name_seg, description_seg, content_seg, name)
-    VALUES ('delete', old.rowid, old.name, old.description_seg, old.content_seg, old.name);
+    VALUES ('delete', old.rowid, old.name_seg, old.description_seg, old.content_seg, old.name);
     INSERT INTO skills_fts(rowid, name_seg, description_seg, content_seg, name)
-    VALUES (new.rowid, new.name, new.description_seg, new.content_seg, new.name);
+    VALUES (new.rowid, new.name_seg, new.description_seg, new.content_seg, new.name);
 END;
 """
+
+
+def _migrate_skills_name_seg(conn: sqlite3.Connection) -> bool:
+    """老库迁移（B156，2026-09-08）：skills 表补 name_seg 分词列并回填存量。
+
+    Returns:
+        True = 本次发生了补列/回填（调用方据此决定是否重建 FTS 索引）；
+        False = 无需迁移（新库或已迁移过）。
+
+    背景（生产实证 NAS v1.1.8）：T-112 建表时漏建 name_seg 列，而 skills_fts
+    外部内容表与三个同步触发器都引用它 → 技能 UPDATE/DELETE 触发器与任何
+    FTS 全表扫描报 ``no such column: T.name_seg``；触发器还将未分词的
+    ``new.name`` 塞进 name_seg 位，BM25 的 10× 名字加权形同虚设。
+
+    迁移职责（照 _migrate_wiki_page_columns 先例）：
+    1. ALTER 补 name_seg 列（幂等：已有列则跳过）；
+    2. 回填：name_seg = segment(name)、缺分词的 description_seg/content_seg
+       一并按当前分词口径补齐（只处理 NULL/空，不重算已有值）；
+    3. 不在此处重建 FTS——connect_skills 后续 executescript 会重建触发器，
+       上层启动预热 sync_index 走增量路径补 FTS 行（删旧写新由触发器完成）。
+
+    分词在 data 层内联导入 sgme.segment（模块唯一职责是分词，无反向依赖，
+    不违反依赖方向：data → segment 与 data → config 同级）。
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skills'"
+    ).fetchone()
+    if not has_table:
+        return False
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(skills)").fetchall()]
+    added = False
+    if "name_seg" not in cols:
+        conn.execute("ALTER TABLE skills ADD COLUMN name_seg TEXT")
+        cols.append("name_seg")
+        added = True
+
+    # 回填缺分词的存量行（幂等：只补 NULL/空，已分词的不动）
+    from sgme.segment import segment
+
+    rows = conn.execute(
+        "SELECT rowid, name, description, content, name_seg, description_seg, "
+        "content_seg FROM skills WHERE name_seg IS NULL OR name_seg=''"
+    ).fetchall()
+    for r in rows:
+        name_seg = segment(r["name"])
+        desc_seg = r["description_seg"] or (
+            segment(r["description"]) if r["description"] else ""
+        )
+        content_seg = r["content_seg"] or (
+            segment(r["content"]) if r["content"] else ""
+        )
+        conn.execute(
+            "UPDATE skills SET name_seg=?, description_seg=?, content_seg=? WHERE rowid=?",
+            (name_seg, desc_seg, content_seg, r["rowid"]),
+        )
+    conn.commit()
+    return added or bool(rows)
 
 
 def _migrate_wiki_page_columns(conn: sqlite3.Connection) -> None:
