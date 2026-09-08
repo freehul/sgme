@@ -91,12 +91,13 @@ def upsert_skill(conn: sqlite3.Connection, rec: dict[str, Any]) -> None:
     now = _now()
     conn.execute(
         """
-        INSERT INTO skills (name, sha256, description, description_seg, category, tags,
+        INSERT INTO skills (name, sha256, name_seg, description, description_seg, category, tags,
                             version, pattern, source, origin_path, content, content_seg,
                             content_len, updated_at, synced_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(name) DO UPDATE SET
-          sha256=excluded.sha256, description=excluded.description,
+          sha256=excluded.sha256, name_seg=excluded.name_seg,
+          description=excluded.description,
           description_seg=excluded.description_seg, category=excluded.category,
           tags=excluded.tags, version=excluded.version, pattern=excluded.pattern,
           source=excluded.source, origin_path=excluded.origin_path,
@@ -107,6 +108,7 @@ def upsert_skill(conn: sqlite3.Connection, rec: dict[str, Any]) -> None:
         (
             rec["name"],
             rec.get("sha256") or "",
+            segment(rec["name"]),
             rec.get("description") or "",
             segment(rec.get("description") or ""),
             rec.get("category") or None,
