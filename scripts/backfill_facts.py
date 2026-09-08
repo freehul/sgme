@@ -78,7 +78,40 @@ def parse_batch_response(
     try:
         data = json.loads(candidate)
     except json.JSONDecodeError as e:
-        return [], [], [f"JSON 解析失败: {e}"]
+        # T-148 门禁实测：GLM-4-9B 会把 Windows 路径（D:\AI\caches）原样写入 JSON，
+        # 产生 \A \c 等非法转义 → 字符级修复：非法转义的反斜杠补成双反斜杠后重试一次
+        _LEGAL = {'"', "/", "b", "f", "n", "r", "t"}
+        fixed_chars: list[str] = []
+        i = 0
+        while i < len(candidate):
+            ch = candidate[i]
+            if ch == "\\" and i + 1 < len(candidate):
+                nxt = candidate[i + 1]
+                # \uXXXX（4 位 hex）是合法转义；单独的 \u / \U 不是
+                is_unicode_esc = nxt in ("u", "U") and i + 5 < len(candidate) \
+                    and all(c in "0123456789abcdefABCDEF" for c in candidate[i + 2:i + 6])
+                if nxt in _LEGAL or is_unicode_esc:
+                    fixed_chars.append(ch)
+                    fixed_chars.append(nxt)
+                    i += 2
+                    continue
+                fixed_chars.append(ch)
+                fixed_chars.append("\\")  # 反斜杠补成双写（非法转义）
+                fixed_chars.append(nxt)
+                i += 2
+                continue
+            fixed_chars.append(ch)
+            i += 1
+        fixed = "".join(fixed_chars)
+        try:
+            data = json.loads(fixed)
+        except json.JSONDecodeError:
+            # 终极兜底：json-repair（专修 LLM 坏 JSON：缺引号/缺逗号/非法转义等）
+            try:
+                import json_repair
+                data = json_repair.loads(fixed)
+            except Exception:
+                return [], [], [f"JSON 解析失败: {e}"]
     if not isinstance(data, list):
         return [], [], ["顶层不是 JSON 数组"]
 
