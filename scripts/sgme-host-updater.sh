@@ -153,6 +153,40 @@ case "$UPSTREAM_URL" in
   *)        log "⚠️ remote get-url 返回空/异常，兜底使用 $BARE_REPO_FALLBACK"
             SAFE_ARGS+=(-c "safe.directory=$BARE_REPO_FALLBACK") ;;
 esac
+
+# 0.5 裸仓同步（T-154 根治，B157）：Gitee → 裸仓自身 main + tags。
+# 背景（B154 实锤）：src 的 origin 是 NAS 本地裸仓，updater 只做 `git pull 裸仓`，
+# 而裸仓自身 refs/heads/main 只在人工 fetch 时才推进——Gitee 有新提交时
+# pull 到的是旧代码 → build 出旧版本 → 版本一致性校验失败 → 回滚，反复空转。
+# 修法：每次执行更新前，先把裸仓从 Gitee 快进到最新（merge-base FF 校验，
+# 非快进只告警不硬写，人工介入）；tags 一并 fetch。裸仓缺 gitee remote 时
+# 回退 github remote，两者都缺则跳过（维持人工流程，不阻断更新）。
+BARE="${UPSTREAM_URL#file://}"
+case "$UPSTREAM_URL" in
+  /*|file://*) : ;;
+  *) BARE="$BARE_REPO_FALLBACK" ;;
+esac
+BARE_GIT() { git -C "$BARE" -c "safe.directory=$BARE" "$@"; }
+if BARE_GIT remote get-url gitee >/dev/null 2>&1; then
+  BARE_REMOTE=gitee
+elif BARE_GIT remote get-url github >/dev/null 2>&1; then
+  BARE_REMOTE=github
+else
+  BARE_REMOTE=""
+  log "⚠️ 裸仓 $BARE 无 gitee/github remote，跳过裸仓同步（维持人工流程）"
+fi
+if [ -n "$BARE_REMOTE" ]; then
+  log "裸仓同步：fetch $BARE_REMOTE ($BARE)"
+  if BARE_GIT fetch "$BARE_REMOTE" main >> "$LOG" 2>&1 \
+     && BARE_GIT merge-base --is-ancestor refs/heads/main FETCH_HEAD; then
+    BARE_GIT update-ref refs/heads/main FETCH_HEAD
+    BARE_GIT fetch "$BARE_REMOTE" --tags >> "$LOG" 2>&1
+    log "裸仓 main 已快进至 $(BARE_GIT rev-parse --short refs/heads/main)（remote=$BARE_REMOTE）"
+  else
+    log "⚠️ 裸仓同步未快进（fetch 失败或非 FF），refs/heads/main 保持原值，后续 git pull 按裸仓现状执行"
+  fi
+fi
+
 log "git pull ($SRC) upstream=$UPSTREAM_URL safe=[${SAFE_ARGS[*]}]"
 PULL_OK=0
 for attempt in 1 2; do
