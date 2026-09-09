@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from sgme.data import facts_dao
 from sgme.data.search import rrf as rrf_mod
 from sgme.data.search import vector as vector_mod
 from sgme.data.search import stoplist as stoplist_mod
@@ -425,7 +426,7 @@ def _graph_candidates(
         ids = [mid for mid, _ in nbrs]
         ph = ",".join("?" * len(ids))
         rows = mem_conn.execute(
-            f"SELECT memory_id, content, priority, updated_at FROM memories "
+            f"SELECT memory_id, content, priority, updated_at, occurred_at, facts_json FROM memories "
             f"WHERE memory_id IN ({ph}) AND status='active'",
             ids,
         ).fetchall()
@@ -440,6 +441,8 @@ def _graph_candidates(
                 "content": r["content"],
                 "priority": r["priority"],
                 "updated_at": r["updated_at"],
+                "occurred_at": r["occurred_at"],
+                "facts_json": r["facts_json"],
                 "score": w,
             })
         return out
@@ -537,12 +540,16 @@ def search_memories(
         deduped.append(r)
     results = deduped[:limit]
 
-    # 附加 trace + dimensions
+    # 附加 trace + dimensions + T-149① 时间锚点与 facts 透传
     for i, r in enumerate(results):
         r["rank"] = i + 1
         r["source"] = "memory"
         r["routes"] = routes
         r["dimensions"] = _get_memory_tags(mem_conn, r["memory_id"])
+        # T-149①：occurred_at（时序推理锚点）+ facts（T-148 三元组，解析后透传）
+        # facts_json 由各 SELECT 路带出；归一化为 facts 列表，原始键移除避免协议泄漏
+        r.setdefault("occurred_at", None)
+        r["facts"] = facts_dao.parse_facts_json(r.pop("facts_json", None))
         if include_sources:
             r["trace"] = _build_trace(mem_conn, session_conn, r["memory_id"])
     return results
@@ -879,6 +886,7 @@ def _clean_en_term(term: str) -> str:
 def _search_no_dims(mem_conn: sqlite3.Connection, fts_query: str, limit: int) -> list[dict]:
     sql = """
         SELECT m.memory_id, m.content, m.priority, m.updated_at,
+               m.occurred_at, m.facts_json,
                bm25(memories_fts) AS score
         FROM memories_fts f
         JOIN memories m ON m.rowid = f.rowid
@@ -902,6 +910,7 @@ def _search_with_dims(
     placeholders = ",".join("?" * len(dimensions))
     base = f"""
         SELECT m.memory_id, m.content, m.priority, m.updated_at,
+               m.occurred_at, m.facts_json,
                bm25(memories_fts) AS score
         FROM memories_fts f
         JOIN memories m ON m.rowid = f.rowid
@@ -951,7 +960,7 @@ def _search_like_fallback(
 
     like_clauses = " OR ".join(["content LIKE ?"] * len(terms))
     sql = (
-        "SELECT memory_id, content, priority, updated_at, 0.0 AS score "
+        "SELECT memory_id, content, priority, updated_at, occurred_at, facts_json, 0.0 AS score "
         f"FROM memories WHERE {like_clauses} AND status != 'rejected'"
     )
     params: list[Any] = [f"%{t}%" for t in terms]

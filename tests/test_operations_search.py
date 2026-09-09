@@ -48,6 +48,7 @@ MCP_TOP_KEYS = ["results"]
 MEMORY_RESULT_KEYS = [
     "rank", "score", "source", "memory_id", "content", "dimensions",
     "priority", "updated_at", "trace", "routes",
+    "occurred_at", "facts",  # T-149①：时间锚点 + facts 三元组透传（答案聚合/时序用）
 ]
 SCENE_RESULT_KEYS = [
     "rank", "source", "scene_id", "title", "content", "heat",
