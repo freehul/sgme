@@ -31,6 +31,7 @@ from sgme.operations.memory import reject_memory as reject_memory_operation
 from sgme.operations.memory import unreject_memory as unreject_memory_operation
 from sgme.operations.append import append_l0 as append_l0_operation
 from sgme.operations.inject import inject as inject_operation
+from sgme.operations.answer import answer as answer_operation
 from sgme.operations.search import http_payload as search_http_payload
 from sgme.operations.search import search as search_operation
 from sgme.operations.session import get_raw_file_content as get_raw_file_content_operation
@@ -69,6 +70,15 @@ class SearchRequest(BaseModel):
     match: str = "any"
     limit: int = 10
     include_sources: bool = True
+
+
+
+class AnswerRequest(BaseModel):
+    """T-149：聚合答案请求（question_type 缺省自动分派）。"""
+
+    query: str
+    question_type: str | None = None  # temporal / aggregate / generic / None=自动
+    limit: int = 8
 
 
 # ---------- POST /v1/append ----------
@@ -177,6 +187,33 @@ def search_memories(
         agent_id=store.resolve_agent_id(auth_key),
     )
     return search_http_payload(data)
+
+
+# ---------- POST /v1/answer（T-149） ----------
+
+@router.post("/v1/answer")
+def answer_question(
+    payload: AnswerRequest,
+    request: Request,
+    _: str = Depends(require_agent_key),
+):
+    """聚合答案：检索 + 题型分派 + LLM 生成（跨会话聚合/时序推理）。
+
+    v0.7 分层：业务在 ``sgme.operations.answer``，本端点只做协议翻译。
+    LLM 全链不可用时 operations 返回 ERR_LLM_UNAVAILABLE（503 语义）。
+    """
+    cfg = request.app.state.cfg
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    session_conn: sqlite3.Connection = request.app.state.session_conn
+    return run_operation(
+        answer_operation,
+        mem_conn,
+        session_conn,
+        cfg,
+        query=payload.query,
+        question_type=payload.question_type,
+        limit=min(payload.limit, 20),
+    )
 
 
 # ---------- GET /v1/memory/{memory_id} ----------

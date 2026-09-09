@@ -55,6 +55,7 @@ ERROR_CODES = {
     "ERR_RATE_LIMITED": 429,
     "ERR_INTERNAL": 500,
     "ERR_LLM_UNAVAILABLE": 503,
+    "ERR_DISABLED": 409,  # T-149：模块被配置关闭（answer.enabled=false）
     # ST-36 M3：技能写侧治理错误码
     "ERR_LINT_FAILED": 400,
     "ERR_DUPLICATE_SKILL": 409,

@@ -1,6 +1,8 @@
 l1:
   chunk_size: 5000
   overlap: 1000
+answer:
+  enabled: true   # T-149：聚合答案/时序推理开关（/v1/answer 与 MCP answer 共用）
 l15:
   prescreen:
     enabled: true
