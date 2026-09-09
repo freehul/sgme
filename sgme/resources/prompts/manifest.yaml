@@ -3,6 +3,18 @@ stages:
     active: '@working'
     ab:
       enabled: false
+  answer_aggregate:
+    active: '@working'
+    ab:
+      enabled: false
+  answer_temporal:
+    active: '@working'
+    ab:
+      enabled: false
+  answer_generic:
+    active: '@working'
+    ab:
+      enabled: false
   l1_extraction:
     active: '@working'
     ab:
@@ -63,3 +75,21 @@ versions:
     sha256: d351637248c379d811db5e9be054f6699a2a4415bf87253694dbb4b486ed0291
     created_at: '2026-08-05T00:00:00Z'
     note: 初始快照（与 v0.1 工作副本一致）
+  answer_aggregate:
+  - version: v001
+    file: versions/answer_aggregate/v001.txt
+    sha256: 3e98a70a12d5410c6562c59c3da65726e9aa402f028fbfef8cac902da3247a0d
+    created_at: '2026-09-09T14:44:46Z'
+    note: T-149② 聚合答案与时序推理三模板初始版
+  answer_temporal:
+  - version: v001
+    file: versions/answer_temporal/v001.txt
+    sha256: 7679a4cb8ca037563b7eaa8417c3a08013daed474a688474684145bbb2bda20e
+    created_at: '2026-09-09T14:44:46Z'
+    note: T-149② 聚合答案与时序推理三模板初始版
+  answer_generic:
+  - version: v001
+    file: versions/answer_generic/v001.txt
+    sha256: 6f60e937150d375427922dd9b1a33f6c473d9e781923388ebede668ceb42c9f9
+    created_at: '2026-09-09T14:44:46Z'
+    note: T-149② 聚合答案与时序推理三模板初始版
