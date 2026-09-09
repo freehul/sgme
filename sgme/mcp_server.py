@@ -252,6 +252,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "append", "description": "L0 捕获：写入原始会话（幂等），content 需 # {ISO时间戳} {role} 格式；可选 agent_id 标注来源（溯源）"},
     {"name": "inject", "description": "记忆注入：按模式模板查询记忆池，返回注入块（画像视图）"},
     {"name": "search", "description": "混合检索：BM25 + 向量 + RRF，带溯源（记忆池）"},
+    {"name": "answer", "description": "聚合答案（T-149）：跨会话计数/列举/时序推理——检索候选+facts 证据+LLM 生成，比 search 多一步答案合成"},
     {"name": "wiki_search", "description": "检索 wiki 知识库（wiki_pages 知识文档，FTS5 BM25 + 兜底）"},
     {"name": "wiki_pages", "description": "wiki 页面列表（updated_at 降序；category 可选过滤；不含正文）"},
     {"name": "wiki_page", "description": "wiki 页面详情（标题/正文/分类/来源/更新时间）"},
@@ -450,6 +451,37 @@ def build_mcp_server():
             include_sources=include_sources,
         )
         return json.dumps(search_mcp_payload(data), ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def answer(
+        query: str,
+        question_type: str | None = None,
+        limit: int = 8,
+    ) -> str:
+        """聚合答案（T-149）：检索 → 题型分派（temporal/aggregate/generic）→ LLM 生成。
+
+        question_type: None 自动分派；可显式指定 "temporal"（时序）/ "aggregate"（聚合）/ "generic"。
+        limit: 检索候选条数（默认 8）。
+        返回 answer + evidence（memory_id/occurred_at/facts_used）+ provider。
+        """
+        from sgme.operations.answer import answer as answer_operation
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        session_conn: sqlite3.Connection = _app_state["session_conn"]
+        cfg = _app_state["cfg"]
+        data = _op_json(
+            answer_operation,
+            mem_conn,
+            session_conn,
+            cfg,
+            query=query,
+            question_type=question_type,
+            limit=min(limit, 20),
+        )
+        return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
     @tool
