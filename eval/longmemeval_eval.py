@@ -241,6 +241,22 @@ DEFAULT_OUT = "eval/results/longmemeval"
 FIXED_TS = "2026-01-01T00:00:00Z"
 
 
+def _session_date_iso(date: str | None) -> str:
+    """session 日期 → ISO 时间戳（T-149⑥ 时序锚点）。
+
+    LongMemEval 日期形如 "2023/05/20 (Sat) 12:04" 或 "2023-05-20 (Sat)"；
+    解析失败回退 FIXED_TS（与旧行为一致）。
+    """
+    if not date:
+        return FIXED_TS
+    head = date.split("(")[0].strip()  # 剥星期后缀
+    head = head.replace("/", "-")
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", head)
+    if not m:
+        return FIXED_TS
+    return m.group(1) + "T12:00:00Z"
+
+
 # ── 数据集 ──
 
 def load_dataset(path: str) -> list[dict]:
@@ -361,7 +377,9 @@ def open_question_db(out_dir: Path, q: dict, dims, aliases, *, vector: bool, cfg
             memory_id=sid,
             created_at=FIXED_TS,
             updated_at=FIXED_TS,
-            occurred_at=FIXED_TS,
+            # T-149⑥ 时序锚点修复：occurred_at 用 session 真实日期（原 FIXED_TS 全库同时刻，
+            # 时序推理无从谈起）；created/updated 保持 FIXED_TS 不影响排序语义
+            occurred_at=_session_date_iso(dates[i] if i < len(dates) else None),
         )
         n += 1
     mem_conn.commit()
@@ -422,12 +440,13 @@ def open_question_db_refined(out_dir: Path, q: dict, dims, aliases, *, cfg: dict
         n_sessions += 1
         l0 = render_session_l0(turns, dates[i] if i < len(dates) else None)
         try:
+            _sess_iso = _session_date_iso(dates[i] if i < len(dates) else None)
             info = sgme_pipeline.append_l0(
                 session_key=sid,
-                started_at=FIXED_TS,
+                started_at=_sess_iso,
                 content=l0,
                 source_type="session",
-                ended_at=FIXED_TS,
+                ended_at=_sess_iso,
                 agent_id=None,
                 metadata={"lme_session": True},
                 cfg=cfg,
@@ -601,12 +620,36 @@ def _process_question(q, qi, args, arms, cfgs, dims, aliases, llm_fn, run_id, ou
 
     if args.qa and llm_fn:
         ctx_src = primary_res or last_res or []
-        context = "\n".join(
-            f"[{i + 1}] {r.get('content', '')}" for i, r in enumerate(ctx_src)
-        ) or "(no memories retrieved)"
-        pred = llm_fn(_ANSWER_PROMPT.format(context=context, question=q["question"])).strip()
-        pred_head = pred.splitlines()[0].strip() if pred else ""
         gold = str(q.get("answer", ""))
+        if getattr(args, "qa_mode", "legacy") == "product":
+            # T-149⑥ product 模式：复用 operations.answer 的题型分派/上下文渲染/
+            # 时间线排序（评测台无生产 Server，纯函数 + llm_fn 注入等价复刻）
+            from sgme.operations.answer import (
+                classify_question,
+                render_context,
+                render_timeline,
+                _stage_for,
+            )
+            from sgme.prompts.manager import PromptStore
+
+            qtype_dispatch = classify_question(q["question"])
+            pv = PromptStore().get(_stage_for(qtype_dispatch))
+            if qtype_dispatch == "temporal":
+                prompt = (pv.text
+                          .replace("{{timeline}}", render_timeline(ctx_src))
+                          .replace("{{context}}", render_context(ctx_src))
+                          .replace("{{question}}", q["question"]))
+            else:
+                prompt = (pv.text
+                          .replace("{{context}}", render_context(ctx_src))
+                          .replace("{{question}}", q["question"]))
+        else:
+            context = "\n".join(
+                f"[{i + 1}] {r.get('content', '')}" for i, r in enumerate(ctx_src)
+            ) or "(no memories retrieved)"
+            prompt = _ANSWER_PROMPT.format(context=context, question=q["question"])
+        pred = llm_fn(prompt).strip()
+        pred_head = pred.splitlines()[0].strip() if pred else ""
         f1 = token_f1(pred_head, gold)
         if not pred:
             outcome = "err"
@@ -869,6 +912,8 @@ def main() -> None:
     ap.add_argument("--primary", default=None, help="QA 用哪条臂的检索结果")
     ap.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     ap.add_argument("--qa", action="store_true", help="启用 LLM 生成 + judge")
+    ap.add_argument("--qa-mode", default="legacy", choices=["legacy", "product"],
+                    help="QA 生成模式：legacy=旧裸拼 prompt；product=T-149 answer 操作语义（facts 证据+时序时间线+题型分派）")
     ap.add_argument("--judge-model", default="deepseek-v4-flash")
     ap.add_argument("--judge-base-url", default=None, help="LLM judge base_url (env SGME_JUDGE_BASE_URL)")
     ap.add_argument("--judge-api-key-env", default=None, help="LLM judge api key env (env SGME_JUDGE_KEY_ENV)")
