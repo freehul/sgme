@@ -493,7 +493,7 @@ providers:
 
 ### 14.1 核心端点
 
-`/v1/append` `/v1/inject` `/v1/search` `/v1/memory/*` `/v1/events` `/v1/health` `/v1/admin/*` 全部保留。
+`/v1/append` `/v1/inject` `/v1/search` `/v1/answer`（T-149） `/v1/memory/*` `/v1/events` `/v1/health` `/v1/admin/*` 全部保留。
 
 ### 14.2 扩展端点
 
@@ -808,6 +808,28 @@ CREATE TABLE refine_cursor (
 - **skills scope**（ST-36 M2，B114 起不再经 wiki 桥接）：技能检索层 = git 源 `source_dirs` 的 SKILL.md，BM25（jieba）+ 向量余弦融合（0.6/0.4，向量不可达自动降级纯 BM25）；`source: "skills"`；routes：`skills_bm25` / `skills_rrf`（两路融合生效）。模块未配置/禁用/该层失败 → 空结果，不影响其他层。
 - **术语别名归一化（查询扩展）**：查询先经 `registry/term_aliases.yaml` 归一化（`operations/search.py normalize_query_terms`）——命中别名的旧术语**保留原文并追加标准术语**（如 `daemon` → `daemon gateway`），大小写/空格容忍、词边界整体匹配（派生词不触发）；新老术语双向可召回，不含别名的查询逐字符不变。与 `registry/aliases.yaml`（维度别名表）语义不同，勿混用
 - 模板查询不经过此端点。
+
+#### 4.3b POST /v1/answer — 聚合答案与时序推理（Agent Key，T-149）
+
+检索之上的答案生成层（B145 剪刀差：recall 0.8426 vs J-score 0.384）：
+
+```json
+{
+  "query": "两次参观博物馆间隔多少天？",
+  "question_type": null,   // temporal / aggregate / generic；null=启发式自动分派
+  "limit": 8               // 检索候选条数
+}
+```
+
+响应 `data`：`answer`（LLM 生成，NO CONTEXT 语义保留）、`question_type`、
+`evidence[]`（memory_id/rank/occurred_at/facts_used 证据链）、`provider`、
+`usage`、`prompt_meta`（stage=answer_temporal|answer_aggregate|answer_generic）、
+`candidates_used`。
+
+实现要点：题型分派正则（时序信号优先于聚合）；temporal 注入 occurred_at
+升序时间线；aggregate 注入 facts 结构化证据（T-148 三元组首次接入消费链）；
+LLM 走 refinement 降级链，全链不可用回 `ERR_LLM_UNAVAILABLE`；`config.answer.enabled`
+灰度开关（false → `ERR_DISABLED`）。MCP 对端工具 `answer`（ONBOARDING_TOOLS 40 个）。
 
 #### 4.4 GET /v1/memory/{memory_id} — 单条记忆 + 溯源（Agent Key）
 

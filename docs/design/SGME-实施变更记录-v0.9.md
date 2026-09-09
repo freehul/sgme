@@ -2650,3 +2650,14 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
   - 放量执行：agnes-2.5-flash 云端 2-3 路分片并行（实测 37-68 条/分；本地 Qwen3.8-9B 思考型实测 1.2 条/分不适用批量任务）。
 - **结果**：12,415/12,415 覆盖，11,884 条 UPDATE 写入 NAS 生产库（471 条空产出为无确定性 facts 短句属合理输出，60 条记录已消失跳过）；三元组 38,167；tokens ~700 万全免费；写库 2 秒批提交，抽验 5/5 一致，health 正常。
 - **运维影响**：L4 facts 覆盖率 88.2%（12,940/14,679，新增 L4 记忆按日常提炼持续覆盖）；回滚 = 恢复 memory.db.bak-t148-20260908。
+
+
+### B159. T-149 聚合答案与时序推理：开发段完成（v1.1.9+，2026-09-09）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | B145 实证「剪刀差」：检索 recall@8=0.8426（+23.1%）但 J-score 仅 0.384（+3.0pp）；时序推理（recall 0.7816/J 0.1579）与跨会话（recall 0.8108/J 0.2273）两类 265 题占 53% 是失分主因——答案已在检索结果里，系统不会聚合与时序比较。答案生成侧 QA 链路此前直接裸拼 8 条记忆原文，occurred_at（v0.5 即有）与 facts（T-148 回填 38,167 条）零消费。 |
+| 改动 | ①检索层（`data/search/__init__.py` 四路 SELECT + 装饰循环、`data/search/vector.py` 预留）：结果透传 `occurred_at` 与 `facts`（`facts_dao.parse_facts_json` 归一化，旧契约 MEMORY_RESULT_KEYS 增量两键）；②新建 `operations/answer.py`：题型启发式分派（temporal/aggregate/generic，时序信号优先）、`{{context}}` facts 证据渲染、`{{timeline}}` occurred_at 升序时间线、`llm.chain.call_with_fallback` 降级链接线（LLM 不可用 → ERR_LLM_UNAVAILABLE，llm_fn 注入点供测试/评测台 mock）；③prompts 注册 answer_aggregate/answer_temporal/answer_generic v001（STAGE_PLACEHOLDERS 补声明 + publish 快照）；④`POST /v1/answer`（Agent Key）+ MCP `answer` 工具（ONBOARDING_TOOLS 39→40）+ `config.answer.enabled` 灰度开关（false → ERR_DISABLED 409，ERROR_CODES 注册）。 |
+| 测试 | 新增 test_search_answer_fields.py（3）+ test_prompts_answer.py（4）+ test_answer.py（14）+ test_routes_answer.py（5），answer/search/facts/mcp 合计 128 passed 全绿。 |
+| 踩坑 | ①测试夹具 `create_app` 三连接必须全非 None——任一为 None 触发 own_conns 分支按全局 DATA_DIR 重开库，测试静默查到**生产数据**（evidence 全空 + 召回陌生记忆的假象）；②write_file 写模板时 `{{占位符}}` 误写成单花括号（渲染用 str.replace 语义需双花括号）；③timeline 排序键 (0,ts)/(1,"") 方向写反——无时间应排最后。 |
+| 运维影响 | /v1/answer 与 MCP answer 上线即灰度可用（answer.enabled 默认 true）；旧客户端零破坏（search 响应纯增量字段）；评测接入（Task 6 --qa-mode product/legacy + refined 臂 FIXED_TS 时序锚点修复）按用户指示置后待令。 |
