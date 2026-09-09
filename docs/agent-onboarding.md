@@ -67,7 +67,7 @@ asyncio.run(main())
 
 ## 3. 连接即发现：agent_onboarding 工具
 
-连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 39 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
+连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 40 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
 
 **自助配置（2026-08-13，接入完成标准）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v1`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
 
@@ -78,7 +78,7 @@ asyncio.run(main())
 
 > 目的：接入从「人复制 README 提示词」变为「agent 连接后自助配置」——换 Agent 零成本：不管工具的文件机制差异，只要求结果（下个会话起 SGME 纪律生效）。
 
-**MCP 39 工具清单与用途**（2026-09-07 与 `ONBOARDING_TOOLS` 清单程序化对账一致；PR#7 起逐步扩充，含三池/信号/角色/技能九工具）：
+**MCP 40 工具清单与用途**（2026-09-09 T-149 随 answer 工具与 `ONBOARDING_TOOLS` 清单程序化对账一致；PR#7 起逐步扩充，含三池/信号/角色/技能九工具）：
 
 | 工具 | 用途 | 一句话用法 |
 |---|---|---|
