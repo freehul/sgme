@@ -2640,3 +2640,13 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 验证 | ①`bash -n` 语法过；②双场景沙箱（三仓结构 origin/bare/src）：FF 场景裸仓正确快进 PASS；真分叉场景（origin main 与 bare main 互不包含）正确拒绝推进 PASS——首轮场景2 用例构造错误（cX 从 c2 长出实为 FF）误报 FAIL，重构用例后确认逻辑正确；③生产端到端：本地推探针提交 ca3773f → Actions 同步 Gitee（40s）→ NAS 上以真实裸仓+真实 gitee remote 执行同步块 → 裸仓自动快进 `d082311→ca3773f`，日志含 FF 校验与推进记录；④NAS 运行副本部署：先备份（.bak-t154-<ts>）→ scp → chmod +x → sha256 与仓库副本一致（724f263b）。 |
 | 运维影响 | 下次发版全自动化：push → Actions 同步 Gitee（含 tag）→ updater 更新前自动快进裸仓 → build 正确版本 → 部署。人工 fetch 补偿步骤正式退役。边界提醒：非 FF（裸仓被人手推过/历史分叉）时 updater 会告警并按裸仓现状构建——版本一致性校验仍会拦截，属预期安全网。 |
 | 关联 | Backlog T-154（✅ B157）；B154（缺口发现与首次人工补偿）；B150（脚本双副本纪律）。 |
+
+## B158 T-148 存量记忆 facts 批量回填放量（2026-09-09）
+
+- **背景**：T-136 facts 能力仅覆盖新增记忆，存量 L4（static ∩ episodic/persona）12,415 条无 facts。门禁（50 样本）覆盖召回 0.901 ≥ 0.9 达标后放量。
+- **改动**：
+  - prompts/facts_batch_extraction.txt 升级粒度纪律（一断言一三元组/谓词规范化/object 保字面）；
+  - scripts/backfill_facts.py：5 条/批小批化（长列表偷懒率大降）+ 空批降级单抽 + 三级解析容错（非法转义字符级修复/\uXXXX 校验/json-repair 兜底）+ 断点续跑幂等；
+  - 放量执行：agnes-2.5-flash 云端 2-3 路分片并行（实测 37-68 条/分；本地 Qwen3.8-9B 思考型实测 1.2 条/分不适用批量任务）。
+- **结果**：12,415/12,415 覆盖，11,884 条 UPDATE 写入 NAS 生产库（471 条空产出为无确定性 facts 短句属合理输出，60 条记录已消失跳过）；三元组 38,167；tokens ~700 万全免费；写库 2 秒批提交，抽验 5/5 一致，health 正常。
+- **运维影响**：L4 facts 覆盖率 88.2%（12,940/14,679，新增 L4 记忆按日常提炼持续覆盖）；回滚 = 恢复 memory.db.bak-t148-20260908。
