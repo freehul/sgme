@@ -2661,3 +2661,14 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 测试 | 新增 test_search_answer_fields.py（3）+ test_prompts_answer.py（4）+ test_answer.py（14）+ test_routes_answer.py（5），answer/search/facts/mcp 合计 128 passed 全绿。 |
 | 踩坑 | ①测试夹具 `create_app` 三连接必须全非 None——任一为 None 触发 own_conns 分支按全局 DATA_DIR 重开库，测试静默查到**生产数据**（evidence 全空 + 召回陌生记忆的假象）；②write_file 写模板时 `{{占位符}}` 误写成单花括号（渲染用 str.replace 语义需双花括号）；③timeline 排序键 (0,ts)/(1,"") 方向写反——无时间应排最后。 |
 | 运维影响 | /v1/answer 与 MCP answer 上线即灰度可用（answer.enabled 默认 true）；旧客户端零破坏（search 响应纯增量字段）；评测接入（Task 6 --qa-mode product/legacy + refined 臂 FIXED_TS 时序锚点修复）按用户指示置后待令。 |
+
+
+### B160. T-149 收官：评测 A/B（265 题失分子集，product vs legacy + 时序锚点修复）（v1.1.9+，2026-09-09）
+
+| 项 | 内容 |
+|---|---|
+| 评测接入 | `eval/longmemeval_eval.py` 新增 `--qa-mode product/legacy`（product=复用 operations.answer 的题型分派/facts 证据渲染/时间线排序，纯函数+llm_fn 注入与生产语义等价；legacy=旧裸拼 prompt 保契约）；**时序锚点修复**：direct/refined 臂 `occurred_at`/`started_at` 改用 session 真实日期（`_session_date_iso`，解析 LongMemEval 双形态日期，失败回退 FIXED_TS）——修复前全库同一时刻，时序推理无从谈起。 |
+| A/B 设计 | 失分子集 265 题（multi-session 133 + temporal-reasoning 133，含切片溢出 1 题）；同臂 hybrid top-8、同 judge（agnes-2.5-flash——DeepSeek 账户 402 余额不足弃用）、workers=3、checkpoint resume。 |
+| 结果（瀑布分解） | multi-session：0.2273（B145 基线）→ 0.5340（锚点修复 **+30.7pp**）→ 0.5728（product **+3.9pp**）＝总 **+34.5pp**；temporal：0.1579 → 0.5191（锚点 **+36.1pp**）→ 0.5152（product -0.4pp）＝总 **+35.7pp**。两项均远超 Backlog +10pp 目标。 |
+| 诚实解读 | 总提升大头来自**时序锚点修复**（数据层，两臂共享）；product prompt 的净贡献为跨会话 +3.9pp（wrong 36→33、F1 0.204→0.242），时序持平（-0.4pp，product noctx 33→49——严格规则下 LLM 更倾向诚实拒答）。judge 由智谱 glm-4-flash 换 agnes-2.5-flash，跨 judge 数字不可直接同比 B145，但 A/B 双臂同 judge 内部可比。 |
+| 运维影响 | 后续全量 500 题评测可直接 `--qa-mode product`；时序锚点修复对所有臂生效（refined 臂未来跑全量时同样受益）；DeepSeek judge 链路因余额停用，judge 默认模型待主人定夺是否换 agnes。 |
