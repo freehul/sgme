@@ -42,6 +42,10 @@ STAGE_PLACEHOLDERS = {
     "l1_extraction": ["{{conversation}}", "{{dimensions}}"],
     "l1_conflict": ["{{new_memories}}", "{{candidates}}"],
     "l2_scene": ["{{new_memories}}", "{{existing_scenes}}", "{{max_scenes}}"],
+    # T-149②：聚合答案三模板（answer 操作）
+    "answer_aggregate": ["{{context}}", "{{question}}"],
+    "answer_temporal": ["{{context}}", "{{question}}", "{{timeline}}"],
+    "answer_generic": ["{{context}}", "{{question}}"],
 }
 
 _VALID_BUCKET_BY = ("file_id", "memory_id", "random")
