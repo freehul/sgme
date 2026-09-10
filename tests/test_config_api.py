@@ -73,7 +73,7 @@ def test_get_config_returns_sections(app, client):
     for s in ("l1", "l2", "refine", "search", "backup"):
         assert s in body["config"], f"缺配置段 {s}"
     assert body["config"]["refine"]["refine_on_append"] is False
-    # chunk_size 以配置文件实际值为准（甜点区定稿 5000），不写死 8000 默认值
+    # chunk_size 以配置文件实际值为准（B162 定稿 6000），不写死默认值
     assert body["config"]["l1"]["chunk_size"] == sgme_config.load_config()["l1"]["chunk_size"]
 
 
