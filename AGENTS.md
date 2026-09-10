@@ -35,17 +35,7 @@
 | `docs/design/SGME-架构设计-v0.9.md` | **架构总纲（v0.9 文档整理合并版：数据流/双库/维度/注入/鉴权/备份 + 接口契约/数据模型/LLM/模板/提示词/分词 并入）** |
 | `docs/design/SGME-实施变更记录-v0.9.md` | **实施变更记录（B 系列，含运维/排障知识）** |
 
-| （表结构见架构 v0.9 §23） | 数据模型已并入架构 v0.9 |
-
-| （端点见架构 v0.9 §22） | 接口契约已并入架构 v0.9 |
-
 | `docs/design/SGME-L0文件格式-v0.1.md` | 原始层文件格式/增量段 |
-
-| （模板见架构 v0.9 §25） | 模板引擎已并入架构 v0.9 |
-
-| （提示词见架构 v0.9 §26） | 提炼提示词已并入架构 v0.9 |
-
-| （版本管理见架构 v0.9 §27） | 提示词版本管理已并入架构 v0.9 |
 
 | `docs/design/SGME-评测基线-PRD-v0.1.md` | **#32 提炼质量评测基线：评测集设计 + L1/L2 度量定义 + RRF 调优方案** |
 
@@ -54,10 +44,6 @@
 | `docs/design/eval-class-diagram.mermaid` | 评测框架类图 |
 
 | `docs/design/eval-sequence-diagram.mermaid` | 评测框架时序图 |
-
-| （降级链见架构 v0.9 §24） | LLM 降级链已并入架构 v0.9 |
-
-| （归一化见架构 v0.9 §28） | 维度归一化已并入架构 v0.9 |
 
 | `templates/*.yaml` | 预定义 4 模式模板 |
 
@@ -152,11 +138,11 @@
 
 **查证与搜索流程（动手前必走，五步）**：
 1. **本地优先**：先读「文档索引」对应章节 + 模块代码与测试，不猜形状
-2. **SGME 记忆**：涉及历史事实/项目决策/用户偏好 → MCP `search`（记忆池）+ `wiki_search`（知识库），不凭记忆断言
-3. **wiki 知识库（W1-W7，2026-08-16）**：手册/经验统一入 wiki_pages（category 分类 + FTS5 检索 + description 摘要 + status supersession）；检索走 `wiki_search`/`wiki_pages`/`wiki_page`，写回走 `wiki_page_add`/`wiki_page_update`（PATCH append ADD-only + hash 去重），自进化走 `wiki_evolve_trigger`（会话经验自动回写，费用门禁 + 规则闸门）
+2. **SGME 记忆**：涉及历史事实/项目决策/用户偏好 → MCP `search` + `wiki_search`，不凭记忆断言
 3. **官方权威**：涉及工具/SDK/API/框架 → 官方文档为准（不猜格式）
-4. **联网兜底**：实现前先找轮子——GitHub 搜索 → 网页搜索 → 库文档，优先成熟方案（不重复造轮子）；JS 渲染/复杂页面用专业抓取工具（如 Firecrawl），不用裸 curl
-5. **三连败升级**：同一问题重试 3 次无效 → 停止重试，按 官方文档 → GitHub Issues → 社区 → 重评估方案 升级（不要在同一方向蛮力试）
+4. **联网兜底**：实现前先找轮子——GitHub → 网页 → 库文档，优先成熟方案；页面抓取用专业工具（如 Firecrawl），不用裸 curl
+5. **三连败升级**：同一问题重试 3 次无效 → 停止重试，按 官方文档 → GitHub Issues → 社区 → 重评估方案 升级
+   > wiki 知识库（W1-W7）维护细节见 SGME 技能 `sgme-operations` / 文档 `docs/design/SGME-架构设计-v0.9.md`
 
 ### 验收纪律
 
@@ -199,12 +185,12 @@ SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。
 
 **接口**：HTTP API http://192.168.10.10:9910 ｜ MCP http://192.168.10.10:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key；默认 dev key 仅限本机回环，远程调用一律 403）。
 
-**接入速查**（2026-08-30 实测沉淀，六坑完整版见 wiki《SGME新接入踩坑手册-2026-08-30》）：
-- inject 模板四选一：`coding`/`daily`/`full`/`work`（无 default；不带 mode 服务端自动回落 daily 并在 stats.note 注明，v1.1.2 起）
-- append 契约：`POST /v1/append` body 必带 `session_key` + `started_at`（ISO）+ `content`；同 session_key+同 started_at **幂等丢弃**——每轮取当前时刻勿固定会话开始时刻（v0.5 曾因此静默丢整月捕获），成功以返回 `status:new` 为准
-- trust_env=False 标准写法：httpx `httpx.Client(trust_env=False)`；requests 是 Session 属性 `s=requests.Session(); s.trust_env=False`（放 request() 参数会 TypeError）
-- 排障口诀：403=鉴权/来源问题（dev key 仅本机回环，远程必须 SGME_AGENT_KEY/agt_*），400=参数问题（key 已通过）
-- 纯远程接入端：`python scripts/install_client.py --host <NAS地址>` 生成 install.json（data_dir/raw_dir 置 null），防本机测试残留误导服务发现（v1.1.2 起）
+**接入速查**（详细六坑见 SGME 技能 `sgme-operations` 与 wiki《SGME新接入踩坑手册-2026-08-30》）：
+- inject 模板四选一：`coding`/`daily`/`full`/`work`（无 default；不带 mode 自动回落 daily）
+- append 契约：`POST /v1/append` body 必带 `session_key`+`started_at`(ISO)+`content`；同 session_key+同 started_at 幂等丢弃——**每轮取当前时刻**勿固定会话开始时刻；成功以 `status:new` 为准
+- `trust_env=False`：httpx `httpx.Client(trust_env=False)`；requests 用 `s=requests.Session(); s.trust_env=False`
+- 排障口诀：403=鉴权/来源问题（远程必须 SGME_AGENT_KEY/agt_*），400=参数问题（key 已通过）
+- 纯远程接入端：`python scripts/install_client.py --host <NAS地址>` 生成 install.json（data_dir/raw_dir 置 null）
 
 **历史会话补导入**：本适配器提供历史会话全量导入方法（把接入前的存量会话补进 SGME）：
    `D:/Projects/SGME/.venv/Scripts/python.exe D:/Projects/SGME/adapters/dsh/import_history.py`
