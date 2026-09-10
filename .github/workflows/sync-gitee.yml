@@ -22,5 +22,8 @@ jobs:
           set -e
           # token 直接嵌 URL 由 GitHub 自动打码；GITEE_USER 用 freehul
           git remote add gitee "https://freehul:${GITEE_TOKEN}@gitee.com/freehul/sgme.git"
+          # tag 触发时 checkout 为 detached HEAD（无本地 main）→ 先显式建/复位 main 分支再推
+          # （B161：v1.2.0 tag 同步曾因 `src refspec main does not match any` 失败）
+          git checkout -B main "$GITHUB_SHA" 2>/dev/null || git checkout -B main
           git push gitee main --force
           git push gitee --tags --force
