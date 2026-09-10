@@ -37,9 +37,10 @@ def cfg():
     cfg = config.load_config()
     # 测试形态：显式 vector base_url（B123）——mock 客户端按传入 client 发请求，
     # 走主路而非链首回退；T-117 后链首 agnes(vector_capable=false) 回退被门禁拦截
-    cfg.setdefault("search", {}).setdefault("vector", {})[
-        "base_url"
-    ] = "http://mock-embed.test/v1"
+    # B169：出厂基线已改为 enabled:false + 空端点（部署态配置），测试自备启用态，不吃出厂默认
+    vec = cfg.setdefault("search", {}).setdefault("vector", {})
+    vec["base_url"] = "http://mock-embed.test/v1"
+    vec["enabled"] = True
     return cfg
 
 
