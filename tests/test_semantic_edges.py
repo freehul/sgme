@@ -23,6 +23,21 @@ def cfg():
     return config.load_config()
 
 
+@pytest.fixture(autouse=True)
+def _vector_enabled(monkeypatch):
+    """B169：出厂基线默认关闭向量端点（enabled:false）+ l15.prescreen.fallback=skip_conflict，
+    embed 不可达时 L1.5 会短路跳过冲突检测（本文件测的正是 resolve_conflicts 挂接写边，必然全挂）。
+
+    自备启用态：mock 掉 embed（返回固定向量），不真连任何部署端点；
+    候选池仍由维度 OR 提供，写边路径与生产一致。
+    """
+    from sgme.data.search import vector as vector_mod
+
+    monkeypatch.setattr(
+        vector_mod, "embed", lambda text, cfg, client=None: [1.0, 0.0, 0.0, 0.0]
+    )
+
+
 @pytest.fixture
 def mem_conn(tmp_path, cfg):
     conn = db_mod.connect_memory(tmp_path)
