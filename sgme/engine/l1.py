@@ -381,7 +381,8 @@ def extract_l1(
     - conversation 可传字符串（内部按消息边界分块）或**预分块列表**
       （2026-08-06：refine.py 已按回合语义预分块，直接逐块提炼，不再二次切分）
     - 长会话按消息边界分块（甜点区 8K），每块独立提炼后合并去重
-    - 单块 JSON 坏输出重试 1 次（重问 LLM）
+    - 单块 JSON 坏输出重试 1 次（重问 LLM）；**空结果（输出 `[]`）也加提示重试 1 次**，
+      仍空则按空块正常返回（2026-09-11：本地模型 12.6% 的块静默空产出，曾致答案块丢失）
     - 再失败 → RefineError
     - bucket_ctx：A/B 分流上下文（提炼链路传 file_id）；mem_conn 提供时逐块记录 refine_run
     - 返回 (记忆列表, provider_name, prompt_meta)
@@ -477,22 +478,6 @@ def _extract_l1_chunk(
 
         try:
             memories = parse_l1_output(text, dimensions)
-            if attempt > 1:
-                logger.info("L1 重试 %s 次成功", attempt)
-            if mem_conn is not None:
-                run_id = RefineRunRecorder.start(
-                    mem_conn, file_id=bucket_key, stage="l1_extraction",
-                    version=pv.version, variant=pv.variant,
-                    provider=provider_name, bucket_key=bucket_key,
-                )
-                RefineRunRecorder.finish(
-                    mem_conn, run_id, memories_count=len(memories),
-                    action_counts={}, status="ok", usage=usage,
-                )
-            meta = {"stage": "l1_extraction", "version": pv.version, "variant": pv.variant}
-            logger.info("L1 块完成: version=%s variant=%s memories=%d",
-                        pv.version, pv.variant, len(memories))
-            return memories, provider_name, meta
         except RefineError as e:
             last_error = e
             logger.warning("L1 输出解析失败 (attempt=%s): %s", attempt, e)
@@ -500,6 +485,35 @@ def _extract_l1_chunk(
             if attempt < max_attempts:
                 prompt = _render_l1_text(pv.text, conversation, dimensions) + \
                     "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
+            continue
+
+        # 空结果视为可疑：模型可能漏抽整块内容（2026-09-11 实测本地模型 12.6% 的块
+        # 静默空产出，其中含答案所在块 → longmemeval recall@8 归零）。
+        # 加提示重试一次；仍空则正常返回（空块合法，不抛错）。
+        if not memories and attempt < max_attempts:
+            logger.warning("L1 空结果 (attempt=%s)，加提示重试", attempt)
+            prompt = _render_l1_text(pv.text, conversation, dimensions) + \
+                "\n\n# 注意\n上次输出为空数组 []，但对话中可能仍有值得长期保存的记忆。" \
+                "请逐条复查对话内容，确保不遗漏任何用户事实（尤其数字、时长、地点、偏好等细节）。" \
+                "若确实没有可提炼的记忆，再输出 []。"
+            continue
+
+        if attempt > 1:
+            logger.info("L1 重试 %s 次成功", attempt)
+        if mem_conn is not None:
+            run_id = RefineRunRecorder.start(
+                mem_conn, file_id=bucket_key, stage="l1_extraction",
+                version=pv.version, variant=pv.variant,
+                provider=provider_name, bucket_key=bucket_key,
+            )
+            RefineRunRecorder.finish(
+                mem_conn, run_id, memories_count=len(memories),
+                action_counts={}, status="ok", usage=usage,
+            )
+        meta = {"stage": "l1_extraction", "version": pv.version, "variant": pv.variant}
+        logger.info("L1 块完成: version=%s variant=%s memories=%d",
+                    pv.version, pv.variant, len(memories))
+        return memories, provider_name, meta
 
     if mem_conn is not None:
         err_run = RefineRunRecorder.start(
