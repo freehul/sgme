@@ -5,3 +5,8 @@
 *.sh text eol=lf
 *.bash text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# Windows 批处理必须 CRLF：cmd 对 LF 换行的 if (…) 块/label 解析不可靠；
+# 编码为 GBK（cmd 默认代码页 936，与编码卫生的 utf-8 规则例外，仅限本仓库的 .bat/.cmd）
+*.bat text eol=crlf
+*.cmd text eol=crlf
