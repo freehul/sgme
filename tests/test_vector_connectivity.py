@@ -82,8 +82,14 @@ def test_connectivity_timeout(cfg, monkeypatch):
 
 
 def test_connectivity_unconfigured(cfg):
-    # 测试环境默认 search.vector 无 base_url → 不可用 + 中文提示
-    r = check_vector_model_connectivity(cfg)
+    """base_url/model 缺失 → 不可用 + 中文提示。
+
+    B169：显式构造「未配置」的向量段，不再依赖出厂基线（基线已改 enabled:false + 空 base_url）。
+    验证的是「缺字段时的行为」，因此任何机器/任何覆盖层配置下都成立。
+    """
+    c2 = copy.deepcopy(cfg)
+    c2.setdefault("search", {})["vector"] = {"provider": "test-prov"}
+    r = check_vector_model_connectivity(c2)
     assert r["available"] is False
     assert "未配置" in r["error"]
 

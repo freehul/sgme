@@ -39,10 +39,13 @@ l2:
     fallback: full_recall  # embed 不可达 → 回退固定 50 摘要（原行为，宁多勿漏）
 search:
   vector:
-    enabled: true
-    provider: local   # 本地优先（2026-08-20 生产定案）：NAS ollama bge-m3 1024 维，零费用、隐私本地
+    # 出厂默认关闭 + 不写死端点（2026-09-11 B169）：向量端点属**部署态**配置——
+    # 各部署的 ollama/LM Studio 地址不同，硬编码会让陌生环境下开箱就指向不存在的地址。
+    # 部署时在可写覆盖层 config/sgme.yaml（$SGME_HOME/config，不入库）开启并填 base_url。
+    enabled: false
+    provider: local
     model: bge-m3
-    base_url: http://192.168.10.10:11434/v1   # NAS ollama OpenAI 兼容端点（SGME 容器经宿主 IP 访问）
+    base_url: ''      # 空 = 未配置；连通性探测返回「向量端点未配置」且不发告警（operations/health.py:113）
     # api_key_env 留空——本地 Ollama 无需鉴权
     fallbacks:
       - provider: siliconflow   # 云端免费降级备用（同 1024 维，切换不重灌索引）
