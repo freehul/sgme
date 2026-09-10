@@ -2723,3 +2723,17 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 诚实边界 | ①AB 对照是**单块 n=1**，信号强但样本小；②「总 262144 + 并行 2」按 llama.cpp 语义读作每路 128K，无论 LM Studio 用何种 KV 分配，总量 262144 都保证单请求 ≥128K；③早前「关思考后只出 1 条记忆」的疑点已结清——那块内容是 **tool 搜索结果噪音**（1 条为正确行为），换信息密集块才有判别力；④6000 分块档在**本地 9B** 上未单独实测（此前 6000 档实验跑的是云免费链）；⑤`.lmstudio` 路径为 Windows 专有，Linux/macOS 端点为 `~/.lmstudio` 同构目录。 |
 | 收尾清理 | ①**删除无效代码**：`eval/longmemeval_eval.py` 的 `_inject_local_refine` 节点内 `"extra_body": {"enable_thinking": False}` 已移除——LM Studio 忽略它（#1990），留着会误导后人以为它是生效开关；同文件 `:118` 的 `payload["enable_thinking"] = False` **保留**，那是 **DeepSeek 云后端**参数（DeepSeek 真实支持），非无效代码。②**修正测试断言**：`tests/test_config.py::test_paths_returns_absolute` 原以 `config/llm.yaml` 作项目根标志文件，但该文件是可写覆盖层、**不入库** → 任何干净克隆下必然失败；改用入库必存在的 `pyproject.toml` 与 `sgme/resources/config/llm.yaml` 作标志。③**覆盖层不入库**：`.gitignore` 新增 `config/llm.yaml`、`config/providers.yaml`、`config/sgme.yaml` 三条忽略规则 —— 理由：本地定制会被推给所有人、多机覆盖层互相冲突、入库后与包内基线漂移（包内 `sgme/resources/config/` 才是只读默认基线）。 |
 | 关联 | B162（chunk_size 6000，评测环境分块档）；T-157（ST-41）；`docs/design/SGME-评测框架设计-v0.1.md`；技能 `pc-lmstudio-local`（已沉淀操作步骤与机制，并更正服务端口 1014 → **8123**）。 |
+
+### B164. L1 空结果加提示重试：修本地模型静默漏抽（2026-09-11）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | longmemeval 评测（refined 臂，PC 本地 `qwen3.8-9b-distill` 提炼）复现出 **q2（`118b2229`「How long is my daily commute to work?」）`recall@8 = 0.0`**；q1（`e47becba`）为 1.0，同批同库 → 非环境性问题。 |
+| 缺陷 | q2 答案会话（`answer_40a90d51`，`file_id=064ca1f3-…`，原文 13,609 字符）**确已落盘、`status=refined`**，但炼出的 **4 条记忆全是有声书/读书类**（会话开头 @361 的话题），**无一条提通勤**；全库关键词 `commute`／`minutes`／`daily` **0 命中**。而原文确含答案：`45 minutes` @10275、`each way` @10286。 |
+| 根因 | 答案落在**段 2**（文件约 3/4 处）。`refine_runs` 实锤该块记录为 **`l1_extraction` / `memories_count=0` / `completion_tokens=2`** —— 模型输出了空数组 `[]`（约 2 token），但 `parse_l1_output` 视作**解析成功**，记 `status="ok"` 后直接 `return`，**重试分支只覆盖「解析抛错」，不覆盖「空结果」** → 该块内容永久不入库，且日志无异常。 |
+| 量化 | q2 库 `l1_extraction` 共 **95** 次，其中 **12 次空结果（12.6%）**，全部以 `status=ok` 静默放过。空结果块的 `prompt_tokens` 仅 **1752–3164**（输入很短）→ **与上下文长度无关**，加大 `max_tokens` 治不了。对照证据：全库 **108/365** 条记忆来自非第 1 段，多段提炼机制本身正常，问题只在该块产出为空。 |
+| 修复 | `engine/l1.py::_extract_l1_chunk`：当 `parse_l1_output` **成功但返回空列表**且 `attempt < max_attempts` 时，**加提示重试一次**（提示要求逐条复查对话、勿漏数字/时长/地点/偏好等细节，并允许确实无记忆时再输出 `[]`）；**仍空则按空块正常返回、不抛错**（空块合法）。原「解析失败重试」分支改为显式 `continue`，成功路径（写 `refine_runs`、返回 `meta`）逻辑不变。 |
+| 验证 | ①**TDD**：新增 `tests/test_l1_empty_retry.py`（4 用例——空→有记忆会重试并取回／两次都空返回空不抛错／非空不额外调用／重试提示带复查引导），修复前 **3 失败 1 通过**（RED），修复后全绿；②**回归**：L1 与提炼链路 **176 项全绿**（44 + 132）；③**真实 LLM 冒烟**（项目铁律：改提炼必跑）：拿 q2 答案会话的 L0 原文重跑真实提炼 → **4 条（无通勤）→ 6 条，其中 2 条命中通勤**，含 ★ `I've been listening to audiobooks during my daily commute, which takes 45 minutes each way.` —— 答案已可入库。 |
+| 诚实边界 | ①真实冒烟是**单文件单次**运行，模型有随机性，"重试救回"的直接证据是「条数 4→6 且含答案」，**未做多次重复统计**；②**12.6% 是 q2 单库口径**，非全库普适值；③重试会让"确实无记忆可抽"的块多花一次调用（约 6 秒/块），换取漏抽补救，**未做成本-收益对照实验**；④**空结果本身的原因未深究**（模型能力／提示词引导／块内信息密度都可能），本条目只做兜底重试，**不改提示词基线**。 |
+| 影响面 | 本地模型 L1 漏抽由**静默丢失**转为**重试后可捞回**；云端提炼链（agnes）同样受益（空结果不再直接定案）。 |
+| 关联 | B163（本地模型关思考，空正文率 15.4%→0——**但那类是 `content=""` 的技术性空，与本次模型输出 `[]` 的语义性空不同**，两者不可互相解释）；B162（chunk_size 6000）；`eval/longmemeval_eval.py`（`--run-id` 复用出分）；技能 `sgme-engine-development`。 |
