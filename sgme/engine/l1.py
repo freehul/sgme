@@ -201,7 +201,7 @@ _MSG_RE = re.compile(r"^# \S+ (user|assistant|tool)\n", re.MULTILINE)
 
 def chunk_messages_by_turn(
     messages: list,
-    chunk_size: int = 5000,
+    chunk_size: int = 6000,
     min_chunk: int | None = None,
 ) -> list[list]:
     """按回合语义分块（2026-08-06 新增，替代纯长度切块）。

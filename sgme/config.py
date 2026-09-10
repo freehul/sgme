@@ -322,10 +322,14 @@ DEFAULT_BACKUP_CONFIG = {
 }
 
 # L1 分块默认兜底（甜点区实测：qwythos-9b-v2-i1 输入 6-8K 字符最佳，2026-08-04）
-# chunk_size：单块字符上限（超过即分块）
-# overlap：相邻块重叠字符（防切碎话题）
+# chunk_size：单块字符上限。回合感知（chunk_messages_by_turn）：按回合累加到 0.9× 后
+#   下一回合装不下才落块，故实块 ∈ [0.9×chunk_size, chunk_size]；单回合超上界独立成块，
+#   超 1.5× 才按消息边界拆（带 1 条消息重叠）。B162（2026-09-10）：8000 → 6000，
+#   与 refine.py 代码内默认、包内资源默认 sgme.yaml 三方对齐。
+# overlap：相邻块重叠字符——⚠️ 仅字符串路径 chunk_conversation 生效，
+#   回合路径 chunk_messages_by_turn 不读此值（B162 记录的死配置，待清理）。
 DEFAULT_L1_CONFIG = {
-    "chunk_size": 8000,
+    "chunk_size": 6000,
     "overlap": 1500,
 }
 
