@@ -2672,3 +2672,13 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 结果（瀑布分解） | multi-session：0.2273（B145 基线）→ 0.5340（锚点修复 **+30.7pp**）→ 0.5728（product **+3.9pp**）＝总 **+34.5pp**；temporal：0.1579 → 0.5191（锚点 **+36.1pp**）→ 0.5152（product -0.4pp）＝总 **+35.7pp**。两项均远超 Backlog +10pp 目标。 |
 | 诚实解读 | 总提升大头来自**时序锚点修复**（数据层，两臂共享）；product prompt 的净贡献为跨会话 +3.9pp（wrong 36→33、F1 0.204→0.242），时序持平（-0.4pp，product noctx 33→49——严格规则下 LLM 更倾向诚实拒答）。judge 由智谱 glm-4-flash 换 agnes-2.5-flash，跨 judge 数字不可直接同比 B145，但 A/B 双臂同 judge 内部可比。 |
 | 运维影响 | 后续全量 500 题评测可直接 `--qa-mode product`；时序锚点修复对所有臂生效（refined 臂未来跑全量时同样受益）；DeepSeek judge 链路因余额停用，judge 默认模型待主人定夺是否换 agnes。 |
+
+
+### B161. sync-gitee workflow tag 触发修复：detached HEAD 下 `checkout -B main` 复位（v1.2.0 后补丁，2026-09-10）
+
+| 项 | 内容 |
+|---|---|
+| 缺陷 | v1.2.0 发版时 tag 触发的「Sync to Gitee」workflow 失败：`error: src refspec main does not match any`——actions/checkout 对 tag push 是 detached HEAD（无本地 main 分支），`git push gitee main` 无源可推。 |
+| 修复 | workflow 脚本在 push 前加 `git checkout -B main "$GITHUB_SHA" \|\| git checkout -B main`——显式建/复位 main 再推（8a81550）。 |
+| 验证 | ①workflow_dispatch（main 路径）success；②实测 tag 场景：推测试 tag `v1.2.1-sync-test` 触发 push 事件 workflow **success**（v1.2.0 时同路径失败），验证后测试 tag 三端清理（GitHub/Gitee/本地）。 |
+| 运维影响 | 此后 tag 推送 Gitee 同步全自动；本机手动补推的应急路径仍可作为兜底。 |
