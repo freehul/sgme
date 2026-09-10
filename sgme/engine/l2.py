@@ -130,6 +130,87 @@ def _get_max_scenes(cfg: dict) -> int:
 
 # ---------- JSON 解析 ----------
 
+
+
+BRACKET_PAIRS = {"}": "{", "]": "["}
+
+
+def _repair_bracket_balance(text: str) -> str:
+    """括号平衡修复：感知字符串状态扫描，丢弃多余闭合符、末尾补齐未闭合括号。
+
+    真实主因（2026-09-11 实测 15 轮）：模型输出大 JSON 数组时括号不平衡 ——
+    外层数组缺 "]"、或多出一个 "}"。此时 json 报 "Expecting ',' delimiter"，
+    报错位置黏在文本末尾，与「缺逗号」的错误码相同但病因完全不同。
+    本修复直接针对结构，实测 3/3 救回（补 1 个 "]"，剥 1 个多余的 "}"）。
+
+    字符串状态感知：引号内的括号不计入配平，避免正文里的括号误判。
+    """
+    stack: list[str] = []
+    out: list[str] = []
+    in_str = False
+    esc = False
+    for ch in text:
+        if esc:
+            esc = False
+            out.append(ch)
+            continue
+        if ch == "\\":
+            esc = True
+            out.append(ch)
+            continue
+        if ch == '"':
+            in_str = not in_str
+            out.append(ch)
+            continue
+        if in_str:
+            out.append(ch)
+            continue
+        if ch in "{[":  # noqa: RUF001
+            stack.append(ch)
+            out.append(ch)
+        elif ch in "}]":  # noqa: RUF001
+            if stack and stack[-1] == BRACKET_PAIRS[ch]:
+                stack.pop()
+                out.append(ch)
+            # 多余的闭合符：丢弃
+        else:
+            out.append(ch)
+    result = "".join(out)
+    if in_str:
+        result += '"'  # 字符串未闭合（多为正文被截断）：补上闭合引号
+    result += "".join("}" if b == "{" else "]" for b in reversed(stack))
+    return result
+
+
+def _insert_missing_commas(text: str, max_fix: int = 200) -> str:
+    """按 json 报错位置补缺失逗号（覆盖「值之间漏逗号」这一独立病因）。"""
+    for _ in range(max_fix):
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError as e:
+            if e.msg != "Expecting ',' delimiter":
+                return text
+            text = text[: e.pos] + "," + text[e.pos:]
+    return text
+
+
+def _loads_robust(text: str):
+    """多级容错解析：原样 → 括号平衡 → 括号平衡+补缺逗号。
+
+    真实病因（实测）：模型输出结构不完整（括号不平衡），而非漏逗号 ——
+    故括号平衡优先；补逗号作为独立病因的兜底。
+    全部失败时上抛「原始错误」，避免掩盖真实病因。
+    """
+    first_err: json.JSONDecodeError | None = None
+    balanced = _repair_bracket_balance(text)
+    for cand in (text, balanced, _insert_missing_commas(balanced)):
+        try:
+            return json.loads(cand)
+        except json.JSONDecodeError as e:
+            if first_err is None:
+                first_err = e
+    raise L2Error(f"L2 JSON 解析失败: {first_err}")
 def _parse_json_lenient(text: str) -> list:
     """容错 JSON 解析：修复 qwen 关思考后的常见输出缺陷。
 
@@ -168,10 +249,9 @@ def _parse_json_lenient(text: str) -> list:
     text = _re.sub(r"([}\]][\s\n]*)([{[])", _fix_missing_comma, text)
     # 4. 尾逗号（数组/对象最后一个元素后多逗号）
     text = _re.sub(r",\s*([}\]])", r"\1", text)
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise L2Error(f"L2 JSON 解析失败: {e}") from e
+    # 5. 缺逗号兜底（2026-09-11 B168）：正则只修「容器后跟容器」，
+    #    字符串值后跟键 / 数组元素间等高频形态由错误位置驱动修复。
+    data = _loads_robust(text)
     if not isinstance(data, list):
         raise L2Error(f"L2 期望 JSON 数组，得到 {type(data).__name__}")
     return data

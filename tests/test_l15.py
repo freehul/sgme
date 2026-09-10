@@ -708,3 +708,32 @@ def test_resolve_conflicts_short_circuit_writes_prompt_version(mem_conn, cfg):
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
     assert mem["prompt_version"] == "l1_extraction:v001"
     assert RefineRunRecorder.list_by_stage(mem_conn, "l1_conflict") == []
+
+
+def test_parse_l15_output_trailing_text_after_array():
+    """数组后跟多余文字（模型附加说明）→ 取首段解析，不抛错。
+
+    实测对应：「L1.5 异常降级直存: Extra data: line 2 column 1 (char 3)」。
+    """
+    text = '[]\n注意：本次无需合并的记忆。'
+    decisions = l15.parse_l15_output(text)
+    assert decisions == []
+
+
+def test_parse_l15_output_trailing_text_after_items():
+    """有内容 + 尾随说明文字 → 取首段解析成功。"""
+    text = ('[{"new_memory_index":0,"candidate_ids":[],"action":"store"}]\n'
+            '以上为本次裁决结果。')
+    decisions = l15.parse_l15_output(text)
+    assert len(decisions) == 1
+    assert decisions[0].action == "store"
+
+
+def test_parse_l15_output_trailing_text_with_brackets():
+    """说明文字里含方括号 → 现有「找首 [ 到末 ]」切片会取错区间，raw_decode 取首段才对。
+
+    实测对应：「L1.5 异常降级直存: Extra data: line 2 column 1 (char 3)」。
+    """
+    text = '[]\n注意[1]：本次无需合并的记忆。'
+    decisions = l15.parse_l15_output(text)
+    assert decisions == []

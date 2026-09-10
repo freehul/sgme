@@ -26,6 +26,11 @@ FUZZY_THRESHOLD = 0.85
 # 单批丢弃率告警阈值（§2）
 DROP_RATE_WARN = 0.20
 
+# 触发告警的最小样本量（2026-09-11 B168）：
+# 标签总数低于此值时，丢弃率无统计意义（1/1 即 100%），
+# 实测评测日志 7 次告警均为 drops=1/total=1~3 的小样本假阳性。
+DROP_RATE_MIN_SAMPLES = 5
+
 
 @dataclass
 class NormalizeStats:
@@ -152,7 +157,8 @@ def normalize_batch(
             seen.add(dim_id)
             result.append(dim_id)
 
-    if stats.drop_rate > DROP_RATE_WARN:
+    if (stats.drop_rate > DROP_RATE_WARN
+            and stats.total >= DROP_RATE_MIN_SAMPLES):
         logger.warning(
             "归一化丢弃率 %.1f%% > 20%% 阈值（drops=%d/%d）→ anomaly_warn",
             stats.drop_rate * 100, stats.drops, stats.total,
@@ -161,5 +167,6 @@ def normalize_batch(
 
 
 def should_warn(stats: NormalizeStats) -> bool:
-    """是否应产 anomaly_warn（丢弃率 > 20%）。"""
-    return stats.drop_rate > DROP_RATE_WARN
+    """是否应产 anomaly_warn（丢弃率 > 20% 且样本量达标）。"""
+    return (stats.drop_rate > DROP_RATE_WARN
+            and stats.total >= DROP_RATE_MIN_SAMPLES)

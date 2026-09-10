@@ -177,7 +177,10 @@ def parse_l15_output(text: str) -> list[ConflictDecision]:
     if m:
         text = m.group(1).strip()
     try:
-        data = json.loads(text)
+        # 2026-09-11 B168：先用 raw_decode 取首个完整 JSON 值，容忍模型
+        # 在数组后附加说明文字（实测「Extra data: line 2 column 1 (char 3)」）。
+        # 说明文字含方括号时，下面「找首 [ 到末 ]」的切片会取错区间。
+        data, _ = json.JSONDecoder().raw_decode(text)
     except json.JSONDecodeError:
         start = text.find("[")
         end = text.rfind("]")
