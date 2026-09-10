@@ -26,6 +26,23 @@ from sgme.segment import current_segmenter_id, segment, segment_terms
 logger = logging.getLogger("sgme.data.search")
 
 
+def _rows_to_dicts(cur: sqlite3.Cursor) -> list[dict]:
+    """游标结果 → dict 列表（对未设 row_factory 的裸连接安全）。
+
+    ⚠️ 不能直接 `dict(row)`：连接未设 row_factory 时 row 是元组，
+    `dict(tuple)` 会按 (k, v) 解包并抛 ValueError（2026-09-10 实测：
+    "dictionary update sequence element #0 has length 36; 2 is required"）。
+    沿用 session_dao / skills.indexer 的既有兜底写法。
+    """
+    rows = cur.fetchall()
+    if not rows:
+        return []
+    if isinstance(rows[0], sqlite3.Row):
+        return [dict(r) for r in rows]
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in rows]
+
+
 # FTS5 虚拟表 + 同步触发器（外部内容表，content='memories'；索引 content_seg 分词列）
 FTS_DDL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
@@ -591,7 +608,7 @@ def search_scenes(
 
     try:
         fts_query = _build_fts_query(query, use_stoplist=_stoplist_enabled(cfg))
-        rows = mem_conn.execute(
+        cur = mem_conn.execute(
             """
             SELECT f.rowid, s.scene_id, s.title, s.content, s.heat,
                    s.status, s.updated_at, bm25(scenes_fts) AS score
@@ -602,8 +619,8 @@ def search_scenes(
             LIMIT ?
             """,
             (fts_query, limit),
-        ).fetchall()
-        bm25_rows = [dict(r) for r in rows]
+        )
+        bm25_rows = _rows_to_dicts(cur)
     except sqlite3.OperationalError:
         logger.warning("scenes FTS 不可用，降级 LIKE: %s", query[:50])
         bm25_rows = []
@@ -896,7 +913,7 @@ def _search_no_dims(mem_conn: sqlite3.Connection, fts_query: str, limit: int) ->
         LIMIT ?
     """
     cur = mem_conn.execute(sql, (fts_query, limit))
-    return [dict(r) for r in cur.fetchall()]
+    return _rows_to_dicts(cur)
 
 
 def _search_with_dims(
@@ -928,7 +945,7 @@ def _search_with_dims(
     base += " ORDER BY score ASC LIMIT ?"
     params.append(limit)
     cur = mem_conn.execute(base, params)
-    return [dict(r) for r in cur.fetchall()]
+    return _rows_to_dicts(cur)
 
 
 def _search_like_fallback(
@@ -971,7 +988,7 @@ def _search_like_fallback(
     sql += " LIMIT ?"
     params.append(min(limit, 20))
     cur = mem_conn.execute(sql, params)
-    return [dict(r) for r in cur.fetchall()]
+    return _rows_to_dicts(cur)
 
 
 def _get_memory_tags(mem_conn: sqlite3.Connection, memory_id: str) -> list[str]:
