@@ -10,7 +10,7 @@
 
 
 
-- Python 3.11+，项目自包含 venv（`.venv/`），依赖见 `pyproject.toml`
+- **基准解释器 = 3.12（`D:\AI\python\cpython-3.12.13-windows-x86_64-none`）**：环境依赖必须**项目级**，禁止依赖系统 PATH 上的 python（PATH 上多版本并存会漂移，2026-09-11 教训：venv 指针指向第三方工具自带解释器）。本项目没有的版本先装进 `D:\AI\python`（用户级 `UV_PYTHON_INSTALL_DIR` 已指向该目录，新版本也落这里）。重建 venv 走 `scripts/bootstrap_venv.bat`（只认该目录，找不到即报错退出、绝不静默用 PATH 上的 python），锁定需求见 `requirements.txt`（含基准解释器与锁定日期头注），依赖声明见 `pyproject.toml`
 
 - SQLite（标准库 sqlite3）+ FTS5 + sqlite-vec（向量，/search 用）
 
@@ -32,7 +32,7 @@
 
 | `docs/requirements/SGME-Backlog-v0.2.md` | **Backlog 锚文档（Epic/Story/Task 体系）——立项即有，持续更新，设计文档依附于此** |
 
-| `docs/design/SGME-架构设计-v0.9.md` | **架构总纲（v0.9 文档整理合并版：数据流/双库/维度/注入/鉴权/备份 + 接口契约/数据模型/LLM/模板/提示词/分词 并入）** |
+| `docs/design/SGME-架构设计-v1.0.md` | **架构总纲（v1.0 文档整理合并版：数据流/双库/维度/注入/鉴权/备份 + 接口契约/数据模型/LLM/模板/提示词/分词 并入）** |
 | `docs/design/SGME-实施变更记录-v0.9.md` | **实施变更记录（B 系列，含运维/排障知识）** |
 
 | `docs/design/SGME-L0文件格式-v0.1.md` | 原始层文件格式/增量段 |
@@ -142,7 +142,7 @@
 3. **官方权威**：涉及工具/SDK/API/框架 → 官方文档为准（不猜格式）
 4. **联网兜底**：实现前先找轮子——GitHub → 网页 → 库文档，优先成熟方案；页面抓取用专业工具（如 Firecrawl），不用裸 curl
 5. **三连败升级**：同一问题重试 3 次无效 → 停止重试，按 官方文档 → GitHub Issues → 社区 → 重评估方案 升级
-   > wiki 知识库（W1-W7）维护细节见 SGME 技能 `sgme-operations` / 文档 `docs/design/SGME-架构设计-v0.9.md`
+   > wiki 知识库（W1-W7）维护细节见 SGME 技能 `sgme-operations` / 文档 `docs/design/SGME-架构设计-v1.0.md`
 
 ### 验收纪律
 
