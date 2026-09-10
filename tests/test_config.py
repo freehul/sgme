@@ -129,8 +129,10 @@ def test_paths_returns_absolute():
     p = cfg["paths"]
     root = Path(p["project_root"])
     assert root.is_absolute()
-    # 项目根标志文件必须真实存在（llm.yaml 配置目录 + data/raw 目录）
-    assert (root / "config" / "llm.yaml").exists()
+    # 项目根标志文件必须真实存在。注意 config/llm.yaml 是可写覆盖层、不入库
+    # （见变更记录 B163），干净克隆下并不存在，故改用入库必存在的两处作标志。
+    assert (root / "pyproject.toml").exists()
+    assert (root / "sgme" / "resources" / "config" / "llm.yaml").exists()
     assert "data_dir" in p and "raw_dir" in p
     assert Path(p["data_dir"]).is_absolute() and Path(p["raw_dir"]).is_absolute()
 
