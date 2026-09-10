@@ -2749,3 +2749,27 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 验证 | ①隐私扫描：新增文件无密钥／真名／用户目录路径（仅 2 处内网地址，同 `docs/` 既有惯例）；②语法与运行自检通过；③**真实运行验证**——重跑 longmemeval（`--limit 2`）由该脚本经 `eval\` 路径成功拉起，日志心跳正常、双端点生效（`SGME_REFINE_CTX=131072`）。 |
 | 影响面 | 评测环境不再依赖 `tmp/`；`git clone` 后即可复跑评测。**运维提示**：启动器路径变更后，旧 `.bat` 若仍指向 `tmp\` 会报"找不到文件"，需同步改路径。 |
 | 关联 | B164（L1 空结果重试，本次重跑所验证的修复）；`eval/longmemeval_eval.py`；`docs/design/SGME-评测框架设计-v0.1.md`；技能 `sgme-engine-development`。 |
+
+### B166. 双机本地提炼评测链路：refined 臂 recall 恒 0 修复 + 搜索层裸连接兜底（2026-09-11）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 目标：让 LongMemEval 评测的 refined 臂**脱离云端 LLM** 跑通——PC（`192.168.10.130:8123`）跑 `qwen3.8-9b-distill` 做 L1 提炼（关思考 / 128K / max_tokens 16K，见 B163），笔记本（`192.168.10.141:1014`）跑 `bge-m3-legal-euro-r7`（1024 维）做向量，评测在笔记本执行。链路搭起后出分异常：**`recall.refined` 恒为 0.0**。 |
+| 缺陷一（召回映射失配） | `eval/longmemeval_eval.py::_resolve_sessions`：`memory_sources.source_ref` 实际形如 `<file_id>:<seq>`（带段号），而 `fileid2sid` 字典的键是**裸 `file_id`**。原样查表**永远落兜底分支**，sids 与 ground-truth 永不相交 → recall 恒 0。修法：查表前**先剥 `:seq` 段号**（`70a3dcf`）。实测 q1：原样查表为空，剥后缀后命中 `answer_280352e9`，单题 recall 0.0 → 1.0。 |
+| 缺陷二（裸连接 dict 崩溃） | `sgme/data/search/__init__.py` 四处 `[dict(r) for r in cur.fetchall()]`：连接**未设 `row_factory`** 时 row 是元组，`dict(tuple)` 按 `(k, v)` 解包失败 → `ValueError: dictionary update sequence element #0 has length 36; 2 is required`。生产连接设了 row_factory（`db.py:399`）故线上无感，**裸连接调用必崩**（评测侧直连库即中招）。修法：新增 `_rows_to_dicts`，row_factory 未设时按 `cur.description` 自行组 dict（`37891d6`）；新增 `tests/test_search_bare_conn.py` 锁行为。 |
+| 修复 | ①`_resolve_sessions:550/553` 剥段号（并补 `--run-id` 支持，断点续跑才能真正命中 `refine_state.json`——原实现每次新建 run_id，`db_exists` 恒 False 导致删库重建；复核实测重算 45 分钟 → 25 秒）②4 处 `dict(r)` → `_rows_to_dicts` 兜底。 |
+| 验证 | **干净对照**：全新 `run_id=20260911T003447` + **不加 `--resume`**（`refine_file` 双游标 `last_refined_seq` + `content_hash` 会跳过已提炼，故必须新 run）→ **`recall@8` 0.5 → 1.0**；q1 `e47becba` = 1.0，q2 `118b2229` = **0.0 → 1.0**（目标题抬起）；J-score 1.0、F1 1.0、NO-CONTEXT 0.0、errors 0。测试：搜索模块新用例 + L1/提炼宽回归全绿。 |
+| 诚实边界 | **n = 2 单块样本**。1.0 只证明「被丢弃的答案现能被救回」这一件事成立，**不可外推**为全量 LongMemEval 能到 1.0；模型仍有随机性，本次为单次运行。真正可迁移的是**机制**：段号剥除 + 裸连接兜底，对任意库与任意连接方式都生效。 |
+| 关联 | B163（关思考）/ B164（L1 空结果重试——本次重跑的 q2 正是该修复接住：日志「L1 空结果 (attempt=1)，加提示重试」**22 次**）/ B165（启动器迁入 `eval/`）/ B167（同批的进度监视服务）；Backlog T-158（ST-40）；技能 `sgme-engine-development`。 |
+
+### B167. 评测长跑进度监视服务：真进度信号 + 心跳卡死检测（2026-09-11）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 长跑评测约 42–75 分钟，日志此前只有一条 20 秒心跳，**无法分辨「正在干活」与「已卡死」**——当日实测 `.bat` 静默失败两次，只能靠进程表确认没跑起来。 |
+| 改动 | 新增 **`eval/progress_server.py`**（约 200 行）+ **`eval/progress.html`**（约 122 行），零新依赖（stdlib `http.server`）。 |
+| 机制 | ①**只读**评测产物，DB 一律 `mode=ro` 打开，绝不写被监视对象；②`/status` 返 JSON、`/` 托管网页、`--once` 供调试；③网页 2 秒轮询，展示每臂提炼进度条 + L0 落盘 / 记忆 / 标签 / 向量 / L2 场景计数 + 日志尾 + 心跳状态灯（绿=运行中，红=心跳陈旧 >90 秒判卡死）。 |
+| 判断口径 | **看真产出，不看心跳**：心跳只证明进程在循环，`raw_files` / `memories` / `memory_vectors` 持续增长才证明链路真在产出（实测 q2 记忆 59 → 68 → 84）。L2 场景计数单独看，因其失败被设计为「不阻塞」。 |
+| 验证 | `/status` HTTP 200、`/` HTTP 200；实测进度快照：11.3 min → q1 记忆 132 / q2 139；19.3 min → q1 208 记忆 / 331 标签 / 203 向量、q2 190 / 280 / 190。浏览器入口 `http://192.168.10.141:8899/`。 |
+| 运维定位 | **一次性调试工具**，用完可关，**不加自启动**（服务操作铁律：加自启动须先问主人）。 |
+| 关联 | B166（同批修复）；`eval/run_eval_env.py`（B165）；技能 `sgme-engine-development`（已沉淀工具用法 + 真进度信号源表）。 |
