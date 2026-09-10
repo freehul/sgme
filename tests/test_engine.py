@@ -547,3 +547,33 @@ def test_refine_file_records_l1_run_and_prompt_versions(raw_dir, mem_conn, sessi
     assert runs[0]["file_id"] == fid
     assert runs[0]["status"] == "ok"
     assert runs[0]["memories_count"] == 1
+
+
+def test_normalize_small_sample_no_warn(cfg, mem_conn):
+    """样本量 < 门槛时即使丢弃率 100% 也不告警（小样本假阳性防护）。"""
+    alias_map = memory_dao.build_alias_map(mem_conn)
+    registry_names = {d["id"]: d["display_name"] for d in cfg["dimensions"]}
+    _, stats = normalize.normalize_batch(["完全不存在的维度"], alias_map, registry_names)
+    assert stats.drop_rate == 1.0
+    assert stats.total == 1
+    assert normalize.should_warn(stats) is False
+
+
+def test_normalize_min_samples_boundary(cfg, mem_conn):
+    """样本量 4（差 1 到门槛）不告警；样本量 5 且超阈值才告警。"""
+    alias_map = memory_dao.build_alias_map(mem_conn)
+    registry_names = {d["id"]: d["display_name"] for d in cfg["dimensions"]}
+
+    # total=4, drops=2 → 50% 丢弃，但样本量不足
+    _, s4 = normalize.normalize_batch(
+        ["技术栈", "身份", "未知A", "未知B"], alias_map, registry_names,
+    )
+    assert s4.total == 4 and s4.drop_rate == 0.5
+    assert normalize.should_warn(s4) is False
+
+    # total=5, drops=3 → 60% 丢弃且达门槛
+    _, s5 = normalize.normalize_batch(
+        ["技术栈", "身份", "未知A", "未知B", "未知C"], alias_map, registry_names,
+    )
+    assert s5.total == 5 and s5.drop_rate == 0.6
+    assert normalize.should_warn(s5) is True

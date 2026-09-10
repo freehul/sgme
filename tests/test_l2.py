@@ -536,3 +536,79 @@ def test_refine_file_triggers_l2(raw_dir, mem_conn, session_conn, cfg):
     assert scene["status"] == "active"
     assert scene["heat"] == 1
     assert "Rust" in scene["content"]
+
+
+# ---------- B168 解析容错 ----------
+
+def test_parse_l2_output_unbalanced_brackets():
+    """外层数组缺 "]"（实测真实主因）→ 括号平衡修复后解析成功。
+
+    形态取自真实失败样本：json 报 Expecting ',' delimiter 且位置黏在
+    文本末尾，实为结构未闭合（json.loads('{"a":1') 同样报此错）。
+    """
+    text = ('[{"action":"create","target_scene_id":"s1",'
+            '"merged_content":"# x","memory_ids":["m1"],"merged_from":[]}')
+    actions = l2.parse_l2_output(text)
+    assert len(actions) == 1
+    assert actions[0]["action"] == "create"
+
+
+def test_parse_l2_output_extra_closing_brace():
+    """末尾多出一个 "}"（实测另一形态）→ 丢弃多余闭合符后解析成功。"""
+    text = ('[{"action":"create","target_scene_id":"s1",'
+            '"merged_content":"# x","memory_ids":["m1"],"merged_from":[]}]}')
+    actions = l2.parse_l2_output(text)
+    assert len(actions) == 1
+    assert actions[0]["target_scene_id"] == "s1"
+
+
+def test_parse_l2_output_bracket_in_content_not_misjudged():
+    """正文里含未配对的括号（引号内）→ 不计入配平，不被误改。"""
+    text = ('[{"action":"create","target_scene_id":"s1",'
+            '"merged_content":"代码用 { 和 ] 混排，还有半句 \\"引号",'
+            '"memory_ids":["m1"],"merged_from":[]}]')
+    actions = l2.parse_l2_output(text)
+    assert len(actions) == 1
+    assert "{ 和 ]" in actions[0]["merged_content"]
+
+
+def test_parse_l2_output_missing_comma_after_string_value():
+    """字符串值后直接跟下一个键（漏逗号）→ 自动补逗号，解析成功。
+
+    实测最高频场景：merged_content 长正文后漏逗号（评测日志 88 次失败全为此类）。
+    """
+    text = ('[{"action":"create","target_scene_id":"s1",'
+            '"merged_content":"# x" "reason":"r"}]')
+    actions = l2.parse_l2_output(text)
+    assert len(actions) == 1
+    assert actions[0]["action"] == "create"
+    assert actions[0]["merged_content"] == "# x"
+    assert actions[0]["reason"] == "r"
+
+
+def test_parse_l2_output_missing_comma_between_array_items():
+    """数组元素之间漏逗号 → 自动补逗号。"""
+    text = ('[{"action":"create","target_scene_id":"s1",'
+            '"merged_content":"# x","reason":"r",'
+            '"memory_ids":["m1" "m2"]}]')
+    actions = l2.parse_l2_output(text)
+    assert len(actions) == 1
+    assert actions[0]["action"] == "create"
+
+
+def test_parse_l2_output_missing_comma_multiple():
+    """多处漏逗号（含对象之间）→ 全部修复。"""
+    text = ('[{"action":"create","target_scene_id":"s1",'
+            '"merged_content":"# x" "reason":"r"},'
+            '{"action":"update","target_scene_id":"s2",'
+            '"merged_content":"# y" "reason":"r2"}]')
+    actions = l2.parse_l2_output(text)
+    assert len(actions) == 2
+    assert [a["action"] for a in actions] == ["create", "update"]
+    assert actions[1]["reason"] == "r2"
+
+
+def test_parse_l2_output_comma_repair_has_bounded_attempts():
+    """非缺逗号的坏 JSON 仍抛 L2Error（修复器不吞错、不死循环）。"""
+    with pytest.raises(l2.L2Error):
+        l2.parse_l2_output('[{"action":"create" "target_scene_id":"s1"')
