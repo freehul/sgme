@@ -2788,3 +2788,28 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 验证 | L2 单测 28 全绿；提炼链路回归 121 全绿；**真实样本端到端 15/15 解析成功**（修复前 3 个失败）；完整链路 e2e 10/11 步 OK（唯一失败为 `backup/restore` 的 Windows 文件锁 `memory.db-wal`，与本改动无关）；Gateway 日志零 L2 告警。 |
 | 诚实边界 | ① 采样 n=15 单模型单机，不足以外推为全量成功率；② 括号平衡是**症状修复**——模型为何产出不平衡 JSON（是否与提示词 schema 示例含非法 JSON 注释/省略号有关）**未验证**，仅作推测；③ 三个失败样本已于本轮逐字符定性（2 例多余闭合符、1 例缺闭合符），`sample_05` 之所以能绕过 `find("[")`/`rfind("]")` 切片逻辑，是因为多余 `}` 出现在**中间**而非尾部；④ e2e 未真正触达 L2 解析路径（本地库场景表缺失），故"无回归"以单测+回归+真实样本为准。 |
 | 运维影响 | 无配置变更、无接口变更。L2 解析失败率预期显著下降，场景层注入覆盖改善。 |
+
+### B169. 向量端点去出厂硬编码 + 连通性测试自足（2026-09-11）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 全量测试稳定 1 失败（`tests/test_vector_connectivity.py::test_connectivity_unconfigured`：`assert r["available"] is False` → `assert True is False`）。用 `.pytest_cache/v/cache/lastfailed`（旧解释器轮次已含该用例）+ 清空 `SGME_EMBED_*` 后单跑仍失败，双重证明**与解释器换代无关、也非环境变量之过**。 |
+| 根因 | 出厂只读基线 `sgme/resources/config/sgme.yaml` 的 `search.vector` **硬编码了本机局域网地址** `http://192.168.10.10:11434/v1` 且 `enabled: true`（来源 T-142 打包修复 `5df2985`）。测试假设「默认没配端点」，实际配了 → 探测真去连 NAS ollama 返 200 → 断言崩。`conftest` 只隔离配置文件路径，**隔离不掉包内出厂默认**。 |
+| 影响面 | 可移植性缺陷：任何人 `pip install` 后（无覆盖层）开箱即指向其网络中不存在的地址；本机看不出问题只因恰好同网段。 |
+| 改动 1（基线） | `search.vector`：`enabled: true→false`、`base_url` 局域网地址 → `''`（空=未配置；`operations/health.py:113` 返回「向量端点未配置」且**不发 anomaly_warn**——未配置不算失效）。**保留** `fallbacks`（siliconflow 公网地址，非局域网，仍是有效兜底）。 |
+| 改动 2（用例自足） | `test_connectivity_unconfigured`：改为 `copy.deepcopy(cfg)` 后显式构造「缺 base_url/model」的 vector 段，验证「缺字段时的行为」——任何机器、任何覆盖层配置下都成立。 |
+| 改动 3（连带修） | `tests/test_search_v04.py` 的 `cfg` fixture 原先只显式补 `base_url`、**隐式依赖出厂默认的 `enabled: true`** → 基线改后 3 个用例失败（`test_search_memories_with_rrf` / `test_recall_routes_consistency_with_search_memories` / `test_recall_routes_no_fusion`）。现显式置 `enabled: True`，测试自备启用态。 |
+| 部署侧影响 | **生产零影响**：NAS 容器有可写覆盖层 `/vol1/1000/Docker/sgme/data/config/sgme.yaml`（`SGME_HOME=/data`），其 `search.vector` 自带 `enabled: true` + NAS ollama 端点（实测确认）；源码开发态本机新增 `config/sgme.yaml`（改前基线的完整副本，`.gitignore` 已忽略）保住本机行为。⚠️ **覆盖层是整文件替换不是深合并**（`load_sgme_config` 命中覆盖层即不再读包内基线）→ 覆盖层必须是完整副本，改一个字段也要复制整份。 |
+| 测试 | `tests/test_vector_connectivity.py` + `test_config*.py`（5 文件）**63 通过 / 0 失败**；检索/健康/运维相关 23 文件**全绿**；**全量 pytest 2277 通过 / 0 失败**（对照本轮重建后 2276 通过 / 1 失败）。新装形态实测：`SGME_HOME=<空目录>` → `enabled=False base_url=''`，探测返回「向量端点未配置」。 |
+| 诚实边界 | ① 基线内 `skills.source_dirs: /app/cache/skills/` 等**容器专属路径仍在**，同属「出厂默认绑死部署态」问题，本轮未动（超出批准范围）；② 覆盖层「整文件替换」是既有设计约束，本轮仅以注释+文档标注，未改代码。 |
+
+### B170. 环境依赖项目级整改（基准解释器收拢 + 锁版本 + 引导脚本）（2026-09-11）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户指出「项目的环境依赖必须是项目级、不依赖系统环境」被违反：SGME / SCSM 的 `.venv` 只是空壳，`pyvenv.cfg` 的 `home` 指向第三方工具 WorkBuddy 自带的 `C:\Users\LEO\.workbuddy\binaries\python\versions\3.13.12`，PATH 上有 5 个 python 导致漂移。**根因=项目从未声明基准解释器**。 |
+| 改动 1（两项目重建） | `pip freeze` → `requirements.txt`（SGME 63 行 / SCSM 31 行，含基准解释器与锁定日期头注）→ 旧 venv 改名 `.venv.bak-20260911`（**保留不删**）→ 以 `D:\AI\python\cpython-3.12.13-windows-x86_64-none` 重建 → `pip install -r requirements.txt --find-links D:/AI/python/sgme-wheels` → `pip install --no-deps -e .`。验收：两项目 `home`/`version` 均指向仓库内 3.12.13；SGME 元数据 1.2.0、58 包装成（全 cp312 轮）。 |
+| 改动 2（解释器仓收拢 A 批） | ① 设用户级 `UV_PYTHON_INSTALL_DIR=D:\AI\python`；② uv 私有仓 3 个版本（3.9.25 / 3.12.11 / 3.13.14）+ `python-sdk\python3.13.2` 迁入 `D:\AI\python`；③ 原件改名保留 `%APPDATA%\uv\python.old-20260911`（207M，未删）；④ **原路径留目录联接（junction，免管理员）** → 依赖老路径的 21 个 venv 全部不掉线。 |
+| 改动 3（防复发） | 新增 `scripts/bootstrap_venv.bat`（只认 `D:\AI\python`，找不到即报错退出，**绝不静默使用 PATH 上的 python**；GBK+CRLF，护栏实测通过）；`AGENTS.md` 技术栈补「基准解释器」规则；`.gitignore` 增加 `.venv.bak-*/`。 |
+| 验收实证 | 3 个版本 `python -V` + `import ssl, sqlite3` 全 ok；`python.exe` md5 源/目标一致；`uv python dir` = `D:\AI\python`；抽 5 个依赖老路径的真实 venv 实跑 ok；`python-sdk` 经联接 `Python 3.13.2`。 |
+| 运维影响 | 新环境搭建统一走 `scripts/bootstrap_venv.bat`；解释器只在 `D:\AI\python` 落地（缺版本也装这里）。⚠️ 未决：`%APPDATA%\uv\python.old-20260911`（207M）备份待用户决定何时删。 |
