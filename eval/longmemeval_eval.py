@@ -547,7 +547,11 @@ def _resolve_sessions(mem_conn, retrieved_ids: list[str], fileid2sid: dict) -> s
         ).fetchall()
         if rows:
             for (sr,) in rows:
-                sids.add(fileid2sid.get(sr, sr))
+                # ⚠️ source_ref 形如 "<file_id>:<seq>"（段号），而 fileid2sid 的键是裸
+                # file_id。不剥段号会永远落到兜底分支 → sids 与 gt 永不相交 → recall 恒 0
+                # （2026-09-10 T-150 实测：q1 原样查空、剥后缀命中 answer_280352e9）。
+                base = sr.rpartition(":")[0] or sr
+                sids.add(fileid2sid.get(base) or fileid2sid.get(sr) or sr)
         else:
             sids.add(mid)  # 兜底：无 source 记录时直接用 memory_id
     return sids
@@ -842,7 +846,9 @@ def run(args) -> dict:
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     out_dir = Path(args.output).resolve()
     # per-run temp dir: avoid db files locked by an old process (WinError 32)
-    run_id = datetime.now().strftime("%Y%m%dT%H%M%S")
+    # --run-id 指定时复用既有目录，断点续跑才能真正命中 refine_state.json
+    # （2026-09-10 T-150：默认时间戳导致 q_out/RAW_DIR 每次新建 → 断点永不命中 → 删库重建）。
+    run_id = args.run_id or datetime.now().strftime("%Y%m%dT%H%M%S")
     (out_dir / "tmp" / run_id).mkdir(parents=True, exist_ok=True)
     cp_path = out_dir / "checkpoint.jsonl"
     fp = _fingerprint(args, arms, len(ds))
@@ -973,6 +979,8 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--offset", type=int, default=0, help="起始题号，用于定向抽样特定题型")
     ap.add_argument("--arms", default="bm25,hybrid", help="bm25,hybrid,refined（refined=跑完整 L0→L1→L1.5 生产链路）")
+    ap.add_argument("--run-id", default=None,
+                    help="复用指定 run_id 的 tmp/raw 目录（断点续跑必需；默认按时间戳新建）")
     ap.add_argument("--refine-backend", default="cloud", choices=["cloud", "local"],
                     help="refined 臂提炼后端：cloud=SGME 生产链(agnes→siliconflow，可靠但限速0.5rps)；local=本地 LM Studio 9B(快但英文 L1 不可靠)")
     ap.add_argument("--refine-stage", default="all", choices=["all", "ingest", "refine", "eval"],
