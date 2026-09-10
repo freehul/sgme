@@ -2705,3 +2705,20 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 遗留（已记录未做） | ①`_split_oversized` 的 1 条消息重叠是重复记忆的直接来源，而合并仅按 `content` 精确去重（`l1.py:424-428`）→ 是否"去重叠"待观察（6000 后仅影响 6% 会话，收益 < 风险，本轮不做）；②`l1.overlap` 在回合路径下为死配置，本轮只加注释未删（删除需联动 `SECTION_KEYS`/校验/传参/热更新契约）；③提炼模型偶发臆造已废弃维度（`projects`/`tasks`/`episodic`，丢弃率 0.5%~3.2%）建议提示词显式禁止；④`prune._truncate` 只留开头，与"前 4000 后 4000"设计意图不符。 |
 | 回滚 | 生产：`python tmp/apply_chunk6000.py 5000`（热更新一条命令，覆盖层备份 `sgme.yaml.bak-20260910` 亦可直接还原）；仓库：git revert 本次配置提交。 |
 | 关联 | Backlog T-157（ST-41）；B8（被更新的档位依据）；T-150（同类覆盖层漂移事故，本条的"覆盖层=生产真值"认知来自该案）；T-34（用户质疑"chunk_size 是否固定大小"经代码核实为回合感知）。 |
+
+### B163. 本地提炼模型关闭思考：模型级配置 `enableThinking`（评测环境口径，2026-09-10）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户定评测口径：refined 臂用 PC 本地 `qwen3.8-9b-distill` 提炼（架构 qwen35），**关闭思考**、上下文 **128K**、`max_tokens` **16K**。 |
+| 缺陷 | 本地 9B 走生产提示词做 L1 提炼时**正文为空**（`content=""`），上层报「JSON 解析失败: 空输出」/「无法从输出中提取 JSON 数组」。LM Studio 服务日志（9-10 当天 435 次请求）实测**空正文 67 次 = 15.4%**，且**输入越大越糟**：8–16K token 桶 39.1%、16–32K 桶 66.7%。原注释误判为「模型思考特性」，旧对策是「加大 max_tokens 留余量」——治标。 |
+| 根因 | 思考内容 `reasoning_content` 与正文 `content` **共用 `max_tokens` 预算**，思考把预算吃光 → 正文为空（日志中思考 token 常见 16,381，即吃满上限）。**加大 max_tokens 是反效果**：8192 档跑满率 5.9%，16384 档反而 **10.7%**（给多少烧多少）。 |
+| 排查（三条路只有一条通） | ①请求侧 `extra_body={"enable_thinking": false}`（`eval/longmemeval_eval.py:330`）→ **LM Studio 直接忽略**（官方 bug #1990：`reasoning_content` 仍吃光预算、`content` 为空）；②`chat_template_kwargs` / 模型目录 `model.yaml` → 同样无效；③**模型级默认配置 `llm.prediction.reasoning.enableThinking = false` → 有效**。另核实 `lms load` 无任何推理/模板参数（命令行关不掉）。 |
+| 机制 | `enableThinking` 即 LM Studio 传给模型 **Jinja 模板的变量 `enable_thinking`**，模板据此决定是否注入思考 token（同机 `config-presets/gemma4.preset.json` 模板内明写 `{%- if enable_thinking is defined and enable_thinking -%}<|think|>`）→ **官方正路，非绕过手段**。 |
+| 落点 | `~/.lmstudio/.internal/user-concrete-model-default-config/<发布者>/<模型>/<gguf>.json` 的 `operation.fields` 增加 `{"key": "llm.prediction.reasoning.enableThinking", "value": false}`（写法照抄同机官方 `qwen/qwen3.5-9b.json`）。⚠️ **不是** `config-presets/*.preset.json`（本机该模型预设 `load.fields` 为空、无推理字段）。改动前备份 `.bak-20260910`。 |
+| 工程化 | LM Studio 内部目录**不属任何版本管理**，换机/重装即丢 → 升级为项目脚本 **`scripts/lmstudio_disable_thinking.py`**（幂等、自动备份、支持 `--list`/`--enable`/`--restore`），纳入仓库随版本管理。 |
+| 生效条件 | **改完必须重载模型**：`lms unload --all` → `lms load qwen3.8-9b-distill --gpu max -c 262144 --parallel 2 -y` → `lms ps` 回显 `CONTEXT 262144 / PARALLEL 2`（= 每路 128K）。⚠️ 在 LM Studio 界面手改该模型设置可能覆盖文件改动（有备份可回滚）。 |
+| 验证 | ①`tmp/verify_no_think.py`：两次探测 `usage.completion_tokens_details.reasoning_tokens == 0`、`reasoning_content` 空、正文正常（exit 0）；②`tmp/verify_l1_no_think.py`：真实 6000 字符生产块 + 真实提示词 → 8051 字符提示 / 1.0 秒返回 / JSON 解析成功；③**AB 对照**（`tmp/ab_thinking_test.py`，同一信息密集块、max_tokens 对等 4096）：关思考 **3 条记忆 / 3.0 秒 / 0 思考 token** vs 开思考 **1 条 / 4.7 秒 / 254 思考 token** → **质量未降反升**。 |
+| 影响面 | 空正文率 15.4% → **0**；单块耗时由数分钟（9 tok/s 烧 16K token ≈ 30 分钟）降至 **3.0 秒**。 |
+| 诚实边界 | ①AB 对照是**单块 n=1**，信号强但样本小；②「总 262144 + 并行 2」按 llama.cpp 语义读作每路 128K，无论 LM Studio 用何种 KV 分配，总量 262144 都保证单请求 ≥128K；③早前「关思考后只出 1 条记忆」的疑点已结清——那块内容是 **tool 搜索结果噪音**（1 条为正确行为），换信息密集块才有判别力；④6000 分块档在**本地 9B** 上未单独实测（此前 6000 档实验跑的是云免费链）；⑤`.lmstudio` 路径为 Windows 专有，Linux/macOS 端点为 `~/.lmstudio` 同构目录。 |
+| 关联 | B162（chunk_size 6000，评测环境分块档）；T-157（ST-41）；`docs/design/SGME-评测框架设计-v0.1.md`；技能 `pc-lmstudio-local`（已沉淀操作步骤与机制，并更正服务端口 1014 → **8123**）。 |
