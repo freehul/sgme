@@ -323,11 +323,12 @@ def _inject_local_refine(cfg: dict) -> None:
         "context_window": int(os.environ.get("SGME_REFINE_CTX", "32768")),
         "api_key_env": None,
         "max_tokens": 16384,
-        # Qwen3.6 是思考模型：无论是否 enable_thinking:false，本 uncensored 变体
-        # 仍会先思考 ~14K 字符再输出 JSON。思考 token 与 max_tokens 共用预算，
-        # 4096 会中途截断 JSON（报 "Expecting ',' delimiter"）。实测 8192 可完整吐出，
-        # 这里给 16384 留足余量，防大块提炼被截断。
-        "extra_body": {"enable_thinking": False},
+        # 思考已由模型级配置关闭：LM Studio 的
+        # `llm.prediction.reasoning.enableThinking = false`（脚本
+        # scripts/lmstudio_disable_thinking.py 落盘，见变更记录 B163）。
+        # 请求侧 enable_thinking / extra_body 均被 LM Studio 忽略（官方 issue #1990），
+        # 故此处不再携带——留着只会让人误以为它是生效开关。
+        # max_tokens 16384 保留作 JSON 完整性的余量（实测跑满率约 10%，正文实际仅 ~1K）。
     }
     cfg.setdefault("llm", {})
     # 直接用本地节点 + rule 兜底（不回退云链，避免 429 干扰）
@@ -408,7 +409,8 @@ def render_session_l0(turns: list, date: str | None, seq_base: int = 0) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def open_question_db_refined(out_dir: Path, q: dict, dims, aliases, *, cfg: dict):
+def open_question_db_refined(out_dir: Path, q: dict, dims, aliases, *, cfg: dict,
+                             stage: str = "all"):
     """Refined 臂：跑完整 SGME 生产链路。
 
     与 direct 臂（insert_memory 整块原文）不同，这里每条 session 走
@@ -418,11 +420,16 @@ def open_question_db_refined(out_dir: Path, q: dict, dims, aliases, *, cfg: dict
     fileid2sid：file_id → session_id 映射，供召回计算把「记忆」还原回「来源 session」
     （refined 臂记忆的 memory_id 是 UUID，不等于 session_id；direct 臂 memory_id==sid）。
     """
-    for name in ("memory.db", "session.db", "wiki.db"):
-        for suffix in ("", "-wal", "-shm"):
-            p = Path(str(out_dir / name) + suffix)
-            if p.exists():
-                p.unlink()
+    # T-150 分步：ingest/all 删库重建；refine/eval 阶段保留既有库（L0/记忆/映射全在磁盘，
+    # 由 refine_state.json 的 sid 断点决定跳过哪些），只在库不存在时初始化
+    state_path = out_dir / "refine_state.json"
+    db_exists = (out_dir / "memory.db").exists() and state_path.exists()
+    if not db_exists:
+        for name in ("memory.db", "session.db", "wiki.db"):
+            for suffix in ("", "-wal", "-shm"):
+                p = Path(str(out_dir / name) + suffix)
+                if p.exists():
+                    p.unlink()
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(out_dir)
     memory_dao.import_registry(mem_conn, dims, aliases)
     init_fts(mem_conn)
@@ -432,6 +439,25 @@ def open_question_db_refined(out_dir: Path, q: dict, dims, aliases, *, cfg: dict
     fileid2sid: dict[str, str] = {}
     seen: set[str] = set()
     n_sessions = n_refined = n_err = 0
+
+    # ── T-150 分步：session 级断点状态（锚 = session_key/sid，fid 是 uuid 跨库不稳定）──
+    state: dict = {"ingested": [], "refined": []}
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            logger.info("[refined] 恢复 session 级断点: ingested=%d refined=%d",
+                        len(state.get("ingested", [])), len(state.get("refined", [])))
+        except Exception:
+            state = {"ingested": [], "refined": []}
+
+    def _save_state() -> None:
+        tmp = state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(state_path)
+
+    # 每阶段都重放 append_l0（幂等/零 LLM/秒级）：既完成 ingest，又重建 fid↔sid 映射
+    refined_set = set(state.get("refined", []))
+    todo_refine: list[str] = []
     for i, turns in enumerate(sessions):
         sid = session_ids[i] if i < len(session_ids) else f"session_{i}"
         if sid in seen:
@@ -457,12 +483,51 @@ def open_question_db_refined(out_dir: Path, q: dict, dims, aliases, *, cfg: dict
             fid = info.get("file_id")
             if fid:
                 fileid2sid[fid] = sid
-                sgme_pipeline.refine_one(fid, mem_conn, session_conn, cfg)
-                n_refined += 1
+                if sid not in state["ingested"]:
+                    state["ingested"].append(sid)
+                if sid not in refined_set:
+                    todo_refine.append(fid)
         except Exception as e:  # noqa: BLE001
             n_err += 1
-            logger.warning("refined 提炼失败 session=%s: %s", sid, str(e)[:160])
-    mem_conn.commit()
+            logger.warning("L0 落盘失败 session=%s: %s", sid, str(e)[:160])
+    if set(state["ingested"]) != seen:
+        state["ingested"] = sorted(seen)
+    _save_state()
+
+    if stage == "ingest":
+        mem_conn.commit()
+        stats = {"sessions": n_sessions, "refined": 0, "errors": n_err,
+                 "ingested": len(state["ingested"])}
+        return mem_conn, session_conn, wiki_conn, fileid2sid, stats
+
+    # ── Stage 2: refine（session 级断点，逐文件幂等；重放后 fid 已重建）──
+    if stage in ("all", "refine"):
+        logger.info("[refined] 待提炼 session: %d / %d", len(todo_refine), len(fileid2sid))
+        done_n = 0
+        for fid in todo_refine:
+            sid = fileid2sid.get(fid, fid)
+            try:
+                sgme_pipeline.refine_one(fid, mem_conn, session_conn, cfg)
+                state["refined"].append(sid)
+                refined_set.add(sid)
+                n_refined += 1
+                done_n += 1
+                if done_n % 5 == 0:
+                    _save_state()
+                    logger.info("[refined] 进度 %d/%d", len(refined_set), len(fileid2sid))
+            except Exception as e:  # noqa: BLE001
+                n_err += 1
+                logger.warning("refined 提炼失败 file=%s: %s", fid, str(e)[:160])
+        _save_state()
+        mem_conn.commit()
+        if stage == "refine":
+            stats = {"sessions": n_sessions, "refined": n_refined, "errors": n_err,
+                     "refined_total": len(state["refined"])}
+            return mem_conn, session_conn, wiki_conn, fileid2sid, stats
+    else:
+        n_refined = len(state.get("refined", []))
+
+    # ── Stage 3: embed（eval/all 阶段）──
     embed = embed_corpus(mem_conn, cfg, workers=6, batch_size=32)
     stats = {"sessions": n_sessions, "refined": n_refined, "errors": n_err, "embed": embed}
     return mem_conn, session_conn, wiki_conn, fileid2sid, stats
@@ -586,7 +651,8 @@ def _process_question(q, qi, args, arms, cfgs, dims, aliases, llm_fn, run_id, ou
         fileid2sid = {}
         if arm == "refined":
             mem_conn, sc, wc, fileid2sid, stats = open_question_db_refined(
-                q_out, q, dims, aliases, cfg=cfg)
+                q_out, q, dims, aliases, cfg=cfg,
+                stage=getattr(args, "refine_stage", "all"))
         else:
             mem_conn, sc, wc = open_question_db(
                 q_out, q, dims, aliases, vector=vector, cfg=cfg)
@@ -909,6 +975,8 @@ def main() -> None:
     ap.add_argument("--arms", default="bm25,hybrid", help="bm25,hybrid,refined（refined=跑完整 L0→L1→L1.5 生产链路）")
     ap.add_argument("--refine-backend", default="cloud", choices=["cloud", "local"],
                     help="refined 臂提炼后端：cloud=SGME 生产链(agnes→siliconflow，可靠但限速0.5rps)；local=本地 LM Studio 9B(快但英文 L1 不可靠)")
+    ap.add_argument("--refine-stage", default="all", choices=["all", "ingest", "refine", "eval"],
+                    help="refined 臂分步执行（T-150）：ingest=只写 L0（零 LLM）；refine=只提炼（session 级断点续跑）；eval=只评测；all=一体跑。分步可随时停止，中断损失=单 session")
     ap.add_argument("--primary", default=None, help="QA 用哪条臂的检索结果")
     ap.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     ap.add_argument("--qa", action="store_true", help="启用 LLM 生成 + judge")
