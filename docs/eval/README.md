@@ -144,20 +144,35 @@ comparable with the other arms.
 - `--refine-backend cloud` (default) uses SGME's **real production refinement
   chain** (`agnes-2.5-flash`) — faithful and reliable: measured **~3.8 structured
   memories + ~0.7 scenes per session** (Q1: 54 sessions -> 169 memories, 38 scenes).
-- `--refine-backend local` points refinement at local LM Studio. **Not usable
-  today**: only the 9B model fits in VRAM (RTX 4080S 16GB, ~13GB taken, ~3GB
-  free), and it fails L1 JSON extraction on English sessions (~1 memory/session
-  with frequent parse failures). 12B/27B models cannot be loaded.
+- `--refine-backend local` points refinement at a local LM Studio endpoint. **Usable since
+  2026-09-11**: the 9B distill model runs on the PC (`-c 131072 --parallel 4`, ctx 32K on
+  the SGME side), vector model co-resident on the same endpoint (~0.6 GB extra). See
+  `docs/design/SGME-实施变更记录-v0.9.md` B172/B173/B174 for the load-slot semantics
+  (**`-c` is the *total* KV pool shared by concurrent requests** — `concurrency × prompt
+  tokens ≤ -c`), the endpoint watchdog, and the measured economics:
+  **~280-310 LLM calls and ~2.6M prompt tokens per question** (≈80 min wall per question
+  at 4-way concurrency; prefill 3.3K tok/s, decode 143 tok/s on an RTX 4080S).
 
-**Blocker — throughput**: refinement runs at **~60 s/session** (~55-60s measured).
-A question needs ~50 sessions, so:
+**Measured refined-vs-direct gap (2026-09-12, 15-question A/B, same questions)**: the
+`refined` arm reaches recall@8 **0.51** vs the direct-ingest arm's **0.98** (answered
+5/15 vs 12/15) — the production chain's distilled memories are semantically further from
+the question wording, so retrieval misses the gold session in ~half of the questions.
+Treat refined numbers as the *production-chain* measurement and direct numbers as the
+*retrieval ceiling*. Session-level aggregation (`--refined-session-k`, default = top-k)
+makes the two arms comparable in information volume, but does **not** close the gap by
+itself (A/B: within ±1-2 questions).
 
-| scope | sessions | wall time |
-|---|---|---|
-Throughput recalibrated 2026-09-02 by a 20-session live benchmark on the real
-cloud chain (agnes-2.5-flash, 0 errors): mean 42.6s / median 28.7s per session,
+**Throughput (local, measured 2026-09-12)**: ~80 min wall per question at 4-way
+concurrency (4 questions in flight on one PC endpoint); **100 questions ≈ 30 h**,
+**500 questions ≈ 6-7 days**. Per question the cost is ~280-310 calls / ~2.6M prompt
+tokens, and the bottleneck is call count × prefill, **not** concurrency (adding slots
+does not raise aggregate throughput on one GPU) — so raising the L1.5 batch budget
+(→ fewer, larger batches) is the main remaining lever.
+
+**Cloud-chain benchmark (2026-09-02, for reference)**: 20-session live benchmark on the
+real cloud chain (agnes-2.5-flash, 0 errors): mean 42.6s / median 28.7s per session,
 3.45 LLM calls/session (L1 chunks 2.13 + L1.5 conflict adjudication ~1.3 as the
-memory store fills up), 4.45 memories/session. Full-500 extrapolation:
+memory store fills up), 4.45 memories/session. Full-500 extrapolation for that chain:
 
 | Scope | sessions | serial wall time | API cost |
 |---|---|---|---|
