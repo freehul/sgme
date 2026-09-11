@@ -22,7 +22,7 @@ from sgme.prompts import BucketCtx, PromptStore
 logger = logging.getLogger("sgme.engine.l1")
 
 # 记忆类型白名单
-VALID_MEMORY_TYPES = {"persona", "episodic", "instruction"}
+VALID_MEMORY_TYPES = {"persona", "episodic", "instruction", "fact"}
 VALID_TIME_VELOCITY = {"static", "dynamic"}
 
 
@@ -112,7 +112,7 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
     - dimensions 非空
     - priority 0-100 钳制
     - time_velocity ∈ {static, dynamic}（否则按维度默认回填）
-    - memory_type ∈ {persona, episodic, instruction}
+    - memory_type ∈ {persona, episodic, instruction, fact}
     - content 非空
     """
     if not isinstance(item, dict):
@@ -442,6 +442,29 @@ def extract_l1(
     return all_memories, "chunked", meta
 
 
+def _lang_mismatch(conversation: str, memories: list[dict]) -> bool:
+    """语言守门：会话以英文（拉丁字母）为主、而记忆以中文为主 → 判为「语言漂移」。
+
+    2026-09-12 LongMemEval 诊断：本地 9B 会把英文会话译成中文记忆（实测约一半记忆
+    如此），而英文语料的问题用英文提问 → BM25 完全失配、向量跨语言匹配更弱，检索
+    命中率腰斩。检出后由调用方带「必须原文语言」提示重试一次。
+    中文会话提炼出中文记忆属正常，不得误报；源会话太短时不下结论。
+    """
+    def _cjk(s: str) -> int:
+        return sum(1 for ch in s if "\u4e00" <= ch <= "\u9fff")
+
+    def _latin(s: str) -> int:
+        return sum(1 for ch in s if ch.isascii() and ch.isalpha())
+
+    src_lat, src_cjk = _latin(conversation), _cjk(conversation)
+    if src_lat < 200 or src_lat < src_cjk * 2:
+        return False  # 源会话不是「英文为主」（短文本/中文会话）→ 不判
+    mem_text = " ".join((m.get("content") or "") for m in memories if isinstance(m, dict))
+    if not mem_text.strip():
+        return False
+    return _cjk(mem_text) > _latin(mem_text)
+
+
 def _extract_l1_chunk(
     conversation: str,
     dimensions: list[dict],
@@ -456,9 +479,11 @@ def _extract_l1_chunk(
     pv = PromptStore().get("l1_extraction", bucket_ctx)
     prompt = _render_l1_text(pv.text, conversation, dimensions)
     bucket_key = bucket_ctx.bucket_key if (bucket_ctx and bucket_ctx.bucket_key) else "unknown"
-    max_attempts = 2  # 首次 + 重试 1 次
+    max_attempts = 2  # 解析/空结果：重试 1 次（B164 既有行为）
+    lang_retries = 0
+    max_lang_retries = 1  # 语言漂移：额外允许 1 次（2026-09-12）
     last_error: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(1, max_attempts + max_lang_retries + 1):
         try:
             text, provider_name, usage = llm_chain.call_with_fallback(
                 llm_cfg, prompt, chain_name="refinement", client=client,
@@ -500,6 +525,16 @@ def _extract_l1_chunk(
 
         if attempt > 1:
             logger.info("L1 重试 %s 次成功", attempt)
+
+        # 语言漂移守门（2026-09-12）：英文会话被提炼成中文记忆 → 带语言提示重试（独立预算）
+        if lang_retries < max_lang_retries and _lang_mismatch(conversation, memories):
+            lang_retries += 1
+            logger.warning("L1 语言漂移（英文会话→中文记忆，attempt=%s），加语言提示重试", attempt)
+            prompt = _render_l1_text(pv.text, conversation, dimensions) + \
+                "\n\n# 注意\n上次输出把会话内容翻译成了中文，这会破坏检索。必须使用**与会话原文相同的语言**输出：" \
+                "英文会话 → 英文记忆（逐条改写为英文，专名/数字/术语保持原样，不要意译）；中文会话 → 中文记忆。"
+            continue
+
         if mem_conn is not None:
             run_id = RefineRunRecorder.start(
                 mem_conn, file_id=bucket_key, stage="l1_extraction",

@@ -17,11 +17,15 @@ def cfg():
 
 
 def _conversation(num_msgs: int = 20, msg_size: int = 500) -> str:
-    """构造 num_msgs 条消息，每条 msg_size 字符的会话。"""
+    """构造 num_msgs 条消息，每条 msg_size 字符的会话。
+
+    中文填充：本文件 mock 的记忆内容是中文，会话必须同为中文——否则会触发 L1
+    语言漂移守门（2026-09-12：英文会话→中文记忆）而多跑一次重试，改变调用次数。
+    """
     parts = []
     for i in range(num_msgs):
         role = "user" if i % 2 == 0 else "assistant"
-        content = f"消息{i} " + "x" * msg_size
+        content = f"消息{i} " + "测" * msg_size
         parts.append(f"# 1783763000.{i} {role}\n{content}\n")
     return "".join(parts)
 

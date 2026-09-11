@@ -58,6 +58,16 @@ versions:
     sha256: 34534605ed54197eba25045389b538cd01180242760fa89f0d1c9916428f2e87
     created_at: '2026-08-31T05:45:35Z'
     note: T-136 v2：facts 规则补时间/地点/频率类确定性属性拆解示例（v002 冒烟 80% → 补引导）
+  - version: v004
+    file: versions/l1_extraction/v004.txt
+    sha256: 34534605ed54197eba25045389b538cd01180242760fa89f0d1c9916428f2e87
+    created_at: '2026-09-11T23:03:30Z'
+    note: 改前快照：用户画像导向版（LongMemEval 诊断基线，2026-09-12）
+  - version: v005
+    file: versions/l1_extraction/v005.txt
+    sha256: 6e134dc8e0b74dc802cc81c500d031dab4ce250be712cb2d263a5ce0626fe573
+    created_at: '2026-09-11T23:03:30Z'
+    note: 事实保真版：新增 fact 类型 + 强制原文语言 + 保留判别性细节（A/B 实验驱动，2026-09-12）
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt
