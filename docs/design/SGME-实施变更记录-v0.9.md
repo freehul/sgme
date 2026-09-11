@@ -2843,3 +2843,15 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 运维影响 | ① 评测台在**任何**宿主机上都免疫代理污染（不再依赖「记得清代理」）；② 断点自愈：端点抖动后 resume 自动重跑失败题，长跑不再静默丢题；③ 向量模型从笔记本搬到 PC（笔记本 LM Studio 无法无头启动），双模型并存 +0.6GB。 |
 | 诚实边界 | 判分/向量仍会受**端点整体宕机**影响（本轮实测 LM Studio 服务端曾在运行中静默停止、Windows 曾在 15:54 睡过 12 秒）；长跑防护（防睡 + 端点探活）另行处理，本轮未做。 |
 
+### B173. 长跑防护：LM Studio 端点守护 + 防睡设置（2026-09-12）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | B172 遗留：多天评测依赖 PC 端 LM Studio，而实测两起「跑着跑着端点没了」——服务端静默停止（无 OS 事件、无崩溃记录）+ 系统按「空闲 1 小时 = 休眠」睡过一次（`Kernel-Power` 42/107）。 |
+| 改动 1（守护） | 新增 `scripts/lmstudio_watchdog.py`：① 用 `trust_env=False` 探 `/v1/models`；② 不可答 → `lms server start` 等就绪；③ 用 `lms ps --json` 对比常驻清单，缺失即按预设档位 `lms load ... -y`（默认守护 `qwen3.8-9b-distill -c 131072 --parallel 4` 与 `text-embedding-bge-m3-legal-euro-r7`）。支持 `--once`（计划任务）与 `--loop`（常驻）。 |
+| 改动 2（计划任务） | 已注册 Windows 计划任务 `SGME-LMStudio-Watchdog`（每 5 分钟 `--once`，当前用户登录态运行），实测触发即写入日志（`logs/lmstudio_watchdog.log`）。停用方式：`schtasks /delete /tn SGME-LMStudio-Watchdog /f`。 |
+| 改动 3（防睡） | `powercfg /change hibernate-timeout-ac 0`（原 3600s = 1 小时，**与 15:54 那次休眠时间线吻合**）、`monitor-timeout-ac 0`；`standby-timeout-ac` 原本已是 0。仅改「交流电」档，电池档未动。 |
+| 测试 | `tests/test_lmstudio_watchdog.py` **3 通过 / 0 失败**（缺失判定纯函数 + 常驻清单覆盖提炼/向量两类）；实跑 `--once`：`端点健康，无需动作`（两模型均在载）。 |
+| 运维影响 | 端点抖动后 5 分钟内自动恢复（含模型回装），评测台自身另有 6 次退避重试兜底；计划任务是本机（PC）级变更，换机需重注册。 |
+
+
