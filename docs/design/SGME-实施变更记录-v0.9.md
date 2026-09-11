@@ -2827,3 +2827,19 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 测试数字 | 备份四件套（`test_operations_backup` / `test_backup` / `test_routes_backup` / `test_backup_scheduler`）**38 通过 / 0 失败**；真实服务 E2E 冒烟 **11/11 PASSED**（`[11] [OK] backup restored`），服务端日志 `POST /v1/admin/backup/restore → 200 OK`，**0 次 500 / 0 次 PermissionError**；**全量 pytest 2278 通过 / 0 失败 / 0 跳过 / 0 错误**（`exit=0`，含本轮新增回归用例，总数由 2277 → 2278）。 |
 | 运维影响 | ① restore 现可**在线执行**（无需停服务）；② 若目标库被别的事务长持有，`backup()` 仍可能 busy → 报 `sqlite3.OperationalError`（语义明确，非本缺陷）；③ 三库之间仍非原子（与旧实现一致，属既有语义，本轮未改）。 |
 | 观察（未修） | 冒烟脚本第 4 步报 `[warn] 查 wiki.db scenes 失败: no such table: scenes` —— v0.7 已把 scenes 迁到 memory.db，脚本的检查口径未跟上（脚本自身陈旧，不影响链路；已记入待办）。 |
+
+### B172. 评测台加固：禁走系统代理 + 断点不丢题 + 启动器副作用守卫（2026-09-11）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | refined 臂冒烟（3 题）跑通提炼后，**判分与批量向量阶段全部失败**：`batch embed 失败(尝试N): [WinError 10061] 由于目标计算机积极拒绝`、`deepseek llm_fn failed after 5 retries: [WinError 10061]`（待办：refined 全量开跑的前置）。同一进程里引擎侧 LLM 调用照常成功，故障签名是「一半通一半不通」。 |
+| 根因 | ① `eval/longmemeval_eval.py` 两处直接 `httpx.post(...)`（judge `fn()` 与 `embed_corpus.embed_batch()`）**未按项目铁律加 `trust_env=False`**，会读宿主机的 `HTTP_PROXY/HTTPS_PROXY`；笔记本上残留的死代理 env（`http://127.0.0.1:7897`，进程早已不在）让这些调用全部打到空端口 → 10061；而引擎侧走 `llm_provider.make_client()`（`trust_env=False`）故不受影响。② 断点续跑把**带 error 的记录也当「已完成」**（`done_qids` 直接用全部 qid），一次端点抖动就让题目被永久跳过。 |
+| 改动 1（代理） | 新增 `_no_proxy_client(timeout_s)`（`httpx.Client(..., trust_env=False)`），judge 与批量向量两处改用它；`eval/run_eval_env.py` 启动器在注入 env 时**清空 6 个代理变量并强制 `NO_PROXY=*`**（覆盖所有 HTTP 库），并在日志显式打印「已禁用系统代理」。 |
+| 改动 2（断点） | 新增 `_done_qids(records)`：`error` 记录不算完成 → resume 会重跑它；`run()` 改用它。 |
+| 改动 3（事故防护） | 启动器主流程收进 `main()` + `__main__` 守卫——加固前**import 本模块会直接拉起一次评测**（本轮实测误触发默认 bm25+hybrid 全量跑，产物已隔离到 `eval/results/_accident_longmemeval_20260912/`，未删除）。启动器默认端点同步改为「提炼与向量都在 PC」。 |
+| 测试（RED→GREEN） | 先 RED：新增 `tests/test_eval_harness.py` 5 例（客户端 `trust_env=False`、`_done_qids` 过滤 error、import 无副作用、装载档可被环境变量覆盖、代理变量清单）——前两例在实现前如实失败（`AttributeError`）。改后 GREEN。 |
+| 测试数字 | `tests/test_eval_harness.py` **5 通过 / 0 失败**；eval 相关 7 个测试文件 **178 通过 / 0 失败**（`exit=0`）。 |
+| 装载档实测（同批） | LM Studio 的 `-c` 是**总 KV 池**、并发请求共享（日志 `n_ctx_slot` 不等于每请求额度）：`-c 65536 --parallel 4` 下 1×54K ✓ / 4×20K ✓ / **2×45K ✗ / 4×55K ✗**（`Context size has been exceeded`）。据此定档：**`-c 131072 --parallel 4` + `SGME_REFINE_CTX=32768`（批预算 27648，4×27.6K=110K ≤ 131K）**，实测 4×26.5K ✓、2×55K ✓、显存（含向量模型）11947 MiB；备选 `-c 131072 --parallel 2` + `CTX=65536`（冒烟已验证）。 |
+| 运维影响 | ① 评测台在**任何**宿主机上都免疫代理污染（不再依赖「记得清代理」）；② 断点自愈：端点抖动后 resume 自动重跑失败题，长跑不再静默丢题；③ 向量模型从笔记本搬到 PC（笔记本 LM Studio 无法无头启动），双模型并存 +0.6GB。 |
+| 诚实边界 | 判分/向量仍会受**端点整体宕机**影响（本轮实测 LM Studio 服务端曾在运行中静默停止、Windows 曾在 15:54 睡过 12 秒）；长跑防护（防睡 + 端点探活）另行处理，本轮未做。 |
+
