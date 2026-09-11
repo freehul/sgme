@@ -124,6 +124,15 @@ def collect(output_dir: str, log_path: str) -> dict:
     log = _collect_log(Path(log_path)) if log_path else {"tail": [], "heartbeat_age_s": None, "elapsed_s": None, "done": False}
     age = log["heartbeat_age_s"]
     progress = _read_checkpoint(out)
+    # 题级记录只在「首题跑完」后才会出现（refined 臂每题 25~45 分钟）——
+    # 之前用 --expect 兜底显示总量，便于开跑初期就有进度条
+    expect = getattr(ARGS, "expect", None)
+    if progress is None and expect:
+        progress = {"total": expect, "done": 0, "errors": 0, "outcome": {},
+                    "recall_mean": None, "f1_mean": None, "by_type": {},
+                    "fingerprint": {}, "pending": True}
+    elif progress is not None and not progress.get("done"):
+        progress["pending"] = True
     health = _log_counters(Path(log_path)) if log_path else {k: 0 for k in LOG_PATTERNS}
 
     # ETA：按「已跑秒数 ÷ 已完成题数」外推剩余题量（粗估，题间差异大时会有偏差）
@@ -283,6 +292,8 @@ def main():
     parser.add_argument("--log", default=None, help="评测日志文件（默认取 <output>.log）")
     parser.add_argument("--port", type=int, default=8899, help="监听端口（默认 8899）")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址（默认 0.0.0.0，便于跨机查看）")
+    parser.add_argument("--expect", type=int, default=None,
+                        help="预期题量（首题跑完、checkpoint 尚无记录时用于显示进度条）")
     parser.add_argument("--once", action="store_true", help="打印一次 JSON 后退出（调试用）")
     ARGS = parser.parse_args()
 
