@@ -560,6 +560,65 @@ def open_question_db_refined(out_dir: Path, q: dict, dims, aliases, *, cfg: dict
     return mem_conn, session_conn, wiki_conn, fileid2sid, stats
 
 
+def _source_to_sid(source_ref: str, fileid2sid: dict) -> str:
+    """source_ref（形如 `<file_id>:<段号>`）→ session_id。
+
+    ⚠️ fileid2sid 的键是裸 file_id；不剥段号会永远落到兜底分支 → sids 与 gt
+    永不相交 → recall 恒 0（2026-09-10 T-150 实测：q1 原样查空、剥后缀命中
+    answer_280352e9）。
+    """
+    base = source_ref.rpartition(":")[0] or source_ref
+    return fileid2sid.get(base) or fileid2sid.get(source_ref) or source_ref
+
+
+def _memory_session_map(mem_conn, mem_ids: list[str], fileid2sid: dict) -> dict[str, str]:
+    """memory_id → 来源 session（每条记忆取第一个来源；无来源记录的不入表）。"""
+    out: dict[str, str] = {}
+    for mid in mem_ids:
+        rows = mem_conn.execute(
+            "SELECT source_ref FROM memory_sources WHERE memory_id=?", (mid,)
+        ).fetchall()
+        if rows:
+            out[mid] = _source_to_sid(rows[0][0], fileid2sid)
+    return out
+
+
+def _rank_sessions(mem_ids: list[str], mid2sid: dict[str, str], k: int) -> list[str]:
+    """会话按其**最好一条记忆**的排名排序、去重，取前 k 个。
+
+    refined 库每场会话产出 8~10 条细粒度记忆，而检索按「条」给 top-k；
+    同一 k 下 refined 臂只覆盖 1~2 场会话，与直灌臂（1 条=1 场原文）不可比。
+    先按会话聚合再取前 k 个会话，才能让两臂拿到同等粒度的证据量。
+    """
+    order: list[str] = []
+    seen: set[str] = set()
+    for mid in mem_ids:
+        sid = mid2sid.get(mid)
+        if sid and sid not in seen:
+            seen.add(sid)
+            order.append(sid)
+            if len(order) >= k:
+                break
+    return order
+
+
+def _select_memories_within_budget(mem_ids: list[str], mid2sid: dict[str, str],
+                                   keep_sids: set[str], budget_chars: int,
+                                   text_by_id: dict) -> list[str]:
+    """按原排名顺序挑出「选中会话」的记忆，累计字符不超过预算；至少保留一条。"""
+    picked: list[str] = []
+    used = 0
+    for mid in mem_ids:
+        if mid2sid.get(mid) not in keep_sids:
+            continue
+        n = len(text_by_id.get(mid) or "")
+        if picked and used + n > budget_chars:
+            break
+        picked.append(mid)
+        used += n
+    return picked
+
+
 def _resolve_sessions(mem_conn, retrieved_ids: list[str], fileid2sid: dict) -> set[str]:
     """memory_id → 来源 session 集合。
 
@@ -574,11 +633,7 @@ def _resolve_sessions(mem_conn, retrieved_ids: list[str], fileid2sid: dict) -> s
         ).fetchall()
         if rows:
             for (sr,) in rows:
-                # ⚠️ source_ref 形如 "<file_id>:<seq>"（段号），而 fileid2sid 的键是裸
-                # file_id。不剥段号会永远落到兜底分支 → sids 与 gt 永不相交 → recall 恒 0
-                # （2026-09-10 T-150 实测：q1 原样查空、剥后缀命中 answer_280352e9）。
-                base = sr.rpartition(":")[0] or sr
-                sids.add(fileid2sid.get(base) or fileid2sid.get(sr) or sr)
+                sids.add(_source_to_sid(sr, fileid2sid))
         else:
             sids.add(mid)  # 兜底：无 source 记录时直接用 memory_id
     return sids
@@ -688,8 +743,17 @@ def _process_question(q, qi, args, arms, cfgs, dims, aliases, llm_fn, run_id, ou
             mem_conn, sc, wc = open_question_db(
                 q_out, q, dims, aliases, vector=vector, cfg=cfg)
         try:
+            # refined 臂会话级聚合（2026-09-12，见 _rank_sessions 注释）：
+            # 先取记忆大池 → 按来源会话聚合取前 N 个会话 → 只把这些会话的记忆
+            # 喂给 QA（控字符预算，对齐直灌臂的上下文体量）。否则同一 top-k 下
+            # 两臂信息量差 ~8 倍，noctx 会系统性虚高。
+            session_k = getattr(args, "refined_session_k", None)
+            session_k = args.top_k if session_k is None else session_k
+            pooled = (arm == "refined") and session_k > 0
+            pool_k = (max(args.top_k, args.top_k * max(1, getattr(args, "refined_pool", 10)))
+                      if pooled else args.top_k)
             res = search_mod.search_memories(
-                mem_conn, None, query=q["question"], limit=args.top_k,
+                mem_conn, None, query=q["question"], limit=pool_k,
                 include_sources=False, cfg=cfg,
             )
             seen = set()
@@ -699,7 +763,18 @@ def _process_question(q, qi, args, arms, cfgs, dims, aliases, llm_fn, run_id, ou
                 if mid and mid not in seen:
                     seen.add(mid)
                     retrieved.append(mid)
-            hit_sids = _resolve_sessions(mem_conn, retrieved, fileid2sid)
+            ctx_res = res
+            if pooled:
+                mid2sid = _memory_session_map(mem_conn, retrieved, fileid2sid)
+                top_sids = _rank_sessions(retrieved, mid2sid, session_k)
+                hit_sids = set(top_sids)
+                text_by_id = {r.get("memory_id"): (r.get("content") or "") for r in res}
+                keep = set(_select_memories_within_budget(
+                    retrieved, mid2sid, set(top_sids),
+                    getattr(args, "refined_ctx_chars", 96000), text_by_id))
+                ctx_res = [r for r in res if r.get("memory_id") in keep]
+            else:
+                hit_sids = _resolve_sessions(mem_conn, retrieved, fileid2sid)
             gt_sessions = set(gt)
             recall_frac = (
                 len(gt_sessions & hit_sids) / len(gt_sessions)
@@ -707,8 +782,8 @@ def _process_question(q, qi, args, arms, cfgs, dims, aliases, llm_fn, run_id, ou
             )
             per_arm_recall[arm] = recall_frac
             if arm == (args.primary or ("refined" if "refined" in arms else "hybrid" if "hybrid" in arms else "bm25")):
-                primary_res = res
-            last_res = res
+                primary_res = ctx_res
+            last_res = ctx_res
         finally:
             sc.close(); wc.close(); mem_conn.close()
 
@@ -936,6 +1011,15 @@ def run(args) -> dict:
         if qid not in done_qids:
             todo.append((qi, q))
 
+    # 口径透明化：refined 臂是否走会话级聚合（影响 recall 与 noctx 的可比性）
+    if "refined" in arms:
+        _sk = args.refined_session_k if getattr(args, "refined_session_k", None) is not None else args.top_k
+        logger.warning(
+            "[lme] refined 会话级聚合：%s",
+            (f"开（取前 {_sk} 个会话；候选池 = top-k×{args.refined_pool}；"
+             f"上下文 ≤{args.refined_ctx_chars} 字符）") if _sk > 0 else "关（旧口径：top-k 条记忆直出）",
+        )
+
     run_start = time.perf_counter()
     new_records = []
     total = len(ds)
@@ -1014,6 +1098,12 @@ def main() -> None:
                     help="refined 臂分步执行（T-150）：ingest=只写 L0（零 LLM）；refine=只提炼（session 级断点续跑）；eval=只评测；all=一体跑。分步可随时停止，中断损失=单 session")
     ap.add_argument("--primary", default=None, help="QA 用哪条臂的检索结果")
     ap.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
+    ap.add_argument("--refined-session-k", type=int, default=None,
+                    help="refined 臂会话级聚合：取前 N 个来源会话作为上下文（默认与 --top-k 同值；0=关闭，退回旧口径）")
+    ap.add_argument("--refined-pool", type=int, default=10,
+                    help="会话级聚合的候选池倍数（池 = top-k × 该值，默认 10）")
+    ap.add_argument("--refined-ctx-chars", type=int, default=96000,
+                    help="会话级聚合后拼上下文的字符上限（默认 96000，对齐直灌臂典型体量）")
     ap.add_argument("--qa", action="store_true", help="启用 LLM 生成 + judge")
     ap.add_argument("--qa-mode", default="legacy", choices=["legacy", "product"],
                     help="QA 生成模式：legacy=旧裸拼 prompt；product=T-149 answer 操作语义（facts 证据+时序时间线+题型分派）")
