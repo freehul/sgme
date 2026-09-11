@@ -123,6 +123,14 @@ def collect(output_dir: str, log_path: str) -> dict:
 
     log = _collect_log(Path(log_path)) if log_path else {"tail": [], "heartbeat_age_s": None, "elapsed_s": None, "done": False}
     age = log["heartbeat_age_s"]
+    progress = _read_checkpoint(out)
+    health = _log_counters(Path(log_path)) if log_path else {k: 0 for k in LOG_PATTERNS}
+
+    # ETA：按「已跑秒数 ÷ 已完成题数」外推剩余题量（粗估，题间差异大时会有偏差）
+    eta_s = None
+    if progress and progress.get("done") and log.get("elapsed_s"):
+        rate = log["elapsed_s"] / max(1, progress["done"])
+        eta_s = int(rate * max(0, progress["total"] - progress["done"]))
 
     return {
         "run_id": run_id,
@@ -131,9 +139,111 @@ def collect(output_dir: str, log_path: str) -> dict:
         "alive": None if age is None else age < STALE_SECONDS,
         "done": log["done"],
         "arms": arms,
+        "progress": progress,
+        "health": health,
+        "eta_s": eta_s,
         "log_tail": log["tail"],
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+
+def _read_checkpoint(out_dir: Path) -> dict | None:
+    """读 checkpoint.jsonl，汇总**题级**进度与质量（100 题长跑的主看板数据源）。
+
+    首行是配置指纹（跳过）；error 记录计入 errors、不算完成（与 resume 口径一致）。
+    """
+    p = out_dir / "checkpoint.jsonl"
+    if not p.exists():
+        return None
+    fp, recs = None, []
+    try:
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if "fingerprint" in obj and fp is None:
+                fp = obj.get("fingerprint") or {}
+                continue
+            recs.append(obj)
+    except Exception:
+        return None
+
+    def _mean(vals):
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    outcome = {"correct": 0, "wrong": 0, "noctx": 0, "err": 0}
+    by_type: dict[str, dict] = {}
+    recall_all, f1_all = [], []
+    done, errors = 0, 0
+    for r in recs:
+        if r.get("error"):
+            errors += 1
+        else:
+            done += 1
+        t = str(r.get("qtype") or "unknown")
+        b = by_type.setdefault(t, {"done": 0, "recall": [], "f1": [], "noctx": 0, "errors": 0})
+        b["done"] += 1
+        if r.get("error"):
+            b["errors"] += 1
+        for v in (r.get("recall") or {}).values():
+            if isinstance(v, (int, float)):
+                b["recall"].append(float(v)); recall_all.append(float(v))
+        qa = r.get("qa") or {}
+        oc = qa.get("outcome") or "none"
+        outcome[oc] = outcome.get(oc, 0) + 1
+        if oc == "noctx":
+            b["noctx"] += 1
+        if isinstance(qa.get("f1"), (int, float)):
+            b["f1"].append(float(qa["f1"])); f1_all.append(float(qa["f1"]))
+
+    total = int((fp or {}).get("n_questions") or (len(recs) or 0))
+    return {
+        "total": total,
+        "done": done,
+        "errors": errors,
+        "outcome": outcome,
+        "recall_mean": _mean(recall_all),
+        "f1_mean": _mean(f1_all),
+        "by_type": {
+            t: {"done": v["done"], "recall_mean": _mean(v["recall"]),
+                "f1_mean": _mean(v["f1"]), "noctx": v["noctx"], "errors": v["errors"]}
+            for t, v in sorted(by_type.items())
+        },
+        "fingerprint": fp,
+    }
+
+
+# 健康计数：长跑期间最容易退化的几类信号（出现即说明链路有抖动）
+LOG_PATTERNS = {
+    "conn_refused": "10061",
+    "embed_fail": "batch embed 失败",
+    "judge_fail": "llm_fn failed",
+    "l1_empty_retry": "L1 空结果",
+    "l2_degrade": "L2 merge 缺",
+    "fallback_store": "降级直存",
+    "l15_parse_fail": "L1.5 输出解析失败",
+}
+
+
+def _log_counters(log_path: Path) -> dict:
+    """按字节统计日志里的告警次数（整文件读一遍，KB 级成本）。"""
+    out = {k: 0 for k in LOG_PATTERNS}
+    if not log_path or not log_path.exists():
+        return out
+    try:
+        blob = log_path.read_bytes()
+    except Exception:
+        return out
+    for k, pat in LOG_PATTERNS.items():
+        try:
+            out[k] = blob.count(pat.encode("utf-8"))
+        except Exception:
+            out[k] = 0
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):

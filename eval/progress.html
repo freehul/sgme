@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>T-150 评测进度</title>
+<title>SGME refined 评测进度</title>
 <style>
   /* 主题变量优先用宿主注入（聊天内嵌预览），无则回落到独立浏览器可用值 */
   body {
@@ -11,95 +11,147 @@
     margin: 0; padding: 14px; font-size: 13px;
     background: transparent;
   }
-  h1 { font-size: 15px; margin: 0 0 10px; font-weight: 600; letter-spacing: .3px; }
+  h1 { font-size: 16px; margin: 0 0 4px; font-weight: 600; letter-spacing: .3px; }
+  h2 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
   .muted { color: var(--muted-foreground, #9aa0a6); }
-  .bar-wrap { background: var(--border, #33363b); border-radius: 6px; height: 10px; overflow: hidden; margin: 6px 0; }
-  .bar { height: 100%; background: var(--accent, #4c9aff); transition: width .4s ease; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline; }
   .card {
     border: 1px solid var(--border, #33363b); border-radius: 10px;
     padding: 12px 14px; margin-bottom: 12px; background: var(--card, transparent);
   }
-  .card h2 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 8px; margin-top: 8px; }
+  .bar-wrap { background: var(--border, #33363b); border-radius: 6px; height: 12px; overflow: hidden; margin: 8px 0 4px; }
+  .bar { height: 100%; width: 0; background: var(--accent, #4c9aff); transition: width .5s ease; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; margin-top: 8px; }
   .cell { border: 1px solid var(--border, #33363b); border-radius: 6px; padding: 6px 8px; }
   .cell .k { font-size: 11px; color: var(--muted-foreground, #9aa0a6); }
-  .cell .v { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .cell .v { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
   .live { background: #2ecc71; box-shadow: 0 0 7px #2ecc71; }
   .stale { background: #e74c3c; box-shadow: 0 0 7px #e74c3c; }
   .unknown { background: #8a8f98; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border, #33363b); }
+  th { font-weight: 600; color: var(--muted-foreground, #9aa0a6); font-size: 11px; }
+  td.num, th.num { text-align: right; }
+  .warn { color: #e67e22; }
+  .bad { color: #e74c3c; font-weight: 600; }
+  .good { color: #2ecc71; }
   pre {
     background: rgba(128,128,128,.08); border: 1px solid var(--border, #33363b); border-radius: 6px;
     padding: 8px 10px; font-size: 11.5px; line-height: 1.55; overflow-x: auto; margin: 8px 0 0;
-    white-space: pre-wrap; word-break: break-all; max-height: 200px;
+    white-space: pre-wrap; word-break: break-all; max-height: 190px;
   }
-  .hdr { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline; margin-bottom: 4px; }
-  .done-banner {
-    border: 1px solid #2ecc71; border-radius: 8px; padding: 8px 12px;
-    color: #2ecc71; font-weight: 600; margin-bottom: 10px;
-  }
+  .miniq { display: inline-block; height: 8px; border-radius: 4px; background: var(--accent, #4c9aff); vertical-align: middle; }
 </style>
 </head>
 <body>
-<h1>T-150 评测进度 <span class="muted" id="sub">连接中…</span></h1>
+<h1>SGME refined 评测进度 <span class="muted" id="sub">连接中…</span></h1>
 <div id="state" class="muted">正在读取…</div>
-<div id="cards"></div>
+
+<div class="card" id="main-card">
+  <h2 id="prog-title">总进度</h2>
+  <div class="bar-wrap"><div class="bar" id="prog-bar"></div></div>
+  <div class="row muted" id="prog-note"></div>
+  <div class="grid" id="kpi"></div>
+</div>
+
+<div class="card">
+  <h2>题型分布（随判分累积）</h2>
+  <table id="types"><tbody></tbody></table>
+</div>
+
+<div class="card">
+  <h2>当前在建题库（并行 <span id="worker-n">0</span>）</h2>
+  <div id="arms" class="muted">等待题库产出…</div>
+</div>
+
+<div class="card">
+  <h2>链路健康（告警计数）</h2>
+  <div class="grid" id="health"></div>
+</div>
+
 <pre id="log">（等待日志…）</pre>
 
 <script>
-// API 地址：默认指向笔记本上的监视服务；可用 ?api=http://host:port 覆盖
+// API 地址：优先同源（服务自己托管本页）；可用 ?api=http://host:port 覆盖
 const params = new URLSearchParams(location.search);
-const API = (params.get("api") || "http://192.168.10.141:8899").replace(/\/$/, "");
-const POLL_MS = 2000;
+const API = (params.get("api") || (location.protocol.startsWith("http") ? location.origin
+             : "http://192.168.10.141:8899")).replace(/\/$/, "");
+const POLL_MS = 3000;
 
 const fmtDur = (s) => {
   if (s === null || s === undefined) return "—";
   s = Math.floor(s);
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d} 天 ${h} 小时`;
   return h > 0 ? `${h} 小时 ${m} 分` : (m > 0 ? `${m} 分 ${s % 60} 秒` : `${s} 秒`);
 };
 const nz = (v) => (v === null || v === undefined ? "—" : v);
+const pct1 = (v) => (v === null || v === undefined ? "—" : (v * 100).toFixed(1) + "%");
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+function cell(k, v, cls) {
+  return `<div class="cell"><div class="k">${k}</div><div class="v ${cls || ""}">${v}</div></div>`;
+}
 
 function render(d) {
   const alive = d.alive;
   const dotCls = alive === null ? "unknown" : (alive ? "live" : "stale");
   const dotTxt = alive === null ? "未知（无心跳）" : (alive ? "运行中" : `心跳陈旧 ${Math.round(d.heartbeat_age_s)} 秒`);
-
-  document.getElementById("sub").textContent =
-    `run_id ${d.run_id || "—"} ｜ 服务时间 ${d.server_time}`;
-
+  document.getElementById("sub").textContent = `run_id ${d.run_id || "—"} ｜ 服务时间 ${d.server_time}`;
   document.getElementById("state").innerHTML =
-    `<span class="dot ${dotCls}"></span>${dotTxt} ｜ 已运行 ${fmtDur(d.elapsed_s)}`;
+    `<span class="dot ${dotCls}"></span>${dotTxt} ｜ 已运行 ${fmtDur(d.elapsed_s)}` +
+    (d.eta_s ? ` ｜ 预计还需 <b>${fmtDur(d.eta_s)}</b>` : "") +
+    (d.done ? ` ｜ <span class="good">评测已收尾</span>` : "");
 
-  if (d.done) {
-    const b = document.createElement("div");
-    b.className = "done-banner";
-    b.textContent = "评测已收尾（日志中出现评分）";
-    document.getElementById("state").after(b);
+  const p = d.progress;
+  if (p) {
+    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+    document.getElementById("prog-title").textContent = `总进度 ${p.done} / ${p.total}（${pct}%）`;
+    document.getElementById("prog-bar").style.width = pct + "%";
+    const o = p.outcome || {};
+    document.getElementById("prog-note").innerHTML =
+      `指纹：${esc(JSON.stringify(p.fingerprint || {}).slice(0, 150))}`;
+    document.getElementById("kpi").innerHTML =
+      cell("recall@8 均值", pct1(p.recall_mean)) +
+      cell("F1 均值", nz(p.f1_mean)) +
+      cell("判对", o.correct || 0, "good") +
+      cell("判错", o.wrong || 0, (o.wrong ? "warn" : "")) +
+      cell("无上下文", o.noctx || 0, (o.noctx ? "warn" : "")) +
+      cell("题错误", p.errors || 0, (p.errors ? "bad" : ""));
+
+    const rows = Object.entries(p.by_type || {}).map(([t, v]) => `
+      <tr><td>${esc(t)}</td>
+        <td class="num">${v.done}</td>
+        <td class="num">${pct1(v.recall_mean)}</td>
+        <td class="num">${nz(v.f1_mean)}</td>
+        <td class="num ${v.noctx ? "warn" : ""}">${v.noctx}</td>
+        <td class="num ${v.errors ? "bad" : ""}">${v.errors}</td></tr>`).join("");
+    document.getElementById("types").querySelector("tbody").innerHTML =
+      `<tr><th>题型</th><th class="num">完成</th><th class="num">recall@8</th><th class="num">F1</th><th class="num">无上下文</th><th class="num">错误</th></tr>` + rows;
+  } else {
+    document.getElementById("prog-title").textContent = "总进度（等待 checkpoint）";
   }
 
-  const wrap = document.getElementById("cards");
-  wrap.innerHTML = "";
-  (d.arms || []).forEach((a) => {
+  const arms = d.arms || [];
+  document.getElementById("worker-n").textContent = arms.length;
+  document.getElementById("arms").innerHTML = arms.length ? arms.map((a) => {
     const ing = a.state ? a.state.ingested : null;
     const ref = a.state ? a.state.refined : null;
     const pct = (ing && ref !== null) ? Math.min(100, Math.round((ref / ing) * 100)) : 0;
+    return `<div style="margin-bottom:9px">
+      <div class="row"><b>${esc(a.arm)}</b>
+        <span class="muted">提炼 ${nz(ref)}/${nz(ing)}</span>
+        <span class="muted">记忆 ${nz(a.memories)} ｜ 向量 ${nz(a.memory_vectors)} ｜ 场景 ${nz(a.scenes)} ｜ 轮次 ${nz(a.refine_runs)}</span></div>
+      <div class="bar-wrap" style="height:7px"><div class="bar" style="width:${pct}%"></div></div></div>`;
+  }).join("") : "等待题库产出…";
 
-    const card = document.createElement("div");
-    card.className = "card";
-    card.innerHTML = `
-      <h2>${a.arm} ｜ 提炼进度 ${ref === null ? "—" : ref} / ${ing === null ? "—" : ing}（${pct}%）</h2>
-      <div class="bar-wrap"><div class="bar" style="width:${pct}%"></div></div>
-      <div class="grid">
-        <div class="cell"><div class="k">L0 落盘</div><div class="v">${nz(a.session_raw_files)}</div></div>
-        <div class="cell"><div class="k">记忆</div><div class="v">${nz(a.memories)}</div></div>
-        <div class="cell"><div class="k">标签</div><div class="v">${nz(a.memory_tags)}</div></div>
-        <div class="cell"><div class="k">向量</div><div class="v">${nz(a.memory_vectors)}</div></div>
-        <div class="cell"><div class="k">L2 场景</div><div class="v">${nz(a.scenes)}</div></div>
-        <div class="cell"><div class="k">提炼轮次</div><div class="v">${nz(a.refine_runs)}</div></div>
-      </div>`;
-    wrap.appendChild(card);
-  });
+  const h = d.health || {};
+  const hc = (k, label, level) => cell(label, h[k] ?? 0, h[k] ? level : "good");
+  document.getElementById("health").innerHTML =
+    hc("conn_refused", "连接被拒") + hc("embed_fail", "向量失败") + hc("judge_fail", "判分失败") +
+    hc("l1_empty_retry", "L1 空重试", "warn") + hc("l2_degrade", "L2 退化", "warn") +
+    hc("fallback_store", "降级直存", "warn") + hc("l15_parse_fail", "L1.5 解析失败", "bad");
 
   document.getElementById("log").textContent = (d.log_tail || []).join("\n") || "（暂无日志）";
 }
@@ -114,7 +166,6 @@ async function tick() {
       `<span class="dot stale"></span>无法连接监视服务（${API}）：${e.message}`;
   }
 }
-
 tick();
 setInterval(tick, POLL_MS);
 </script>
