@@ -81,14 +81,16 @@ def test_source_to_sid_strips_segment_suffix():
 
 
 def test_rank_sessions_by_best_memory_rank():
-    """会话按其最好一条记忆的排名排序、去重、截断到 k。"""
+    """会话按其最好一条记忆的排名排序、去重、截断到 k（一条记忆可来自多场会话）。"""
     from eval.longmemeval_eval import _rank_sessions
 
     mem_ids = ["m1", "m2", "m3", "m4", "m5"]        # 已按检索排名排列
-    mid2sid = {"m1": "A", "m2": "B", "m3": "A", "m4": "C", "m5": "B"}
-    assert _rank_sessions(mem_ids, mid2sid, 3) == ["A", "B", "C"]
-    assert _rank_sessions(mem_ids, mid2sid, 1) == ["A"]
-    assert _rank_sessions(mem_ids[:2], mid2sid, 5) == ["A", "B"]
+    mid2sids = {"m1": ["A"], "m2": ["B"], "m3": ["A"], "m4": ["C"], "m5": ["B", "D"]}
+    assert _rank_sessions(mem_ids, mid2sids, 3) == ["A", "B", "C"]
+    assert _rank_sessions(mem_ids, mid2sids, 1) == ["A"]
+    assert _rank_sessions(mem_ids[:2], mid2sids, 5) == ["A", "B"]
+    # 多来源记忆：它同时把两场会话顶到前面
+    assert _rank_sessions(["m1", "m5"], mid2sids, 5) == ["A", "B", "D"]
 
 
 def test_select_memories_within_budget_keeps_rank_order():
@@ -96,14 +98,14 @@ def test_select_memories_within_budget_keeps_rank_order():
     from eval.longmemeval_eval import _select_memories_within_budget
 
     mem_ids = ["m1", "m2", "m3", "m4"]
-    mid2sid = {"m1": "A", "m2": "B", "m3": "A", "m4": "C"}
+    mid2sids = {"m1": ["A"], "m2": ["B"], "m3": ["A"], "m4": ["C"]}
     texts = {"m1": "a" * 100, "m2": "b" * 100, "m3": "c" * 100, "m4": "d" * 100}
     # 只要 A 会话：m1 + m3，共 200 字符
-    assert _select_memories_within_budget(mem_ids, mid2sid, {"A"}, 10_000, texts) == ["m1", "m3"]
+    assert _select_memories_within_budget(mem_ids, mid2sids, {"A"}, 10_000, texts) == ["m1", "m3"]
     # 预算 150 → 只装得下 m1（200 会超）
-    assert _select_memories_within_budget(mem_ids, mid2sid, {"A"}, 150, texts) == ["m1"]
+    assert _select_memories_within_budget(mem_ids, mid2sids, {"A"}, 150, texts) == ["m1"]
     # 预算为 0 也要保证至少一条（否则上下文为空，等于白跑）
-    assert _select_memories_within_budget(mem_ids, mid2sid, {"A"}, 0, texts) == ["m1"]
+    assert _select_memories_within_budget(mem_ids, mid2sids, {"A"}, 0, texts) == ["m1"]
     # 高排名记忆不属于选中会话时，跳过它、继续用后面的
-    assert _select_memories_within_budget(mem_ids, mid2sid, {"B"}, 10_000, texts) == ["m2"]
+    assert _select_memories_within_budget(mem_ids, mid2sids, {"B"}, 10_000, texts) == ["m2"]
 

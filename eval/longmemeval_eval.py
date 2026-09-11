@@ -571,19 +571,24 @@ def _source_to_sid(source_ref: str, fileid2sid: dict) -> str:
     return fileid2sid.get(base) or fileid2sid.get(source_ref) or source_ref
 
 
-def _memory_session_map(mem_conn, mem_ids: list[str], fileid2sid: dict) -> dict[str, str]:
-    """memory_id → 来源 session（每条记忆取第一个来源；无来源记录的不入表）。"""
-    out: dict[str, str] = {}
+def _memory_session_map(mem_conn, mem_ids: list[str], fileid2sid: dict) -> dict[str, list[str]]:
+    """memory_id → 来源 session 列表（一条记忆可能由多场会话贡献；无来源记录的不入表）。"""
+    out: dict[str, list[str]] = {}
     for mid in mem_ids:
         rows = mem_conn.execute(
             "SELECT source_ref FROM memory_sources WHERE memory_id=?", (mid,)
         ).fetchall()
-        if rows:
-            out[mid] = _source_to_sid(rows[0][0], fileid2sid)
+        sids: list[str] = []
+        for (sr,) in rows:
+            sid = _source_to_sid(sr, fileid2sid)
+            if sid not in sids:
+                sids.append(sid)
+        if sids:
+            out[mid] = sids
     return out
 
 
-def _rank_sessions(mem_ids: list[str], mid2sid: dict[str, str], k: int) -> list[str]:
+def _rank_sessions(mem_ids: list[str], mid2sids: dict[str, list[str]], k: int) -> list[str]:
     """会话按其**最好一条记忆**的排名排序、去重，取前 k 个。
 
     refined 库每场会话产出 8~10 条细粒度记忆，而检索按「条」给 top-k；
@@ -593,23 +598,23 @@ def _rank_sessions(mem_ids: list[str], mid2sid: dict[str, str], k: int) -> list[
     order: list[str] = []
     seen: set[str] = set()
     for mid in mem_ids:
-        sid = mid2sid.get(mid)
-        if sid and sid not in seen:
-            seen.add(sid)
-            order.append(sid)
-            if len(order) >= k:
-                break
+        for sid in mid2sids.get(mid, []):
+            if sid not in seen:
+                seen.add(sid)
+                order.append(sid)
+                if len(order) >= k:
+                    return order
     return order
 
 
-def _select_memories_within_budget(mem_ids: list[str], mid2sid: dict[str, str],
+def _select_memories_within_budget(mem_ids: list[str], mid2sids: dict[str, list[str]],
                                    keep_sids: set[str], budget_chars: int,
                                    text_by_id: dict) -> list[str]:
     """按原排名顺序挑出「选中会话」的记忆，累计字符不超过预算；至少保留一条。"""
     picked: list[str] = []
     used = 0
     for mid in mem_ids:
-        if mid2sid.get(mid) not in keep_sids:
+        if not (set(mid2sids.get(mid, [])) & keep_sids):
             continue
         n = len(text_by_id.get(mid) or "")
         if picked and used + n > budget_chars:
@@ -765,12 +770,12 @@ def _process_question(q, qi, args, arms, cfgs, dims, aliases, llm_fn, run_id, ou
                     retrieved.append(mid)
             ctx_res = res
             if pooled:
-                mid2sid = _memory_session_map(mem_conn, retrieved, fileid2sid)
-                top_sids = _rank_sessions(retrieved, mid2sid, session_k)
+                mid2sids = _memory_session_map(mem_conn, retrieved, fileid2sid)
+                top_sids = _rank_sessions(retrieved, mid2sids, session_k)
                 hit_sids = set(top_sids)
                 text_by_id = {r.get("memory_id"): (r.get("content") or "") for r in res}
                 keep = set(_select_memories_within_budget(
-                    retrieved, mid2sid, set(top_sids),
+                    retrieved, mid2sids, set(top_sids),
                     getattr(args, "refined_ctx_chars", 96000), text_by_id))
                 ctx_res = [r for r in res if r.get("memory_id") in keep]
             else:
