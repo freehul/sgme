@@ -38,6 +38,13 @@ OVERRIDES = {
     "SGME_REFINE_CTX": "131072",  # 128K：单批预算 116490 token
 }
 
+# 允许调用方用同名环境变量覆盖上表（切换装载档/端点时用，如冒烟试 4×64K）。
+# 不设则用上表默认（提炼=PC、向量=笔记本）。注意 SGME_REFINE_CTX 必须与
+# LM Studio 每路上下文一致或更小，否则单批提示词会超窗被截断。
+for _k in list(OVERRIDES):
+    if os.environ.get(_k):
+        OVERRIDES[_k] = os.environ[_k]
+
 log_path = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "eval" / "results" / "run.log"
 eval_args = sys.argv[2:]
 log_path.parent.mkdir(parents=True, exist_ok=True)
