@@ -2799,8 +2799,10 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 改动 1（基线） | `search.vector`：`enabled: true→false`、`base_url` 局域网地址 → `''`（空=未配置；`operations/health.py:113` 返回「向量端点未配置」且**不发 anomaly_warn**——未配置不算失效）。**保留** `fallbacks`（siliconflow 公网地址，非局域网，仍是有效兜底）。 |
 | 改动 2（用例自足） | `test_connectivity_unconfigured`：改为 `copy.deepcopy(cfg)` 后显式构造「缺 base_url/model」的 vector 段，验证「缺字段时的行为」——任何机器、任何覆盖层配置下都成立。 |
 | 改动 3（连带修） | `tests/test_search_v04.py` 的 `cfg` fixture 原先只显式补 `base_url`、**隐式依赖出厂默认的 `enabled: true`** → 基线改后 3 个用例失败（`test_search_memories_with_rrf` / `test_recall_routes_consistency_with_search_memories` / `test_recall_routes_no_fusion`）。现显式置 `enabled: True`，测试自备启用态。 |
+| 改动 4 | 同类根因的用例一次修完（**全量套件才暴露**，按模块挑跑漏掉了）：`tests/test_e2e_v04.py`、`tests/test_l15.py`、`tests/test_semantic_edges.py`、`tests/test_server_v04.py` → 显式置 `enabled: True` 或新增 autouse fixture `mock embed`（`l15.prescreen.fallback=skip_conflict` 会在 embed 不可达时短路跳过冲突检测 → 裁决类用例必挂）。⚠️ 其中 `test_l15.py` / `test_semantic_edges.py` 此前是**靠真连 NAS ollama 让 embed 成功**的（隐性网络依赖，NAS 一停就会红），现改为完全离线自足。 |
 | 部署侧影响 | **生产零影响**：NAS 容器有可写覆盖层 `/vol1/1000/Docker/sgme/data/config/sgme.yaml`（`SGME_HOME=/data`），其 `search.vector` 自带 `enabled: true` + NAS ollama 端点（实测确认）；源码开发态本机新增 `config/sgme.yaml`（改前基线的完整副本，`.gitignore` 已忽略）保住本机行为。⚠️ **覆盖层是整文件替换不是深合并**（`load_sgme_config` 命中覆盖层即不再读包内基线）→ 覆盖层必须是完整副本，改一个字段也要复制整份。 |
 | 测试 | `tests/test_vector_connectivity.py` + `test_config*.py`（5 文件）**63 通过 / 0 失败**；检索/健康/运维相关 23 文件**全绿**；**全量 pytest 2277 通过 / 0 失败**（对照本轮重建后 2276 通过 / 1 失败）。新装形态实测：`SGME_HOME=<空目录>` → `enabled=False base_url=''`，探测返回「向量端点未配置」。 |
+| 教训 | ①**改全局默认值必须跑全量**：本轮按模块挑跑 22 个文件全绿，全量却炸出 16 个失败（13 个在挑跑范围外的文件里），分两轮才收敛（16 → 5 → 0）。②pytest 9 在本机把汇总行丢给管道/文件（`N passed` 不落盘），取数用**进度行字符计数 + `exit=`** 双证，勿信单条。③测试若隐式依赖部署端点，NAS 一停就红——用例必须离线自足（本轮 2 个文件即如此）。 |
 | 诚实边界 | ① 基线内 `skills.source_dirs: /app/cache/skills/` 等**容器专属路径仍在**，同属「出厂默认绑死部署态」问题，本轮未动（超出批准范围）；② 覆盖层「整文件替换」是既有设计约束，本轮仅以注释+文档标注，未改代码。 |
 
 ### B170. 环境依赖项目级整改（基准解释器收拢 + 锁版本 + 引导脚本）（2026-09-11）
