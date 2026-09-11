@@ -27,6 +27,10 @@ from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # 仅供类型检查：httpx 在各调用点按需导入，保持模块启动轻量
+    import httpx
 
 # 复用 SGME 真实接口；以下 LLM/嵌入帮手从原 locomo_eval.py 内联（LoCoMo 已移除，
 # 但这些函数是通用评测基础设施，LongMemEval 评测台继续使用，故就地保留）。
@@ -69,6 +73,28 @@ Decide whether the system answer is CORRECT with respect to the gold answer.
 Reply with exactly one word, CORRECT or WRONG, on the first line. Optionally add a one-line reason on the second line."""
 
 
+def _no_proxy_client(timeout_s: float) -> "httpx.Client":
+    """评测台统一 HTTP 客户端：``trust_env=False``（项目铁律，防代理劫持）。
+
+    2026-09-11 教训：评测脚本原先直接 ``httpx.post(...)``，会读宿主机的
+    ``HTTP_PROXY/HTTPS_PROXY`` 环境变量；残留的死代理（指向未运行的本机端口）会让
+    批量向量与判分全部报 10061「目标计算机积极拒绝」，而引擎侧 trust_env=False 的
+    调用照常成功 —— 故障表现为「同一进程里一半通一半不通」。
+    """
+    import httpx
+
+    return httpx.Client(timeout=timeout_s, trust_env=False)
+
+
+def _done_qids(records: list[dict]) -> set[str]:
+    """已完成题目集合：**error 记录不算完成**（resume 会重跑它）。
+
+    2026-09-11 教训：原实现把带 error 的记录也当「已完成」跳过，一次网络抖动
+    （如端点瞬断）就让题目被永久丢弃，长跑必须能自愈。
+    """
+    return {r["qid"] for r in records if r.get("qid") and not r.get("error")}
+
+
 def make_deepseek_llm_fn(
     model: str = "deepseek-v4-flash",
     api_key_env: str = "DEEPSEEK_API_KEY_SGME",
@@ -107,6 +133,7 @@ def make_deepseek_llm_fn(
 
     def fn(prompt: str) -> str:
         last_err = ""
+        cli = _no_proxy_client(timeout_s)
         if throttle_s > 0:
             time.sleep(throttle_s)
         payload = {
@@ -118,11 +145,10 @@ def make_deepseek_llm_fn(
             payload["enable_thinking"] = False
         for attempt in range(1, max_retry + 1):
             try:
-                r = httpx.post(
+                r = cli.post(
                     f"{base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                     json=payload,
-                    timeout=timeout_s,
                 )
                 if r.status_code == 429:
                     last_err = "429"
@@ -188,14 +214,15 @@ def embed_corpus(
             misses.append((i, r["memory_id"], r["content"]))
     mem_conn.commit()
 
+    cli = _no_proxy_client(120.0)  # trust_env=False；httpx.Client 线程安全，多线程共用
+
     def embed_batch(batch: list) -> list:
         texts = [b[2] for b in batch]
         for attempt in range(1, 7):
             try:
-                r = httpx.post(
+                r = cli.post(
                     f"{base_url}/embeddings",
                     json={"model": model, "input": texts},
-                    timeout=120,
                 )
                 if r.status_code == 429:
                     time.sleep(min(2.0 ** attempt, 16.0) + random.random())
@@ -901,7 +928,7 @@ def run(args) -> dict:
             done_records = loaded
             if loaded:
                 logger.warning("[lme] resume: %d questions from checkpoint, skipped", len(loaded))
-    done_qids = {r.get("qid") for r in done_records}
+    done_qids = _done_qids(done_records)
 
     todo = []
     for qi, q in enumerate(ds, 1):
