@@ -252,6 +252,53 @@ def test_restore_data_http_shape_complete(conns, cfg, raw_dir):
 
 # ---------- 3. restore 快照不存在 ----------
 
+def test_restore_succeeds_when_extra_connection_holds_wal(conns, cfg, tmp_path):
+    """B171：进程内还有别的连接持有该库时，恢复也必须成功。
+
+    旧实现（删 -wal/-shm + copy2 覆盖主库）在 Windows 上必踩 PermissionError
+    [WinError 32]——真实服务进程里除传入的 conn_pair，还有 MCP/引擎/调度器/逐请求
+    DAO 的连接；若吞掉删除失败继续覆盖，残留旧 -wal 会在下次打开时被回放 →
+    静默污染恢复结果。本用例复刻该场景，并断言「完成覆盖 + 无快照后状态残留」。
+    """
+    mem_conn, session_conn, wiki_conn = conns
+    data_dir = tmp_path / "data"
+
+    # Arrange：先造快照
+    snap = op_backup_create(cfg, mem_conn, session_conn, wiki_conn, level="full").data
+
+    # 快照之后：另开一条连接写入（不进 conn_pair）→ 制造被进程占用的 memory.db-wal
+    extra = sqlite3.connect(str(data_dir / "memory.db"))
+    data = None
+    try:
+        extra.execute("CREATE TABLE IF NOT EXISTS _b171_probe(x INTEGER)")
+        extra.commit()
+        assert (data_dir / "memory.db-wal").exists(), "复刻条件不成立：WAL 文件不存在"
+
+        # Act：恢复（旧实现在此抛 PermissionError [WinError 32]）
+        data = op_backup_restore(
+            cfg, mem_conn, session_conn, wiki_conn, snapshot_id=snap["snapshot_id"],
+        ).data
+    finally:
+        extra.close()
+
+    # Assert：恢复成功；快照后写入的表不应残留（证明是彻底覆盖，无旧 WAL 状态混入）
+    assert data is not None, "恢复未返回结果"
+    assert "memory.db" in data["restored"]["files"]
+    try:
+        new_mem = data["_new_conns"][0]
+        left = new_mem.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='_b171_probe'"
+        ).fetchone()
+        assert left is None, "恢复后仍存在快照后的表：旧状态混入（WAL 未正确处理）"
+    finally:
+        # restore 会换新连接；显式关闭，否则 Windows 下 tmp_path 清理撞文件锁
+        for c in data["_new_conns"]:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+
 def test_restore_missing_snapshot_fails_not_found(conns, cfg):
     """快照不存在 → OperationResult(ok=False, ERR_NOT_FOUND)，文案含 snapshot_id。"""
     # Arrange / Act
