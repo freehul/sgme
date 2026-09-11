@@ -39,6 +39,12 @@ lives at `eval/longmemeval_eval.py`.
   > J-score 0.1579; multi-session: recall 0.8108 yet J-score 0.2273). Further
   > retrieval tuning has low marginal return — invest in generation/aggregation.
 
+## Reports
+- `docs/eval/SGME-LongMemEval评测报告-v0.2.md`（2026-09-11，中文）——直灌臂 500 题全量成绩
+  （recall@8 **0.9608** / J-score **0.654** / NO CONTEXT **21.4%**）+ refined 臂小样验证 + 口径与局限。
+  ⚠️ 口径警告：**500 题数字来自 direct-ingest 臂，不代表 refined 生产链路**；refined 全量尚未跑。
+- `docs/eval/longmemeval_report_zh.md`（2026-09-02，v0.1）——bm25 vs hybrid 对照，原件保留。
+
 ## Usage
 
     python -m eval.longmemeval_eval --limit 500 --arms bm25,hybrid \
