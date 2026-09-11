@@ -68,6 +68,11 @@ versions:
     sha256: 6e134dc8e0b74dc802cc81c500d031dab4ce250be712cb2d263a5ce0626fe573
     created_at: '2026-09-11T23:03:30Z'
     note: 事实保真版：新增 fact 类型 + 强制原文语言 + 保留判别性细节（A/B 实验驱动，2026-09-12）
+  - version: v006
+    file: versions/l1_extraction/v006.txt
+    sha256: 899acbe453efcb3a9a34e8b6a67434afda7fb9ac5d43fe97edb3dbf52a852c22
+    created_at: '2026-09-11T23:34:37Z'
+    note: 事实保真版二稿：语言守则前置+文末再强调，压中文示例诱导（2026-09-12 A/B 驱动）
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt
