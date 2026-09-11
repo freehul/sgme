@@ -107,11 +107,14 @@ function render(d) {
   const p = d.progress;
   if (p) {
     const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
-    document.getElementById("prog-title").textContent = `总进度 ${p.done} / ${p.total}（${pct}%）`;
+    const pending = p.pending && !p.done;
+    document.getElementById("prog-title").textContent =
+      `总进度 ${p.done} / ${p.total}（${pct}%）${pending ? " ｜ 等待首题写入" : ""}`;
     document.getElementById("prog-bar").style.width = pct + "%";
     const o = p.outcome || {};
-    document.getElementById("prog-note").innerHTML =
-      `指纹：${esc(JSON.stringify(p.fingerprint || {}).slice(0, 150))}`;
+    document.getElementById("prog-note").innerHTML = pending
+      ? "题级记录要等<b>第一题跑完</b>才落盘（refined 臂单题约 25–45 分钟）；下面「在建题库」是实时提炼进度。"
+      : `指纹：${esc(JSON.stringify(p.fingerprint || {}).slice(0, 150))}`;
     document.getElementById("kpi").innerHTML =
       cell("recall@8 均值", pct1(p.recall_mean)) +
       cell("F1 均值", nz(p.f1_mean)) +
