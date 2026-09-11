@@ -81,6 +81,35 @@ def _backup_db(src_conn: sqlite3.Connection, dst_path: Path) -> None:
         dst_conn.close()
 
 
+def _restore_db_file(src_db: Path, dst_db: Path) -> None:
+    """用 SQLite backup API 把快照库写回目标库（B171）。
+
+    为什么不用「删 -wal/-shm + copy2 覆盖主库」（旧实现，已废止）：
+    - Windows 下只要进程内还有任一连接持有目标库（服务进程必然有：MCP/引擎/
+      调度器/逐请求 DAO），`unlink(-wal)` 就抛 PermissionError [WinError 32]；
+    - 若删失败仍继续覆盖主库，**残留的旧 -wal 会在下次打开时被回放** →
+      静默污染恢复结果（比报错更危险）。
+    改用 backup API 反向写入：页级复制由 SQLite 完成，全程零文件级删除；
+    旧 WAL 的历史帧会被新写入的帧正常取代，一致性由 SQLite 负责。
+    """
+    src_conn = sqlite3.connect(f"file:{src_db.as_posix()}?mode=ro", uri=True)
+    try:
+        dst_conn = sqlite3.connect(str(dst_db))
+        try:
+            src_conn.backup(dst_conn)
+            dst_conn.commit()
+            # 顺带把 WAL 落盘（快照库自包含，便于外部直接拷走该文件）；
+            # 有其它连接持有 WAL 时 TRUNCATE 会 busy，属正常，不影响正确性
+            try:
+                dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.OperationalError:
+                pass
+        finally:
+            dst_conn.close()
+    finally:
+        src_conn.close()
+
+
 def _copy_raw_full(src_raw: Path, dst_raw: Path) -> list[str]:
     """全量复制 raw/ 目录，返回复制的相对路径列表。"""
     if not src_raw.exists():
@@ -390,19 +419,13 @@ def restore(
             except Exception:
                 pass
 
-    # 3. 覆盖 data_dir 下 db 文件
+    # 3. 用 backup API 把快照写回三库（B171：不再删 WAL、不再文件级覆盖）
     restored_files: list[str] = []
     data_dir.mkdir(parents=True, exist_ok=True)
     for db_name in DB_FILENAMES:
         src_db = snapshot_path / db_name
-        dst_db = data_dir / db_name
         if src_db.exists():
-            # 删除可能残留的 WAL/SHM 文件（关闭连接后通常已清理，此处兜底）
-            for suffix in ("-wal", "-shm"):
-                wal_file = data_dir / (db_name + suffix)
-                if wal_file.exists():
-                    wal_file.unlink()
-            shutil.copy2(src_db, dst_db)
+            _restore_db_file(src_db, data_dir / db_name)
             restored_files.append(db_name)
 
     # 4. 恢复 raw/

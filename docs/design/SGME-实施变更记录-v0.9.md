@@ -2815,3 +2815,15 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 改动 3（防复发） | 新增 `scripts/bootstrap_venv.bat`（只认 `D:\AI\python`，找不到即报错退出，**绝不静默使用 PATH 上的 python**；GBK+CRLF，护栏实测通过）；`AGENTS.md` 技术栈补「基准解释器」规则；`.gitignore` 增加 `.venv.bak-*/`。 |
 | 验收实证 | 3 个版本 `python -V` + `import ssl, sqlite3` 全 ok；`python.exe` md5 源/目标一致；`uv python dir` = `D:\AI\python`；抽 5 个依赖老路径的真实 venv 实跑 ok；`python-sdk` 经联接 `Python 3.13.2`。 |
 | 运维影响 | 新环境搭建统一走 `scripts/bootstrap_venv.bat`；解释器只在 `D:\AI\python` 落地（缺版本也装这里）。⚠️ 未决：`%APPDATA%\uv\python.old-20260911`（207M）备份待用户决定何时删。 |
+
+### B171. restore 不再删 WAL 覆盖文件：改用 backup API 反向写入（2026-09-11）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | E2E 冒烟第 11 步 `POST /v1/admin/backup/restore` 恒定 HTTP 500：`ERR_INTERNAL 内部错误: [WinError 32] 另一个程序正在使用此文件: 'D:\Projects\SGME\data\memory.db-wal'`（待办 9bc49b98）。恢复路径是灾难恢复的最后一道，不能坏。 |
+| 根因 | `restore_snapshot` 第 3 步「删 `-wal`/`-shm` + `copy2` 覆盖主库」：Windows 下只要进程内**还有任一连接**持有目标库（服务进程必然有：MCP / 引擎 / 调度器 / 逐请求 DAO；`conn_pair` 只覆盖 3 条），`unlink(-wal)` 必抛 `PermissionError [WinError 32]`。且**吞掉该错误继续覆盖更危险**——残留旧 `-wal` 会在下次打开时被回放，静默污染恢复结果（比报错更坏）。 |
+| 修法 | 第 3 步改为 `_restore_db_file()`：以 `mode=ro` 打开快照库 → `src.backup(dst)` **写回目标库的活连接** → `commit` → 尽力 `PRAGMA wal_checkpoint(TRUNCATE)`（多连接持有 WAL 时 busy 属正常，不影响正确性）。全程**零文件级删除**，页级复制与 WAL 一致性交给 SQLite。 |
+| 测试（RED→GREEN） | 先 RED：新增 `test_restore_succeeds_when_extra_connection_holds_wal`——快照后另开连接写入（不进 `conn_pair`）制造被占用的 `-wal`，旧实现**如实复现** `PermissionError [WinError 32]`（本缺陷首次可在单测内复现，此前只能打真服务）；改后 GREEN，并断言「快照后写入的表不残留」→ 覆盖是彻底的、无旧状态混入。 |
+| 测试数字 | 备份四件套（`test_operations_backup` / `test_backup` / `test_routes_backup` / `test_backup_scheduler`）**38 通过 / 0 失败**；真实服务 E2E 冒烟 **11/11 PASSED**（`[11] [OK] backup restored`），服务端日志 `POST /v1/admin/backup/restore → 200 OK`，**0 次 500 / 0 次 PermissionError**。 |
+| 运维影响 | ① restore 现可**在线执行**（无需停服务）；② 若目标库被别的事务长持有，`backup()` 仍可能 busy → 报 `sqlite3.OperationalError`（语义明确，非本缺陷）；③ 三库之间仍非原子（与旧实现一致，属既有语义，本轮未改）。 |
+| 观察（未修） | 冒烟脚本第 4 步报 `[warn] 查 wiki.db scenes 失败: no such table: scenes` —— v0.7 已把 scenes 迁到 memory.db，脚本的检查口径未跟上（脚本自身陈旧，不影响链路；已记入待办）。 |
