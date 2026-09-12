@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 import sys
@@ -165,6 +166,40 @@ def make_deepseek_llm_fn(
     return fn
 
 
+def _embed_with_split(cli, base_url: str, model: str, batch: list,
+                      max_attempts: int = 6, sleep_s: float | None = None) -> list:
+    """批量向量：失败重试 max_attempts 次；仍失败且批 >1 条 → 二分拆批递归。
+
+    2026-09-13 实测（0100672e 单题复盘）：向量端点瞬时拒连（WinError 10061）会让
+    整批 32 条连续 6 次失败 → 整个题目作废。拆批后小批更容易穿过抖动，且单条超限
+    不再拖累整批。sleep_s 仅测试用（None = 真实退避 + 抖动）。
+    """
+    texts = [b[2] for b in batch]
+    for attempt in range(1, max_attempts + 1):
+        try:
+            r = cli.post(
+                f"{base_url}/embeddings",
+                json={"model": model, "input": texts},
+            )
+            if r.status_code == 429:
+                time.sleep((min(2.0 ** attempt, 16.0) if sleep_s is None else sleep_s)
+                           + (random.random() if sleep_s is None else 0))
+                continue
+            r.raise_for_status()
+            data = {d["index"]: d["embedding"] for d in r.json()["data"]}
+            return [(batch[k][1], batch[k][2], data[k]) for k in range(len(batch))]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("batch embed 失败(尝试%d/%d): %s", attempt, max_attempts, str(e)[:120])
+            time.sleep((min(2.0 ** attempt, 16.0) if sleep_s is None else sleep_s)
+                       + (random.random() if sleep_s is None else 0))
+    if len(batch) > 1:
+        mid = len(batch) // 2
+        logger.warning("batch embed 拆批重试：%d → %d + %d", len(batch), mid, len(batch) - mid)
+        return (_embed_with_split(cli, base_url, model, batch[:mid], max_attempts, sleep_s)
+                + _embed_with_split(cli, base_url, model, batch[mid:], max_attempts, sleep_s))
+    raise RuntimeError(f"batch embed 耗尽重试: {texts[0][:40]!r}")
+
+
 def embed_corpus(
     mem_conn: sqlite3.Connection,
     cfg: dict,
@@ -217,23 +252,7 @@ def embed_corpus(
     cli = _no_proxy_client(120.0)  # trust_env=False；httpx.Client 线程安全，多线程共用
 
     def embed_batch(batch: list) -> list:
-        texts = [b[2] for b in batch]
-        for attempt in range(1, 7):
-            try:
-                r = cli.post(
-                    f"{base_url}/embeddings",
-                    json={"model": model, "input": texts},
-                )
-                if r.status_code == 429:
-                    time.sleep(min(2.0 ** attempt, 16.0) + random.random())
-                    continue
-                r.raise_for_status()
-                data = {d["index"]: d["embedding"] for d in r.json()["data"]}
-                return [(batch[k][1], batch[k][2], data[k]) for k in range(len(batch))]
-            except Exception as e:  # noqa: BLE001
-                logger.warning("batch embed 失败(尝试%d): %s", attempt, str(e)[:120])
-                time.sleep(min(2.0 ** attempt, 16.0) + random.random())
-        raise RuntimeError(f"batch embed 耗尽重试: {texts[0][:40]!r}")
+        return _embed_with_split(cli, base_url, model, batch)
 
     if misses:
         batches = [misses[s:s + batch_size] for s in range(0, len(misses), batch_size)]
