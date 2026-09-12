@@ -154,13 +154,25 @@ comparable with the other arms.
   at 4-way concurrency; prefill 3.3K tok/s, decode 143 tok/s on an RTX 4080S).
 
 **Measured refined-vs-direct gap (2026-09-12, 15-question A/B, same questions)**: the
-`refined` arm reaches recall@8 **0.51** vs the direct-ingest arm's **0.98** (answered
-5/15 vs 12/15) — the production chain's distilled memories are semantically further from
-the question wording, so retrieval misses the gold session in ~half of the questions.
-Treat refined numbers as the *production-chain* measurement and direct numbers as the
-*retrieval ceiling*. Session-level aggregation (`--refined-session-k`, default = top-k)
-makes the two arms comparable in information volume, but does **not** close the gap by
-itself (A/B: within ±1-2 questions).
+`refined` arm reached recall@8 **0.51** vs the direct-ingest arm's **0.98** (answered
+5/15 vs 12/15). Follow-up diagnosis (B175) traced this to the **L1 extraction prompt**:
+it was user-profile oriented ("extract long-term *user* memories", "don't extract
+temporary details"), so assistant-provided facts had **no memory channel**, and ~half of
+the English sessions were distilled into Chinese memories (breaking BM25 and weakening the
+vector match). A fact-faithful prompt (v006) + `fact` memory type + a language-drift guard
+were installed, and the **same 19 failed/anchor questions were re-run head-to-head**:
+
+| refined arm, same 19 questions, same judge | recall@8 | correct | wrong | no-context |
+|---|---|---|---|---|
+| old prompt (main run) | 0.618 | 4 | 5 | 10 |
+| **fact-faithful prompt** | **0.864** | **10** | 3 | **5** |
+
+Six questions flipped from "no context" to correct — including both root-caused ones
+(`18dcd5a5` 0.00→1.00, `1de5cff2` 0.00→1.00) — while **3 regressions** appeared (two
+previously-correct questions → wrong/no-context). Single sample at temperature 0.6, so
+read the delta as ≈+6 questions subject to sampling noise. Session-level aggregation
+(`--refined-session-k`, default = top-k) stays on: it makes the two arms comparable in
+information volume but does not by itself close the gap (A/B: within ±1-2 questions).
 
 **Throughput (local, measured 2026-09-12)**: ~80 min wall per question at 4-way
 concurrency (4 questions in flight on one PC endpoint); **100 questions ≈ 30 h**,
