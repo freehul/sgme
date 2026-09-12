@@ -165,14 +165,15 @@ were installed, and the **same 19 failed/anchor questions were re-run head-to-he
 | refined arm, same 19 questions, same judge | recall@8 | correct | wrong | no-context |
 |---|---|---|---|---|
 | old prompt (main run) | 0.618 | 4 | 5 | 10 |
-| **fact-faithful prompt** | **0.864** | **10** | 3 | **5** |
+| **fact-faithful prompt** | **0.917** | **11** | 3 | **5** |
 
-Six questions flipped from "no context" to correct — including both root-caused ones
-(`18dcd5a5` 0.00→1.00, `1de5cff2` 0.00→1.00) — while **3 regressions** appeared (two
-previously-correct questions → wrong/no-context). Single sample at temperature 0.6, so
-read the delta as ≈+6 questions subject to sampling noise. Session-level aggregation
-(`--refined-session-k`, default = top-k) stays on: it makes the two arms comparable in
-information volume but does not by itself close the gap (A/B: within ±1-2 questions).
+Eight questions flipped to correct — six from "no context" (including both root-caused ones:
+`18dcd5a5` 0.00→1.00, `1de5cff2` 0.00→1.00) and two from "wrong" (`0100672e`, `26bdc477`) —
+while **3 regressions** appeared (two previously-correct questions → wrong/no-context).
+Single sample at temperature 0.6, so read the delta as ≈+7 questions subject to sampling
+noise. Session-level aggregation (`--refined-session-k`, default = top-k) stays on: it
+makes the two arms comparable in information volume but does not by itself close the gap
+(A/B: within ±1-2 questions).
 
 **Throughput (local, measured 2026-09-12)**: ~80 min wall per question at 4-way
 concurrency (4 questions in flight on one PC endpoint); **100 questions ≈ 30 h**,
