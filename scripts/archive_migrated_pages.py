@@ -2,7 +2,7 @@
 """批量把 wiki 的 skill:* 原页置 superseded（M4a 收尾：技能已全部入库）。
 
 用法（本机运行，打 NAS 生产 API）：
-    SGME_ADMIN_KEY=xxx python scripts/archive_migrated_pages.py --api http://192.168.10.10:9910
+    SGME_ADMIN_KEY=xxx python scripts/archive_migrated_pages.py --api http://<NAS_IP>:9910
 
 安全：只处理 title 以 skill: 开头且 status='active' 的页；带 --dry-run 预览。
 """

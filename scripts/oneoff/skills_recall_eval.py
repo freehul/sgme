@@ -126,7 +126,7 @@ def main(argv=None) -> int:
 
     from sgme.operations.skills import search_skills
 
-    # wiki_conn：--with-wiki 时接入生产 wiki.db 副本（拉取：scp nas:/vol1/1000/Docker/sgme/data/data/wiki.db data/wiki_prod.db）
+    # wiki_conn：--with-wiki 时接入生产 wiki.db 副本（拉取：scp nas:<NAS_ROOT>/Docker/sgme/data/data/wiki.db data/wiki_prod.db）
     wiki_conn = None
     if args.with_wiki:
         wiki_db = Path("D:/Projects/SGME/data/wiki_prod.db")

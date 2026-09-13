@@ -1289,7 +1289,7 @@ def write_client_install_json(
     **环境变量名引用**，不落任何明文密钥（铁律 #10：密钥不落盘）。
 
     Args:
-        host: 远程 SGME 主机地址（如 192.168.10.10）。
+        host: 远程 SGME 主机地址（如 <NAS_IP>）。
         port: 远程 HTTP 端口（默认 9910）。
         mcp_port: 远程 MCP 端口；未传时取 SGME_MCP_PORT env（默认 9913），
             与 write_install_json 同逻辑。

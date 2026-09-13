@@ -15,14 +15,14 @@
 1. npmjs.com → 头像 → Access Tokens → Generate New Token → 类型选 **Granular**
 2. 三个区块都要填：
    - **Token name**：随意
-   - **IP allowlist**：`43.255.156.6/32`（VPS 出口 IP）
+   - **IP allowlist**：`<VPS_IP>/32`（VPS 出口 IP）
    - **Packages and scopes**：Add Packages → 选 `dsh-sgme` 或 All packages → 勾 **Read and write** ← 最容易漏
 3. 生成后复制新 token（只显示一次）→ 更新 `D:/Projects/SGME/.env` 的 `NPM_KEY=` 整行
 4. 校验：新 token 前缀一定 ≠ 旧值（`Get-Content .env | Select-String NPM_KEY` 看前缀变化）
 
 ## 三、发布命令（必须走 7897 代理）
 
-> 出口 IP 必须匹配 token 的 IP 白名单（VPS 43.255.156.6）。直连出口是家里 IP → 404；走 Clash 7897 代理 → 出口 VPS → 匹配。
+> 出口 IP 必须匹配 token 的 IP 白名单（VPS <VPS_IP>）。直连出口是家里 IP → 404；走 Clash 7897 代理 → 出口 VPS → 匹配。
 
 ```powershell
 cd D:/Projects/SGME/adapters/dsh/sgme-bridge

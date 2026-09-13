@@ -57,7 +57,7 @@ export SGME_MCP_URL="${SGME_MCP_URL:-http://localhost:9913/mcp}"
 ```python
 # python 示例统一引用
 import os
-SGME_HTTP_BASE = os.environ.get("SGME_HTTP_URL", "http://localhost:9910")  # NAS：export SGME_HTTP_URL=http://192.168.10.10:9910
+SGME_HTTP_BASE = os.environ.get("SGME_HTTP_URL", "http://localhost:9910")  # NAS：export SGME_HTTP_URL=http://<NAS_IP>:9910
 SGME_MCP_URL = os.environ.get("SGME_MCP_URL", "http://localhost:9913/mcp")
 ```
 
@@ -788,11 +788,11 @@ docker compose up -d --build
 **自动更新（ST-34，2026-08-21）**：
 - WebUI 检测到新版本（GitHub Releases API，`update_check` 配置段可调 enabled/interval_hours/source）→ 健康卡片显示提示条 → 用户确认「立即更新」→ 写意图文件 `$SGME_HOME/update/request.json`
 - 主机侧代理 `scripts/sgme-host-updater.sh`（NAS root cron 每 5 分钟轮询）执行：git pull → docker build 新镜像 → 备份 compose → 换 tag → compose up → 健康验证 → 成功清请求 / 失败自动回滚旧镜像
-- 容器无特权（不挂 docker.sock），更新由主机脚本执行；**NAS 自动更新代理已部署（2026-08-22 复验）**：脚本 /vol1/1000/Docker/sgme/scripts/sgme-host-updater.sh + root cron `*/5 * * * *`（→ logs/updater.log），端到端验证通过
+- 容器无特权（不挂 docker.sock），更新由主机脚本执行；**NAS 自动更新代理已部署（2026-08-22 复验）**：脚本 <NAS_ROOT>/Docker/sgme/scripts/sgme-host-updater.sh + root cron `*/5 * * * *`（→ logs/updater.log），端到端验证通过
 
 ### 16.5 NAS（群晖）部署
 
 - 部署真相源：`deploy/nas-docker-compose.yml`（模板，`{{IMAGE_TAG}}` 占位），NAS 生产 compose 非 git 仓库（B64 遗留）
-- 流程（B64 纪律）：改项目 git → push（github + gitee 双推）→ NAS 拉取（`/vol1/1000/git/sgme.git` bare 仓接 gitee remote 后 fetch）→ NAS 构建 → 更新 compose → up -d
-- 数据卷 bind mount 到共享文件夹（如 `/vol1/1000/Docker/sgme/data` → `/data`），文件站可直接备份
-- skills-hub 可选 bind mount：`/vol1/1000/git/skills-hub.git` → `/git/skills-hub.git`（file:// 直访，免 SSH key）
+- 流程（B64 纪律）：改项目 git → push（github + gitee 双推）→ NAS 拉取（`<NAS_ROOT>/git/sgme.git` bare 仓接 gitee remote 后 fetch）→ NAS 构建 → 更新 compose → up -d
+- 数据卷 bind mount 到共享文件夹（如 `<NAS_ROOT>/Docker/sgme/data` → `/data`），文件站可直接备份
+- skills-hub 可选 bind mount：`<NAS_ROOT>/git/skills-hub.git` → `/git/skills-hub.git`（file:// 直访，免 SSH key）

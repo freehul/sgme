@@ -18,7 +18,7 @@ host/port，data_dir/raw_dir 置 null（表示本地无数据目录，防止接�
   3) 仍失败 → 向主人报告「SGME 未发现」。
 
 用法：
-  python scripts/install_client.py --host 192.168.10.10 [--port 9910] [--mcp-port 9913]
+  python scripts/install_client.py --host <NAS_IP> [--port 9910] [--mcp-port 9913]
 
 Key 引用：清单只写环境变量名（SGME_ADMIN_KEY/SGME_AGENT_KEY/SGME_BEARER_TOKEN），
 不落任何明文密钥（铁律 #10：密钥不落盘）。
@@ -41,7 +41,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="客户端模式：生成 install.json 服务发现清单（本机不跑 SGME，纯远程接入端）",
     )
-    parser.add_argument("--host", required=True, help="远程 SGME 主机地址（如 192.168.10.10）")
+    parser.add_argument("--host", required=True, help="远程 SGME 主机地址（如 <NAS_IP>）")
     parser.add_argument("--port", type=int, default=9910, help="远程 HTTP 端口（默认 9910）")
     parser.add_argument(
         "--mcp-port", type=int, default=None,

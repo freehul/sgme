@@ -56,7 +56,7 @@ curl http://localhost:9910/v1/health
 
 **注册 agent 拿密钥**（两条路径都需要）：本体启动后运行 `adapters/dsh/install.py`，注册 DSH agent，把 `SGME_AGENT_KEY` / `SGME_ADMIN_KEY` 写入 `.env`。
 
-**服务地址**：插件 `baseUrl` 由环境变量 `SGME_BASE_URL` 注入（缺省指向 NAS `192.168.10.10:9910`，面向多 agent 共享场景）。本地部署时设 `SGME_BASE_URL=http://127.0.0.1:9910` 即可，无需改代码。
+**服务地址**：插件 `baseUrl` 由环境变量 `SGME_BASE_URL` 注入（缺省指向 NAS `<NAS_IP>:9910`，面向多 agent 共享场景）。本地部署时设 `SGME_BASE_URL=http://127.0.0.1:9910` 即可，无需改代码。
 
 ## 安装
 
@@ -88,7 +88,7 @@ dsh plugin --profile <你的profile> add dsh-sgme
 `cordis.patch.yml` 默认值：
 
 ```yaml
-baseUrl: process.env.SGME_BASE_URL ?? 'http://192.168.10.10:9910'   # 环境变量注入，缺省指向 NAS
+baseUrl: process.env.SGME_BASE_URL ?? 'http://<NAS_IP>:9910'   # 环境变量注入，缺省指向 NAS
 agentKey: process.env.SGME_AGENT_KEY   # 环境变量注入，密钥不落盘
 adminKey: process.env.SGME_ADMIN_KEY
 agentId: dsh
@@ -96,7 +96,7 @@ injectMode: daily
 syncOnTurnEnd: true
 ```
 
-- `baseUrl` 与密钥均通过环境变量注入（符合 SGME 密钥不落盘铁律）；`SGME_BASE_URL` 缺省指向 NAS（192.168.10.10:9910），SGME 部署在其他机器时改环境变量即可，无需改代码；
+- `baseUrl` 与密钥均通过环境变量注入（符合 SGME 密钥不落盘铁律）；`SGME_BASE_URL` 缺省指向 NAS（<NAS_IP>:9910），SGME 部署在其他机器时改环境变量即可，无需改代码；
 - 生产环境请用 SGME 的 `adapters/dsh/install.py` 注册 agent 后覆盖 dev key（install.py 已把 `SGME_BASE_URL` 一并写入 `.env`）。
 
 ## 用法

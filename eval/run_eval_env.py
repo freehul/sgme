@@ -38,9 +38,9 @@ ENV_FILE = ROOT / "config" / ".env"
 # （2026-09-11 拓扑定案：笔记本 LM Studio 无法无头启动，故向量模型也搬来 PC，
 #   与 9B 提炼模型并存仅多占 ~0.6GB 显存；地址如需换机改这里或用环境变量覆盖）
 OVERRIDES = {
-    "SGME_EMBED_BASE_URL": "http://192.168.10.130:8123/v1",
+    "SGME_EMBED_BASE_URL": "http://127.0.0.1:8123/v1",
     "SGME_EMBED_MODEL": "text-embedding-bge-m3-legal-euro-r7",
-    "SGME_REFINE_BASE_URL": "http://192.168.10.130:8123/v1",
+    "SGME_REFINE_BASE_URL": "http://127.0.0.1:8123/v1",
     "SGME_REFINE_MODEL": "qwen3.8-9b-distill",
     "SGME_REFINE_CTX": "131072",  # 批预算 = ctx − 4096 − 8%ctx = 116490
 }

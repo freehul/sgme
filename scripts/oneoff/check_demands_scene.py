@@ -17,7 +17,7 @@ if not key:
     print('NO_ADMIN_KEY')
     raise SystemExit(0)
 
-url = 'http://192.168.10.10:9910/v1/admin/demands?limit=50'
+url = 'http://<NAS_IP>:9910/v1/admin/demands?limit=50'
 req = urllib.request.Request(url, headers={'X-API-Key': key})
 try:
     with urllib.request.urlopen(req, timeout=8) as resp:

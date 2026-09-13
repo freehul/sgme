@@ -130,14 +130,14 @@ def test_write_install_json_creates_file(tmp_path, monkeypatch):
     """write_install_json → ~/.sgme/install.json，字段完整（http/mcp/keys/agent_id）。"""
     import json
     target = tmp_path / "install.json"
-    monkeypatch.setattr(install, "_BASE_URL", "http://192.168.10.10:9910")
+    monkeypatch.setattr(install, "_BASE_URL", "http://10.0.0.5:9910")
     monkeypatch.setattr(install, "_AGENT_ID", "dsh")
     path = install.write_install_json(target)
     assert path == target
     assert target.exists()
     data = json.loads(target.read_text(encoding="utf-8"))
     assert data["schema_version"] == 1
-    assert data["http"] == {"host": "192.168.10.10", "port": 9910}
+    assert data["http"] == {"host": "10.0.0.5", "port": 9910}
     assert data["mcp"]["port"] == 9913
     assert data["agent_id"] == "dsh"
     assert data["keys"]["admin"] == "SGME_ADMIN_KEY"

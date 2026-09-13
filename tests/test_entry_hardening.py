@@ -195,7 +195,7 @@ def test_is_localhost_source_unit(default_key_app):
     assert _is_localhost_source(_req("::1")) is True
     assert _is_localhost_source(_req("localhost")) is True
     assert _is_localhost_source(_req("testclient")) is True
-    assert _is_localhost_source(_req("192.168.1.10")) is False
+    assert _is_localhost_source(_req("10.0.0.1")) is False
     assert _is_localhost_source(_req(REMOTE_HOST)) is False
     assert _is_localhost_source(_req(None)) is False
 

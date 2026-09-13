@@ -14,7 +14,7 @@ if not key:
 
 body = json.dumps({"async_mode": True}).encode('utf-8')
 req = urllib.request.Request(
-    'http://192.168.10.10:9910/v1/admin/refine/trigger',
+    'http://<NAS_IP>:9910/v1/admin/refine/trigger',
     data=body,
     headers={'X-API-Key': key, 'Content-Type': 'application/json'},
     method='POST',

@@ -159,7 +159,7 @@ async def test_http_usage_middleware_records(mem_conn, store):
         "method": "POST",
         "path": "/v1/admin/demands/abc-123/status",
         "headers": [(b"x-api-key", store.agent_key.encode())],
-        "client": ("192.168.1.9", 12345),
+        "client": ("10.0.0.9", 12345),
         "route": type("R", (), {"path": "/v1/admin/demands/{demand_id}/status"})(),
     }
     sent = await _run_middleware(mw, scope)
@@ -169,7 +169,7 @@ async def test_http_usage_middleware_records(mem_conn, store):
     assert row["kind"] == "http"
     assert row["name"] == "/v1/admin/demands/{demand_id}/status"  # route 模板归一化
     assert row["caller"] == "default"
-    assert row["last_ip"] == "192.168.1.9"
+    assert row["last_ip"] == "10.0.0.9"
 
 
 @pytest.mark.asyncio
@@ -308,7 +308,7 @@ def _mcp_scope(headers):
         "method": "POST",
         "path": "/mcp",
         "headers": headers,
-        "client": ("192.168.1.8", 5555),
+        "client": ("10.0.0.8", 5555),
     }
 
 
@@ -362,7 +362,7 @@ async def test_mcp_usage_records_tools_call(mem_conn, store):
     assert row["kind"] == "mcp"
     assert row["name"] == "search"
     assert row["caller"] == "default"
-    assert row["last_ip"] == "192.168.1.8"
+    assert row["last_ip"] == "10.0.0.8"
 
 
 @pytest.mark.asyncio

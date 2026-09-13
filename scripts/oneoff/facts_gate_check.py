@@ -54,7 +54,7 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
                 keys[k.strip()] = v.strip()
     # 本地优先（NAS ollama），失败降级 siliconflow
     for url, headers, model, payload_key in [
-        ("http://192.168.10.10:11434/api/embeddings", {}, "bge-m3", "prompt"),
+        ("http://<NAS_IP>:11434/api/embeddings", {}, "bge-m3", "prompt"),
         ("https://api.siliconflow.cn/v1/embeddings",
          {"Authorization": "Bearer " + keys.get("SILICONFLOW_API_KEY", "")},
          "BAAI/bge-m3", "input"),

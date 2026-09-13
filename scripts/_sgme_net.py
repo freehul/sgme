@@ -4,8 +4,8 @@
 以后 SGME 迁移/换机，只需改环境变量或 install.json，无需改任何代码。
 
 环境变量：
-  SGME_HTTP_URL   完整 HTTP base，如 http://192.168.10.10:9910（最高优先）
-  SGME_MCP_URL    完整 MCP endpoint，如 http://192.168.10.10:9913/mcp
+  SGME_HTTP_URL   完整 HTTP base，如 http://<NAS_IP>:9910（最高优先）
+  SGME_MCP_URL    完整 MCP endpoint，如 http://<NAS_IP>:9913/mcp
   SGME_HTTP_HOST / SGME_HTTP_PORT / SGME_MCP_HOST / SGME_MCP_PORT
   SGME_INSTALL_JSON   覆盖 install.json 路径（默认 ~/.sgme/install.json）
 """
@@ -29,7 +29,7 @@ def _read_install_json() -> dict:
 
 
 def sgme_http_base() -> str:
-    """HTTP API base，如 http://192.168.10.10:9910（无尾部斜杠）。"""
+    """HTTP API base，如 http://<NAS_IP>:9910（无尾部斜杠）。"""
     url = os.environ.get("SGME_HTTP_URL")
     if url:
         return url.rstrip("/")
@@ -40,7 +40,7 @@ def sgme_http_base() -> str:
 
 
 def sgme_mcp_url() -> str:
-    """MCP endpoint，如 http://192.168.10.10:9913/mcp。"""
+    """MCP endpoint，如 http://<NAS_IP>:9913/mcp。"""
     url = os.environ.get("SGME_MCP_URL")
     if url:
         return url.rstrip("/")

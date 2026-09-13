@@ -9,7 +9,7 @@ def ts(v):
     except Exception:
         return str(v)
 
-db = sqlite3.connect('/vol1/1000/Docker/sgme/data/data/memory.db')
+db = sqlite3.connect('<NAS_ROOT>/Docker/sgme/data/data/memory.db')
 db.row_factory = sqlite3.Row
 
 print('== active 场景总数 ==')

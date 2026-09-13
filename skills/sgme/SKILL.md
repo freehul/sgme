@@ -15,7 +15,7 @@ type: skill
 # SGME 操作手册
 
 > 拾光记忆引擎（Single-user Agent Memory Engine）——多 agent 共享的记忆/知识/经验中枢。
-> 服务：NAS 192.168.10.10（HTTP :9910 / MCP :9913）。密钥走环境变量，不落明文。
+> 服务：NAS <NAS_IP>（HTTP :9910 / MCP :9913）。密钥走环境变量，不落明文。
 
 ## 一、功能总览
 
@@ -88,7 +88,7 @@ memory_search（L1.5 记忆池检索）/ wiki_search（知识库检索）/ wiki_
 
 | 变量 | 用途 |
 |---|---|
-| SGME_BASE_URL | 服务地址（http://192.168.10.10:9910） |
+| SGME_BASE_URL | 服务地址（http://<NAS_IP>:9910） |
 | SGME_AGENT_KEY | Agent Key（非 admin 端点） |
 | SGME_ADMIN_KEY | Admin Key（/v1/admin/*） |
 | DEEPSEEK_API_KEY_SGME | 提炼用 LLM 密钥（降级链） |

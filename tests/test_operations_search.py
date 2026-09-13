@@ -792,7 +792,7 @@ def _skills_cfg(source_dir: str) -> dict:
 
 
 NAS_SKILL_MD = (
-    "---\nname: nas-deploy\ndescription: 飞牛 NAS 部署技能\nversion: 1.0.0\n---\n"
+    "---\nname: nas-deploy\ndescription: NAS 部署技能\nversion: 1.0.0\n---\n"
     "# NAS 部署\n docker compose 用法"
 )
 DOUYIN_SKILL_MD = (

@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 REPORT = Path(r"D:\Projects\SGME\tmp\sgme-coldstart-skills-20260828.md")
-BASE = "http://192.168.10.10:9910"
+BASE = "http://<NAS_IP>:9910"
 ENV = Path(r"D:\Projects\SGME\.env")
 
 LINE_RE = re.compile(r"^- \*\*(.+?)\*\*.+? - (.+?) {2}\(tags:", re.S | re.M)

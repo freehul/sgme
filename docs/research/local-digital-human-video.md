@@ -76,7 +76,7 @@ Windows 原生支持、中文生态最好、开源免费，叙事上还能对标
 
 ### 克隆声音对比实测（2026-08-26，小何参考音频 casual 版）
 
-前置改造：飞牛 AngeVoice 容器按商店模板重建（原容器是旧版装的，`ANGEVOICE_ENABLED_MODELS`
+前置改造：NAS AngeVoice 容器按商店模板重建（原容器是旧版装的，`ANGEVOICE_ENABLED_MODELS`
 只生效了 kokoro；重建后 moss+zipvoice 启用，编排文件备份 `.bak-20260826`）；ZipVoice 权重
 6 个文件经 PC 代理中转补齐至 `@appdata/AngeVoice/models/zipvoice/`（NAS 本机代理失效，
 HuggingFace 直连不通）。

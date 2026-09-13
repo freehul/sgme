@@ -35,7 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SUGGESTIONS_PATH = PROJECT_ROOT / "exports" / "t123-categorize-suggestions.json"
 
 # 与 scripts/_sgme_net.py 同源：env → install.json → 默认
-BASE = "http://192.168.10.10:9910"
+BASE = "http://127.0.0.1:9910"
 
 
 def _load_admin_key() -> str:

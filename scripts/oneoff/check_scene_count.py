@@ -14,7 +14,7 @@ if not key:
 
 # 先查 health 看场景数（refinement 无场景数，走 stats）
 req = urllib.request.Request(
-    'http://192.168.10.10:9910/v1/admin/stats',
+    'http://<NAS_IP>:9910/v1/admin/stats',
     headers={'X-API-Key': key},
 )
 try:
