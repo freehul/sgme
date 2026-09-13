@@ -2941,6 +2941,23 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 运维影响 | ①各克隆需 `sh scripts/install_git_hooks.sh` 启用（含 pre-commit 新钩子）；②部署机制耦合组 5 文件（deploy.sh、compose、运维三脚本）真实路径**本批保留**（待 env 化改造，改造需配套 NAS 部署机制同步）；③历史 git 对象中旧值不重写（惯例）；④技能库（Hermes skills / NAS skills-hub）同类清理另行立项。 |
 | 教训（沉淀） | ①「源头」= 写文件的那一刻：用变量/占位符，别等审查；②敏感值分类处置：**能跑的值**（配置/默认值）走环境变量与回环兜底，**纯展示的值**（文档/样例/测试数据）走功能占位符与通用假值；③门禁要「单一规则源 + 双关卡」（暂存 + 推送），且必带行内豁免与逃生开关；④脱敏要「保功能」：env 默认值改回环、检测器测试保私网形态——**字符串替换也需要理解语义**。 |
 
+### B181. 接口面双向对齐补齐：skill_search 补 HTTP + memory_unreject 补 MCP（T-163 收尾，2026-09-13）
 
+| 项 | 内容 |
+|---|---|
+| 背景 | T-163 接口对齐核对（124 个 HTTP 端点 vs 40 个 MCP 工具）发现 4 处缺口，其中 2 处为真实规格缺口：①`skill_search` 仅有 MCP 工具、无 HTTP 端点；②`memory_reject`（HTTP `POST /v1/memory/{id}/reject`）的逆操作 `unreject` 有 HTTP、无 MCP 工具（纠错闭环单向）。 |
+| 改动 | ①`sgme/server/routes_skills.py`：新增 `GET /v1/skills/search?q=&limit=`（与 MCP `skill_search` 同实现 `operations.skills.search_skills`；注册在 `/{name}` 动态路由之前，防 `search` 被当作技能名命中 L2 端点——同 coldstart 先例）；②`sgme/mcp_server.py`：新增 `memory_unreject(memory_id)` 工具（接线 `operations.memory.unreject_memory`，与 HTTP 同一实现）+ `ONBOARDING_TOOLS` 清单同步 + 两处 docstring 更新。 |
+| 未补（评估保留） | ①wiki `export/ingest/raw` 的 MCP 侧——批量文件操作，MCP 通道无对应场景（管理面）；②`stats/detail` 的 MCP 侧——HTTP 运维端点，MCP 已有 `stats` 聚合。两者为设计边界，非缺陷。 |
+| 测试 | 新增 5 例（HTTP search 4：命中/字段结构/缺参 422/未授权 + `/search` 不被 `{name}` 吞的防回归断言；MCP unreject 1：reject→unreject 恢复 active + 不存在报错对称）。`tests/test_mcp_server.py` + `tests/test_routes_skills.py` 合计 **61 passed / 0 failed**；回归：skills 组 270 / mcp 组 56 / 推导组 86 全绿。 |
+| 防漂移（生效案例） | 新增工具后 `test_mcp_agent_onboarding` 立即失败（`ONBOARDING_TOOLS` 与 `@tool` 一一对应断言）——防漂移机制按设计拦截并指引同步，非缺陷。 |
 
+### B182. 门禁规则回归修复：低熵占位 body 判定 + 白名单匹配方向 + 自测脚本（T-166，2026-09-13）
 
+| 项 | 内容 |
+|---|---|
+| 背景（发现过程） | 本批推送前预检（`git diff origin/main..HEAD` 新增行过 `sgme_scan_file`）报拦截：`tests/test_guardrail.py` 的 `sk-` 加 32 个 0 低熵占位被误判为密钥——**推送将被卡死**（该行为合法测试占位，B179 明确承诺自动放行）。 |
+| 根因 | ①**低熵判定回归**：T-164 原版 pre-push（`b771eaf`）按「`-` 之后 body 去重字符 ≤3」判定（`sk-` 加 32 个 0 → body 仅 1 种字符 → 放行）；T-165 重构抽 `lib_scan.sh` 时**丢失该修正**，回退为全 token 去重——`sk-` 前缀自带 s/k/- 3 种字符，加 0 共 4 种，恒 >3 恒拦。②**白名单方向反写**（T-164 起潜伏）：原实现 `grep -qE "$tok" "$ALLOW_FILE"` 把 token 当正则搜白名单文本；正确方向是「白名单条目（正则）匹配 token」——旧写法永不命中所列模式（B179/B180 实测未覆盖白名单路径，未暴露）。 |
+| 改动 | ①`lib_scan.sh` 恢复 `body=${tok#*-}` 判定（补注释防再回退）；②白名单匹配改为逐行读取（跳 `#` 注释）以正则匹配 token；③新增 `scripts/test_git_hooks.sh`——10 用例自测（放行：普通文本/低熵占位×2/白名单假串/内网 IP 加 scan-allow；拦截：高熵随机串/内网 IP/NAS 路径/本机用户目录/真实姓名），测试数据全部运行时拼接（自匹配规避，同 lib_scan 做法）。 |
+| 测试 | 自测 **10/10**（含本回归点与白名单路径）；修复后本批推送预检**通过**；`lib_scan.sh`、`test_git_hooks.sh` 自匹配检查通过。 |
+| 运维影响 | ①后续修改 `lib_scan.sh` 后必跑 `sh scripts/test_git_hooks.sh`（规则级防回归；区别于 install 脚本的启用职责）；②白名单文件格式不变（每行一条正则、`#` 注释），语义修正后真正可用；③本批推送为修复后首推。 |
+| 教训（沉淀） | ①重构抽取共享逻辑时必须对照原实现的每一处修正点（多版本演进的知识易丢——「回归」多发生在重构而非新写）；②未被实测覆盖的分支（白名单路径）等于没有——自测脚本要把承诺逐条变用例；③门禁拦截要先怀疑规则本身（本次误拦合法占位），再怀疑内容。 |
