@@ -931,6 +931,7 @@ LLM 走 refinement 降级链，全链不可用回 `ERR_LLM_UNAVAILABLE`；`confi
 | `POST /v1/admin/refine/trigger` | 手动触发提炼（同步）；`POST /v1/admin/refine/trigger_async` 异步版（后台线程立即返回，Hermes 插件用） |
 | `POST /v1/admin/backup` | 触发在线快照（§19）；兼容路径 `POST /v1/admin/backup/create`；首次调用幂等拉起每日自动备份定时器（`backup.schedule` 默认 04:00） |
 | `GET /v1/admin/stats` | 统计：记忆/场景/原始层计数、维度分布、水位 |
+| `GET /v1/admin/usage` | 接口调用统计（T-163）：近 N 天按「端点/工具 × 调用方」聚合（`api_usage_daily` 日粒度；HTTP/MCP 双端中间件埋点，含 caller 反查与路由模板归一化） |
 | `GET /v1/admin/config` | 读配置；`PUT` 或 `POST` 改配置（热生效+落盘，SCSM 远程设置用） |
 | `GET /v1/admin/registry` | 维度注册表：列维度(含别名)/单查/新增/停用启用/别名增删（动态扩展） |
 
@@ -939,7 +940,7 @@ LLM 走 refinement 降级链，全链不可用回 `ERR_LLM_UNAVAILABLE`；`confi
 ### 5.1 MCP 接口
 
 - 端点：`http://<host>:9913/mcp`（streamable HTTP transport，FastMCP 自托管，与 HTTP API 同进程但**独立监听端口**）
-- 工具集（18 个）：`append` / `inject` / `search` / `wiki_search` / `wiki_pages` / `wiki_page` / `wiki_page_add` / `wiki_page_update` / `wiki_evolve_trigger` / `memory_get` / `memory_reject` / `refine_trigger` / `refine_batch` / `refine_status` / `stats` / `health` / `config_get` / `config_update` / `agent_onboarding`（与 HTTP 端点功能等价；`agent_onboarding` 返回新接入 Agent 的能力清单与接入指引，能力清单与 @mcp.tool 一一对应、测试断言防漂移；wiki 三工具 T-22 新增 2026-08-13，检索/浏览 wiki_pages 知识文档，数据源与 L2 场景检索不同）
+- 工具集（**40 个**，2026-09-13 计数且持续增长；代码为唯一真相源——运行时 `agent_onboarding` 能力清单可自证、测试断言与 @mcp.tool 一一对应防漂移。以下为其中 19 个核心工具）：`append` / `inject` / `search` / `wiki_search` / `wiki_pages` / `wiki_page` / `wiki_page_add` / `wiki_page_update` / `wiki_evolve_trigger` / `memory_get` / `memory_reject` / `refine_trigger` / `refine_batch` / `refine_status` / `stats` / `health` / `config_get` / `config_update` / `agent_onboarding`（与 HTTP 端点功能等价；`agent_onboarding` 返回新接入 Agent 的能力清单与接入指引；wiki 三工具 T-22 新增 2026-08-13，检索/浏览 wiki_pages 知识文档，数据源与 L2 场景检索不同）
 - 鉴权：管理端工具依赖环境变量 `SGME_ADMIN_KEY` 与 HTTP 对齐
 
 ### 5.2 GET /v1/admin/agents — Agent 只读列表（管理员 Key）

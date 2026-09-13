@@ -2904,5 +2904,19 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 发布 | tag `v1.2.1`（GitHub 与飞牛哈希一致 `41dc7b6b`）+ GitHub Release：https://github.com/freehul/sgme/releases/tag/v1.2.1 |
 | 运维影响 | ①生产提炼自 2026-09-13 03:10Z 起用事实保真提示词，**记忆条数预计上升**（评测台实测 1.4~19 倍，需观察生产库容量与检索表现）；②回滚路径：提示词 `PromptStore().activate("l1_extraction","v004")`，镜像回滚 = compose 换回 `sgme:1.2.0-nas-autoupd`（旧镜像保留未删，代理失败时也会自动回滚 tag）；③后续升级走同一入口（WebUI「立即更新」或 API），仍禁止手工旁路构建。 |
 
+### B178. 接口调用统计持久化：api_usage_daily + HTTP/MCP 双端埋点（T-163，2026-09-13）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | 用户令「统计 SGME 公开接口调用频率，看哪些从未调用过」+ 追令「**必须带调用方，不能只有次数**」。查证结论：服务端无任何持久调用统计——容器 stdout 日志只覆盖单容器生命周期（部署重建即丢）、MCP 工具名不落地（POST /mcp 聚合）、sgme.log 只有应用事件。当日实查（3h15m / 1071 请求 / 118 HTTP 端点）：仅 11 个端点被调用；MCP 工具级无法从服务端回答。 |
+| 设计 | 日粒度聚合表 `api_usage_daily(day, kind, name, caller, calls, last_ts, last_ip)`（memory.db；PK=day+kind+name+caller，upsert 累加，400 天 TTL）。**HTTP 侧**=9910 纯 ASGI 中间件（响应头发出时记录；route 模板归一化；X-API-Key→`resolve_agent_id` 反查 caller）。**MCP 侧**=9913 ApiKeyMiddleware body 窥探重放（解析 `tools/call` 的 `params.name`）。写入全静默（统计是旁路，失败不影响请求）。 |
+| 关键决策 | ①MCP 侧**不**改 40 个工具签名、不用 ctx/contextvar——ctx 覆盖率仅 7/40，contextvar 在 stateful 模式跨请求不传播（server task 在 initialize 时创建，后续请求的 context 副本到不了它）；中间件层 body 缓存重放（Starlette Request.body 同模式）是唯一与工具实现/会话模式（stateful/stateless）全解耦的通用方案。②caller 语义与鉴权反查一致：env 主 key/管理员 key→`default`、注册 `agt_*`→绑定 agent_id、无 key→`anonymous`、无法反查→`unknown`。③name 归一化防行数爆炸：路由模板（UUID→`{demand_id}`）+ FastAPI 内置 catch-all（`/{full_path:path}`）→`(unmatched)`。④统计记录在**响应头发出时**（SSE 长流不必等流关闭；异常响应同样记录）。 |
+| 改动 | ①`sgme/data/db.py`：`API_USAGE_DDL` + `_migrate_api_usage_table`（老库自动补表）；②`sgme/data/usage_dao.py`（新）：record/query/prune；③`sgme/operations/usage.py`（新）：操作层（参数校验 + 响应组装，入口层不越级）；④`sgme/server/app.py`：`UsageMiddleware` + 注册 + 启动时 prune(400d)；⑤`sgme/mcp_server.py`：ApiKeyMiddleware 加 conn + `_wrap_receive_with_usage`/`_record_tools_call`；`run_mcp_server`/`mount_mcp` 接线；⑥`sgme/server/routes_admin.py`：`GET /v1/admin/usage`（days/kind 过滤）。 |
+| 测试 | 新增 `tests/test_api_usage.py` **18 例**（DAO upsert/分桶/query/prune；HTTP 中间件直调+集成+模板归一化+catch-all+静默+非 http 透传；MCP body 解析/完整重放/多 chunk/坏 JSON/403 不记录/conn=None 禁用；usage 端点契约）。相关模块回归全绿：mcp **55** / entry **24** / server+signal **117** / diff 推导 **188** / usage **18**（0 失败）。 |
+| 实测（真实链路冒烟） | 本地起真服务（备用端口 9930/9933——9910 被 Hermes runtime 占用绕过）：MCP `initialize→tools/call(stats/health)` 真实执行成功且落库（`mcp/stats`、`mcp/health`，caller=default）；HTTP `GET /v1/health`→anonymous、`GET /v1/admin/demands`（admin key）→default；`GET /v1/admin/usage` 200 完整聚合返回。**body 重放无损**（工具正常执行即证）。 |
+| 运维影响 | ①部署即生效（容器重启自动迁移补表）；②查询入口 `GET /v1/admin/usage?days=30&kind=http|mcp`；③空间 O(天×端点×调用方)，单用户年行数万级，启动时自动清 >400 天；④性能：每请求一次微秒级 upsert，旁路静默；⑤顺带修正架构文档两处过时（MCP 工具数 18→40 计数 + §5 增统计端点行）。 |
+| 已知边界 | ①MCP 只统计 `tools/call`（initialize/列表/握手不记）；②未匹配路径归 `(unmatched)` 不记具体 path（防行数爆炸；细节仍可查容器日志）；③admin 与 env 主 key 均记 `default`（`resolve_agent_id` 既有语义，非本次引入）。 |
+
+
 
 
