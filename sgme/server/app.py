@@ -467,6 +467,80 @@ def require_admin_key(request: Request) -> str:
     return key or ""
 
 
+class UsageMiddleware:
+    """HTTP 调用统计中间件（T-163，2026-09-13，纯 ASGI 旁路）。
+
+    把 9910 全部请求记入 api_usage_daily（day × route 模板 × caller 聚合），
+    回答「哪些端点从未被调用 / 谁在调用」：
+    - 记录时机：响应头（http.response.start）发出时——SSE 长流也能即刻落库，
+      不必等流关闭；异常请求同样记录（调用事实与结果无关）
+    - name 归一化：优先 scope["route"].path（路由模板，如
+      /v1/admin/demands/{demand_id}）；FastAPI 内置 catch-all
+      （/{full_path:path}，捕获全部未匹配请求）归为 "(unmatched)"——
+      不可控输入（任意 404 路径）不得无界增长统计行数
+    - caller 反查：X-API-Key → AgentKeyStore.resolve_agent_id（env 主 key →
+      "default"；注册 agt_* key → 绑定 agent_id）；无 key → "anonymous"；
+      key 合法但无反查 → "unknown"
+    - 全静默：任何记录失败被吞掉，绝不改变响应或抛出（统计是旁路）
+    - 纯 ASGI（同 T-155 ApiKeyMiddleware 理由）：BaseHTTPMiddleware × SSE
+      长流是死锁高危组合；本中间件只读 scope、写一条 SQL，零桥接
+    """
+
+    def __init__(self, app, conn=None, key_store=None):
+        self.app = app
+        self._conn = conn
+        self._key_store = key_store
+
+    async def __call__(self, scope, receive, send):
+        if self._conn is None or scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        recorded = False
+
+        async def send_wrapper(message):
+            nonlocal recorded
+            if not recorded and message.get("type") == "http.response.start":
+                recorded = True
+                try:
+                    self._record(scope)
+                except Exception:
+                    pass  # 统计是旁路：任何失败不得影响响应
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+    def _record(self, scope) -> None:
+        from sgme.operations.usage import record_usage
+
+        # name 归一化：路由模板（如 /v1/admin/demands/{demand_id}）。
+        # FastAPI 内置 catch-all（/{full_path:path}）捕获全部未匹配请求——
+        # 归为 "(unmatched)" 语义标记，防任意路径冲击统计行数（UUID 归一化的
+        # 同一目的：不可控输入不得无界增长行数）。
+        route_path = getattr(scope.get("route"), "path", None)
+        if route_path == "/{full_path:path}":
+            name = "(unmatched)"
+        elif route_path:
+            name = route_path
+        else:
+            name = scope.get("path") or "?"
+        key = None
+        for h_name, h_value in scope.get("headers") or []:
+            if h_name == b"x-api-key":
+                key = h_value.decode("latin-1")
+                break
+        caller = None
+        if self._key_store is not None:
+            try:
+                caller = self._key_store.resolve_agent_id(key)
+            except Exception:
+                caller = None
+        if not caller:
+            caller = "anonymous" if key is None else "unknown"
+        client = scope.get("client")
+        ip = client[0] if client else None
+        record_usage(self._conn, "http", name, caller, ip)
+
+
 # ---------- 后台定时任务（T12 Tier0 每日摘要 / T15 心跳） ----------
 
 async def daily_tier0_task(app) -> None:
@@ -730,6 +804,13 @@ def create_app(
             asyncio.create_task(daily_tier0_task(app))
             asyncio.create_task(heartbeat_task(app))
             asyncio.create_task(update_check_task(app))
+            # T-163：接口调用统计保留期清理（400 天，失败不阻断启动）
+            try:
+                from sgme.data.usage_dao import prune_usage
+
+                prune_usage(mem_conn, keep_days=400)
+            except Exception as e:
+                print(f"[SGME usage] 调用统计清理失败（不影响启动）: {e}")
             _start_batch_scan_scheduler(app)
             # ST-35 T-101：人格月度校准定时器（失败不阻断启动）
             try:
@@ -865,6 +946,9 @@ def create_app(
     # 必须注册才能使限流生效；读取 request.app.state.cfg["server"]["rate_limit_per_min"]
     from sgme.server.ratelimit import RateLimitMiddleware
     app.add_middleware(RateLimitMiddleware)
+
+    # T-163：接口调用统计（纯 ASGI 旁路；全静默，统计失败不影响请求）
+    app.add_middleware(UsageMiddleware, conn=mem_conn, key_store=store)
 
     # MCP Server（同进程两协议出口：HTTP API + MCP streamable HTTP）
     # 默认生产挂载；测试可通过 create_app(enable_mcp=False) 或 SGME_MCP_DISABLED=1 关闭

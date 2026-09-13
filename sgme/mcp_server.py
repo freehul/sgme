@@ -137,9 +137,10 @@ class ApiKeyMiddleware:
     EventSourceResponse）组合是社区已知死锁高危形态（任务组收尾互相等待）。
     纯 ASGI 只在 scope 上写一个键、403 直接经 send 下发，零桥接零死锁面。
     """
-    def __init__(self, app, key_store):
+    def __init__(self, app, key_store, conn=None):
         self.app = app
         self._key_store = key_store
+        self._conn = conn  # T-163：接口调用统计连接（None=禁用统计）
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -174,21 +175,91 @@ class ApiKeyMiddleware:
             return
         # 供工具内 resolve_agent_id 反查（PR#2）——Request.state 即 scope["state"] 视图
         scope.setdefault("state", {})["api_key"] = key
+        # T-163：tools/call 调用统计（读 body 后完整重放；全静默）
+        if self._conn is not None and scope.get("method") == "POST":
+            receive = await self._wrap_receive_with_usage(scope, receive, key)
         await self.app(scope, receive, send)
 
+    async def _wrap_receive_with_usage(self, scope, receive, key):
+        """T-163：读取 POST body（完整缓存）→ 解析 tools/call → 记录 → 返回重放版 receive。
 
-def run_mcp_server(mcp, key_store, host: str = "127.0.0.1", port: int = 9913) -> None:
+        与工具实现完全解耦（不依赖 ctx / contextvar），stateful/stateless 会话
+        模式下行为一致。body 标准缓存重放（与 Starlette Request.body() 同模式）：
+        应用读到的仍是原文，请求行为零变化；解析/记录任何异常均被吞掉。
+        """
+        chunks: list[bytes] = []
+        pending: list[dict] = []
+        while True:
+            message = await receive()
+            if message.get("type") != "http.request":
+                pending.append(message)  # 罕见（disconnect 等）：缓存后按序补发
+                break
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        body = b"".join(chunks)
+        try:
+            self._record_tools_call(body, key, scope)
+        except Exception:
+            pass  # 统计是旁路：任何失败不得影响请求
+        consumed = False
+
+        async def replay():
+            nonlocal consumed
+            if not consumed:
+                consumed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            if pending:
+                return pending.pop(0)
+            return await receive()
+
+        return replay
+
+    def _record_tools_call(self, body: bytes, key: str | None, scope) -> None:
+        """解析 JSON-RPC body：method==tools/call 时记一条 mcp 统计（其余静默跳过）。"""
+        if self._conn is None:
+            return
+        if b"tools/call" not in body:  # 快速短路：initialize / tools/list 等
+            return
+        import json as _json
+
+        from sgme.operations.usage import record_usage
+
+        try:
+            data = _json.loads(body)
+        except Exception:
+            return
+        if not isinstance(data, dict) or data.get("method") != "tools/call":
+            return
+        params = data.get("params")
+        name = params.get("name") if isinstance(params, dict) else None
+        if not name or not isinstance(name, str):
+            return
+        caller = None
+        try:
+            caller = self._key_store.resolve_agent_id(key)
+        except Exception:
+            caller = None
+        caller = caller or "unknown"
+        client = scope.get("client")
+        ip = client[0] if client else None
+        record_usage(self._conn, "mcp", name, caller, ip)
+
+
+def run_mcp_server(mcp, key_store, host: str = "127.0.0.1", port: int = 9913, conn=None) -> None:
     """手动启动 MCP streamable-http server（带鉴权中间件，PR#1）。
 
     替代 mcp.run(transport="streamable-http")——自托管会忽略中间件，
     无法挂 ApiKeyMiddleware。此处显式构建 Starlette app → 加中间件 →
     uvicorn 独立线程跑（与 mount_mcp 原行为一致：daemon 线程、同进程）。
+
+    conn（T-163）：memory.db 连接，传入后启用 tools/call 调用统计；None=禁用。
     """
     import threading
     import uvicorn
 
     starlette_app = mcp.streamable_http_app()
-    starlette_app.add_middleware(ApiKeyMiddleware, key_store=key_store)
+    starlette_app.add_middleware(ApiKeyMiddleware, key_store=key_store, conn=conn)
 
     config = uvicorn.Config(
         starlette_app,
@@ -1481,5 +1552,6 @@ def mount_mcp(app, start_server: bool = True):
         key_store=app.state.key_store,
         host=os.environ.get("SGME_MCP_HOST", "127.0.0.1"),
         port=int(os.environ.get("SGME_MCP_PORT", "9913")),
+        conn=app.state.mem_conn,  # T-163：tools/call 调用统计
     )
     return mcp
