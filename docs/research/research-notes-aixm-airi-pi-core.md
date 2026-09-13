@@ -1,7 +1,7 @@
 # 研究笔记：aixm / airi / pi-core 三项目深度梳理
 
 > 创建：2026-08-01 | 用途：跨项目关系与关键信息存档（临时研究笔记）
-> 来源：D:\Projects\aixm\AIXM-设计方案-0.3.md（全文精读）+ 两路代码探查（airi / pi-core 实仓 grep+read）
+> 来源：<projects-root>\aixm\AIXM-设计方案-0.3.md（全文精读）+ 两路代码探查（airi / pi-core 实仓 grep+read）
 
 ---
 
@@ -66,9 +66,9 @@ airi    (moeru-ai/airi, MIT)       — 被 AIXM 适配的对象之一 + 桌宠�
 - CJK 分词(nodejieba vs jieba-wasm)、OCR(tesseract.js/PaddleOCR-ONNX/外部)、爬取(cheerio/playwright)、vault 加密(SQLCipher/应用层 AES)、sqlite-vec 向量检索（FTS5 先行）。
 
 ### 外部引用（文档中）
-- pi-core 源码 `D:\Projects\pi-core`（pi-agent-core v0.82.1；extensions.md/custom-provider.md/sdk.md/packages.md）—— 已核实 pi 能力（agent_settled、turn_end、before_agent_start、sessionManager JSONL 树、registerProvider、pi-ai、pi install、createAgentSession）。
-- openpi `D:\Projects\openpi`（desktop fork 基）。
-- 旧版 aixm（Python）`D:\Projects\aixm`（FactEngine/tokenizer/ensure_aixm/backfill 逻辑参考）。
+- pi-core 源码 `<projects-root>\pi-core`（pi-agent-core v0.82.1；extensions.md/custom-provider.md/sdk.md/packages.md）—— 已核实 pi 能力（agent_settled、turn_end、before_agent_start、sessionManager JSONL 树、registerProvider、pi-ai、pi install、createAgentSession）。
+- openpi `<projects-root>\openpi`（desktop fork 基）。
+- 旧版 aixm（Python）`<projects-root>\aixm`（FactEngine/tokenizer/ensure_aixm/backfill 逻辑参考）。
 
 ---
 
@@ -121,7 +121,7 @@ airi    (moeru-ai/airi, MIT)       — 被 AIXM 适配的对象之一 + 桌宠�
 | AIXM ⟷ pi-core | **用户澄清后修订**：v0.3 文档把 AIXM 写成「以 pi-agent-core 为运行时」，但用户明确 **pi 不是基座，AIXM 才是中心**。正确关系：AIXM 独立运行、对外暴露 HTTP/MCP/CLI；pi 是 AIXM 要适配的下游 Agent 之一（AIXM 作为 pi 的记忆扩展）。文档措辞是「乱了」的表现，重设时将推翻。 |
 | AIXM ⟷ airi | **无代码关联，但有关联意图**：AIXM 文档未提 airi；airi 代码 grep 无 AIXM/pi-core 命中。用户看 airi 是因为它**已实现桌宠**，想直接复用其轮子；且未来 AIXM 可作 airi 的记忆扩展适配器。两者 LLM SDK 不同（pi-ai vs xsai）。 |
 | pi-core ⟷ airi | **无关联**：pi-core 代码 grep 无 moeru-ai/airi/AIXM 命中；组织不同（earendil-works vs moeru-ai）。 |
-| AIXM ⟷ openpi | AIXM 的 desktop app 计划 fork 自 `D:\Projects\openpi`（非 airi）。openpi 未纳入本次探查。 |
+| AIXM ⟷ openpi | AIXM 的 desktop app 计划 fork 自 `<projects-root>\openpi`（非 airi）。openpi 未纳入本次探查。 |
 
 **推断（修订）**：用户把三者放一起，是为了给 AIXM 重新设计找「可复用的轮子 + 可适配的生态」——airi 提供桌宠实现参考、pi 提供扩展/Agent 机制参考；但 AIXM 自身是独立中心，pi/airi 都是下游适配对象。若做「统一记忆层」，AIXM 的方案思路（事实日志+物化画像+Supersession 判重+常驻 daemon）仍可独立借鉴。
 
@@ -130,7 +130,7 @@ airi    (moeru-ai/airi, MIT)       — 被 AIXM 适配的对象之一 + 桌宠�
 ## 5. 待确认 / 可追问方向
 
 1. 用户已澄清真实意图（见第 7 节）：AIXM 独立通用记忆系统 + 专用适配器（hermes/zcode/pi/airi）+ 桌面形态（desktop/tray/灵动岛/桌宠）。下一步是重新设计。
-2. `D:\Projects\openpi` 是什么？是否为 Pi 的开源桌面版？与 airi 是否撞名混淆？值得单开探查（尤其若桌面形态要 fork 它）。
+2. `<projects-root>\openpi` 是什么？是否为 Pi 的开源桌面版？与 airi 是否撞名混淆？值得单开探查（尤其若桌面形态要 fork 它）。
 3. AIXM 当前是否已有代码（aixm-monorepo 目录，packages/{core,service,pi-ext,eval}）？本次只给了设计文档，未给实现全貌。
 4. Hermes / Trae / ZCode 三个「外部 Agent」是否也是本地项目？AIXM 的 backfill 核心语料来自 Hermes state.db；Hermes 是精准触发适配器的首要对象。
 5. airi 的「Memory Alaya」与 AIXM 记忆层是否存在可对齐的设计理念（都含事实/画像/检索），作为 airi 适配器设计的参考。
@@ -139,12 +139,12 @@ airi    (moeru-ai/airi, MIT)       — 被 AIXM 适配的对象之一 + 桌宠�
 
 ## 6. AIXM 设计文档版本演进（0.1 → 0.2 → 0.3）
 
-> 三版位置：0.1/0.2 在 `D:\Projects\aixm\docs\history\`，0.3 在 `D:\Projects\aixm\` 根目录。行数：0.1=788、0.2=564、0.3=492。
+> 三版位置：0.1/0.2 在 `<projects-root>\aixm\docs\history\`，0.3 在 `<projects-root>\aixm\` 根目录。行数：0.1=788、0.2=564、0.3=492。
 
 ### 演进主线
 - **v0.1**：通用 AI 记忆引擎，试图从零重写（TS 核心 fork pi-agent-core + Python 扩展，双库 user.db/agent.db）。被 K3 审查打回（45/100，5 致命）：无视已上线系统、语言栈撕裂、抛弃单库、偏离「同库渐进拆分」、违反 CLAUDE.md（缺测试门槛/migration UP+DOWN）。
 - **v0.2**：按 K3 + 8 项变更重写。定位收敛为「pi 生态记忆/知识扩展集合」；100% TS、npm 依赖 pi 不 fork、单库、三层去重（游标+Supersession+溯源）、三层架构成型。但 HTTP 仍内嵌 pi 扩展、全局单一游标、agent_settled 重入无防护、提炼质量无闭环——4 项严重隐患遗留。
-- **v0.3**：针对 v0.2 的 4 严重问题重构。三层拆分 core/service/pi-ext；HTTP 抽成独立 daemon（唯一写者）；每会话游标+processed_entries 集合+single-flight 串行队列；Phase 0 质量冲刺前置（黄金集+门禁）；提炼管线 pi-ai 库直调；Hermes state.db backfill 升 P0。当前 `D:\Projects\aixm` 仓库已含 packages/{core,service,pi-ext,eval} 实际实现，v0.3 进入落地。
+- **v0.3**：针对 v0.2 的 4 严重问题重构。三层拆分 core/service/pi-ext；HTTP 抽成独立 daemon（唯一写者）；每会话游标+processed_entries 集合+single-flight 串行队列；Phase 0 质量冲刺前置（黄金集+门禁）；提炼管线 pi-ai 库直调；Hermes state.db backfill 升 P0。当前 `<projects-root>\aixm` 仓库已含 packages/{core,service,pi-ext,eval} 实际实现，v0.3 进入落地。
 
 ### 维度对比表
 | 维度 | v0.1 | v0.2 | v0.3 |

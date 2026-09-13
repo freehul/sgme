@@ -256,5 +256,5 @@ MCP（`sgme/mcp_server.py`）补：`wiki_page_update(page_id, content, append?)`
 
 ## 10. 调研参照
 
-- D:\Projects\AIRDT\docs\research\wiki-kb-benchmark\00-summary.md（综合）／01-tools-survey.md／02-methodology.md／03-industry-practice.md
+- <projects-root>\AIRDT\docs\research\wiki-kb-benchmark\00-summary.md（综合）／01-tools-survey.md／02-methodology.md／03-industry-practice.md
 - 已入 wiki：wiki渐进式披露共享知识库-设计决策-v0.1（NAS 9910）

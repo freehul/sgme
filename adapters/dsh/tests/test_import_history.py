@@ -39,7 +39,7 @@ def sample_events() -> list[dict]:
     """构造与真实 dsh rc8 会话同构的事件流（含噪音事件）。"""
     return [
         {"type": "session", "version": 0, "id": "sess-abc", "createdAt": 1787208816366,
-         "cwd": "D:\\Projects\\SGME", "agentPreset": "code"},
+         "cwd": "<project-root>", "agentPreset": "code"},
         {"type": "turn/start", "seq": 0, "time": 1787208816366, "data": {"turn": 1}},
         {"type": "user/message", "seq": 1, "time": 1787208816366,
          "data": {"role": "user", "content": [{"type": "text", "text": "你好"}]}},

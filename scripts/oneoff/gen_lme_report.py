@@ -15,7 +15,7 @@ import argparse
 import json
 from pathlib import Path
 
-ROOT = Path(r"D:/Projects/SGME")
+ROOT = Path(r"<project-root>")
 
 # 2026-03 公开榜（GPT-4 judge，J-Score / F1）。来源：LongMemEval 相关公开评测汇总。
 LEADERBOARD = [

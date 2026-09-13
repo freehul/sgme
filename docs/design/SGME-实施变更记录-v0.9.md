@@ -479,7 +479,7 @@ L1.5 冲突裁决、L2 场景聚合。
   - `scripts/care_consumer.py`（T-38）：消费方核心脚本（项目内随 git）——触发扫描 → 拉未消费信号 → **幂等去重**（本地状态 data/care/consumer_state.json，last_notified_at 模式防 consume 失败重复通知）→ stdout JSON 行输出待关怀事项（空=静默）→ 标记已消费；`--check-only` 供 heartbeat 巡检（只查不消费）；SGME 不可达静默降级不阻塞宿主；key 从 config/.env 读不落盘；cron（完整流程）+ heartbeat（--check-only）双轨由 Hermes 平台 cron 调度
   - 测试：test_care.py +5（装配无 persona/有 persona/带画像/404/HTTP）、test_care_consumer.py 5 用例（无信号静默/输出+消费+幂等/check-only/不可达降级/缺 key）
 - 文档：Backlog T-37/T-38 ✅；设计文档 §Task 状态；本记录 B45
-- **接线完成（2026-08-13）**：Hermes cron job `sgme-care-heartbeat`（*/30 * * * *，workdir=D:\Projects\SGME，仅 terminal 工具集）——跑 scripts/care_consumer.py，有信号时以管家角色口吻生成 ≤80 字关怀消息，时段约束 08:00-22:00、同主题当日一次、周三透析日关怀提醒；⚠️ 当前 deliver=local（消息存 cron 日志不主动推送——CLI/TUI 会话无投递通道），送达通道形态留用户选（telegram 等 gateway 平台）
+- **接线完成（2026-08-13）**：Hermes cron job `sgme-care-heartbeat`（*/30 * * * *，workdir=<project-root>，仅 terminal 工具集）——跑 scripts/care_consumer.py，有信号时以管家角色口吻生成 ≤80 字关怀消息，时段约束 08:00-22:00、同主题当日一次、周三透析日关怀提醒；⚠️ 当前 deliver=local（消息存 cron 日志不主动推送——CLI/TUI 会话无投递通道），送达通道形态留用户选（telegram 等 gateway 平台）
 - **真实链路验证（2026-08-13 生产库）**：服务重启后 GET /v1/admin/roles → butler 管家角色 ✓；POST /v1/admin/care/scan → 生产数据推导 care_mood=1/care_overwork=1/care_daily=1（care_todo_due=0 无 7 天无进展待办）✓；care_consumer.py 输出 3 条信号并消费 ✓；**假阳性修复**（commit 289823a）：care_mood 误命中技术记忆「崩溃确认为偶发竞态」→ TECHNICAL_CONTEXT_KEYWORDS 技术语境排除表（bug/测试/竞态/passed 等），回归测试 +2，31 passed
 - **验收**：test_fast care 全绿；真实链路闭环（角色+信号+消费+排除）
 
@@ -624,7 +624,7 @@ L1.5 冲突裁决、L2 场景聚合。
   - **session-sync v1.1 关键修复**（T-53 实测后发现）：v1 假设 `turn/end` 事件含 messages 字段，实测解压 `session.jsonl.zstd` 确认事件结构只有 `{type, seq, time, data:{turn, reason}}`——消息分布在 `user/message` / `assistant/message` / `tool/result` 事件中。v1.1 改造为累积式：监听 4 类事件 → 累积到 turn buffer → `turn/end` 触发 `/v1/append`。`assistant/message` 的 `content` 数组只取 `type='text'` 项（忽略 reasoning / tool-call 块）；`tool/result` 提取 `content[0].content[0].text`；`session_key` 用首条 user 消息毫秒时间戳保证同进程内稳定
 - 测试：vitest 65 用例全绿（session-sync 12 + sgme-client 19 + tools 12 + skeleton 5 + commands/tools 其他 17）；pytest 17 用例全绿（install/import_history）；typecheck + tsdown build 通过
 - T-53 本地加载验证（2026-08-14）：
-  - ①`dsh plugin --profile web add "link:D:/Projects/SGME/adapters/dsh/sgme-bridge"` 成功挂载
+  - ①`dsh plugin --profile web add "link:<project-root>/adapters/dsh/sgme-bridge"` 成功挂载
   - ②`dsh --profile headless "say hi"` 成功响应 "Hi there! 👋"
   - ③memory_search 工具调用返回真实 SGME 记忆（用户/项目历史事实）
   - ④`/sgme SGME 项目` 命令执行返回详细记忆汇总（项目定位/技术栈/当前状态/架构决策）
@@ -672,9 +672,9 @@ L1.5 冲突裁决、L2 场景聚合。
   - `docs/deployment-docker.md`：交付物清单/布局约定/单机快速开始/NAS 部署流程（镜像加速→save→scp→load→bind mount compose→验收清单）/注意事项（端口冲突、时区、备份、升级）/安全（密钥不入 git、0.0.0.0 必设自定义 key）
 - 测试（真实环境验收，非 mock）：
   - 笔记本 Docker Desktop（镜像加速已配 daocloud/1ms/dockerproxy）：`docker compose build` 成功 → 镜像 463MB（`docker save` tar 109MB）；容器 health 200、`llm.available=true`；append→refine→search 端到端通过（检索命中「用户喜欢用 DeepSeek 写 Python 后端」）
-  - NAS（群晖 192.168.10.10，LEO 免 sudo docker）：`docker load` 成功；路径修正（NAS 卷为 `/vol1` 非 `/volume1`）；bind mount `/vol1/1000/Docker/sgme/data:/data`；`docker compose up -d` 后容器 `Up (healthy)`；health ok、llm.available=true；端到端 append（status=new）→ refine → search 命中「用户的家目录部署在群晖 NAS 上」；`/data` 下 data/raw/logs/install.json 均生成（持久化正常）
+  - NAS（群晖 <NAS_IP>，LEO 免 sudo docker）：`docker load` 成功；路径修正（NAS 卷为 `/vol1` 非 `/volume1`）；bind mount `<NAS_ROOT>/Docker/sgme/data:/data`；`docker compose up -d` 后容器 `Up (healthy)`；health ok、llm.available=true；端到端 append（status=new）→ refine → search 命中「用户的家目录部署在群晖 NAS 上」；`/data` 下 data/raw/logs/install.json 均生成（持久化正常）
 - 运维影响：
-  - NAS 常驻：`restart: unless-stopped` + healthcheck 自愈；数据卷 `/vol1/1000/Docker/sgme/data` 可用群晖「文件站」/Hyper Backup 直接备份
+  - NAS 常驻：`restart: unless-stopped` + healthcheck 自愈；数据卷 `<NAS_ROOT>/Docker/sgme/data` 可用群晖「文件站」/Hyper Backup 直接备份
   - 升级路径：`docker compose build` → `docker compose up -d`（数据卷不变不丢数据）；NAS 侧 `docker save`/`load` 更新镜像
   - 密钥：`docker.env` 含真实 key，**不入 git**（`.gitignore` 的 `*.env` 已覆盖）；与项目根 dsh 适配器 `.env`（SGME_AGENT_KEY=agt_*）严格隔离，勿混用
 - 文档：Backlog ST-24 ✅；本记录 B58；docs/deployment-docker.md
@@ -746,12 +746,12 @@ L1.5 冲突裁决、L2 场景聚合。
 
 ### B63. 搬家收尾——本机 Gateway 退役，SGME 迁移 NAS（2026-08-16）
 
-- 背景：用户搬家，SGME 生产环境从本机（D:\Projects\SGME 直跑，nssm 服务"SGME Gateway"）迁移到 NAS（飞牛 fnOS，Docker 容器 sgme，/vol1/1000/Docker/sgme，bind mount data→/vol1/1000/Docker/sgme/data）。数据库与 raw 原件已复制，本任务为收尾闭环。
+- 背景：用户搬家，SGME 生产环境从本机（<project-root> 直跑，nssm 服务"SGME Gateway"）迁移到 NAS（NAS fnOS，Docker 容器 sgme，<NAS_ROOT>/Docker/sgme，bind mount data→<NAS_ROOT>/Docker/sgme/data）。数据库与 raw 原件已复制，本任务为收尾闭环。
 - 改动：
   1. **MCP 监听可配置**（`sgme/mcp_server.py`）：`run_mcp_server` host 从硬编码 `"127.0.0.1"` 改为 `os.environ.get("SGME_MCP_HOST", "127.0.0.1")`——容器部署必须绑 0.0.0.0 才能对外；`build_mcp_server` 增加 `transport_security` 参数：非本机部署（SGME_MCP_HOST≠127.0.0.1/localhost/::1）时显式关闭 FastMCP 自动 DNS 防重绑（该附加层默认只放行 localhost Host 头，容器场景导致 421 Invalid Host header），SGME 自身 ApiKeyMiddleware 鉴权不降级
-  2. **Hermes 插件指向**（`adapters/hermes/plugin.yaml` + `%LOCALAPPDATA%\hermes\plugins\sgme\plugin.yaml` 部署副本）：`base_url` → `http://192.168.10.10:9910`
+  2. **Hermes 插件指向**（`adapters/hermes/plugin.yaml` + `%LOCALAPPDATA%\hermes\plugins\sgme\plugin.yaml` 部署副本）：`base_url` → `http://<NAS_IP>:9910`
   3. **care_consumer**（`scripts/care_consumer.py`）：BASE_URL 默认 → NAS（SGME_BASE_URL 可覆盖）
-  4. **全部适配器默认指向 NAS**（`adapters/dsh|hermes|reasonix|trae|workbuddy` 共 12 文件）：默认 `http://192.168.10.10:9910`，SGME_BASE_URL 可覆盖；含 sgme-bridge（yml/ts/js/README）；顺手修复 README 中被脱敏损坏的 `<admin-key>` 占位符
+  4. **全部适配器默认指向 NAS**（`adapters/dsh|hermes|reasonix|trae|workbuddy` 共 12 文件）：默认 `http://<NAS_IP>:9910`，SGME_BASE_URL 可覆盖；含 sgme-bridge（yml/ts/js/README）；顺手修复 README 中被脱敏损坏的 `<admin-key>` 占位符
   5. **新增 NAS 运维脚本**（`scripts/nas_watchdog.sh` / `scripts/nas_backup.sh`）：看门狗（/etc/cron.d/sgme-watchdog，root 每 5 分钟：docker.sock 缺失→拉起 docker.service 含 containerd 重试；sgme 容器未运行→拉起）；每日备份（LEO crontab 03:30，rsync data→/vol2/1000/sgme-backup/ 轮转留 7 份）
 - 测试：`tests/test_mcp_server.py` 25 passed（MCP host 配置改动后回归）；`adapters/dsh/tests/test_install.py` 7 passed（默认值改动后回归，测试用显式 mock 覆盖不受影响）；实测 NAS MCP 握手成功（serverInfo SGME 1.29.0）、care/scan 200、inject/search 200
 - 运维影响：
@@ -764,11 +764,11 @@ L1.5 冲突裁决、L2 场景聚合。
 
 ### B64. SkillsHub 启用——Hermes skill 库同步 NAS + 迁移遗留配置修复（2026-08-16）
 
-- 背景：用户要求把 Hermes 本机 skill 库（%LOCALAPPDATA%\hermes\skills，392 个注册 skill）单向复制到 NAS skills-hub 远端仓（/vol1/1000/git/skills-hub.git），本地零删除，走 SGME skills_hub 模块正规链路（put_skill → POST /v1/admin/skills/sync to_remote）。
+- 背景：用户要求把 Hermes 本机 skill 库（%LOCALAPPDATA%\hermes\skills，392 个注册 skill）单向复制到 NAS skills-hub 远端仓（<NAS_ROOT>/git/skills-hub.git），本地零删除，走 SGME skills_hub 模块正规链路（put_skill → POST /v1/admin/skills/sync to_remote）。
 - 改动（均为 NAS 部署位，非项目代码；代码侧无改动）：
   1. **修复 B63 迁移遗留缺陷——生产配置从未生效**：SGME_HOME=/data 时用户配置路径为 `/data/config/sgme.yaml`，但迁移时漏拷，Gateway 一直跑内置默认配置（l1.chunk_size 8000 应为 5000、L1.5 预筛关闭应为开、向量模型 nomic 应为 doubao/volc-plan、skills_hub.enabled=false 应为 true）。修复：镜像内 `/app/config/sgme.yaml` 复制到 `/data/config/sgme.yaml`，重启生效。**影响面**：NAS 生产 SGME 首次真正跑在生产配置上
   2. **NAS 容器镜像缺 git**：skills_hub 同步依赖 subprocess 调系统 git，但 sgme:1.0.0b1-nas 镜像未装。新增 `Dockerfile.git`（FROM sgme:1.0.0b1-nas + apt install git + `git config --global --add safe.directory /git/skills-hub.git`，容器内 root 访问属主 1000 的 bare 仓必需），NAS 上 docker build → `sgme:1.0.0b1-nas-git`（+139MB）
-  3. **compose 挂载 + env 覆盖**（/vol1/1000/Docker/sgme/docker-compose.yml / docker.env，均已留 .bak）：image 改 sgme:1.0.0b1-nas-git；volumes 增 `/vol1/1000/git/skills-hub.git:/git/skills-hub.git`（file:// 直访免 SSH key）；docker.env 增 `SGME_SKILLS_HUB_REMOTE=file:///git/skills-hub.git`（ST-20 env 覆盖机制，值仅存进程内存不落盘）
+  3. **compose 挂载 + env 覆盖**（<NAS_ROOT>/Docker/sgme/docker-compose.yml / docker.env，均已留 .bak）：image 改 sgme:1.0.0b1-nas-git；volumes 增 `<NAS_ROOT>/git/skills-hub.git:/git/skills-hub.git`（file:// 直访免 SSH key）；docker.env 增 `SGME_SKILLS_HUB_REMOTE=file:///git/skills-hub.git`（ST-20 env 覆盖机制，值仅存进程内存不落盘）
   4. **Hermes skill 库同步**：本地 392 个 SKILL.md 打包（manifest 对齐 Hermes 注册名单、软链接解引用、排除 .archive/.curator_backups）→ 容器内 `SkillsHub.init → put_skill × 392`（PYTHONPATH=/app，脚本在 /data/import_skills.py，用后清理）→ `POST /v1/admin/skills/sync` direction=to_remote → 远端仓 main +1 commit（393 文件 = .gitignore + 392 SKILL.md，冲突按 local_wins 解决，败方备份 ref conflict-backup-20260816041111）
   5. **容器重建验证闭环**：新镜像重建容器后工作区清空 → `sync` from_remote 全量恢复 392/392，远端仓→工作区链路验证通过
 - 测试：远端仓 `git ls-tree main` 393 文件抽查 sgme-operations/hermes-agent/zhangxuefeng-perspective 均在；本地 skills 目录零改动（406 SKILL.md 原样）；Gateway health OK（deepseek 链正常）
@@ -820,7 +820,7 @@ L1.5 冲突裁决、L2 场景聚合。
   3. 项目 config/.env 存在但被 dockerignore + gitignore 双排除，运行时密钥走 docker.env 注入 ✅
 - 改动：
   1. **镜像固化（方案 A，零风险快照）**：`docker commit sgme sgme:1.0.0b1-nas-git-t69`（622MB）——把已验证 healthy + 冒烟通过、含全部修复的容器整体提交为新镜像。验证：镜像内 l15.py 5 处 PRESCREEN_SKIP_CONFLICT / resolve.py 7 处 static_node / db.py PRIMARY KEY / memory_dao.py INSERT OR IGNORE 全部在。
-  2. **NAS compose 指向 t69**：`/vol1/1000/Docker/sgme/docker-compose.yml` 改 image: sgme:1.0.0b1-nas-git-t69（留 .bak-pre-t69），当前容器保持运行不重建——即使 NAS 重启/重建容器，也从固化镜像拉起，修复不丢。
+  2. **NAS compose 指向 t69**：`<NAS_ROOT>/Docker/sgme/docker-compose.yml` 改 image: sgme:1.0.0b1-nas-git-t69（留 .bak-pre-t69），当前容器保持运行不重建——即使 NAS 重启/重建容器，也从固化镜像拉起，修复不丢。
   3. **Dockerfile 合入 git（方案 B 前置）**：主 Dockerfile 加 git 安装（apt install git + safe.directory /git/skills-hub.git，B64 遗留单一入口）。
   4. **NAS 部署模板入 git**：`tmp/nas-docker-compose.yml`（{{IMAGE_TAG}} 占位 + 部署流程注释）——NAS 生产 compose 的真相源模板（NAS 部署目录非 git 仓库，B64 遗留）。
   5. **项目 docker-compose.yml / .dockerignore** 首次纳入 git 跟踪（单机部署形态 + 构建排除规则）。
@@ -844,12 +844,12 @@ L1.5 冲突裁决、L2 场景聚合。
 
 ### B69. Docker 新用户开箱修复：多阶段 WebUI 镜像 + 首次启动物化 sgme.yaml + runbook Docker 章节 + NAS 全新构建验证（2026-08-16）
 
-- 背景：核查「用户从 Docker 安装部署会不会出问题」（2026-08-16 用户问询）——静态核查发现 4 缺口：①git Dockerfile 从未全新构建验证（B67 遗留：NAS 生产镜像 sgme:1.0.0b1-nas-git-t69 为 docker commit 固化，非从 Dockerfile 构建）②`SGME_HOME=/data` 时 `DEFAULT_SGME_CONFIG = $SGME_HOME/config/sgme.yaml`，镜像内 `/app/config/sgme.yaml` 永不加载——空卷启动 = 全默认配置：`l15.prescreen.enabled=False` + `fallback: full_recall`（B65 防烧钱的 skip_conflict 丢失，embed 不可达回退全量召回场景复现）③WebUI 不进镜像（Dockerfile 无 ui/、.dockerignore 排除 ui/dist；app.py 检测 /app/ui/dist 存在即挂载 SPA），compose 注释「HTTP API + WebUI」误导 ④docs/runbook.md 无 Docker 章节；NAS 拉取链路未接（/vol1/1000/git/sgme.git bare 仓为空、无 remote、cron 无拉取任务）。
+- 背景：核查「用户从 Docker 安装部署会不会出问题」（2026-08-16 用户问询）——静态核查发现 4 缺口：①git Dockerfile 从未全新构建验证（B67 遗留：NAS 生产镜像 sgme:1.0.0b1-nas-git-t69 为 docker commit 固化，非从 Dockerfile 构建）②`SGME_HOME=/data` 时 `DEFAULT_SGME_CONFIG = $SGME_HOME/config/sgme.yaml`，镜像内 `/app/config/sgme.yaml` 永不加载——空卷启动 = 全默认配置：`l15.prescreen.enabled=False` + `fallback: full_recall`（B65 防烧钱的 skip_conflict 丢失，embed 不可达回退全量召回场景复现）③WebUI 不进镜像（Dockerfile 无 ui/、.dockerignore 排除 ui/dist；app.py 检测 /app/ui/dist 存在即挂载 SPA），compose 注释「HTTP API + WebUI」误导 ④docs/runbook.md 无 Docker 章节；NAS 拉取链路未接（<NAS_ROOT>/git/sgme.git bare 仓为空、无 remote、cron 无拉取任务）。
 - 改动：
   1. **Dockerfile 多阶段化**：Stage 1 node:20-alpine 构建 WebUI（npm ci + vite build → /ui/dist）；Stage 2 python:3.11-slim（git + safe.directory + pip 依赖清单与 pyproject 逐项一致）；`COPY --from=ui-build /ui/dist ui/dist/` 入镜像；`config/sgme.yaml` 语义明确为「首次启动模板」（非死代码）
   2. **docker/entrypoint.sh（新增）**：`ENTRYPOINT` 接管——空卷首次启动把 `/app/config/sgme.yaml` 物化到 `$SGME_HOME/config/`（含生产调优 prescreen+skip_conflict），用户可编辑后重启；`exec "$@"` 透传 CMD
   3. **docs/runbook.md §16 Docker 部署**：准备（.env.example→docker.env）/启动验证/配置（sgme.yaml 物化语义）/升级/NAS 部署流程（B64 纪律 + bare 仓拉取）
-  4. **NAS 拉取链路**：`/vol1/1000/git/sgme.git` bare 仓接 gitee remote + fetch（此前为空仓无 remote，B64「NAS 拉取」未落地）
+  4. **NAS 拉取链路**：`<NAS_ROOT>/git/sgme.git` bare 仓接 gitee remote + fetch（此前为空仓无 remote，B64「NAS 拉取」未落地）
   5. **NAS 全新构建验证（E）**：`git fetch → clone → docker build（多阶段）→ 空卷 throwaway 容器 → /v1/health + WebUI index + 物化 sgme.yaml 校验 → 清理`（不触碰生产容器 sgme）
 - 测试：本地 ui 前端构建冒烟（vite build 800ms 出产物 ✓）；entrypoint sh 语法校验；NAS 全新构建 + 空卷启动冒烟结果见 E 段
 - 运维影响：新用户 `docker compose up -d --build` 开箱即用（WebUI 内置 + 防烧钱默认物化）；升级仍走 `git pull && docker compose up -d --build`；NAS 生产容器未动（当前 t69 镜像继续跑，下次计划升级时按 §16.5 流程切换新镜像）
@@ -877,7 +877,7 @@ L1.5 冲突裁决、L2 场景聚合。
 ### B70. 生产容器切换到 git 构建镜像 sgme:1.0.0b1-git-t72 + 全链路测试（2026-08-16）
 
 - 背景：T-72 完成 Docker 开箱修复并通过空卷冒烟；用户指令（2026-08-16）「接入 SGME 的 agent 只有当前会话在工作，由你完成容器重建并测试」——把生产容器从旧镜像（docker commit 固化的 nas-git）切换到 git 构建的新镜像（含 WebUI + entrypoint 物化 + T-68/T-69 修复）。
-- 前置：手动备份（nas_backup.sh → /vol2/1000/sgme-backup，OK）；确认 /vol1/1000/Docker/sgme/data/config/sgme.yaml 存在（md5 4e409685103dc04b2613cd543683ff8f，含 l15 prescreen+skip_conflict 生产调优）——entrypoint 首次启动检测到文件存在会跳过物化，不覆盖生产配置。
+- 前置：手动备份（nas_backup.sh → /vol2/1000/sgme-backup，OK）；确认 <NAS_ROOT>/Docker/sgme/data/config/sgme.yaml 存在（md5 4e409685103dc04b2613cd543683ff8f，含 l15 prescreen+skip_conflict 生产调优）——entrypoint 首次启动检测到文件存在会跳过物化，不覆盖生产配置。
 - 改动：
   1. NAS src 同步至 209d926（bare 仓 gitee fetch → src pull，B64 链路）
   2. NAS 构建正式镜像 `sgme:1.0.0b1-git-t72`（缓存层秒级完成）
@@ -891,7 +891,7 @@ L1.5 冲突裁决、L2 场景聚合。
   - 提炼健康：refine_runs 最近 l2_scene 阶段 status=ok（provider deepseek）
   - config 未被覆盖：md5 前后一致（4e409685…）；entrypoint 无物化日志（符合设计）
   - 日志无 traceback/CRITICAL
-  - 端到端：开发机 → 192.168.10.10:9910 可达；POST /v1/search（dsh agent key）真实召回 BM25+vector+RRF 融合记忆（含溯源 trace）
+  - 端到端：开发机 → <NAS_IP>:9910 可达；POST /v1/search（dsh agent key）真实召回 BM25+vector+RRF 融合记忆（含溯源 trace）
 - 运维影响：生产已运行 git 构建镜像（WebUI 内置 + 防烧钱默认 + 未来升级可走 `git pull && docker compose up -d --build`）；旧镜像 nas-git/t69 保留可回滚（compose 备份 .bak-pre-git-t72）；NAS 侧不再依赖 docker commit 固化
 - 文档：Backlog T-73；本记录 B70
 
@@ -938,7 +938,7 @@ L1.5 冲突裁决、L2 场景聚合。
 
 **数据修正**：AI弱电通-技术架构与选型定稿-2026-08-14-旧版已归档（e8d8e945）标 superseded（POST 时 W1 同 title 取代锚点自动处理，直改幂等确认）；注意 POST 幂等锚点对 title 变更敏感（page_id 含 title slug）——PATCH 改 title 后原 page_id 无法被 POST 命中，改 status 需数据库直改（PATCH 不支持 status 字段，待补）。
 
-**部署**：push GitHub/Gitee + NAS bare（/vol1/1000/git/sgme.git）→ NAS src pull → build sgme:1.0.0b1-wiki-v3 → compose 替换（数据卷不动）→ 生产验证 5/5 全绿（统一搜索恢复 / 执行通道不受影响 / 记忆正常 / chronomemo 不可见 / 旧版页不可见）。
+**部署**：push GitHub/Gitee + NAS bare（<NAS_ROOT>/git/sgme.git）→ NAS src pull → build sgme:1.0.0b1-wiki-v3 → compose 替换（数据卷不动）→ 生产验证 5/5 全绿（统一搜索恢复 / 执行通道不受影响 / 记忆正常 / chronomemo 不可见 / 旧版页不可见）。
 
 **文档**：本记录 B74
 
@@ -967,7 +967,7 @@ L1.5 冲突裁决、L2 场景聚合。
 - config/providers.yaml：deepseek 节点 api_key_env: DEEPSEEK_API_KEY → DEEPSEEK_API_KEY_SGME
 - config/.env：DEEPSEEK_API_KEY= 改名 DEEPSEEK_API_KEY_SGME=（值不动；原文件备份 config/.env.bak-20260816-A，gitignore 不随 git）
 - tests/test_providers.py：4 处断言/夹具同步（55/99/132/210；186/192 旧内联回退模拟保留历史值）
-- NAS 生产同步：本地 git push → NAS bare 仓（/vol1/1000/git/sgme.git）→ src pull → 构建 sgme:1.0.0b2-nas-key → docker.env 补 DEEPSEEK_API_KEY_SGME（值复制自 NAS 的 DEEPSEEK_API_KEY，sed 不落屏）→ compose image 切换 → 容器重建
+- NAS 生产同步：本地 git push → NAS bare 仓（<NAS_ROOT>/git/sgme.git）→ src pull → 构建 sgme:1.0.0b2-nas-key → docker.env 补 DEEPSEEK_API_KEY_SGME（值复制自 NAS 的 DEEPSEEK_API_KEY，sed 不落屏）→ compose image 切换 → 容器重建
 - 备份：NAS docker-compose.yml / docker.env 各留 .bak-时间戳
 
 **测试**：本机 config/provider 相关 pytest 82 通过 0 失败；本机真实 LLM 冒烟 9 tokens 正常；NAS 容器内验证（docker exec + PYTHONPATH=/app）：链节点 api_key_env=DEEPSEEK_API_KEY_SGME、key 解析成功（len 35）、真实调用 provider=deepseek 回复正常；NAS /v1/health 全绿（version 1.0.0b2，llm available，向量 11648 条数据完整）。
@@ -993,20 +993,20 @@ L1.5 冲突裁决、L2 场景聚合。
 **文档**：本记录 B77
 
 
-### B78. dsh-codegraph 插件迁出 SGME 仓库，独立成仓于 D:/Projects/dsh-codegraph-bridge（2026-08-17）
+### B78. dsh-codegraph 插件迁出 SGME 仓库，独立成仓于 <projects-root>/dsh-codegraph-bridge（2026-08-17）
 
-**背景**：dsh-codegraph（CodeGraph 本地代码知识图谱桥）2026-08-16 被误按「SGME 项目产物随 git 管理」铁律收编进 adapters/dsh/codegraph-bridge/（提交 98d4d3a），实际它是 DSH 生态独立插件、不属于 SGME 项目产物，导致 SGME 仓库混入 4 个无关提交，而平级位置 D:/Projects/dsh-codegraph-bridge 反而成了无 git 的散装副本。用户定：插件与 SGME 平级、独立管理。
+**背景**：dsh-codegraph（CodeGraph 本地代码知识图谱桥）2026-08-16 被误按「SGME 项目产物随 git 管理」铁律收编进 adapters/dsh/codegraph-bridge/（提交 98d4d3a），实际它是 DSH 生态独立插件、不属于 SGME 项目产物，导致 SGME 仓库混入 4 个无关提交，而平级位置 <projects-root>/dsh-codegraph-bridge 反而成了无 git 的散装副本。用户定：插件与 SGME 平级、独立管理。
 
 **改动**：
-- 复制最新版（含 2026-08-17 通用化：bin 自动探测 + projectPath 跟随启动目录）至 D:/Projects/dsh-codegraph-bridge，git init 独立成仓（66ea9f2 初始提交 + 468d3a7 README 更新，freehul 署名）
+- 复制最新版（含 2026-08-17 通用化：bin 自动探测 + projectPath 跟随启动目录）至 <projects-root>/dsh-codegraph-bridge，git init 独立成仓（66ea9f2 初始提交 + 468d3a7 README 更新，freehul 署名）
 - SGME 仓库 git rm -r adapters/dsh/codegraph-bridge（a5369d5，历史 4 提交保留可追溯）+ 清理残留 node_modules 空壳
 - adapters/dsh/README.md codegraph 章节改写为「2026-08-17 迁出独立仓库」；.gitignore 移除 codegraph-bridge 规则
-- web profile：package.json 的 dsh-codegraph link 改为 link:D:/Projects/dsh-codegraph-bridge；删旧 junction 后 pnpm install 重建（lock 同步更新）
+- web profile：package.json 的 dsh-codegraph link 改为 link:<projects-root>/dsh-codegraph-bridge；删旧 junction 后 pnpm install 重建（lock 同步更新）
 - 顺带修正：web profile 的 dsh-desktop-safe-market 在用户 20:40 重启时被还原回 bundle，本次一并重新移除
 
 **测试**：dump-config 装配树 577 行正常（codegraph 从新家解析、仅 queryLimit 显式配置；safe-market 不在 bundle）；junction Target 确认指向新家；SGME git status 无 codegraph 残留。
 
-**运维影响**：重启 Web GUI 生效；下次重启前旧 link 已修复，不会再出现 bundle 解析失败。后续 codegraph 插件改动在 D:/Projects/dsh-codegraph-bridge 独立提交。
+**运维影响**：重启 Web GUI 生效；下次重启前旧 link 已修复，不会再出现 bundle 解析失败。后续 codegraph 插件改动在 <projects-root>/dsh-codegraph-bridge 独立提交。
 
 **文档**：本记录 B78
 
@@ -1183,7 +1183,7 @@ L1.5 冲突裁决、L2 场景聚合。
 
 **改动**：
 1. **sgme/data/search/vector.py**：`embed()` 支持多 provider 降级链——`search.vector.fallbacks` 列表（`[{base_url, model, api_key_env}]`）；主 provider 失败 → 依次尝试 fallback → 全部失败才返回 None（降级纯 BM25）。向后兼容：无 fallbacks 时行为不变。每个 provider 独立 429 退避重试、Bearer 鉴权、超时
-2. **config/sgme.yaml**（生产配置）：`search.vector` 主=本地 ollama（`http://192.168.10.10:11434/v1` + `bge-m3`），`fallbacks=[siliconflow 云端]`
+2. **config/sgme.yaml**（生产配置）：`search.vector` 主=本地 ollama（`http://<NAS_IP>:11434/v1` + `bge-m3`），`fallbacks=[siliconflow 云端]`
 3. **NAS 部署**：ollama 容器拉取 `bge-m3`（1.2GB）；SGME 容器经宿主 IP 访问 ollama（两容器不同 docker 网络，已验证连通）
 4. **sgme/mcp_server.py**：`agent_onboarding` self_config 升 **SGME-ONBOARDING-v2**，template 新增「向量引擎接入」章节（诊断→探测→引导部署→配置写入→验证闭环 五步；Ollama/LM Studio 双推荐；明确不推荐 llama.cpp——模型状态无人维护）
 5. **docs/agent-onboarding.md**：新增 §7.5「向量引擎接入流程」（五步闭环 + 边界说明 + 排障顺序）
@@ -1206,7 +1206,7 @@ L1.5 冲突裁决、L2 场景聚合。
 
 **改动**：
 1. 新增项目根 `deploy.sh`（bash）：封装 构建→导出→传输→NAS 导入→启动→验证 全流程；子命令 build/deploy <host>/up/down/logs/verify
-2. NAS 部署路径约定 /vol1/1000/Docker/sgme（bind mount 数据卷，与 deployment-docker.md §4.3 一致）；docker.env 密钥检查守卫（缺失/为空即中止）
+2. NAS 部署路径约定 <NAS_ROOT>/Docker/sgme（bind mount 数据卷，与 deployment-docker.md §4.3 一致）；docker.env 密钥检查守卫（缺失/为空即中止）
 3. deployment-docker.md 新增 §2.5 一键脚本说明
 
 **测试**：脚本语法 bash -n 校验通过；命令分支走查（build/up/down/logs/deploy/verify/非法参数）；NAS 实机部署待用户执行
@@ -1404,7 +1404,7 @@ dsh 的 ¥117.46）。根因：zhipu glm-4.7-flash 免费主链被平台 1305 �
 573 次），重试 3 次（3s/6s/12s）耗尽后按降级链自动切 deepseek-v4-flash 付费兜底，
 refinement 链 deepseek 成功 704 次 vs zhipu 仅 38 次（8/14-8/20 日志）。
 
-**改动**（本机 config/ 与 NAS /vol1/1000/Docker/sgme/data/config/ 同步，均先备份）：
+**改动**（本机 config/ 与 NAS <NAS_ROOT>/Docker/sgme/data/config/ 同步，均先备份）：
 1. config/llm.yaml：
    - chains.refinement 移除 deepseek 备用节点 → zhipu → rule drop_batch
      （1305 限流时整批滞留，下一轮 batch_scan/Dream 重试，记忆不丢只是延迟；
@@ -1497,7 +1497,7 @@ src/config/llm.yaml 防重建回退。重启后以 load_llm_config() 运行时�
 
 **NAS 部署执行补充（2026-08-21）**：
 1. 部署链路：push nas（f0003d4→1bcd167）→ src git pull → docker build sgme:1.0.0b4-nas-upd1（BUILD_EXIT=0）→ 备份 compose → sed 换 tag → compose up -d → 容器 healthy，health 返回 4 个更新字段（update_available=False/latest_version=v1.0.0b4/update_checked_at 填充/update_error=None），真实连 GitHub 检测正常
-2. 主机代理部署：scp scripts/sgme-host-updater.sh → /vol1/1000/Docker/sgme/scripts/（chmod +x）+ root cron `*/5 * * * *`（与 logrotate 并存）
+2. 主机代理部署：scp scripts/sgme-host-updater.sh → <NAS_ROOT>/Docker/sgme/scripts/（chmod +x）+ root cron `*/5 * * * *`（与 logrotate 并存）
 3. **实测发现并修复 2 个脚本缺陷**（提交 e373d4f）：
    - **版本号双重拼接 BUG**：`NEW_TAG="${VER_TAG_PREFIX}${TARGET_VERSION#v}"` 在 VER_TAG_PREFIX=1.0.0b + 完整版本 1.0.0b4 时拼成 `1.0.0b1.0.0b4`——WebUI 传完整版本号，前缀冗余。修复：去掉 VER_TAG_PREFIX，直接用 `${TARGET_VERSION#v}-nas-autoupd`
    - **缺版本一致性校验**：v9.9.9 假版本测试暴露——脚本构建任意 tag 镜像 + health 只查 status=ok 就判成功（代码没变也"成功"）。修复：健康验证后加 `/v1/health` version == 目标版本校验，不符自动回滚旧镜像 + 标记 failed
@@ -1717,19 +1717,19 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 **背景**：B111 四项修复（#1 图谱时序 / #4 技能索引）已本地提交并 push 到 NAS 裸仓、重建镜像、force-recreate 上线（见下「部署验证」）。但「立即更新」自动链路仍坏：① `sgme-host-updater.sh` 根本未进 cron（只有 `nas_watchdog.sh`）；② 即便进 cron 也会因 **root 跑 git 撞 `fatal: detected dubious ownership`**（`src` 属主 `LEO:Users`，cron 以 root 跑）。**根因 = 自动更新代理以非仓库属主（root）身份操作 LEO 所有的 git 仓库**。
 
 **改动（scripts/sgme-host-updater.sh + NAS 部署配置）**：
-1. **updater 改以仓库属主 LEO 运行**（根治，非给 root 加 `safe.directory`——后者会致 root 写入 src 造成属主漂移）：`/etc/cron.d/sgme-watchdog` 新增 `*/5 * * * * LEO /vol1/1000/Docker/sgme/scripts/sgme-host-updater.sh >> .../logs/updater.log 2>&1`（watchdog 保持 root，因其需 `systemctl start docker.service`）。
+1. **updater 改以仓库属主 LEO 运行**（根治，非给 root 加 `safe.directory`——后者会致 root 写入 src 造成属主漂移）：`/etc/cron.d/sgme-watchdog` 新增 `*/5 * * * * LEO <NAS_ROOT>/Docker/sgme/scripts/sgme-host-updater.sh >> .../logs/updater.log 2>&1`（watchdog 保持 root，因其需 `systemctl start docker.service`）。
 2. **data/update 目录属主归还 LEO**：该目录原为 `root:root`（容器 root 写 request.json 留下），LEO 身份的 updater 无法 rm/重写。经容器 root `docker exec sgme chown -R 1000:1001 /data/update` 改回 `LEO:Users`。
 3. **mark_failed 写回健壮性**：原 `cat > "$REQUEST_FILE"` 在 request.json 为容器 root 创建的 `root-owned 644` 时，非 root 身份无法 truncate。改为先 `rm -f "$REQUEST_FILE"` 再 `cat >`，任何属主下均可重写失败状态。
 4. **补 cron 调度缺失**：原 cron 仅 watchdog，updater 缺失；现已补齐（见上）。
 
-**B111 部署验证（NAS 192.168.10.10:9910，已上线）**：
+**B111 部署验证（NAS <NAS_IP>:9910，已上线）**：
 - `git push nas main`：`9ce9991..3613bde`（B111 4 文件，快进）。
 - 备份旧镜像 `sgme:1.0.1-nas-autoupd.bak-pre-b111`（rollback 点）。
 - NAS `src` `git pull` → tip `3613bde`；`docker build -t sgme:1.0.1-nas-autoupd .`（含 UI 重编译，产物 GraphView chunk 68KB）→ `docker compose up -d --force-recreate`。
 - 验证：`/v1/health` `status=ok version=1.0.1`；新 `GraphView-DqCOUNOG.js` 对外 HTTP 200（#1 修复确凿上线）；旧镜像留 rollback 点。
 
 **验证（autoupd 链路）**：
-- LEO 身份 `git -C /vol1/1000/Docker/sgme/src pull` → `Already up to date.`，**无 dubious ownership**（根因消除的直接证据）。
+- LEO 身份 `git -C <NAS_ROOT>/Docker/sgme/src pull` → `Already up to date.`，**无 dubious ownership**（根因消除的直接证据）。
 - 造 `request.json`(target 1.0.1, pending) 后以 LEO 手动跑 updater → exit 0、request.json 被清除、日志 `当前已是 1.0.1 ... 标记完成`，无 safe.directory 报错。（注：updater.log 中 21:55 的 `dubious ownership` 为历史旧记录，本次 LEO 运行 23:47 干净通过。）
 - 说明：当前运行即 1.0.1，故走「已是最新」短路（不重建）；要真触发完整 `git pull→build→compose up` 链，仍需 GitHub 发 >1.0.1 的 Release tag + bump `SGME_VERSION`（用户既定 1.1.0 计划），此为前提条件、非本次缺陷。
 
@@ -1834,7 +1834,7 @@ wiki skill:* 页生产迁移；随后 M5 收官（冷启动包/WebUI/文档/卸�
 
 ### B119. dsh-sgme 0.4.0：技能层接入 + source 类型漂移修复（2026-08-29）
 
-**背景**：用户升级 NAS 飞牛系统致 sgme 容器自启失效（已自行修复），要求核查 SGME 近期更新对 dsh-sgme 0.3.1 的影响。
+**背景**：用户升级 NAS NAS系统致 sgme 容器自启失效（已自行修复），要求核查 SGME 近期更新对 dsh-sgme 0.3.1 的影响。
 实测 25 个在用端点**零破坏**（`GET /v1/wiki/search?q=手册` 仍能召回 SGME操作手册，B114 技能去 wiki 化未波及 wiki 通道；
 `ideas|demands|projects` 仍是 `require_admin_key`，未被 B116 的 `/v1/admin/skills` 写侧门禁波及），但暴露 3 个实质问题：
 ①skills 层 403 个技能 dsh 侧完全够不到（`SearchResult.source` 无 `skills`，所有调用点 scopes 恒为
@@ -2531,7 +2531,7 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 坑2 · cron 下 dubious ownership 复发 | 仓库级/全局 `safe.directory` 在 cron 最小环境下读不到 → `fatal: detected dubious ownership`（08-31 修过一次，本次复发）。修法：git pull 改命令行级 `git -c safe.directory="$SRC" pull`（protected config，优先级最高且必生效）。最小环境 `env -i HOME=... PATH=...` 复测通过。 |
 | 坑3 · sed -i 丢执行位 + root 属主 | 用 `sed -i` 改脚本后文件重建为 `-rwx------` → cron 调起 `Permission denied`；另容器 root 写的 `request.json` 属主 root，脚本以 LEO 运行时重写会被拒（目录属主 LEO 时可 `rm` 重建，但不可覆写）。处置：`chmod 755` + `chown -R LEO:Users data/update`。 |
 | 结果 | 11:57 更新成功 → **v1.1.4**（容器重建、版本确认通过、health ok）。生产实证：refine.py:210 含 `"facts": rm.get("facts")`；冒烟 append → 提炼 → `facts_json` 落库 4 三元组（赵六/任职于/杭州阿里巴巴西溪园区 等），**全库 facts 计数 0 → 1**，B147 修复在生产确认生效。 |
-| 备注 | 脚本在仓库 `scripts/sgme-host-updater.sh`（git 跟踪）与主机运行副本 `/vol1/1000/Docker/sgme/scripts/`（src 之外，pull 不覆盖）**两份**，修复后已双向同步（md5 `45316305...` 一致）。修改主机副本时勿用 `sed -i`（丢执行位）。 |
+| 备注 | 脚本在仓库 `scripts/sgme-host-updater.sh`（git 跟踪）与主机运行副本 `<NAS_ROOT>/Docker/sgme/scripts/`（src 之外，pull 不覆盖）**两份**，修复后已双向同步（md5 `45316305...` 一致）。修改主机副本时勿用 `sed -i`（丢执行位）。 |
 
 ### B149. 中文分词静默降级修复：jieba 在 Python 3.12+ 全线失效（2026-09-03）
 
@@ -2564,14 +2564,14 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 项 | 内容 |
 |---|---|
 | 背景 | B150 的修复在笔记本侧全部验证通过（wheel/sdist/只读安装），但**从未在生产镜像验证过**。1.1.5 发版时连续撞上三道关卡，每次都被自动更新代理判失败并回滚 1.1.4：①`git pull` 报裸仓 dubious ownership；②容器启动崩溃致健康验证失败；③`docker build` 报 buildx 权限拒绝。**三道全部排除后 1.1.6 才真正上线**。 |
-| 关卡①根因 | 日志 `git pull (...) upstream=` 为空——`git remote get-url` **自身也会触发属主校验**，失败时 stdout 空、错误进 stderr，而脚本写了 `2>/dev/null` 把根因整个吞掉 → `UPSTREAM_URL` 空 → 新加的裸仓白名单没生效。叠加：裸仓 `/vol1/1000/git/sgme.git` **不在** LEO 全局 gitconfig 白名单（B148 只加了 src；src 的**仓库级**配置只对 src 生效，对裸仓无效）；cron 最小环境若读不到 `~/.gitconfig` 则全部白名单失效。 |
-| 关卡①修复 | 脚本头部 `export HOME=/home/LEO`（/etc/passwd 中 LEO 的 home）钉死环境基线；`remote get-url` 同样带 `-c safe.directory=$SRC` 且 stderr **改记入日志**（不再吞）；解析为空/异常时兜底 `BARE_REPO_FALLBACK=/vol1/1000/git/sgme.git`；日志增加实际生效的 safe 参数回显。主机侧补 `git config --global --add safe.directory /vol1/1000/git/sgme.git`（持久化，不依赖脚本逻辑）。 |
+| 关卡①根因 | 日志 `git pull (...) upstream=` 为空——`git remote get-url` **自身也会触发属主校验**，失败时 stdout 空、错误进 stderr，而脚本写了 `2>/dev/null` 把根因整个吞掉 → `UPSTREAM_URL` 空 → 新加的裸仓白名单没生效。叠加：裸仓 `<NAS_ROOT>/git/sgme.git` **不在** LEO 全局 gitconfig 白名单（B148 只加了 src；src 的**仓库级**配置只对 src 生效，对裸仓无效）；cron 最小环境若读不到 `~/.gitconfig` 则全部白名单失效。 |
+| 关卡①修复 | 脚本头部 `export HOME=/home/LEO`（/etc/passwd 中 LEO 的 home）钉死环境基线；`remote get-url` 同样带 `-c safe.directory=$SRC` 且 stderr **改记入日志**（不再吞）；解析为空/异常时兜底 `BARE_REPO_FALLBACK=<NAS_ROOT>/git/sgme.git`；日志增加实际生效的 safe 参数回显。主机侧补 `git config --global --add safe.directory <NAS_ROOT>/git/sgme.git`（持久化，不依赖脚本逻辑）。 |
 | 关卡②根因 | **T-142 的次生效应，非打包缺陷**。1.1.4 生产镜像构建于 09-03（src=`7142114`）**不含 T-142**，读镜像内 `/app/config/llm.yaml`（链 = agnes → siliconflow → rule），故 `/data/config/llm.yaml` 一直未生效、无人察觉；该覆盖层文件停留在 **2026-08-20 的 zhipu 单链**，而 zhipu 供应商定义已在后续迭代中从 providers.yaml 移除（原 `47aca62` T-55 引入）。T-142 让 `$SGME_HOME/config` 覆盖层**首次生效** → 旧链与新供应商表不匹配 → `_merge_provider_into_node` 抛 `ValueError` → `load_config` 崩 → 服务起不来。 |
 | 关卡②修复 | `load_llm_config` 把「读取 + 合并连接表 + 白名单校验」抽为内部 `_build()`，捕获 `ValueError`：**来源为覆盖层时降级为「警告 + 回退包内默认」**；来源为包内默认时**照常抛出**（属发布缺陷，不得被掩盖）。设计原则：覆盖层是用户可编辑数据，**配置漂移不应导致服务不可用**。回归测试 +2（`test_overlay_llm_unknown_provider_falls_back_to_bundle` / `test_bundle_llm_invalid_still_raises`）。 |
 | 关卡③根因 | `/home/LEO/.docker/buildx/activity/default` 属主 **root:root**。`root` cron 每 5 分钟跑 `nas_watchdog.sh`（`docker ps`/`docker start`/`compose up`）以及群晖 Container Manager 等 root 侧调用都会让 docker CLI 初始化 buildx 状态；本脚本以 LEO 运行 → 无写权限 → `ERROR: ... permission denied` → buildx 初始化失败。注：root 的 home 是 `/root`，该文件出现在 LEO 家目录系群晖环境特定行为。 |
 | 关卡③修复 | 脚本 `export DOCKER_CONFIG="$DATA_DIR/.docker"` —— LEO 专属、位于持久卷内、**与 root 侧彻底隔离**。cli-plugins 位于 `/usr/libexec/docker/cli-plugins`，不受 `DOCKER_CONFIG` 变更影响，buildx / compose v2 插件照常可用。不改 `/home/LEO/.docker`（无 sudo，改他人属主文件风险更高）。 |
 | 生产验证 | ①`sgme:1.1.6-nas-autoupd` 已上线且 `healthy`，`/v1/health` 返回 `version=1.1.6`、`status=ok`、`llm.provider=agnes`（**与升级前 1.1.4 逐项一致，零回归**）；②**B150 遗留项③闭环**：entrypoint 已物化出 llm/providers/sgme 三份 yaml，且**旧卷内已有配置未被覆盖**（`if [ ! -f ]` 语义成立——`llm.yaml`/`sgme.yaml` 保持原时间戳，`providers.yaml` 为新增物化）；③包内资源齐全：`/app/sgme/resources/{config,registry,templates,prompts}`，旧布局 `/app/config`、`/app/registry` **已不存在**（干净迁移）；④`GET /v1/skills` **total=403**（与修复后水位一致）；⑤启动日志如期打印覆盖层回退告警，含具体不兼容原因与回退路径。 |
-| ⚠️ 踩坑 | ①更新脚本在**仓库与 NAS 主机运行副本各一份**（`/vol1/1000/Docker/sgme/scripts/`），主机侧跑的是副本；改完必须 `cp` 同步（勿用 `sed -i`，会丢执行位）。②`request.json` 一旦被标记 `failed`，脚本门控 `status != pending` 就**不再自动重试**，必须人工重置为 pending。③诊断容器启动失败时旧容器已被 `compose up` 替换，须用 `docker run --rm` 手动起临时容器（同 env/volumes、不映射端口）才能抓到启动日志。④发版前也要拉一次 src：脚本是主机侧的，**不需要 bump 版本**即可生效（bump 只影响镜像 tag）。 |
+| ⚠️ 踩坑 | ①更新脚本在**仓库与 NAS 主机运行副本各一份**（`<NAS_ROOT>/Docker/sgme/scripts/`），主机侧跑的是副本；改完必须 `cp` 同步（勿用 `sed -i`，会丢执行位）。②`request.json` 一旦被标记 `failed`，脚本门控 `status != pending` 就**不再自动重试**，必须人工重置为 pending。③诊断容器启动失败时旧容器已被 `compose up` 替换，须用 `docker run --rm` 手动起临时容器（同 env/volumes、不映射端口）才能抓到启动日志。④发版前也要拉一次 src：脚本是主机侧的，**不需要 bump 版本**即可生效（bump 只影响镜像 tag）。 |
 | 遗留（✅ 同日闭环） | **生产覆盖层 `/data/config/llm.yaml` 过时配置已归档**（原为 2026-08-20 的 zhipu 单链，靠 B151 回退逻辑兜底）。用户拍板 **方案①**：`mv llm.yaml llm.yaml.bak-20260904`（md5 归档前后一致 `28bd8efe…`，数据零丢失）→ `docker restart sgme` → entrypoint 物化出包内默认副本。实测：覆盖层与 `/app/sgme/resources/config/llm.yaml` md5 **完全一致**（`86ab7b88…`），**重启后日志零告警**（此前每次启动必打回退告警），skills 403 未变、health 正常、链仍为 agnes → siliconflow → rule。⚠️ 认知沉淀：因 entrypoint 恒定物化（`if [ ! -f ]`），**方案①与②殊途同归**——覆盖层最终都是包内默认副本，差别只在归档保留了旧配置可回溯。另发现（非本次缺陷）：有客户端把 MCP 请求打到 HTTP 端口 9910 得 404，正确端点是 **9913/mcp**（实测 403 = 端点存活、鉴权在拦），属客户端配置问题。详见 **Backlog T-150（✅ 已解决）**。 |
 | 关联 | Backlog T-142（✅ 已解决并上生产）、新增 T-150；`scripts/sgme-host-updater.sh`（三处加固）；`sgme/config.py`（`load_llm_config` 容错）；`tests/test_config_home.py`（+2 回归）。 |
 
@@ -2743,8 +2743,8 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 项 | 内容 |
 |---|---|
 | 背景 | T-150 双机评测的启动器 `run_eval_env.py`（注入 `config/.env`、拉起评测、全量日志 + 20 秒心跳）原落在仓库 `tmp/` 下。而 `tmp/` 被 `.gitignore` 忽略 → **一旦清理 tmp，整套评测无法再跑**；且笔记本上 6 个 `t150_*.bat` 全都依赖它，属"现场文件依赖未入库"的可复现性缺口。 |
-| 改动 | `git mv` 语义：新增 **`eval/run_eval_env.py`**（102 行），并把 `ROOT` 由硬编码 `D:\Projects\SGME` 改为 **按脚本自身位置推导**（`Path(__file__).resolve().parent.parent`）→ 任意克隆目录均可运行；用法行同步为 `python eval/run_eval_env.py <日志> [评测参数…]`。 |
-| 理由 | ①评测启动器是**可复现资产**（换机、换人、归档复跑都要它），不应藏在 gitignored 目录；②内网地址（`192.168.10.130:8123` / `192.168.10.141:1014`）**不构成入库障碍**——`docs/` 中已有 9 处同类写法，且这些地址本就是评测口径的一部分；③启动器**不含任何密钥**——密钥一律由运行时从 `config/.env` 注入（严守密钥不落盘铁律）。 |
+| 改动 | `git mv` 语义：新增 **`eval/run_eval_env.py`**（102 行），并把 `ROOT` 由硬编码 `<project-root>` 改为 **按脚本自身位置推导**（`Path(__file__).resolve().parent.parent`）→ 任意克隆目录均可运行；用法行同步为 `python eval/run_eval_env.py <日志> [评测参数…]`。 |
+| 理由 | ①评测启动器是**可复现资产**（换机、换人、归档复跑都要它），不应藏在 gitignored 目录；②内网地址（`<PC_IP>:8123` / `<LAPTOP_IP>:1014`）**不构成入库障碍**——`docs/` 中已有 9 处同类写法，且这些地址本就是评测口径的一部分；③启动器**不含任何密钥**——密钥一律由运行时从 `config/.env` 注入（严守密钥不落盘铁律）。 |
 | 笔记本侧 | `t150_refined_full.bat`、`t150_refined_smoke.bat` 内的启动器路径由 `tmp\run_eval_env.py` 改为 **`eval\run_eval_env.py`**（GBK 编码就地改写，评测参数未动）；其余 4 个 `.bat` 本就不引用启动器，跳过。`.bat` 本身**不入库**（含本机盘符路径的现场脚本）。 |
 | 验证 | ①隐私扫描：新增文件无密钥／真名／用户目录路径（仅 2 处内网地址，同 `docs/` 既有惯例）；②语法与运行自检通过；③**真实运行验证**——重跑 longmemeval（`--limit 2`）由该脚本经 `eval\` 路径成功拉起，日志心跳正常、双端点生效（`SGME_REFINE_CTX=131072`）。 |
 | 影响面 | 评测环境不再依赖 `tmp/`；`git clone` 后即可复跑评测。**运维提示**：启动器路径变更后，旧 `.bat` 若仍指向 `tmp\` 会报"找不到文件"，需同步改路径。 |
@@ -2754,7 +2754,7 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 
 | 项 | 内容 |
 |---|---|
-| 背景 | 目标：让 LongMemEval 评测的 refined 臂**脱离云端 LLM** 跑通——PC（`192.168.10.130:8123`）跑 `qwen3.8-9b-distill` 做 L1 提炼（关思考 / 128K / max_tokens 16K，见 B163），笔记本（`192.168.10.141:1014`）跑 `bge-m3-legal-euro-r7`（1024 维）做向量，评测在笔记本执行。链路搭起后出分异常：**`recall.refined` 恒为 0.0**。 |
+| 背景 | 目标：让 LongMemEval 评测的 refined 臂**脱离云端 LLM** 跑通——PC（`<PC_IP>:8123`）跑 `qwen3.8-9b-distill` 做 L1 提炼（关思考 / 128K / max_tokens 16K，见 B163），笔记本（`<LAPTOP_IP>:1014`）跑 `bge-m3-legal-euro-r7`（1024 维）做向量，评测在笔记本执行。链路搭起后出分异常：**`recall.refined` 恒为 0.0**。 |
 | 缺陷一（召回映射失配） | `eval/longmemeval_eval.py::_resolve_sessions`：`memory_sources.source_ref` 实际形如 `<file_id>:<seq>`（带段号），而 `fileid2sid` 字典的键是**裸 `file_id`**。原样查表**永远落兜底分支**，sids 与 ground-truth 永不相交 → recall 恒 0。修法：查表前**先剥 `:seq` 段号**（`70a3dcf`）。实测 q1：原样查表为空，剥后缀后命中 `answer_280352e9`，单题 recall 0.0 → 1.0。 |
 | 缺陷二（裸连接 dict 崩溃） | `sgme/data/search/__init__.py` 四处 `[dict(r) for r in cur.fetchall()]`：连接**未设 `row_factory`** 时 row 是元组，`dict(tuple)` 按 `(k, v)` 解包失败 → `ValueError: dictionary update sequence element #0 has length 36; 2 is required`。生产连接设了 row_factory（`db.py:399`）故线上无感，**裸连接调用必崩**（评测侧直连库即中招）。修法：新增 `_rows_to_dicts`，row_factory 未设时按 `cur.description` 自行组 dict（`37891d6`）；新增 `tests/test_search_bare_conn.py` 锁行为。 |
 | 修复 | ①`_resolve_sessions:550/553` 剥段号（并补 `--run-id` 支持，断点续跑才能真正命中 `refine_state.json`——原实现每次新建 run_id，`db_exists` 恒 False 导致删库重建；复核实测重算 45 分钟 → 25 秒）②4 处 `dict(r)` → `_rows_to_dicts` 兜底。 |
@@ -2770,7 +2770,7 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 改动 | 新增 **`eval/progress_server.py`**（约 200 行）+ **`eval/progress.html`**（约 122 行），零新依赖（stdlib `http.server`）。 |
 | 机制 | ①**只读**评测产物，DB 一律 `mode=ro` 打开，绝不写被监视对象；②`/status` 返 JSON、`/` 托管网页、`--once` 供调试；③网页 2 秒轮询，展示每臂提炼进度条 + L0 落盘 / 记忆 / 标签 / 向量 / L2 场景计数 + 日志尾 + 心跳状态灯（绿=运行中，红=心跳陈旧 >90 秒判卡死）。 |
 | 判断口径 | **看真产出，不看心跳**：心跳只证明进程在循环，`raw_files` / `memories` / `memory_vectors` 持续增长才证明链路真在产出（实测 q2 记忆 59 → 68 → 84）。L2 场景计数单独看，因其失败被设计为「不阻塞」。 |
-| 验证 | `/status` HTTP 200、`/` HTTP 200；实测进度快照：11.3 min → q1 记忆 132 / q2 139；19.3 min → q1 208 记忆 / 331 标签 / 203 向量、q2 190 / 280 / 190。浏览器入口 `http://192.168.10.141:8899/`。 |
+| 验证 | `/status` HTTP 200、`/` HTTP 200；实测进度快照：11.3 min → q1 记忆 132 / q2 139；19.3 min → q1 208 记忆 / 331 标签 / 203 向量、q2 190 / 280 / 190。浏览器入口 `http://<LAPTOP_IP>:8899/`。 |
 | 运维定位 | **一次性调试工具**，用完可关，**不加自启动**（服务操作铁律：加自启动须先问主人）。 |
 | 关联 | B166（同批修复）；`eval/run_eval_env.py`（B165）；技能 `sgme-engine-development`（已沉淀工具用法 + 真进度信号源表）。 |
 
@@ -2794,13 +2794,13 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 项 | 内容 |
 |---|---|
 | 背景 | 全量测试稳定 1 失败（`tests/test_vector_connectivity.py::test_connectivity_unconfigured`：`assert r["available"] is False` → `assert True is False`）。用 `.pytest_cache/v/cache/lastfailed`（旧解释器轮次已含该用例）+ 清空 `SGME_EMBED_*` 后单跑仍失败，双重证明**与解释器换代无关、也非环境变量之过**。 |
-| 根因 | 出厂只读基线 `sgme/resources/config/sgme.yaml` 的 `search.vector` **硬编码了本机局域网地址** `http://192.168.10.10:11434/v1` 且 `enabled: true`（来源 T-142 打包修复 `5df2985`）。测试假设「默认没配端点」，实际配了 → 探测真去连 NAS ollama 返 200 → 断言崩。`conftest` 只隔离配置文件路径，**隔离不掉包内出厂默认**。 |
+| 根因 | 出厂只读基线 `sgme/resources/config/sgme.yaml` 的 `search.vector` **硬编码了本机局域网地址** `http://<NAS_IP>:11434/v1` 且 `enabled: true`（来源 T-142 打包修复 `5df2985`）。测试假设「默认没配端点」，实际配了 → 探测真去连 NAS ollama 返 200 → 断言崩。`conftest` 只隔离配置文件路径，**隔离不掉包内出厂默认**。 |
 | 影响面 | 可移植性缺陷：任何人 `pip install` 后（无覆盖层）开箱即指向其网络中不存在的地址；本机看不出问题只因恰好同网段。 |
 | 改动 1（基线） | `search.vector`：`enabled: true→false`、`base_url` 局域网地址 → `''`（空=未配置；`operations/health.py:113` 返回「向量端点未配置」且**不发 anomaly_warn**——未配置不算失效）。**保留** `fallbacks`（siliconflow 公网地址，非局域网，仍是有效兜底）。 |
 | 改动 2（用例自足） | `test_connectivity_unconfigured`：改为 `copy.deepcopy(cfg)` 后显式构造「缺 base_url/model」的 vector 段，验证「缺字段时的行为」——任何机器、任何覆盖层配置下都成立。 |
 | 改动 3（连带修） | `tests/test_search_v04.py` 的 `cfg` fixture 原先只显式补 `base_url`、**隐式依赖出厂默认的 `enabled: true`** → 基线改后 3 个用例失败（`test_search_memories_with_rrf` / `test_recall_routes_consistency_with_search_memories` / `test_recall_routes_no_fusion`）。现显式置 `enabled: True`，测试自备启用态。 |
 | 改动 4 | 同类根因的用例一次修完（**全量套件才暴露**，按模块挑跑漏掉了）：`tests/test_e2e_v04.py`、`tests/test_l15.py`、`tests/test_semantic_edges.py`、`tests/test_server_v04.py` → 显式置 `enabled: True` 或新增 autouse fixture `mock embed`（`l15.prescreen.fallback=skip_conflict` 会在 embed 不可达时短路跳过冲突检测 → 裁决类用例必挂）。⚠️ 其中 `test_l15.py` / `test_semantic_edges.py` 此前是**靠真连 NAS ollama 让 embed 成功**的（隐性网络依赖，NAS 一停就会红），现改为完全离线自足。 |
-| 部署侧影响 | **生产零影响**：NAS 容器有可写覆盖层 `/vol1/1000/Docker/sgme/data/config/sgme.yaml`（`SGME_HOME=/data`），其 `search.vector` 自带 `enabled: true` + NAS ollama 端点（实测确认）；源码开发态本机新增 `config/sgme.yaml`（改前基线的完整副本，`.gitignore` 已忽略）保住本机行为。⚠️ **覆盖层是整文件替换不是深合并**（`load_sgme_config` 命中覆盖层即不再读包内基线）→ 覆盖层必须是完整副本，改一个字段也要复制整份。 |
+| 部署侧影响 | **生产零影响**：NAS 容器有可写覆盖层 `<NAS_ROOT>/Docker/sgme/data/config/sgme.yaml`（`SGME_HOME=/data`），其 `search.vector` 自带 `enabled: true` + NAS ollama 端点（实测确认）；源码开发态本机新增 `config/sgme.yaml`（改前基线的完整副本，`.gitignore` 已忽略）保住本机行为。⚠️ **覆盖层是整文件替换不是深合并**（`load_sgme_config` 命中覆盖层即不再读包内基线）→ 覆盖层必须是完整副本，改一个字段也要复制整份。 |
 | 测试 | `tests/test_vector_connectivity.py` + `test_config*.py`（5 文件）**63 通过 / 0 失败**；检索/健康/运维相关 23 文件**全绿**；**全量 pytest 2277 通过 / 0 失败**（对照本轮重建后 2276 通过 / 1 失败）。新装形态实测：`SGME_HOME=<空目录>` → `enabled=False base_url=''`，探测返回「向量端点未配置」。 |
 | 教训 | ①**改全局默认值必须跑全量**：本轮按模块挑跑 22 个文件全绿，全量却炸出 16 个失败（13 个在挑跑范围外的文件里），分两轮才收敛（16 → 5 → 0）。②pytest 9 在本机把汇总行丢给管道/文件（`N passed` 不落盘），取数用**进度行字符计数 + `exit=`** 双证，勿信单条。③测试若隐式依赖部署端点，NAS 一停就红——用例必须离线自足（本轮 2 个文件即如此）。 |
 | 诚实边界 | ① 基线内 `skills.source_dirs: /app/cache/skills/` 等**容器专属路径仍在**，同属「出厂默认绑死部署态」问题，本轮未动（超出批准范围）；② 覆盖层「整文件替换」是既有设计约束，本轮仅以注释+文档标注，未改代码。 |
@@ -2809,7 +2809,7 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 
 | 项 | 内容 |
 |---|---|
-| 背景 | 用户指出「项目的环境依赖必须是项目级、不依赖系统环境」被违反：SGME / SCSM 的 `.venv` 只是空壳，`pyvenv.cfg` 的 `home` 指向第三方工具 WorkBuddy 自带的 `C:\Users\LEO\.workbuddy\binaries\python\versions\3.13.12`，PATH 上有 5 个 python 导致漂移。**根因=项目从未声明基准解释器**。 |
+| 背景 | 用户指出「项目的环境依赖必须是项目级、不依赖系统环境」被违反：SGME / SCSM 的 `.venv` 只是空壳，`pyvenv.cfg` 的 `home` 指向第三方工具 WorkBuddy 自带的 `<user-home>\.workbuddy\binaries\python\versions\3.13.12`，PATH 上有 5 个 python 导致漂移。**根因=项目从未声明基准解释器**。 |
 | 改动 1（两项目重建） | `pip freeze` → `requirements.txt`（SGME 63 行 / SCSM 31 行，含基准解释器与锁定日期头注）→ 旧 venv 改名 `.venv.bak-20260911`（**保留不删**）→ 以 `D:\AI\python\cpython-3.12.13-windows-x86_64-none` 重建 → `pip install -r requirements.txt --find-links D:/AI/python/sgme-wheels` → `pip install --no-deps -e .`。验收：两项目 `home`/`version` 均指向仓库内 3.12.13；SGME 元数据 1.2.0、58 包装成（全 cp312 轮）。 |
 | 改动 2（解释器仓收拢 A 批） | ① 设用户级 `UV_PYTHON_INSTALL_DIR=D:\AI\python`；② uv 私有仓 3 个版本（3.9.25 / 3.12.11 / 3.13.14）+ `python-sdk\python3.13.2` 迁入 `D:\AI\python`；③ 原件改名保留 `%APPDATA%\uv\python.old-20260911`（207M，未删）；④ **原路径留目录联接（junction，免管理员）** → 依赖老路径的 21 个 venv 全部不掉线。 |
 | 改动 3（防复发） | 新增 `scripts/bootstrap_venv.bat`（只认 `D:\AI\python`，找不到即报错退出，**绝不静默使用 PATH 上的 python**；GBK+CRLF，护栏实测通过）；`AGENTS.md` 技术栈补「基准解释器」规则；`.gitignore` 增加 `.venv.bak-*/`。 |
@@ -2820,7 +2820,7 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 
 | 项 | 内容 |
 |---|---|
-| 背景 | E2E 冒烟第 11 步 `POST /v1/admin/backup/restore` 恒定 HTTP 500：`ERR_INTERNAL 内部错误: [WinError 32] 另一个程序正在使用此文件: 'D:\Projects\SGME\data\memory.db-wal'`（待办 9bc49b98）。恢复路径是灾难恢复的最后一道，不能坏。 |
+| 背景 | E2E 冒烟第 11 步 `POST /v1/admin/backup/restore` 恒定 HTTP 500：`ERR_INTERNAL 内部错误: [WinError 32] 另一个程序正在使用此文件: '<project-root>\data\memory.db-wal'`（待办 9bc49b98）。恢复路径是灾难恢复的最后一道，不能坏。 |
 | 根因 | `restore_snapshot` 第 3 步「删 `-wal`/`-shm` + `copy2` 覆盖主库」：Windows 下只要进程内**还有任一连接**持有目标库（服务进程必然有：MCP / 引擎 / 调度器 / 逐请求 DAO；`conn_pair` 只覆盖 3 条），`unlink(-wal)` 必抛 `PermissionError [WinError 32]`。且**吞掉该错误继续覆盖更危险**——残留旧 `-wal` 会在下次打开时被回放，静默污染恢复结果（比报错更坏）。 |
 | 修法 | 第 3 步改为 `_restore_db_file()`：以 `mode=ro` 打开快照库 → `src.backup(dst)` **写回目标库的活连接** → `commit` → 尽力 `PRAGMA wal_checkpoint(TRUNCATE)`（多连接持有 WAL 时 busy 属正常，不影响正确性）。全程**零文件级删除**，页级复制与 WAL 一致性交给 SQLite。 |
 | 测试（RED→GREEN） | 先 RED：新增 `test_restore_succeeds_when_extra_connection_holds_wal`——快照后另开连接写入（不进 `conn_pair`）制造被占用的 `-wal`，旧实现**如实复现** `PermissionError [WinError 32]`（本缺陷首次可在单测内复现，此前只能打真服务）；改后 GREEN，并断言「快照后写入的表不残留」→ 覆盖是彻底的、无旧状态混入。 |
@@ -2897,11 +2897,11 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 项 | 内容 |
 |---|---|
 | 背景 | B175 的修复（事实保真提示词 + `fact` 类型 + 语言守门）在评测台已验证（19 题 recall 0.618→0.917、判对 4→11），但生产 NAS 仍跑旧提示词（`refine_runs.version = working-34534605` = v003/v004）。用户拍板「提示词修复上线」。 |
-| 版本 | `sgme/__init__.py` + `pyproject.toml`：1.2.0 → **1.2.1**（提交 `7091371`，本地/GitHub/飞牛三端 `refs/heads/main` 一致）。 |
-| 部署链（官方路径，无旁路） | 生产部署走 NAS 主机侧更新代理（`/vol1/1000/Docker/sgme/scripts/sgme-host-updater.sh`，cron 每 5 分钟，以 LEO 身份运行）：`POST /v1/admin/update/request {"target_version":"1.2.1"}` → 代理轮询到 `status=pending` → runbook 16.4 链：git pull（源 = 本地裸仓 `/vol1/1000/git/sgme.git`）→ `docker build` → 备份 compose → 换 tag → `docker compose up -d` → 健康验证 + 版本一致性校验。 |
+| 版本 | `sgme/__init__.py` + `pyproject.toml`：1.2.0 → **1.2.1**（提交 `7091371`，本地/GitHub/NAS三端 `refs/heads/main` 一致）。 |
+| 部署链（官方路径，无旁路） | 生产部署走 NAS 主机侧更新代理（`<NAS_ROOT>/Docker/sgme/scripts/sgme-host-updater.sh`，cron 每 5 分钟，以 LEO 身份运行）：`POST /v1/admin/update/request {"target_version":"1.2.1"}` → 代理轮询到 `status=pending` → runbook 16.4 链：git pull（源 = 本地裸仓 `<NAS_ROOT>/git/sgme.git`）→ `docker build` → 备份 compose → 换 tag → `docker compose up -d` → 健康验证 + 版本一致性校验。 |
 | 部署结果 | 镜像 `sgme:1.2.1-nas-autoupd` 构建成功；容器 Recreated；代理日志 `=== 更新成功 → 1.2.1 ===`；健康检查 `version 1.2.1`、LLM `agnes/agnes-2.5-flash` 可用、向量引擎 `sqlite-vec`（memory_vectors 33,067）、提炼未停摆（stalled=false）。 |
 | 提示词落地验证（关键） | ①容器内 `/app/sgme/resources/prompts/l1_extraction.txt` sha256 = **`899acbe4…`**（= v006 发布哈希，与仓库 LF 版一致），`versions/l1_extraction/` 含 v004/v005/v006；②触发一次异步提炼后，`refine_runs` 最新记录为 `stage=l1_extraction / version=working-899acbe4 / status=ok / 8 条` —— **新提示词已在生产实跑**。 |
-| 发布 | tag `v1.2.1`（GitHub 与飞牛哈希一致 `41dc7b6b`）+ GitHub Release：https://github.com/freehul/sgme/releases/tag/v1.2.1 |
+| 发布 | tag `v1.2.1`（GitHub 与NAS哈希一致 `41dc7b6b`）+ GitHub Release：https://github.com/freehul/sgme/releases/tag/v1.2.1 |
 | 运维影响 | ①生产提炼自 2026-09-13 03:10Z 起用事实保真提示词，**记忆条数预计上升**（评测台实测 1.4~19 倍，需观察生产库容量与检索表现）；②回滚路径：提示词 `PromptStore().activate("l1_extraction","v004")`，镜像回滚 = compose 换回 `sgme:1.2.0-nas-autoupd`（旧镜像保留未删，代理失败时也会自动回滚 tag）；③后续升级走同一入口（WebUI「立即更新」或 API），仍禁止手工旁路构建。 |
 
 ### B178. 接口调用统计持久化：api_usage_daily + HTTP/MCP 双端埋点（T-163，2026-09-13）
@@ -2923,10 +2923,23 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 |---|---|
 | 背景（事件） | 2026-08-31 15:41 的 T-139 Guardrail 提交（`5f9d388`）中，`tests/test_guardrail.py` 的 API 密钥检测测试样例**误用了真实 key**（`DEEPSEEK_API_KEY_SGME` 35 位完整串）。该提交 8-31 先推 NAS 裸仓（私有，16:10），**9-01 19:02 随批量推送进入公开 GitHub**（Gitee 经 Actions 自动同步），公网明文暴露约 12 天。9-13 用户发现并删除该 key（平台侧吊销）；排查未见盗用迹象（NAS 提炼链近 30 天无 DeepSeek 调用记录、账号余额无异常波动；公网期间是否存在第三方获取无法完全排除，按已吊销处置）。 |
 | 排查取证 | ①本机 remote-tracking 日志（`update by push`）与 GitHub PushEvent 双向锁定暴露起点（NAS 8-31 16:10:46 / GitHub 9-01 19:02:55）；②全历史 pickaxe（`git log -S`）确认该 key 仅 `5f9d388` 一处入库、其余两把 key 从未入库；③全部接入方会话核查（NAS raw/sessions 1160 条，含 hermes/trae/dsh/reasonix）：8-31~9-01 的提交/推送操作不在任何会话记录中——发布审查自 8-26 立规后，**8-31~9-04 为执行断档窗口**（9-05 起恢复稳定执行）。 |
-| 改动 | ①`tests/test_guardrail.py`：测试样例真实 key → 低熵占位（`sk-` + 32×0，形状同真、一眼假）；②新增推送前机器门禁：`.githooks/pre-push`（扫描本次推送新增行中的疑似密钥长串；`-` 后 body 去重字符 ≤3 自动放行；白名单 `.githooks/secret_scan_allowlist`；逃生开关 `GIT_PUSH_SKIP_SECRET_SCAN=1`；新分支按「未推送过的提交」扫描避免重扫已公开历史）+ `scripts/install_git_hooks.sh`（幂等启用 `core.hooksPath`）+ `.gitattributes` 补 `.githooks/* eol=lf`；③`AGENTS.md` 提交流程新增「推送前发布审查」（跨工具可见，Hermes 侧配 `publish-review` skill）；④失效旧 key 值清理（`REVOKED_20260913` 占位）：本机 `SGME/.env`、`config/.env`（含 3 个 .bak）、`docker.env`、`~/.dsh/.env`、`AIRDT/.dsh/.env`；NAS `/vol1/1000/Docker/sgme/docker.env`。 |
+| 改动 | ①`tests/test_guardrail.py`：测试样例真实 key → 低熵占位（`sk-` + 32×0，形状同真、一眼假）；②新增推送前机器门禁：`.githooks/pre-push`（扫描本次推送新增行中的疑似密钥长串；`-` 后 body 去重字符 ≤3 自动放行；白名单 `.githooks/secret_scan_allowlist`；逃生开关 `GIT_PUSH_SKIP_SECRET_SCAN=1`；新分支按「未推送过的提交」扫描避免重扫已公开历史）+ `scripts/install_git_hooks.sh`（幂等启用 `core.hooksPath`）+ `.gitattributes` 补 `.githooks/* eol=lf`；③`AGENTS.md` 提交流程新增「推送前发布审查」（跨工具可见，Hermes 侧配 `publish-review` skill）；④失效旧 key 值清理（`REVOKED_20260913` 占位）：本机 `SGME/.env`、`config/.env`（含 3 个 .bak）、`docker.env`、`~/.dsh/.env`、`AIRDT/.dsh/.env`；NAS `<NAS_ROOT>/Docker/sgme/docker.env`。 |
 | 测试 | `tests/test_guardrail.py` 11 passed、`tests/test_operations_append.py` 9 passed（合计 **20 / 0 failed**，test_fast 推导同口径）；门禁四场景实测（本地临时裸仓）：干净增量通过 / 高熵串拒绝 exit 1 / 逃生开关放行 / 低熵占位放行——低熵判定在首测中抓获一次真实缺陷（误把 `sk-` 前缀计入字符集致 `sk-000…0` 被误拦，修正为仅判 `-` 后 body）。 |
 | 运维影响 | ①各克隆需执行一次 `sh scripts/install_git_hooks.sh`（或 `git config core.hooksPath .githooks`）启用门禁；②历史中旧 key 明文保留不重写（与既定「已发布仓库不重写历史」惯例一致；key 已吊销）；③GitHub 无服务端 pre-receive，门禁为本地防线 + 会话侧 `publish-review` 双层；④提示：8-20 的 B89「全历史审计」为一次性检查——持续防护依赖本门禁，后续「定期全量复扫」机制见 skill 更新。 |
 | 教训（沉淀） | ①真实密钥绝不可作为测试/文档样例（「一眼像测试数据」正是盲区）；②「推送前审查」必须机器兜底，不能只靠会话自觉——断档期的执行链恰不在记录会话中；③多工具协作下规则必须进项目级文件（AGENTS.md），不能只存在单工具私有规则里；④新增门禁必须自带逃生开关与白名单，防「门禁把合法操作锁死」。 |
+
+### B180. 数据卫生源头治理：真实标识占位化 + 双钩子门禁（T-165，2026-09-13）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | B179 密钥泄露事件后用户定调「从源头杜绝」：开发流程起点即避免真实数据（IP/路径/密钥/姓名）入库，用变量名/功能占位符替代；**提交审查只是最后一道防线**。内网 IP 采用**功能占位符**（用户指定：`host="<真实IP>"` → `host="<NAS_IP>"`）。 |
+| 依据（业内标准调研） | OWASP Secrets Management Cheat Sheet（hardcoded in source code 是源头问题）、NIST SSDF SP 800-218（PW 组安全编码实践）、GitHub Push Protection（平台层；用户级默认拦截 public 仓库推送）、gitleaks / pre-commit / detect-secrets（左移事实标准：pre-commit 阶段扫描 + baseline/allow 误报治理）、RFC 5737 / RFC 2606（文档占位 IP/域名标准）、12-Factor（配置入环境）、CWE-798（硬编码凭据）。 |
+| 改动① 存量脱敏 | **两轮共 96 文件次、976 处**（首轮 56/894 + 二轮补扫 40/82）。首轮：内网 IP → `<NAS_IP>` / `<PC_IP>` / `<LAPTOP_IP>`；公网 IP → `<VPS_IP>` / `<HOME_PUBLIC_IP>`；NAS 路径 → `<NAS_ROOT>`；品牌词 → 中性化；真名/用户名 → `<用户名>` / `<USER>`；env 默认值 → 回环 `127.0.0.1`；测试数据 → `10.0.0.x`。二轮补扫：反斜杠/正斜杠形态的本机盘符路径 → `<project-root>` / `<projects-root>` / `<user-home>`（脚本运行值改相对化）。范围 = git 追踪文件。 |
+| 改动② 机器门禁 | 新增 `.githooks/lib_scan.sh`（**单一规则源**：密钥长串 + 真实标识 + 行内 `scan-allow` 豁免）+ `.githooks/pre-commit`（**暂存区扫描——提交前第一道**）+ `pre-push` 重构（复用 lib；部署耦合组由 pathspec 排除）；`scripts/install_git_hooks.sh` 更新（说明双钩子与逃生开关）。 |
+| 改动③ 规范沉淀 | `AGENTS.md` 新增「数据卫生」章（敏感值→标准写法对照表 + 写前自检 + 门禁说明）；SOUL 数据卫生铁律；`secrets-handling` skill 升级（数据卫生节 + 检查清单）。 |
+| 测试 | ①相关模块与风险引用全绿（改动测试文件 10 个 + 引用被改文件的 3 个，26 passed 等）；test_fast 393 passed / 0 failed（23 关键词推导）；②门禁实测 8 场景全过（pre-commit：拦截/放行/scan-allow；pre-push：commit 拦截/IP/密钥/占位/逃生）；③**全量 pytest：全绿**（100% 完成、exit 0、无失败；15:26→15:47 约 21 分钟）。 |
+| 运维影响 | ①各克隆需 `sh scripts/install_git_hooks.sh` 启用（含 pre-commit 新钩子）；②部署机制耦合组 5 文件（deploy.sh、compose、运维三脚本）真实路径**本批保留**（待 env 化改造，改造需配套 NAS 部署机制同步）；③历史 git 对象中旧值不重写（惯例）；④技能库（Hermes skills / NAS skills-hub）同类清理另行立项。 |
+| 教训（沉淀） | ①「源头」= 写文件的那一刻：用变量/占位符，别等审查；②敏感值分类处置：**能跑的值**（配置/默认值）走环境变量与回环兜底，**纯展示的值**（文档/样例/测试数据）走功能占位符与通用假值；③门禁要「单一规则源 + 双关卡」（暂存 + 推送），且必带行内豁免与逃生开关；④脱敏要「保功能」：env 默认值改回环、检测器测试保私网形态——**字符串替换也需要理解语义**。 |
 
 
 

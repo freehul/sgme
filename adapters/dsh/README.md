@@ -43,14 +43,14 @@ dsh 有完整插件 SDK（工具注册/事件监听/上下文注入/命令注册
 # 1. 注册 agent + 写 .env + 生成 ~/.sgme/install.json + 生成 AGENTS.md + 打印 dsh 加载命令
 #    install.json = 服务发现清单（http/mcp 地址端口 + Key 环境变量名引用，不落明文），
 #    agent 找不到 SGME 时按 README 服务发现第 2 步读取
-<项目根>/.venv/Scripts/python.exe <项目根>/adapters/dsh/install.py --dir D:/Projects/<目标项目>
+<项目根>/.venv/Scripts/python.exe <项目根>/adapters/dsh/install.py --dir <projects-root>/<目标项目>
 # key 会写入两处：
 #   - adapters/dsh/.env   （Python 侧：import_history.py 等用）
 #   - <项目根>/.env       （dsh 加载路径，插件据此读 key）
 # 若 dsh 从其他目录启动，用 --dsh-env <该目录>/.env 指定
 
 # 2. 加载 dsh 插件（本地 link 模式，改代码即生效）
-dsh plugin --profile web add "link:D:/Projects/SGME/adapters/dsh/sgme-bridge"
+dsh plugin --profile web add "link:<project-root>/adapters/dsh/sgme-bridge"
 
 # 3. 启动 dsh（需在含 .env 的目录下，或在启动前 export SGME_AGENT_KEY/SGME_ADMIN_KEY）
 dsh --profile web
@@ -104,9 +104,9 @@ dsh 对话回合结束 → session/event(turn/end) → sgme-bridge
 
 ## codegraph-bridge（dsh-codegraph 插件，2026-08-17 迁出独立仓库）
 
-- **2026-08-17 起不再随本项目管理**：独立仓库 `D:/Projects/dsh-codegraph-bridge`（git 独立成仓，freehul 署名）
+- **2026-08-17 起不再随本项目管理**：独立仓库 `<projects-root>/dsh-codegraph-bridge`（git 独立成仓，freehul 署名）
 - 历史：2026-08-16 曾纳入本项目（提交 98d4d3a），因其是独立 DSH 插件而非 SGME 产物，2026-08-17 迁出（提交 a5369d5）；历史提交保留可追溯
 - 功能：CodeGraph 本地代码知识图谱桥接（explore/query/node/status 4 工具）
-- 用户级技能可重建源：`D:/Projects/dsh-codegraph-bridge/skills/codegraph/SKILL.md`
+- 用户级技能可重建源：`<projects-root>/dsh-codegraph-bridge/skills/codegraph/SKILL.md`
 - 依赖：npm 全局 `@colbymchenry/codegraph`（npm-shim.js 自动探测，DSH_CODEGRAPH_BIN 可覆盖）；项目需 `codegraph index` 建索引（`.codegraph/codegraph.db`）
 - 改动后：`dsh plugin --profile web install` + 重启 web 生效

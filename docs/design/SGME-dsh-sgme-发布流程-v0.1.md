@@ -17,7 +17,7 @@
    - **Token name**：随意
    - **IP allowlist**：`<VPS_IP>/32`（VPS 出口 IP）
    - **Packages and scopes**：Add Packages → 选 `dsh-sgme` 或 All packages → 勾 **Read and write** ← 最容易漏
-3. 生成后复制新 token（只显示一次）→ 更新 `D:/Projects/SGME/.env` 的 `NPM_KEY=` 整行
+3. 生成后复制新 token（只显示一次）→ 更新 `<project-root>/.env` 的 `NPM_KEY=` 整行
 4. 校验：新 token 前缀一定 ≠ 旧值（`Get-Content .env | Select-String NPM_KEY` 看前缀变化）
 
 ## 三、发布命令（必须走 7897 代理）
@@ -25,8 +25,8 @@
 > 出口 IP 必须匹配 token 的 IP 白名单（VPS <VPS_IP>）。直连出口是家里 IP → 404；走 Clash 7897 代理 → 出口 VPS → 匹配。
 
 ```powershell
-cd D:/Projects/SGME/adapters/dsh/sgme-bridge
-$token = (Get-Content "D:/Projects/SGME/.env" | Where-Object { $_ -match '^NPM_KEY=' } | ForEach-Object { ($_ -split '=',2)[1] }).Trim()
+cd <project-root>/adapters/dsh/sgme-bridge
+$token = (Get-Content "<project-root>/.env" | Where-Object { $_ -match '^NPM_KEY=' } | ForEach-Object { ($_ -split '=',2)[1] }).Trim()
 Set-Content -Path ".npmrc" -Value ("//registry.npmjs.org/:_authToken=" + $token) -NoNewline -Encoding utf8
 $env:HTTPS_PROXY = "http://127.0.0.1:7897"
 $env:HTTP_PROXY   = "http://127.0.0.1:7897"

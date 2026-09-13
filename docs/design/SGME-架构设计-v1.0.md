@@ -432,7 +432,7 @@ GET  /v1/wiki/raw/{hash}           # 下载原件
 ```yaml
 skills_hub:
   enabled: true
-  path: "D:/Projects/skills-hub/"
+  path: "<projects-root>/skills-hub/"
   mode: map
   sync_policy: manual
   remote:                    # mode=copy 时才生效
@@ -610,7 +610,7 @@ CREATE TABLE refine_cursor (
 | 蒸馏什么 | 书的方法论 | 人的思维框架 | 技术书的细节 | 已有 skill |
 | 保留什么 | 决策框架、原则、案例 | 心智模型、表达风格 | 公式、代码、API、化学式 | 优化触发词、压缩冗余 |
 
-套装通过 SGME refinery API 获取解析+提取能力，但编排逻辑（多阶段、质量规则、输出格式）完全保留在 skill 内。位置：`D:\Projects\zhengliu_skills\`。
+套装通过 SGME refinery API 获取解析+提取能力，但编排逻辑（多阶段、质量规则、输出格式）完全保留在 skill 内。位置：`<projects-root>\zhengliu_skills\`。
 
 ---
 
@@ -1536,7 +1536,7 @@ Query：`limit`（默认 50）/ `offset`（默认 0）——对齐 SCSM `list_te
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| project_id | TEXT PK | 项目名（纯英文，与 D:\Projects 目录名一致） |
+| project_id | TEXT PK | 项目名（纯英文，与 <projects-root> 目录名一致） |
 | name | TEXT | 项目名（同 project_id，冗余便于改名迁移） |
 | path | TEXT | 绝对路径 |
 | git_repo | TEXT NULL | git 仓库地址（本地路径或远端 URL） |

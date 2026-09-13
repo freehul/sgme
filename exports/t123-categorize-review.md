@@ -79,7 +79,7 @@ scroll |
 | powerpoint | creative | PPT创建与编辑工具 | Create, read, edit .pptx decks with python-pptx. |
 | product-price-monitor | data | 商品价格监控与预警服务 | Watch product, flight, or listing prices; alert on target. |
 | production-audit | devops | 生产环境上线审计流程 | 生产就绪审计——上线前检查、post-merge验证、风险评估。 |
-| project-lifecycle-tracking | methodology | 项目全生命周期管理规范 | 项目立项与追踪体系。触发：立项、开搞、新建项目、需求池、创意池、项目注册表、问题追踪、D:\Projects 整理。 |
+| project-lifecycle-tracking | methodology | 项目全生命周期管理规范 | 项目立项与追踪体系。触发：立项、开搞、新建项目、需求池、创意池、项目注册表、问题追踪、<projects-root> 整理。 |
 | requesting-code-review | software-development | 代码提交前审查工作流 | Pre-commit review: security scan, quality gates, auto-fix. |
 | research-paper-writing | research | ML论文写作投稿指导 | Write ML papers for NeurIPS/ICML/ICLR: design→submit. |
 | research-workflow | research | 技术调研与知识管理流程 | 调研/搜索/搜集/对比分析/技术选型 —— 调研工作流规范：从搜索到存档的完整流程。确保每份调研产出存到正确的地方（本地+NAS+本地记忆），不遗漏、不重复。适 |

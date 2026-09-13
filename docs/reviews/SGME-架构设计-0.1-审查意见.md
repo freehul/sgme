@@ -1,6 +1,6 @@
 # SGME 架构设计 v0.1 — 审查意见
 
-> 审查对象：`D:\Projects\SGME\SGME-架构设计-0.1.md`（2026-08-03，492 行）
+> 审查对象：`<project-root>\SGME-架构设计-0.1.md`（2026-08-03，492 行）
 > 审查人：Hermes Soul
 > 审查日期：2026-08-03
 > 审查方式：通读全文 + 对 §16 Fork 底座论断做独立线上核实（GitHub API / 官方文档 / 公开 Issues）

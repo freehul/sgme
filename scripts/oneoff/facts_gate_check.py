@@ -12,8 +12,8 @@ F1 口径（task 要求）：subject+predicate+object 三元组精确匹配（�
 只产出报告，不写库，不连 NAS。
 
 用法：
-  D:/Projects/SGME/.venv/Scripts/python.exe scripts/oneoff/facts_gate_check.py \
-      --input D:/Projects/SGME/tmp/facts_sample_50.jsonl --report tmp/facts_gate_report.md
+  <project-root>/.venv/Scripts/python.exe scripts/oneoff/facts_gate_check.py \
+      --input <project-root>/tmp/facts_sample_50.jsonl --report tmp/facts_gate_report.md
   # --dry-run：用内置桩样本与桩结果跑通链路，不调 LLM（测试/演示用）
 """
 
@@ -46,7 +46,7 @@ def _embed_texts(texts: list[str]) -> list[list[float]]:
     import os
     import httpx
     keys = {}
-    env_path = Path(os.environ.get("SGME_PROJECT_ROOT", "D:/Projects/SGME")) / "config" / ".env"
+    env_path = Path(os.environ.get("SGME_PROJECT_ROOT", "<project-root>")) / "config" / ".env"
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if "=" in line and not line.startswith("#"):
@@ -267,7 +267,7 @@ def write_report(path: Path, rows: list[dict], macro: dict, per_sample: list[dic
 def _args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="facts 批量抽取门禁（单条 vs 批量 F1）")
     p.add_argument("--input", default="",
-                   help="样本 JSONL（{memory_id, content}）。缺省查找 D:/Projects/SGME/tmp/facts_sample_50.jsonl")
+                   help="样本 JSONL（{memory_id, content}）。缺省查找 <project-root>/tmp/facts_sample_50.jsonl")
     p.add_argument("--report", default="", help="markdown 报告输出路径（空则不落盘）")
     p.add_argument("--limit", type=int, default=50, help="样本上限（默认 50）")
     p.add_argument("--batch-size", type=int, default=20)
@@ -287,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.dry_run:
         rows = _default_sample()
     else:
-        cand = Path("D:/Projects/SGME/tmp/facts_sample_50.jsonl")
+        cand = Path("<project-root>/tmp/facts_sample_50.jsonl")
         if cand.exists():
             rows = bf.read_input_rows(cand)
         else:

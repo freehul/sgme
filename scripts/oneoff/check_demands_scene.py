@@ -5,7 +5,7 @@ import os, re, json, urllib.request
 key = None
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config', '.env')
 if not os.path.exists(env_path):
-    env_path = 'D:/Projects/SGME/config/.env'
+    env_path = '<project-root>/config/.env'
 with open(env_path, 'r', encoding='utf-8') as f:
     for line in f:
         m = re.match(r'^\s*SGME_ADMIN_KEY\s*=\s*(.+?)\s*$', line)

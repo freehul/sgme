@@ -129,7 +129,7 @@ def main(argv=None) -> int:
     # wiki_conn：--with-wiki 时接入生产 wiki.db 副本（拉取：scp nas:<NAS_ROOT>/Docker/sgme/data/data/wiki.db data/wiki_prod.db）
     wiki_conn = None
     if args.with_wiki:
-        wiki_db = Path("D:/Projects/SGME/data/wiki_prod.db")
+        wiki_db = Path("<project-root>/data/wiki_prod.db")
         if wiki_db.exists():
             import sqlite3
             wiki_conn = sqlite3.connect(str(wiki_db))

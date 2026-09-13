@@ -141,7 +141,7 @@ async function saveEdit() {
         <label>展示名</label>
         <input v-model="newName" placeholder="缺省同 ID" />
         <label>项目路径 *</label>
-        <input v-model="newPath" placeholder="D:/Projects/..." />
+        <input v-model="newPath" placeholder="<projects-root>/..." />
         <label>git 仓库（可选）</label>
         <input v-model="newGit" />
         <label>当前里程碑（可选）</label>

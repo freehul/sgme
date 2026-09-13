@@ -1,0 +1,42 @@
+#!/bin/sh
+# ============================================================
+# SGME pre-commit 数据卫生扫描（T-165，2026-09-13）
+#
+# 提交前第一道机器门禁：扫"暂存区新增行"，命中真实标识/密钥即拒绝提交。
+# 部署机制耦合文件（deploy.sh 等 5 个）由 pathspec 排除（待 env 化改造）。
+# 豁免：行内 scan-allow 注释；逃生：GIT_COMMIT_SKIP_SCAN=1 git commit …（留痕）
+#
+# 安装（每份克隆一次）：git config core.hooksPath .githooks
+#   或 sh scripts/install_git_hooks.sh
+# ============================================================
+set -u
+
+if [ "${GIT_COMMIT_SKIP_SCAN:-}" = "1" ]; then
+    echo "[pre-commit] GIT_COMMIT_SKIP_SCAN=1 —— 已跳过数据卫生扫描（留痕）" >&2
+    exit 0
+fi
+
+ROOT="$(git rev-parse --show-toplevel)"
+. "$ROOT/.githooks/lib_scan.sh"
+
+DATA="$(mktemp 2>/dev/null || echo "/tmp/sgme_precommit.$$")"
+trap 'rm -f "$DATA"' EXIT
+
+git diff --cached --no-color --unified=0 \
+    -- . \
+    ':(exclude)deploy.sh' \
+    ':(exclude)deploy/nas-docker-compose.yml' \
+    ':(exclude)scripts/nas_watchdog.sh' \
+    ':(exclude)scripts/nas_backup.sh' \
+    ':(exclude)scripts/sgme-host-updater.sh' \
+    2>/dev/null | grep -a '^+' | grep -av '^+++' > "$DATA" || true
+
+if [ ! -s "$DATA" ]; then
+    exit 0
+fi
+
+if sgme_scan_file "$DATA"; then
+    echo "[pre-commit] 数据卫生扫描通过"
+    exit 0
+fi
+exit 1

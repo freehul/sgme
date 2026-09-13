@@ -12,7 +12,7 @@
 2. 超 8K 技能拆分（复用 split_oversize_skills.split_one——含引言保留/错位根治）
 
 用法：
-    python scripts/oneoff/hub_skills_normalize.py [--root D:/Projects/skills-hub-work] [--apply]
+    python scripts/oneoff/hub_skills_normalize.py [--root <projects-root>/skills-hub-work] [--apply]
 """
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ def normalize_one(skill_dir: Path, apply: bool) -> dict:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="hub 独有技能技能化改造")
-    ap.add_argument("--root", default="D:/Projects/skills-hub-work")
+    ap.add_argument("--root", default="<projects-root>/skills-hub-work")
     ap.add_argument("--apply", action="store_true", help="真实写盘（缺省 dry-run）")
     args = ap.parse_args(argv)
 

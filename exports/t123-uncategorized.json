@@ -448,7 +448,7 @@
   },
   {
    "name": "project-lifecycle-tracking",
-   "description": "项目立项与追踪体系。触发：立项、开搞、新建项目、需求池、创意池、项目注册表、问题追踪、D:\\Projects 整理。",
+   "description": "项目立项与追踪体系。触发：立项、开搞、新建项目、需求池、创意池、项目注册表、问题追踪、<projects-root> 整理。",
    "category": "uncategorized",
    "content_len": 3946
   },

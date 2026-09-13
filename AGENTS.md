@@ -107,6 +107,32 @@
 
 
 
+## 数据卫生（源头治理，2026-09-13 用户定，T-165）
+
+原则：**敏感数据从源头不产生**——写任何文件（代码/测试/脚本/临时/文档）时就用变量或占位符；提交审查只是最后一道防线。
+
+### 敏感值 → 标准写法
+
+| 类型 | 禁止（真实值写进文件） | 标准写法 |
+|---|---|---|
+| API Key/Token | `sk-…` 明文 | 代码：`os.environ["X_KEY"]`；样例：`<YOUR_API_KEY>` 或低熵占位 |
+| 设备 IP（含内网） | `192.168.x.x` 写死 | 代码：环境变量（默认回环）；文档/样例：功能占位符 `<NAS_IP>` / `<PC_IP>` / `<LAPTOP_IP>` / `<VPS_IP>` |
+| 路径 | 本机盘符路径、NAS 卷路径 | 代码：相对路径/环境变量；文档：`<NAS_ROOT>`、`<project-root>` |
+| 域名/邮箱 | 真实域名/邮箱 | `example.com` / `user@example.com`（RFC 2606） |
+| 主机名/品牌 | 真实主机名、设备品牌 | `<NAS_HOST>` 或通用词 |
+| 真实姓名 | 真名 | 网名或 `<用户名>` |
+| 测试数据 | 复制自真实环境 | 通用假值（私网语义用 `10.0.0.x`）或夹具生成 |
+
+### 写文件前自检
+
+① 值是不是"本环境实况"（IP/路径/主机/凭据/姓名）？② 能否用变量或占位符？——**写的时候就做**；③ 临时件放 `tmp/`（gitignore，不入 git）。
+
+### 机器门禁（兜底）
+
+- `.githooks/pre-commit`（暂存区）+ `pre-push`（推送新增行）：命中真实标识即拦截；行内 `scan-allow` 注释豁免；逃生开关 `GIT_PUSH_SKIP_SECRET_SCAN=1`（留痕）；新克隆先跑 `sh scripts/install_git_hooks.sh` 启用。
+- 发布前：`publish-review` skill 全流程（Hermes 侧）。
+- **已知保留**（部署机制耦合，待 env 化改造）：`deploy.sh`、`deploy/nas-docker-compose.yml`、`scripts/nas_watchdog.sh`、`scripts/nas_backup.sh`、`scripts/sgme-host-updater.sh`。
+
 ## 开发流程
 
 需求与任务以 Backlog 锚文档为锚（见「文档索引」），动手前读架构文档 `docs/design/SGME-架构设计-v1.0.md` 对应章节。项目由多 AI 工具协作（Hermes/Trae/WorkBuddy/笔记本会话），所有协作者遵守以下规范：
@@ -154,10 +180,10 @@
 
 # SGME 接入纪律（SGME-ONBOARDING-v1）
 
-你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在 NAS（192.168.10.10）。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
+你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在 NAS（<NAS_IP>）。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 **服务发现**（找不到时按序）：
-1) 探测 http://192.168.10.10:9910/v1/health；
+1) 探测 http://<NAS_IP>:9910/v1/health；
 2) 失败读 ~/.sgme/install.json（地址/端口/Key 引用）；
 3) 仍失败 → 向主人报告「SGME 未发现」。
 
@@ -167,7 +193,7 @@
 3. 对话开始时 inject 按场景取画像 / search 检索相关记忆；
 4. 主动关怀靠消费信号——**信号消费=主动关怀，谁消费谁标记**：拿到 care_* 信号后 signal_claim 原子认领 → 关怀用户 → signal_ack 回执（认领失败=已被其他 agent 消费，跳过即可）。⚠️ **认领必须用 agent key（X-API-Key=SGME_AGENT_KEY 类）**——admin key 反查为合成身份 default，触发「关怀信号被合成身份认领」anomaly_warn（T-126 实锤，2026-08-30）。获取信号两条路：
    - 短连接（无常驻进程）：每次对话开始 signal_pull 拉未消费信号；
-   - 长连接（有常驻能力，**主动关怀首选**）：挂 SSE 事件流 `GET http://192.168.10.10:9910/v1/events/stream?subscriber_id=<你的agent_id>`（带 X-API-Key），care_*/memory_updated/anomaly_warn 一产生即实时推送 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件；
+   - 长连接（有常驻能力，**主动关怀首选**）：挂 SSE 事件流 `GET http://<NAS_IP>:9910/v1/events/stream?subscriber_id=<你的agent_id>`（带 X-API-Key），care_*/memory_updated/anomaly_warn 一产生即实时推送 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件；
 5. 对话开始时（或用户指定角色时）role_list 看可用角色 → role_assemble(role_id) 拿人设并按其说话——**换皮不换芯**，角色只是沟通外皮，记忆池不动。
 
 **事件对接**（主动关怀的触发源，常驻 agent 必读）：SGME 事件三类——care_*（关怀：情绪/待办到期/过劳/每日）、memory_updated（记忆更新）、anomaly_warn（异常）。三种接法任选：
@@ -184,7 +210,7 @@ SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。
 
 **批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 不立即重试（交服务端 batch_scan 兜底）；永远 async 模式。
 
-**接口**：HTTP API http://192.168.10.10:9910 ｜ MCP http://192.168.10.10:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key；默认 dev key 仅限本机回环，远程调用一律 403）。
+**接口**：HTTP API http://<NAS_IP>:9910 ｜ MCP http://<NAS_IP>:9913/mcp，请求头 X-API-Key（key 由主人配置：config/.env 的 SGME_ADMIN_KEY/SGME_AGENT_KEY，或管理员签发的 agt_* key；默认 dev key 仅限本机回环，远程调用一律 403）。
 
 **接入速查**（详细六坑见 SGME 技能 `sgme-operations` 与 wiki《SGME新接入踩坑手册-2026-08-30》）：
 - inject 模板四选一：`coding`/`daily`/`full`/`work`（无 default；不带 mode 自动回落 daily）
@@ -194,7 +220,7 @@ SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。
 - 纯远程接入端：`python scripts/install_client.py --host <NAS地址>` 生成 install.json（data_dir/raw_dir 置 null）
 
 **历史会话补导入**：本适配器提供历史会话全量导入方法（把接入前的存量会话补进 SGME）：
-   `D:/Projects/SGME/.venv/Scripts/python.exe D:/Projects/SGME/adapters/dsh/import_history.py`
+   `<project-root>/.venv/Scripts/python.exe <project-root>/adapters/dsh/import_history.py`
    幂等可重跑（已导入的自动跳过）。需要补录历史时执行它即可，然后汇报导入数量。
 
 > 注：以上路径为本机安装时生成；仓库迁移/克隆到其他机器后，重跑 `adapters/dsh/install.py` 即可刷新为本机路径。

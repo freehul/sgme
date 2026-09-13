@@ -12,8 +12,8 @@
 - 只产出 facts JSON（JSONL：{memory_id, facts:[...]}），零 UPDATE
 
 用法：
-  D:/Projects/SGME/.venv/Scripts/python.exe scripts/backfill_facts.py \
-      --input D:/Projects/SGME/tmp/facts_sample_50.jsonl \
+  <project-root>/.venv/Scripts/python.exe scripts/backfill_facts.py \
+      --input <project-root>/tmp/facts_sample_50.jsonl \
       --output tmp/facts_backfill_out.jsonl \
       --batch-size 20 --model agnes-2.5-flash --api-key-env AGNESAI_API_KEY
   # --dry-run：不调 LLM，只校验输入/分批/断点续跑逻辑
