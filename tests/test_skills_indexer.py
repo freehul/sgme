@@ -134,7 +134,7 @@ class TestIndexer:
             ("技能管理规则总纲-组织-拆分-编写-ff769a90", "技能管理规则总纲（组织/拆分/编写）",
              "# 技能管理规则总纲", "skill", '["skill","governance","split","lint","sgme"]', "active"),
             ("vps-加固变更与登录方式-2026-08-18-484cbbc0", "VPS 加固变更与登录方式（2026-08-18）",
-             "# VPS 加固变更", "skill/vps", '["vps","ssh","leo","fail2ban"]', "active"),
+             "# VPS 加固变更", "skill/vps", '["vps","ssh","user","fail2ban"]', "active"),
             ("sgme操作手册-749c4590", "SGME操作手册", "# SGME操作手册", "skill/sgme",
              '["skill","sgme","handbook"]', "active"),
             ("免费模型key申请指南-sgme托底-548ba7b7", "免费模型Key申请指南（SGME托底）",
@@ -192,7 +192,7 @@ class TestBm25:
         from sgme.skills.indexer import SkillRecord
 
         return [
-            SkillRecord(name="nas-deploy", description="飞牛NAS部署技能", tags=["skill"],
+            SkillRecord(name="nas-deploy", description="NAS部署技能", tags=["skill"],
                         content="# NAS 部署指南 docker compose 用法"),
             SkillRecord(name="douyin-pipeline", description="抖音视频分析入口", tags=["skill"],
                         content="# 抖音采集 yt-dlp cookies 流水线"),

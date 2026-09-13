@@ -30,7 +30,7 @@
 
 ```bash
 ssh LEO@<NAS_IP>
-cd /vol1/1000/git/skills-hub.git/hooks/
+cd <NAS_ROOT>/git/skills-hub.git/hooks/
 cp audit.env audit.env.bak-warn-only   # 原件保留
 # 删除 AUDIT_WARN_ONLY=1 行 → 审计 FAIL 开始真实拒绝推送
 sed -i '/^AUDIT_WARN_ONLY=1/d' audit.env

@@ -55,8 +55,8 @@ def test_launcher_overrides_allow_env_switch():
     merged = ree._effective_overrides({"SGME_REFINE_CTX": "32768"})
     assert merged["SGME_REFINE_CTX"] == "32768"
     # 未覆盖项保持默认（提炼与向量都在 PC）
-    assert merged["SGME_EMBED_BASE_URL"].startswith("http://<PC_IP>")
-    assert merged["SGME_REFINE_BASE_URL"].startswith("http://<PC_IP>")
+    assert merged["SGME_EMBED_BASE_URL"].startswith("http://127.0.0.1")
+    assert merged["SGME_REFINE_BASE_URL"].startswith("http://127.0.0.1")
 
 
 def test_launcher_strips_proxy_vars():

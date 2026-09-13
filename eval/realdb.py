@@ -392,7 +392,7 @@ def make_mini_replica(tmp_dir: Path, n: int = 12, seed: int = 0) -> Path:
         "李娜是产品经理，负责记忆引擎的需求梳理，偏好简洁的原型",
         "团队每周三上午开技术评审会，讨论本周的架构变更",
         "项目 SGME 使用 sqlite-vec 做向量检索，嵌入模型走 agnes",
-        "用户吹吹风家的 NAS 出口 IP 是 171.40.166.121，位于湖北孝感电信",
+        "用户家的 NAS 出口 IP 是 <HOME_PUBLIC_IP>，位于<地区>电信",
         "记忆系统支持 multi-hop 检索，通过 superseded_by 和 scene_memories 构图",
         "LoCoMo 是长程对话记忆评测集，SGME 早期用它做基线对照",
         "RRF 融合默认 k=60，当前评测集上 rrf_k 对 NDCG 零区分度",

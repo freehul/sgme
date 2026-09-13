@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-BASE = "http://<NAS_IP>:9910"
+BASE = "http://127.0.0.1:9910"
 ENV_PATH = ROOT / "docker.env"
 CACHE = ROOT / "tmp" / "t131_raw.json"
 PROPOSAL_MD = ROOT / "eval" / "results" / "t131_dryrun_proposal.md"

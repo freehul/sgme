@@ -10,7 +10,7 @@ import sys
 
 import httpx
 
-BASE = os.environ.get("SGME_BASE_URL", "http://<NAS_IP>:9910")
+BASE = os.environ.get("SGME_BASE_URL", "http://127.0.0.1:9910")
 
 
 def main() -> int:

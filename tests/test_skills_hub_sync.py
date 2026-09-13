@@ -525,7 +525,7 @@ def test_source_injection_rejected(tmp_path, monkeypatch) -> None:
 def test_validate_source_forms() -> None:
     """remote.source 三形态白名单：ssh:// / user@host:path / file:// 放行，其余拒绝。"""
     for ok in (
-        "ssh://user@nas-host/vol1/1000/git/skills-hub.git",
+        "ssh://user@nas-host<NAS_ROOT>/git/skills-hub.git",
         "ssh://nas-host/vol1/x.git",
         "user@nas-host:/path/to/skills-hub.git",
         "file:///tmp/skills-hub.git",

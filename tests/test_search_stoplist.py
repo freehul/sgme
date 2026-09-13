@@ -107,7 +107,7 @@ def _insert(conn, mid, content):
 
 def test_stoplist_removes_pure_stopword_distractors(tmp_path):
     conn = _make_conn(tmp_path)
-    _insert(conn, "m-t", "深圳 飞盘 俱乐部 吹吹风 常去")
+    _insert(conn, "m-t", "深圳 飞盘 俱乐部 <用户名> 常去")
     _insert(conn, "n1", "请问你知道这是什么地方吗")      # 纯停用词
     _insert(conn, "n2", "谁在哪个城市上班呢")            # 含停用词 + 内容词
     conn.commit()
@@ -145,7 +145,7 @@ def test_stoplist_recall_preserved_on_real_content_query(tmp_path):
     from eval import metrics as eval_metrics
 
     conn = _make_conn(tmp_path)
-    _insert(conn, "m-t", "深圳 飞盘 俱乐部 吹吹风 常去")
+    _insert(conn, "m-t", "深圳 飞盘 俱乐部 <用户名> 常去")
     conn.commit()
     query = "深圳 飞盘"
 

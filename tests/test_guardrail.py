@@ -34,7 +34,7 @@ def test_detect_hits():
     assert "bank_card" in guardrail.detect("银行卡 6222021234567890123")
     assert "api_key" in guardrail.detect("密钥 sk-00000000000000000000000000000000")
     assert "email" in guardrail.detect("邮箱 leo@example.com")
-    assert "private_ip" in guardrail.detect("部署在 <NAS_IP> 的 NAS")
+    assert "private_ip" in guardrail.detect("部署在 10.0.0.1 的 NAS")
 
 
 def test_detect_clean_text_empty():

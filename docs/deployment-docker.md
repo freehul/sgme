@@ -31,11 +31,11 @@
 
 ```bash
 ./deploy.sh build          # 仅本地构建
-./deploy.sh deploy <host>  # 一键部署到 NAS（如 leo@<NAS_IP>）
+./deploy.sh deploy <host>  # 一键部署到 NAS（如 <USER>@<NAS_IP>）
 ./deploy.sh up / down / logs / verify [host]
 ```
 
-> NAS 部署路径约定：/vol1/1000/Docker/sgme（bind mount 数据卷）。脚本为 bash 编写，Windows 本机可用 Git Bash / WSL 执行；纯本机部署直接 `docker compose up -d --build` 即可。
+> NAS 部署路径约定：<NAS_ROOT>/Docker/sgme（bind mount 数据卷）。脚本为 bash 编写，Windows 本机可用 Git Bash / WSL 执行；纯本机部署直接 `docker compose up -d --build` 即可。
 
 ## 3. 快速开始（单机）
 
@@ -53,7 +53,7 @@ curl http://<sgme-host>:9910/v1/health
 
 ## 4. NAS（群晖 Synology）部署
 
-已实测环境：DSM + Docker 29.1.2，用户 `LEO` 可用 docker（免 sudo），共享文件夹 `/vol1/1000/Docker`。
+已实测环境：DSM + Docker 29.1.2，用户 `LEO` 可用 docker（免 sudo），共享文件夹 `<NAS_ROOT>/Docker`。
 
 ### 4.1 构建镜像（在能联网的机器上，如笔记本）
 
@@ -73,8 +73,8 @@ docker save sgme:1.0.0b1 -o sgme-1.0.0b1.tar   # 导出约 109 MB
 ### 4.2 上传并加载到 NAS
 
 ```bash
-scp sgme-1.0.0b1.tar LEO@<NAS_IP>:/vol1/1000/Docker/sgme/
-ssh LEO@<NAS_IP> "docker load -i /vol1/1000/Docker/sgme/sgme-1.0.0b1.tar"
+scp sgme-1.0.0b1.tar LEO@<NAS_IP>:<NAS_ROOT>/Docker/sgme/
+ssh LEO@<NAS_IP> "docker load -i <NAS_ROOT>/Docker/sgme/sgme-1.0.0b1.tar"
 ```
 
 ### 4.3 NAS 专用 compose
@@ -82,7 +82,7 @@ ssh LEO@<NAS_IP> "docker load -i /vol1/1000/Docker/sgme/sgme-1.0.0b1.tar"
 群晖共享文件夹路径用 **bind mount**（便于「文件站」直接备份数据），不 build：
 
 ```yaml
-# /vol1/1000/Docker/sgme/docker-compose.yml
+# <NAS_ROOT>/Docker/sgme/docker-compose.yml
 services:
   sgme:
     image: sgme:1.0.0b1
@@ -99,7 +99,7 @@ services:
     env_file:
       - docker.env          # 复制 .env.example 填真实密钥
     volumes:
-      - /vol1/1000/Docker/sgme/data:/data
+      - <NAS_ROOT>/Docker/sgme/data:/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9910/v1/health', timeout=3).status==200 else 1)"]
       interval: 30s
@@ -109,7 +109,7 @@ services:
 ```
 
 ```bash
-ssh LEO@<NAS_IP> "cd /vol1/1000/Docker/sgme && docker compose up -d"
+ssh LEO@<NAS_IP> "cd <NAS_ROOT>/Docker/sgme && docker compose up -d"
 ```
 
 ### 4.4 NAS 验收清单（2026-08-14 实测 ✅）
@@ -123,7 +123,7 @@ ssh LEO@<NAS_IP> "cd /vol1/1000/Docker/sgme && docker compose up -d"
 
 - **端口冲突**：笔记本若本机已跑 SGME Gateway（Python，占用 `127.0.0.1:9910`），Docker 容器绑定 `0.0.0.0:9910`（IPv6 `::`）可能冲突。NAS 无此问题；本地验证时先停本机 Gateway 再起容器。
 - **时区**：`TZ: Asia/Shanghai` 保证日报/备份定时用本地时区。
-- **备份**：NAS 数据卷 `/vol1/1000/Docker/sgme/data` 可直接用群晖「文件站」或 Hyper Backup 备份；`remote_dir` 挂载见 runbook。
+- **备份**：NAS 数据卷 `<NAS_ROOT>/Docker/sgme/data` 可直接用群晖「文件站」或 Hyper Backup 备份；`remote_dir` 挂载见 runbook。
 - **升级**：新版本 `docker compose build` 后 `docker compose up -d`（数据卷不变，不丢数据）；镜像 tag 推进时同步 `docker-compose.yml` 的 `image:` 与 `docker save` 文件名。
 
 ## 6. 安全

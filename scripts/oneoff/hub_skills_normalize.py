@@ -29,7 +29,7 @@ FM_RE = re.compile(r"\A(---\r?\n.*?\r?\n---\r?\n?)(.*)", re.S)
 CATEGORY_RULES: list[tuple[str, str]] = [
     (r"comfyui|工作流|节点|模型部署", "creative"),
     (r"hermes|gateway|memory|插件|desktop", "hermes"),
-    (r"nas|飞牛|群晖|docker", "devops"),
+    (r"nas|NAS|群晖|docker", "devops"),
     (r"vps|代理|clash|xray|sing-box|proxy", "network"),
     (r"douyin|抖音|视频", "social-media"),
     (r"邮件|mail|email", "email"),
