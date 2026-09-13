@@ -317,6 +317,26 @@ CREATE TABLE IF NOT EXISTS signal_acks (
 CREATE INDEX IF NOT EXISTS idx_signal_acks_agent ON signal_acks(agent_id, claimed_at DESC);
 """
 
+# ---------- T-163：接口调用统计（memory.db，独立 DDL 常量） ----------
+# 背景：服务端此前无调用统计——「哪些 HTTP 端点 / MCP 工具从未被调用、谁在调用」
+# 只能靠容器 stdout 日志（只覆盖单容器生命周期、MCP 工具名不落地）回答。
+# 埋点：9910 HTTP 纯 ASGI 中间件（UsageMiddleware）+ 9913 MCP ApiKeyMiddleware
+# body 窥探（解析 tools/call 的 params.name）；两层共写本表。
+# 行粒度 = (day, kind, name, caller) 日聚合 upsert；写入方全静默（旁路统计，
+# 失败不影响请求）；保留策略见 usage_dao.prune_usage（默认 400 天）。
+API_USAGE_DDL = """
+CREATE TABLE IF NOT EXISTS api_usage_daily (
+  day      TEXT NOT NULL,      -- UTC 日 YYYY-MM-DD
+  kind     TEXT NOT NULL,      -- http | mcp
+  name     TEXT NOT NULL,      -- HTTP 路由模板 / MCP 工具名
+  caller   TEXT NOT NULL,      -- agent_id / default / anonymous / unknown
+  calls    INTEGER NOT NULL DEFAULT 0,
+  last_ts  TEXT NOT NULL,      -- 最近调用时刻（ISO UTC）
+  last_ip  TEXT,               -- 最近来源 IP
+  PRIMARY KEY (day, kind, name, caller));
+CREATE INDEX IF NOT EXISTS idx_api_usage_name ON api_usage_daily(name, day DESC);
+"""
+
 # ---------- 0.8 T-13：ingest 任务持久化（wiki.db，独立 DDL 常量） ----------
 # 图纸：`SGME-数据模型设计-v0.1.md` §二 wiki.db → ingest_tasks。
 # 原 `_TASKS` 进程内内存字典 → SQLite 表：任务创建/状态流转/查询全落库，
@@ -435,6 +455,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_ideas_table(conn)
     _migrate_signal_consumed_by(conn)
     _migrate_signal_acks_table(conn)
+    _migrate_api_usage_table(conn)
     _migrate_persona_tables(conn)
     _migrate_memory_edges_table(conn)
     _migrate_mem_facts_json(conn)
@@ -1007,6 +1028,16 @@ def _migrate_signal_acks_table(conn: sqlite3.Connection) -> None:
     不会重跑 MEMORY_DDL 之外的变更，必须走迁移函数才能补齐新表。
     """
     conn.executescript(SIGNAL_ACKS_DDL)
+    conn.commit()
+
+
+def _migrate_api_usage_table(conn: sqlite3.Connection) -> None:
+    """老库迁移：建接口调用统计表 api_usage_daily（T-163，2026-09-13）。幂等。
+
+    与 _migrate_signal_acks_table 同模式：独立成 API_USAGE_DDL + 本迁移函数——
+    老库（schema_versions 已登记）不会重跑新表的 DDL，必须走迁移函数补齐。
+    """
+    conn.executescript(API_USAGE_DDL)
     conn.commit()
 
 

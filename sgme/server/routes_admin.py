@@ -48,6 +48,7 @@ from sgme.engine import dream as dream_mod
 # ——详见 operations/__init__.py「导入规范」。
 from sgme.operations.stats import http_payload as stats_http_payload
 from sgme.operations.stats import stats as stats_operation
+from sgme.operations.usage import query_usage as query_usage_operation
 from sgme.operations.refine import refine_trigger as refine_trigger_operation
 from sgme.operations.refine import refine_trigger_async as refine_trigger_async_operation
 from sgme.profile import tier0 as tier0_mod
@@ -963,6 +964,26 @@ def admin_stats_detail(
         from_ts=from_,
         to_ts=to,
     )
+
+
+# ---------- T-163：GET /v1/admin/usage（接口调用统计） ----------
+
+@router.get("/v1/admin/usage")
+def admin_usage(
+    request: Request,
+    days: int = 30,
+    kind: str | None = None,
+    _: str = Depends(require_admin_key),
+):
+    """接口调用统计（T-163）：近 N 天按「端点/工具 × 调用方」聚合。
+
+    - days ∈ [1, 400]（默认 30）；kind ∈ {http, mcp}（缺省=全部）
+    - 数据源 api_usage_daily：HTTP 中间件（9910 全部请求，route 模板归一化）
+      + MCP 中间件（9913 tools/call，解析工具名）双端埋点，日粒度聚合
+    - 用于「哪些接口从未被调用 / 谁在调用」的数据回答（此前无持久统计）
+    """
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    return run_operation(query_usage_operation, mem_conn, days=days, kind=kind)
 
 # ---------- POST /v1/admin/skills/sync（0.8 ST-11：skills-hub copy 模式真实同步） ----------
 
