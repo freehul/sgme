@@ -216,7 +216,7 @@ def test_mcp_demand_create(mcp):
 def test_mcp_project_register(mcp):
     """project_register：登记项目 → project_meta 落库；二次登记=更新（created=False）。"""
     text, _ = _call(mcp, "project_register", {
-        "project_id": "testproj", "path": "D:/Projects/testproj", "name": "测试项目",
+        "project_id": "testproj", "path": "<projects-root>/testproj", "name": "测试项目",
     })
     data = json.loads(text)
     assert "error" not in data, data
@@ -224,7 +224,7 @@ def test_mcp_project_register(mcp):
     assert data["project"]["name"] == "测试项目"
 
     text2, _ = _call(mcp, "project_register", {
-        "project_id": "testproj", "path": "D:/Projects/testproj", "milestone": "v1.0",
+        "project_id": "testproj", "path": "<projects-root>/testproj", "milestone": "v1.0",
     })
     data2 = json.loads(text2)
     assert "error" not in data2, data2

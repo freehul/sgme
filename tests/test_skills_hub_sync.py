@@ -529,7 +529,7 @@ def test_validate_source_forms() -> None:
         "ssh://nas-host/vol1/x.git",
         "user@nas-host:/path/to/skills-hub.git",
         "file:///tmp/skills-hub.git",
-        "file:///D:/Projects/skills-hub.git",
+        "file:///<projects-root>/skills-hub.git",
     ):
         assert _validate_source(ok) == ok, ok
     for bad in (
@@ -543,7 +543,7 @@ def test_validate_source_forms() -> None:
         "file:///tmp/x --upload-pack=cat",
         "user@host:",
         "ssh://",
-        "D:/Projects/x.git",  # 裸 Windows 路径不属于三形态
+        "<projects-root>/x.git",  # 裸 Windows 路径不属于三形态
     ):
         with pytest.raises(ValueError):
             _validate_source(bad)

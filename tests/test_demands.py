@@ -146,7 +146,7 @@ def _seed_project(conn: sqlite3.Connection, project_id: str = "SGME") -> None:
     conn.execute(
         "INSERT OR REPLACE INTO project_meta "
         "(project_id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (project_id, project_id, f"D:/Projects/{project_id}",
+        (project_id, project_id, f"<projects-root>/{project_id}",
          "2026-08-10T00:00:00Z", "2026-08-10T00:00:00Z"),
     )
     conn.commit()
@@ -336,7 +336,7 @@ def test_dao_project_meta_probe(mem_conn):
 
     mem_conn.execute(
         "INSERT INTO project_meta (project_id, name, path, created_at, updated_at) "
-        "VALUES ('SGME','SGME','D:/Projects/SGME', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z')"
+        "VALUES ('SGME','SGME','<project-root>', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z')"
     )
     mem_conn.commit()
     assert demand_dao.project_exists(mem_conn, "SGME") is True
@@ -770,7 +770,7 @@ def test_project_id_validated_when_project_meta_present(client, mem_conn):
     _make_project_meta(mem_conn)
     mem_conn.execute(
         "INSERT INTO project_meta (project_id, name, path, created_at, updated_at) "
-        "VALUES ('SGME','SGME','D:/Projects/SGME', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z')"
+        "VALUES ('SGME','SGME','<project-root>', '2026-08-10T00:00:00Z', '2026-08-10T00:00:00Z')"
     )
     mem_conn.commit()
 
