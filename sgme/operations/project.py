@@ -36,7 +36,7 @@ from typing import Any
 from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult
 from sgme.data import project_dao
 
-# project_id = 项目名（纯英文，与 D:\Projects 目录名一致，数据模型 §二 project_meta）。
+# project_id = 项目名（纯英文，与 <projects-root> 目录名一致，数据模型 §二 project_meta）。
 # 同时是主键与未来跨项目检索的关联键，因此限制为目录名安全字符集。
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 PROJECT_ID_MAX_LEN = 64

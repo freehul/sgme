@@ -2,7 +2,7 @@
 import os, re, json, urllib.request
 
 key = None
-with open('D:/Projects/SGME/config/.env', 'r', encoding='utf-8') as f:
+with open('<project-root>/config/.env', 'r', encoding='utf-8') as f:
     for line in f:
         m = re.match(r'^\s*SGME_ADMIN_KEY\s*=\s*(.+?)\s*$', line)
         if m:

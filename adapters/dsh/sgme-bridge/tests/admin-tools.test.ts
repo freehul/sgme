@@ -96,10 +96,10 @@ describe('project_register tool', () => {
       projectRegister: vi.fn(async () => ({ project_id: 'sgme' })),
     })
     const tool = asToolLike(createProjectRegisterTool(client))
-    const result = (await tool.execute({ project_id: 'sgme', path: 'D:/Projects/SGME' })) as string
+    const result = (await tool.execute({ project_id: 'sgme', path: '<project-root>' })) as string
     expect(client.projectRegister).toHaveBeenCalledWith({
       project_id: 'sgme',
-      path: 'D:/Projects/SGME',
+      path: '<project-root>',
       name: null,
       git_repo: null,
       milestone: null,

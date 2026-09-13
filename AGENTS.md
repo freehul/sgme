@@ -107,6 +107,32 @@
 
 
 
+## 数据卫生（源头治理，2026-09-13 用户定，T-165）
+
+原则：**敏感数据从源头不产生**——写任何文件（代码/测试/脚本/临时/文档）时就用变量或占位符；提交审查只是最后一道防线。
+
+### 敏感值 → 标准写法
+
+| 类型 | 禁止（真实值写进文件） | 标准写法 |
+|---|---|---|
+| API Key/Token | `sk-…` 明文 | 代码：`os.environ["X_KEY"]`；样例：`<YOUR_API_KEY>` 或低熵占位 |
+| 设备 IP（含内网） | `192.168.x.x` 写死 | 代码：环境变量（默认回环）；文档/样例：功能占位符 `<NAS_IP>` / `<PC_IP>` / `<LAPTOP_IP>` / `<VPS_IP>` |
+| 路径 | 本机盘符路径、NAS 卷路径 | 代码：相对路径/环境变量；文档：`<NAS_ROOT>`、`<project-root>` |
+| 域名/邮箱 | 真实域名/邮箱 | `example.com` / `user@example.com`（RFC 2606） |
+| 主机名/品牌 | 真实主机名、设备品牌 | `<NAS_HOST>` 或通用词 |
+| 真实姓名 | 真名 | 网名或 `<用户名>` |
+| 测试数据 | 复制自真实环境 | 通用假值（私网语义用 `10.0.0.x`）或夹具生成 |
+
+### 写文件前自检
+
+① 值是不是"本环境实况"（IP/路径/主机/凭据/姓名）？② 能否用变量或占位符？——**写的时候就做**；③ 临时件放 `tmp/`（gitignore，不入 git）。
+
+### 机器门禁（兜底）
+
+- `.githooks/pre-commit`（暂存区）+ `pre-push`（推送新增行）：命中真实标识即拦截；行内 `scan-allow` 注释豁免；逃生开关 `GIT_PUSH_SKIP_SECRET_SCAN=1`（留痕）；新克隆先跑 `sh scripts/install_git_hooks.sh` 启用。
+- 发布前：`publish-review` skill 全流程（Hermes 侧）。
+- **已知保留**（部署机制耦合，待 env 化改造）：`deploy.sh`、`deploy/nas-docker-compose.yml`、`scripts/nas_watchdog.sh`、`scripts/nas_backup.sh`、`scripts/sgme-host-updater.sh`。
+
 ## 开发流程
 
 需求与任务以 Backlog 锚文档为锚（见「文档索引」），动手前读架构文档 `docs/design/SGME-架构设计-v1.0.md` 对应章节。项目由多 AI 工具协作（Hermes/Trae/WorkBuddy/笔记本会话），所有协作者遵守以下规范：
@@ -194,7 +220,7 @@ SSE/pull 走 HTTP :9910 带 X-API-Key；signal_pull 走 MCP。
 - 纯远程接入端：`python scripts/install_client.py --host <NAS地址>` 生成 install.json（data_dir/raw_dir 置 null）
 
 **历史会话补导入**：本适配器提供历史会话全量导入方法（把接入前的存量会话补进 SGME）：
-   `D:/Projects/SGME/.venv/Scripts/python.exe D:/Projects/SGME/adapters/dsh/import_history.py`
+   `<project-root>/.venv/Scripts/python.exe <project-root>/adapters/dsh/import_history.py`
    幂等可重跑（已导入的自动跳过）。需要补录历史时执行它即可，然后汇报导入数量。
 
 > 注：以上路径为本机安装时生成；仓库迁移/克隆到其他机器后，重跑 `adapters/dsh/install.py` 即可刷新为本机路径。

@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-HUB = Path("D:/Projects/skills-hub-work")
+HUB = Path("<projects-root>/skills-hub-work")
 LOCAL = Path("D:/HermesAgent/skills")
 
 # category → 本地库分类目录（hub 的扁平 category 直接作为分类目录名）

@@ -47,7 +47,7 @@ sed -i '/^AUDIT_WARN_ONLY=1/d' audit.env
 
 ### 3. 项目仓库处置
 
-- D:\Projects\progressive-skill 归档保留（不删）；README 加一行
+- <projects-root>\progressive-skill 归档保留（不删）；README 加一行
   「已被 SGME Skills 管理（ST-36/B106）取代，归档」即可
 
 ## 四、回退方案

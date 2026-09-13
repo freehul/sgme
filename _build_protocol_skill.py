@@ -33,7 +33,7 @@ category: sgme
 | `skill_list` / `skill_coldstart` | 列目录 / 冷启动包（本文件即冷启动包唯一项） |
 """
 
-fp = r"D:\Projects\SGME\sgme\skills\protocol\SKILL.md"
+fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sgme", "skills", "protocol", "SKILL.md")
 os.makedirs(os.path.dirname(fp), exist_ok=True)
 with open(fp, "w", encoding="utf-8") as f:
     f.write(content)

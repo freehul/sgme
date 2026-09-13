@@ -14,9 +14,9 @@ import sys
 import urllib.request
 from pathlib import Path
 
-REPORT = Path(r"D:\Projects\SGME\tmp\sgme-coldstart-skills-20260828.md")
+REPORT = Path(__file__).resolve().parents[2] / "tmp" / "sgme-coldstart-skills-20260828.md"
 BASE = "http://<NAS_IP>:9910"
-ENV = Path(r"D:\Projects\SGME\.env")
+ENV = Path(__file__).resolve().parents[2] / ".env"
 
 LINE_RE = re.compile(r"^- \*\*(.+?)\*\*.+? - (.+?) {2}\(tags:", re.S | re.M)
 
@@ -95,7 +95,7 @@ def main():
         print(f"  X {name} | q='{q[:50]}' | top5={t5}")
 
     # dump misses for later fixing
-    out = Path(r"D:\Projects\SGME\tmp\skills_recall_misses.json")
+    out = Path(__file__).resolve().parents[2] / "tmp" / "skills_recall_misses.json"
     out.write_text(json.dumps(
         [{"name": n, "query": q, "top5": t} for n, q, t in misses],
         ensure_ascii=False, indent=2,

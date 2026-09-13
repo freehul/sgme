@@ -174,7 +174,7 @@ def upsert_project(
 
     Args:
         conn: memory.db 连接。
-        project_id: 项目名（纯英文，与 D:\\Projects 目录名一致），主键。
+        project_id: 项目名（纯英文，与 <projects-root> 目录名一致），主键。
         name: 展示名，缺省与 project_id 同值（冗余列，便于将来改名迁移）。
         path: 项目绝对路径。新建时必填（NOT NULL 列），更新时可省。
         git_repo: git 仓库地址（本地路径或远端 URL）。
