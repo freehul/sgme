@@ -10,3 +10,6 @@ docker/entrypoint.sh text eol=lf
 # 编码为 GBK（cmd 默认代码页 936，与编码卫生的 utf-8 规则例外，仅限本仓库的 .bat/.cmd）
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# git 钩子：一律 LF（shebang 保护，同 *.sh 规则——2026-09-13 T-164）
+.githooks/* text eol=lf
