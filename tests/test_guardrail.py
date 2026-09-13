@@ -32,7 +32,7 @@ def test_detect_hits():
     assert "id_card" in guardrail.detect("用户身份证号 110105199003078888")
     assert "phone" in guardrail.detect("联系手机 13812345678")
     assert "bank_card" in guardrail.detect("银行卡 6222021234567890123")
-    assert "api_key" in guardrail.detect("密钥 sk-ccf27ee1ca004400ae20169c0e557454")
+    assert "api_key" in guardrail.detect("密钥 sk-00000000000000000000000000000000")
     assert "email" in guardrail.detect("邮箱 leo@example.com")
     assert "private_ip" in guardrail.detect("部署在 192.168.10.10 的 NAS")
 
