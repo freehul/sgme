@@ -31,7 +31,7 @@ def test_parse_full_config() -> None:
     cfg = {
         "skills_hub": {
             "enabled": True,
-            "path": "D:/Projects/skills-hub/",
+            "path": "<projects-root>/skills-hub/",
             "mode": "copy",
             "sync_policy": "auto",
             "remote": {
@@ -42,7 +42,7 @@ def test_parse_full_config() -> None:
     }
     c = parse_skills_hub_config(cfg)
     assert c.enabled is True
-    assert c.path == "D:/Projects/skills-hub/"
+    assert c.path == "<projects-root>/skills-hub/"
     assert c.mode == "copy"
     assert c.sync_policy == "auto"
     assert c.remote_source == "nas://nas-host/skills-hub/"
