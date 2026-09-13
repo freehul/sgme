@@ -17,7 +17,7 @@
     # 常驻循环（长跑期间另开一个窗口/后台进程用）
     python scripts/lmstudio_watchdog.py --loop --interval 120
     # 换端点/换模型参数
-    python scripts/lmstudio_watchdog.py --base-url http://192.168.10.130:8123/v1 \
+    python scripts/lmstudio_watchdog.py --base-url http://127.0.0.1:8123/v1 \
         --keep "modelA|-c 131072 --parallel 4" --keep "modelB|--gpu max"
 """
 from __future__ import annotations
@@ -108,7 +108,7 @@ def once(lms: Path, base_url: str, keep: list[tuple[str, str]], log) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-url", default="http://192.168.10.130:8123/v1")
+    ap.add_argument("--base-url", default="http://127.0.0.1:8123/v1")
     ap.add_argument("--lms", default=str(DEFAULT_LMS))
     ap.add_argument("--keep", action="append", default=None,
                     help='应常驻模型，格式 "模型id|装载参数"；可多次')

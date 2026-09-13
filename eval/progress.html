@@ -76,7 +76,7 @@
 // API 地址：优先同源（服务自己托管本页）；可用 ?api=http://host:port 覆盖
 const params = new URLSearchParams(location.search);
 const API = (params.get("api") || (location.protocol.startsWith("http") ? location.origin
-             : "http://192.168.10.141:8899")).replace(/\/$/, "");
+             : "http://127.0.0.1:8899")).replace(/\/$/, "");
 const POLL_MS = 3000;
 
 const fmtDur = (s) => {

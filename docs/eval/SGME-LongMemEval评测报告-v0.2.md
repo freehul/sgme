@@ -1,6 +1,6 @@
 # SGME · LongMemEval 评测报告 v0.2
 
-> 2026-09-11 ｜ 数据来源：笔记本评测台（`D:\Projects\SGME\eval`）实跑记录，逐题 checkpoint 可溯源
+> 2026-09-11 ｜ 数据来源：笔记本评测台（本仓 `eval/`）实跑记录，逐题 checkpoint 可溯源
 > 上一版：`docs/eval/longmemeval_report_zh.md`（v0.1，2026-09-02，原件保留）
 > 配套：`docs/eval/README.md`（评测台用法与口径）、`docs/eval/longmemeval_refined_cost_v0.1.md`（refined 全量成本模型）
 
