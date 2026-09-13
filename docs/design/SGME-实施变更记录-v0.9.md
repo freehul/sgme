@@ -2892,5 +2892,17 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 附带坑（排障纪律） | 本轮检查看板时本机报「127.0.0.1:8899 连接被拒」——**误报**：笔记本残留死代理环境变量（`HTTP_PROXY=http://127.0.0.1:7897`，该进程早已不在），本机 `urllib` 默认吃它 → 一律表现为「拒连」。**结论：这台笔记本上做任何本机 HTTP 检查都要显式清代理**（`ProxyHandler({})` / `trust_env=False`），否则会把「服务正常」误判成「服务挂了」。 |
 | 运维影响 | 长跑遇端点抖动不再整题作废（最多拆到单条重试）；拆批仅发生在重试耗尽后，正常路径零额外开销。 |
 
+### B177. 生产上线：L1 事实保真提示词部署到 NAS（v1.2.1，2026-09-13）
+
+| 项 | 内容 |
+|---|---|
+| 背景 | B175 的修复（事实保真提示词 + `fact` 类型 + 语言守门）在评测台已验证（19 题 recall 0.618→0.917、判对 4→11），但生产 NAS 仍跑旧提示词（`refine_runs.version = working-34534605` = v003/v004）。用户拍板「提示词修复上线」。 |
+| 版本 | `sgme/__init__.py` + `pyproject.toml`：1.2.0 → **1.2.1**（提交 `7091371`，本地/GitHub/飞牛三端 `refs/heads/main` 一致）。 |
+| 部署链（官方路径，无旁路） | 生产部署走 NAS 主机侧更新代理（`/vol1/1000/Docker/sgme/scripts/sgme-host-updater.sh`，cron 每 5 分钟，以 LEO 身份运行）：`POST /v1/admin/update/request {"target_version":"1.2.1"}` → 代理轮询到 `status=pending` → runbook 16.4 链：git pull（源 = 本地裸仓 `/vol1/1000/git/sgme.git`）→ `docker build` → 备份 compose → 换 tag → `docker compose up -d` → 健康验证 + 版本一致性校验。 |
+| 部署结果 | 镜像 `sgme:1.2.1-nas-autoupd` 构建成功；容器 Recreated；代理日志 `=== 更新成功 → 1.2.1 ===`；健康检查 `version 1.2.1`、LLM `agnes/agnes-2.5-flash` 可用、向量引擎 `sqlite-vec`（memory_vectors 33,067）、提炼未停摆（stalled=false）。 |
+| 提示词落地验证（关键） | ①容器内 `/app/sgme/resources/prompts/l1_extraction.txt` sha256 = **`899acbe4…`**（= v006 发布哈希，与仓库 LF 版一致），`versions/l1_extraction/` 含 v004/v005/v006；②触发一次异步提炼后，`refine_runs` 最新记录为 `stage=l1_extraction / version=working-899acbe4 / status=ok / 8 条` —— **新提示词已在生产实跑**。 |
+| 发布 | tag `v1.2.1`（GitHub 与飞牛哈希一致 `41dc7b6b`）+ GitHub Release：https://github.com/freehul/sgme/releases/tag/v1.2.1 |
+| 运维影响 | ①生产提炼自 2026-09-13 03:10Z 起用事实保真提示词，**记忆条数预计上升**（评测台实测 1.4~19 倍，需观察生产库容量与检索表现）；②回滚路径：提示词 `PromptStore().activate("l1_extraction","v004")`，镜像回滚 = compose 换回 `sgme:1.2.0-nas-autoupd`（旧镜像保留未删，代理失败时也会自动回滚 tag）；③后续升级走同一入口（WebUI「立即更新」或 API），仍禁止手工旁路构建。 |
+
 
 
