@@ -101,6 +101,30 @@ def skills_coldstart(
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
     return run_operation(cold_start_operation, cfg, wiki_conn)
 
+
+# ---------- GET /v1/skills/search （技能检索，须先于 /{name} 注册） ----------
+
+@router.get("/v1/skills/search")
+def skills_search(
+    request: Request,
+    q: str = Query(..., min_length=1, description="检索词"),
+    limit: int = Query(default=10, ge=1, le=20),
+    _: str = Depends(require_agent_key),
+):
+    """技能检索（T-163 对齐补齐）：BM25+向量融合 → [{name, score, source, ...}]。
+
+    与 MCP ``skill_search`` 同一实现（``operations.skills.search_skills``，
+    向量路不可达自动降级纯 BM25）；须注册在 ``/{name}`` 动态路由之前，
+    否则 ``search`` 会被当成技能名命中 L2 端点（同 coldstart 先例）。
+    """
+    from sgme.operations.skills import search_skills as search_skills_operation
+
+    cfg = request.app.state.cfg
+    wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
+    items = search_skills_operation(q, cfg, wiki_conn, limit=limit, skills_conn=skills_conn)
+    return {"query": q, "count": len(items), "items": items}
+
 # ---------- GET /v1/skills/{name}/digest （L1 摘要） ----------
 
 @router.get("/v1/skills/{name}/digest")

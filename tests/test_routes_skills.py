@@ -374,6 +374,36 @@ class TestSkillsReadEndpoints:
     def test_list_requires_agent_key(self, read_client):
         assert read_client.get("/v1/skills").status_code in (401, 403)
 
+    # ---------- T-163 对齐补齐：技能检索 HTTP 端点（与 MCP skill_search 同实现） ----------
+
+    def test_search_endpoint(self, read_client):
+        resp = read_client.get("/v1/skills/search", params={"q": "alpha"},
+                               headers=AGENT_HEADERS)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["query"] == "alpha"
+        assert data["count"] == len(data["items"])
+        # alpha 名称命中；字段结构（name/score/source）
+        hit = next((s for s in data["items"] if s["name"] == "alpha"), None)
+        assert hit is not None, f"items={data['items']}"
+        assert {"name", "score", "source"} <= set(hit)
+
+    def test_search_not_swallowed_by_name_route(self, read_client):
+        """/v1/skills/search 须注册在 /{name} 之前（否则被当成技能名 404）。"""
+        resp = read_client.get("/v1/skills/search", params={"q": "beta"},
+                               headers=AGENT_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert "items" in resp.json()
+
+    def test_search_requires_agent_key(self, read_client):
+        resp = read_client.get("/v1/skills/search", params={"q": "alpha"})
+        assert resp.status_code in (401, 403)
+
+    def test_search_missing_query(self, read_client):
+        # q 必填（min_length=1）→ 422 统一错误结构
+        resp = read_client.get("/v1/skills/search", headers=AGENT_HEADERS)
+        assert resp.status_code == 422
+
     def test_digest_l1(self, read_client):
         resp = read_client.get("/v1/skills/alpha/digest", headers=AGENT_HEADERS)
         assert resp.status_code == 200, resp.text

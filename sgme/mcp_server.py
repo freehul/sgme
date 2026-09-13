@@ -6,7 +6,8 @@ SCSM / 其他 Agent 可经 MCP 调用。
 
 统一服务原则（2026-08-04 用户决策）：
 - HTTP API 与 MCP 两套接口都提供服务，功能等价
-- MCP 工具：append / inject / search / memory_get / memory_reject / refine_trigger /
+- MCP 工具：append / inject / search / memory_get / memory_reject / memory_unreject /
+  refine_trigger /
   refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding
 - 鉴权：MCP 工具内自行校验 X-API-Key（读环境变量 SGME_AGENT_KEY / SGME_ADMIN_KEY）
 
@@ -332,6 +333,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "wiki_evolve_trigger", "description": "自进化触发（W4）：会话 → 经验 → 写回 wiki 手册（费用门禁 + 规则闸门 + 独立游标 wiki_evolve）"},
     {"name": "memory_get", "description": "单条记忆详情（内容/维度/TTL + 溯源 + 归档链）"},
     {"name": "memory_reject", "description": "标记记忆「不采用」（不删除、可恢复），带纠错理由"},
+    {"name": "memory_unreject", "description": "撤销「不采用」：恢复为 active（rejected 误操作时用，T-163 补齐）"},
     {"name": "refine_trigger", "description": "触发提炼：单文件或扫 status=new 批量（async_mode 分流同步/异步）"},
     {"name": "refine_batch", "description": "批量提炼：显式文件列表或扫全部未提炼，异步排队即返"},
     {"name": "refine_status", "description": "提炼进度：待提炼/已完成/失败计数 + 水位 + 最近失败"},
@@ -408,7 +410,7 @@ def build_mcp_server():
         instructions=(
             "SGME 记忆引擎 MCP 接口。记忆写入（append）、注入（inject）、"
             "检索（search，记忆池）、wiki 知识库（wiki_search/wiki_pages/wiki_page）、"
-            "记忆查看/纠错（memory_get/memory_reject）、"
+            "记忆查看/纠错（memory_get/memory_reject/memory_unreject）、"
             "提炼（refine_trigger/refine_batch/refine_status）、"
             "统计（stats）、健康检查（health）、配置读写（config_get/config_update）、"
             "创意/待办/项目管理（idea_add/demand_create/project_register，2026-08-13："
@@ -597,6 +599,27 @@ def build_mcp_server():
         mem_conn: sqlite3.Connection = _app_state["mem_conn"]
 
         data = _op_json(reject_memory_operation, mem_conn, memory_id, reason=reason)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def memory_unreject(memory_id: str) -> str:
+        """撤销「不采用」：恢复为 active（rejected 误操作时用）。
+
+        T-163 对齐补齐：接线 operations.memory.unreject_memory（HTTP
+        ``POST /v1/memory/{id}/unreject`` 同一实现）——此前纠错单向
+        （有 reject 无 unreject），MCP 侧补齐闭环。记忆不存在返回
+        ``{"error": ...}``（MCP 扁平错误约定），与 memory_reject 对称。
+        """
+        import json
+        import sqlite3
+
+        # 规范：operations 一律走完整子模块路径导入（详见 operations/__init__.py）
+        from sgme.operations.memory import unreject_memory as unreject_memory_operation
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+
+        data = _op_json(unreject_memory_operation, mem_conn, memory_id)
         return json.dumps(data, ensure_ascii=False)
 
     # ---------- 管理 ----------
