@@ -33,11 +33,27 @@ sgme_scan_file() {
     # —— A. 密钥类（token 级；低熵占位放行） ——
     _root=$(git rev-parse --show-toplevel 2>/dev/null)
     for tok in $(grep -aoE 'sk-[A-Za-z0-9]{20,}|pk-[A-Za-z0-9]{20,}|ak-[A-Za-z0-9]{20,}|ark-[A-Za-z0-9-]{20,}|sgme_(admin|agent)_[A-Za-z0-9]{16,}|agt_[A-Za-z0-9]{16,}|(AKIA|ASIA)[A-Z0-9]{16}' "$_data" 2>/dev/null | sort -u); do
-        n=$(printf '%s' "$tok" | fold -w1 | sort -u | wc -l | tr -d ' ')
+        # 低熵占位自动放行：对 '-' 之后的 body 判定（去重字符 ≤ 3，如 sk-000…0 假串）
+        # ⚠️ 必须用 body 判定，勿回退为全 token 去重——sk- 前缀自带 3 种字符，全 token
+        #    判定会让 sk-000…0 恒被误拦（2026-09-13 回归修复，见变更记录 B182 /
+        #    自测脚本 scripts/test_git_hooks.sh）
+        body=${tok#*-}
+        n=$(printf '%s' "$body" | fold -w1 | sort -u | wc -l | tr -d ' ')
         [ "$n" -le 3 ] && continue
-        if [ -f "$_root/.githooks/secret_scan_allowlist" ] && grep -qE "$tok" "$_root/.githooks/secret_scan_allowlist" 2>/dev/null; then
-            continue
+        # 白名单放行：白名单文件每行是一条正则（`#` 开头为注释），命中 token 即放行
+        # ⚠️ 方向必须是「白名单正则匹配 token」；不能写成「token 当正则搜白名单文本」
+        #    （旧写法永不命中所列模式——2026-09-13 修复，见 B182）
+        _allow=0
+        if [ -f "$_root/.githooks/secret_scan_allowlist" ]; then
+            while IFS= read -r _pat; do
+                case "$_pat" in ''|\#*) continue ;; esac
+                if printf '%s' "$tok" | grep -qE "$_pat" 2>/dev/null; then
+                    _allow=1
+                    break
+                fi
+            done < "$_root/.githooks/secret_scan_allowlist"
         fi
+        [ "$_allow" = "1" ] && continue
         _blocked="$_blocked
   [密钥] $tok"
     done
