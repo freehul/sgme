@@ -1,0 +1,83 @@
+#!/bin/sh
+# ============================================================
+# SGME pre-push 密钥扫描门禁（T-164，2026-09-13 立）
+#
+# 背景：2026-08-31 真实 key 被误当测试样例提交（tests/），
+#       9-01 随批量推送进入公开仓库（公网暴露约 12 天）。
+#       本钩子为机器门禁：推送前扫描"本次推送提交的新增行"，
+#       命中疑似真实密钥即拒绝推送。
+#
+# 命中规则（长串，非低熵）：
+#   sk- / pk- / ak- 20+ 位；ark-（火山）20+ 位；
+#   sgme_(admin|agent)_ 16+ 位；agt_ 16+ 位；AWS (AKIA|ASIA) 16 位
+# 自动放行：'-' 之后的 body 去重字符 ≤ 3（如 sk-000…0 低熵占位）
+# 白名单：.githooks/secret_scan_allowlist（每行一个正则，命中放行）
+# 逃生开关：GIT_PUSH_SKIP_SECRET_SCAN=1 git push …（会留痕）
+#
+# 安装（每份克隆执行一次）：git config core.hooksPath .githooks
+#   或 sh scripts/install_git_hooks.sh
+# ============================================================
+set -u
+
+if [ "${GIT_PUSH_SKIP_SECRET_SCAN:-}" = "1" ]; then
+    echo "[pre-push] GIT_PUSH_SKIP_SECRET_SCAN=1 —— 已跳过密钥扫描（留痕）" >&2
+    exit 0
+fi
+
+ZERO=0000000000000000000000000000000000000000
+SCAN_DATA_FILE="$(mktemp 2>/dev/null || echo "/tmp/sgme_prescan.$$")"
+trap 'rm -f "$SCAN_DATA_FILE"' EXIT
+
+# 收集本次推送范围内所有提交的新增行（diff '+' 行）
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$ZERO" ] && continue
+    if [ "$remote_sha" = "$ZERO" ]; then
+        # 新分支：只扫"任何远端都没有的提交"（避免重扫已公开历史 —— T-164 迭代）
+        echo "[pre-push] 新分支 $local_ref —— 扫描未推送过的提交" >&2
+        git log -p --no-color "$local_sha" --not --remotes 2>/dev/null | grep -a '^+' | grep -av '^+++' >> "$SCAN_DATA_FILE" || true
+    else
+        git diff --no-color --unified=0 "$remote_sha" "$local_sha" 2>/dev/null | grep -a '^+' | grep -av '^+++' >> "$SCAN_DATA_FILE" || true
+    fi
+done
+
+PATTERN='sk-[A-Za-z0-9]{20,}|pk-[A-Za-z0-9]{20,}|ak-[A-Za-z0-9]{20,}|ark-[A-Za-z0-9-]{20,}|sgme_(admin|agent)_[A-Za-z0-9]{16,}|agt_[A-Za-z0-9]{16,}|(AKIA|ASIA)[A-Z0-9]{16}'
+HITS=$(grep -aoE "$PATTERN" "$SCAN_DATA_FILE" 2>/dev/null | sort -u)
+
+if [ -z "$HITS" ]; then
+    echo "[pre-push] 密钥扫描通过（未命中）"
+    exit 0
+fi
+
+ALLOW_FILE="$(git rev-parse --show-toplevel)/.githooks/secret_scan_allowlist"
+BLOCKED=""
+while IFS= read -r tok; do
+    [ -z "$tok" ] && continue
+    # 低熵占位自动放行：对 '-' 之后的 body 判定（去重字符 ≤ 3，如 sk-000…0）
+    body=${tok#*-}
+    n=$(printf '%s' "$body" | fold -w1 | sort -u | wc -l | tr -d ' ')
+    [ "$n" -le 3 ] && continue
+    # 白名单放行
+    if [ -f "$ALLOW_FILE" ] && grep -qE "$tok" "$ALLOW_FILE" 2>/dev/null; then
+        continue
+    fi
+    BLOCKED="${BLOCKED}
+  $tok"
+done <<EOF
+$HITS
+EOF
+
+if [ -n "$BLOCKED" ]; then
+    {
+        echo ""
+        echo "[pre-push] 检测到疑似真实密钥，已拒绝推送：$BLOCKED"
+        echo ""
+        echo "  · 若为测试样例：改用低熵占位（如 sk-000…0），或加入 .githooks/secret_scan_allowlist"
+        echo "  · 查询位置：git grep -n \"<串前缀>\" HEAD"
+        echo "  · 确需强推：GIT_PUSH_SKIP_SECRET_SCAN=1 git push（会留痕）"
+        echo ""
+    } >&2
+    exit 1
+fi
+
+echo "[pre-push] 密钥扫描通过（命中项均为低熵占位/白名单）"
+exit 0
