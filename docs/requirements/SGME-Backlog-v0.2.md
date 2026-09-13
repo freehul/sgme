@@ -264,6 +264,7 @@
 | T-161 | Task | 环境依赖项目级整改：基准解释器规则 + requirements 锁定 + bootstrap 引导脚本 + 解释器仓收拢（A 批） | ST-41 | ✅ 已解决 | v1.2.1 | 2026-09-11 变更记录 B170；SGME/SCSM 双双指向 `D:\AI\python\cpython-3.12.13`；原路径留 junction，21 个依赖老路径的 venv 不掉线；原件备份保留未删 |
 | T-162 | B171 restore 改用 backup API（不删 WAL） | restore 第 3 步由「删 -wal/-shm + copy2 覆盖」改为 backup API 写入活连接；新增单测复现 WinError 32；备份四件套 38/0、E2E 11/11、真实服务 200 OK | ST-30 | ✅ 完成 | v1.2.1 | `9bc49b98` |
 | T-163 | Task | **P1** 接口调用统计持久化：`api_usage_daily` 表 + HTTP/MCP 双端埋点（含调用方）+ `GET /v1/admin/usage` | ST-41 | 🔴 开发中 | v1.2.2 | **2026-09-13 用户批**（背景：服务端无调用统计，HTTP 124 端点/MCP 40 工具"哪些从未被调用"无法从数据回答；容器日志只覆盖单容器生命周期、MCP 工具名不落地）。**需求**：①统计调用次数 + **调用方（agent_id）**，不能只有次数；②持久化（跨容器重建）。**设计**：日粒度聚合表 `api_usage_daily(day,kind,name,caller,calls,last_ts,last_ip)`（memory.db，PK=day+kind+name+caller，upsert 累加）；HTTP 侧=9910 纯 ASGI 中间件（route 模板归一化 + X-API-Key→resolve_agent_id 反查）；MCP 侧=9913 ApiKeyMiddleware 内 body 窥探重放（解析 `tools/call` 的 `params.name`，与工具实现解耦、stateful/stateless 无关）；写入全静默（统计不阻断主链路）；保留 400 天。 |
+| T-164 | Task | **P1** 密钥泄露修复与推送门禁：测试样例去真 key + `.githooks/pre-push` 机器门禁 + 发布审查进 AGENTS.md + 失效旧值清理 | ST-41 | ✅ 完成 | v1.2.2 | **2026-09-13 用户批**（背景：8-31 真 key 误作 T-139 测试样例提交，9-01 随批量推送公开暴露约 12 天；用户删除 key 止血，本任务收口）。四项：①`tests/test_guardrail.py` 真 key → 低熵占位 `sk-000…0`；②门禁 `.githooks/pre-push`（扫描推送新增行；低熵自动放行 / 白名单 / 逃生开关）+ `scripts/install_git_hooks.sh` + `.gitattributes` 补 LF 规则；③`AGENTS.md` 提交流程补「推送前发布审查」；④本机 + NAS 失效旧 key 值清理（`REVOKED_20260913` 占位）。详见 B179。 |
 
 ## 设计文档索引（依附关系）
 

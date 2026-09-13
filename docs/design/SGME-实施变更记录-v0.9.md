@@ -2917,6 +2917,17 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 运维影响 | ①部署即生效（容器重启自动迁移补表）；②查询入口 `GET /v1/admin/usage?days=30&kind=http|mcp`；③空间 O(天×端点×调用方)，单用户年行数万级，启动时自动清 >400 天；④性能：每请求一次微秒级 upsert，旁路静默；⑤顺带修正架构文档两处过时（MCP 工具数 18→40 计数 + §5 增统计端点行）。 |
 | 已知边界 | ①MCP 只统计 `tools/call`（initialize/列表/握手不记）；②未匹配路径归 `(unmatched)` 不记具体 path（防行数爆炸；细节仍可查容器日志）；③admin 与 env 主 key 均记 `default`（`resolve_agent_id` 既有语义，非本次引入）。 |
 
+### B179. 密钥泄露事件复盘与推送前门禁（T-164，2026-09-13）
+
+| 项 | 内容 |
+|---|---|
+| 背景（事件） | 2026-08-31 15:41 的 T-139 Guardrail 提交（`5f9d388`）中，`tests/test_guardrail.py` 的 API 密钥检测测试样例**误用了真实 key**（`DEEPSEEK_API_KEY_SGME` 35 位完整串）。该提交 8-31 先推 NAS 裸仓（私有，16:10），**9-01 19:02 随批量推送进入公开 GitHub**（Gitee 经 Actions 自动同步），公网明文暴露约 12 天。9-13 用户发现并删除该 key（平台侧吊销）；排查未见盗用迹象（NAS 提炼链近 30 天无 DeepSeek 调用记录、账号余额无异常波动；公网期间是否存在第三方获取无法完全排除，按已吊销处置）。 |
+| 排查取证 | ①本机 remote-tracking 日志（`update by push`）与 GitHub PushEvent 双向锁定暴露起点（NAS 8-31 16:10:46 / GitHub 9-01 19:02:55）；②全历史 pickaxe（`git log -S`）确认该 key 仅 `5f9d388` 一处入库、其余两把 key 从未入库；③全部接入方会话核查（NAS raw/sessions 1160 条，含 hermes/trae/dsh/reasonix）：8-31~9-01 的提交/推送操作不在任何会话记录中——发布审查自 8-26 立规后，**8-31~9-04 为执行断档窗口**（9-05 起恢复稳定执行）。 |
+| 改动 | ①`tests/test_guardrail.py`：测试样例真实 key → 低熵占位（`sk-` + 32×0，形状同真、一眼假）；②新增推送前机器门禁：`.githooks/pre-push`（扫描本次推送新增行中的疑似密钥长串；`-` 后 body 去重字符 ≤3 自动放行；白名单 `.githooks/secret_scan_allowlist`；逃生开关 `GIT_PUSH_SKIP_SECRET_SCAN=1`；新分支按「未推送过的提交」扫描避免重扫已公开历史）+ `scripts/install_git_hooks.sh`（幂等启用 `core.hooksPath`）+ `.gitattributes` 补 `.githooks/* eol=lf`；③`AGENTS.md` 提交流程新增「推送前发布审查」（跨工具可见，Hermes 侧配 `publish-review` skill）；④失效旧 key 值清理（`REVOKED_20260913` 占位）：本机 `SGME/.env`、`config/.env`（含 3 个 .bak）、`docker.env`、`~/.dsh/.env`、`AIRDT/.dsh/.env`；NAS `/vol1/1000/Docker/sgme/docker.env`。 |
+| 测试 | `tests/test_guardrail.py` 11 passed、`tests/test_operations_append.py` 9 passed（合计 **20 / 0 failed**，test_fast 推导同口径）；门禁四场景实测（本地临时裸仓）：干净增量通过 / 高熵串拒绝 exit 1 / 逃生开关放行 / 低熵占位放行——低熵判定在首测中抓获一次真实缺陷（误把 `sk-` 前缀计入字符集致 `sk-000…0` 被误拦，修正为仅判 `-` 后 body）。 |
+| 运维影响 | ①各克隆需执行一次 `sh scripts/install_git_hooks.sh`（或 `git config core.hooksPath .githooks`）启用门禁；②历史中旧 key 明文保留不重写（与既定「已发布仓库不重写历史」惯例一致；key 已吊销）；③GitHub 无服务端 pre-receive，门禁为本地防线 + 会话侧 `publish-review` 双层；④提示：8-20 的 B89「全历史审计」为一次性检查——持续防护依赖本门禁，后续「定期全量复扫」机制见 skill 更新。 |
+| 教训（沉淀） | ①真实密钥绝不可作为测试/文档样例（「一眼像测试数据」正是盲区）；②「推送前审查」必须机器兜底，不能只靠会话自觉——断档期的执行链恰不在记录会话中；③多工具协作下规则必须进项目级文件（AGENTS.md），不能只存在单工具私有规则里；④新增门禁必须自带逃生开关与白名单，防「门禁把合法操作锁死」。 |
+
 
 
 
