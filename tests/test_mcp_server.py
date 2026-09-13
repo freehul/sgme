@@ -68,6 +68,7 @@ def test_mcp_tools_available(mcp):
     tools = asyncio.run(mcp.list_tools())
     names = [t.name for t in tools]
     expected = {"append", "inject", "search", "memory_get", "memory_reject",
+                "memory_unreject",
                 "refine_trigger", "refine_batch", "refine_status",
                 "stats", "health", "config_get", "config_update", "agent_onboarding",
                 "idea_add", "demand_create", "project_register",
@@ -346,6 +347,28 @@ def test_mcp_memory_reject(mcp):
     r3 = _call(mcp, "memory_reject", {"memory_id": "no-such-id"})
     data3 = json.loads(r3[0])
     assert "error" in data3
+
+
+def test_mcp_memory_unreject(mcp):
+    """memory_unreject（T-163 对齐补齐）：接线 operations.unreject_memory——
+    reject 后恢复 active；不存在 → 扁平 error（与 memory_reject 对称）。"""
+    from sgme.data import memory_dao
+
+    mid = memory_dao.insert_memory(
+        mcp_test_conn(), "待恢复记忆内容", "fact", 50, "static", None, ["goals"],
+        agent_tag="mcp-test",
+    )
+    # 先 reject 再 unreject → 恢复 active
+    _call(mcp, "memory_reject", {"memory_id": mid, "reason": "误操作"})
+    r = _call(mcp, "memory_unreject", {"memory_id": mid})
+    data = json.loads(r[0])
+    assert data["memory_id"] == mid
+    assert data["status"] == "active"
+
+    # 不存在（unreject 逐行保留「不预查、按 rowcount 判」语义 → error）
+    r2 = _call(mcp, "memory_unreject", {"memory_id": "no-such-id"})
+    data2 = json.loads(r2[0])
+    assert "error" in data2
 
 
 def test_mcp_refine_batch_and_status(mcp):
