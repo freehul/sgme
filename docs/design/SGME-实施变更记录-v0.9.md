@@ -2961,3 +2961,15 @@ scenes active 262 / rejected 2（含 1 个冒烟）；health v1.1.3 ok。
 | 测试 | 自测 **10/10**（含本回归点与白名单路径）；修复后本批推送预检**通过**；`lib_scan.sh`、`test_git_hooks.sh` 自匹配检查通过。 |
 | 运维影响 | ①后续修改 `lib_scan.sh` 后必跑 `sh scripts/test_git_hooks.sh`（规则级防回归；区别于 install 脚本的启用职责）；②白名单文件格式不变（每行一条正则、`#` 注释），语义修正后真正可用；③本批推送为修复后首推。 |
 | 教训（沉淀） | ①重构抽取共享逻辑时必须对照原实现的每一处修正点（多版本演进的知识易丢——「回归」多发生在重构而非新写）；②未被实测覆盖的分支（白名单路径）等于没有——自测脚本要把承诺逐条变用例；③门禁拦截要先怀疑规则本身（本次误拦合法占位），再怀疑内容。 |
+
+### B183. v1.2.2 生产上线记录（2026-09-13）
+
+| 项 | 内容 |
+|---|---|
+| 发布内容 | T-163 接口调用统计持久化 / T-164 推送前密钥门禁 / T-165 数据卫生源头治理（976 处脱敏）/ T-166 门禁回归修复 / 接口面对齐补齐（skill_search 补 HTTP + memory_unreject 补 MCP） |
+| 提交范围 | bump `80fed45` ← 前置 12 提交（`533c37e`…`e35d719`，含另一会话 T-164/T-165 批） |
+| 部署链 | push GitHub → Actions 同步 Gitee（main + tag 均 success）→ `POST /v1/admin/update/request {"target_version":"1.2.2"}` → updater（NAS root cron）自动执行：裸仓 fetch Gitee → src pull → docker build → `sgme:1.2.2-nas-autoupd` → compose up → 版本确认 |
+| 部署验证 | 容器 `sgme:1.2.2-nas-autoupd` Up (healthy)；updater.log `=== 更新成功 → 1.2.2 ===`；health：version=1.2.2 / llm=agnes / vector ok / refinement ok；**新功能冒烟**：`GET /v1/admin/usage` 200 且埋点实测落库（`/v1/health` caller=anonymous×5、`/v1/admin/update/request` caller=default×1，自动迁移补表生效） |
+| Release | `gh release create v1.2.2`（tag 指向 `80fed45`；⚠️ tag 为 lightweight，与 v1.2.1 的 annotated 略有差异，功能等价）；Gitee tag 同步 ✓；`update/check` 强刷：`latest_version=v1.2.2`，Release 读取链路正常 |
+| 耗时 | request 16:23:19 → 版本确认 16:26:04（约 2.7 分钟，含 cron 轮询窗口） |
+| 备注 | ①本批为「门禁修复后」首推（pre-push 扫描通过，2273 行增量 0 红）；②部署前置提交均过 publish-review；③存量观察项 3 项（历史 Leo 身份 2 提交 / 家庭照护词 / 脱敏模式缺口）已登记待办待用户定夺 |
