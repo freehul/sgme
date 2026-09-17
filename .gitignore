@@ -91,3 +91,16 @@ ui/vite.config.ts.timestamp-*.mjs
 
 # 迁移过程预览快照（migrate_wiki_skills.py 生成，385 页可从 hub 重导出；报告类 exports/*.md 照常入库）
 exports/skills-migration-preview/
+
+# 内部开发文档（2026-09-18 用户定：撤出公开仓，由私有仓管理；本地为 junction 指向）
+/docs/design/
+/docs/requirements/
+/docs/audit/
+/docs/research/
+/docs/decisions/
+/docs/eval/
+/docs/plans/
+/docs/reviews/
+/docs/QA_评测基线_验收报告.md
+/docs/QA_提示词版本管理_验收报告.md
+/exports/

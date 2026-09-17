@@ -161,6 +161,14 @@
 - 重大变更记入 `docs/design/SGME-实施变更记录-v0.9.md`（B 系列编号递增，含背景/改动/测试/运维影响）
 - ⚠️ **推送前发布审查（2026-09-13 用户定，密钥泄露事件 B179 后立）**：任何内容推送到公开远端（origin/Gitee）之前，必须完成「隐私扫描 + 可运行性验证」——重点核：真实密钥（完整 `sk-`/`ark-` 等格式，**测试与文档样例同样适用**）、真名/邮箱、本机绝对路径、内网地址、内部代号。Hermes 会话走 `publish-review` skill 全流程；**所有协作者最低要求：推送前启用机器门禁**——每份克隆执行一次 `sh scripts/install_git_hooks.sh`（或 `git config core.hooksPath .githooks`），`.githooks/pre-push` 扫描本次推送新增行，命中疑似真实密钥即拒绝推送（低熵占位自动放行；白名单 `.githooks/secret_scan_allowlist`；逃生开关 `GIT_PUSH_SKIP_SECRET_SCAN=1`，会留痕）。审查未通过（🔴 未清零）禁止推送。
 
+### 文档边界与推送纪律（2026-09-18 用户定）
+
+- **公开仓库（GitHub freehul/sgme + Gitee 镜像）只推产品内容**；内部开发文档一律进**私有文档仓**：
+  - 私有仓工作区：本机 `SGME-internal`（与 SGME 仓库同级目录；远端：NAS 裸仓 `sgme-dev.git`）
+  - 私有范围：`docs/design/`、`docs/requirements/`、`docs/audit/`、`docs/research/`、`docs/decisions/`、`docs/eval/`、`docs/plans/`、`docs/reviews/`、`docs/QA_*.md`、`exports/`
+- ⚠️ 以上目录在 SGME 工作区内为 **junction（目录链接）**，实体文件在私有仓——**禁止对 SGME 工作区执行 `git clean -fdx` 或任何递归删除操作**（会穿透链接删除私有仓文件）；清理必须显式指定目标路径。
+- 推送分工：产品改动 → 公开仓（照旧走发布审查）；文档改动 → 进入同级目录 `SGME-internal` 提交推送（即 SGME 仓库的 `../SGME-internal`）。公开文档（README 等）不得引用上述内部路径。
+
 ### 研究先行
 
 **查证与搜索流程（动手前必走，五步）**：
