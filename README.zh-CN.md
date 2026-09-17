@@ -254,7 +254,7 @@ sgme/
 ├── mcp_server.py    # MCP 出口（9913，与 HTTP 共享业务层，入口不互相依赖）
 └── server/          # FastAPI（HTTP 壳：鉴权 + 参数解析 + 响应组装）
 migrations/          # 一次性数据迁移（0001 三库拆分，python -m migrations 执行）
-docs/design/         # 架构/数据模型/接口契约设计文档（第一公民）
+docs/                # 用户文档（接入指南/免费 Key 指南/运维手册/发版说明；内部设计文档在私有仓）
 templates/           # 预定义 4 模式模板（daily/coding/work/full）
 prompts/             # 提炼提示词（含 MIT 来源标注）
 registry/            # 维度注册表 + 别名表

@@ -260,7 +260,7 @@ sgme/
 ├── mcp_server.py    # MCP endpoint (9913; shares the business layer with HTTP — entry layers don't depend on each other)
 └── server/          # FastAPI (HTTP shell: auth + param parsing + response assembly)
 migrations/          # one-off data migrations (0001 three-DB split; run with python -m migrations)
-docs/design/         # architecture / data model / API contract design docs (first-class citizens)
+docs/                # user-facing docs (agent onboarding / free-key guide / runbook / release notes; internal design docs live in a private repo)
 templates/           # predefined 4-mode templates (daily/coding/work/full)
 prompts/             # refinement prompts (with MIT source attribution)
 registry/            # dimension registry + alias table

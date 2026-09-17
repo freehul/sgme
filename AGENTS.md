@@ -158,7 +158,7 @@
 
 - 提交信息格式 `<type>: <中文描述>`，type ∈ feat/fix/docs/refactor/test/chore/perf/ci（Conventional Commits）
 - 逻辑分组提交：代码/适配器/文档分开提交；提交前跑全量 pytest
-- 重大变更记入 `docs/design/SGME-实施变更记录-v0.9.md`（B 系列编号递增，含背景/改动/测试/运维影响）
+- 重大变更记入 B 系列变更记录（私有仓 `SGME-internal/docs/design/SGME-实施变更记录-v0.9.md`；编号递增，含背景/改动/测试/运维影响）
 - ⚠️ **推送前发布审查（2026-09-13 用户定，密钥泄露事件 B179 后立）**：任何内容推送到公开远端（origin/Gitee）之前，必须完成「隐私扫描 + 可运行性验证」——重点核：真实密钥（完整 `sk-`/`ark-` 等格式，**测试与文档样例同样适用**）、真名/邮箱、本机绝对路径、内网地址、内部代号。Hermes 会话走 `publish-review` skill 全流程；**所有协作者最低要求：推送前启用机器门禁**——每份克隆执行一次 `sh scripts/install_git_hooks.sh`（或 `git config core.hooksPath .githooks`），`.githooks/pre-push` 扫描本次推送新增行，命中疑似真实密钥即拒绝推送（低熵占位自动放行；白名单 `.githooks/secret_scan_allowlist`；逃生开关 `GIT_PUSH_SKIP_SECRET_SCAN=1`，会留痕）。审查未通过（🔴 未清零）禁止推送。
 
 ### 文档边界与推送纪律（2026-09-18 用户定）

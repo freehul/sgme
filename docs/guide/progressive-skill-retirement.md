@@ -60,6 +60,6 @@ sed -i '/^AUDIT_WARN_ONLY=1/d' audit.env
 
 ## 五、关联文档
 
-- 设计：docs/design/SGME-Skills管理模块设计-v0.2.md（v0.2.1）
-- 变更记录：docs/design/SGME-实施变更记录-v0.9.md B105/B106
+- 设计：内部文档《SGME-Skills管理模块设计-v0.2》（v0.2.1）
+- 变更记录：内部文档《SGME-实施变更记录》B105/B106
 - 运维：skills-hub.git hooks/audit_gate.py（执法后 FAIL=拒绝）
