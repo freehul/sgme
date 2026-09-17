@@ -167,7 +167,7 @@
   - 私有仓工作区：本机 `SGME-internal`（与 SGME 仓库同级目录；远端：NAS 裸仓 `sgme-dev.git`）
   - 私有范围：`docs/design/`、`docs/requirements/`、`docs/audit/`、`docs/research/`、`docs/decisions/`、`docs/eval/`、`docs/plans/`、`docs/reviews/`、`docs/QA_*.md`、`exports/`
 - ⚠️ 以上目录在 SGME 工作区内为 **junction（目录链接）**，实体文件在私有仓——**禁止对 SGME 工作区执行 `git clean -fdx` 或任何递归删除操作**（会穿透链接删除私有仓文件）；清理必须显式指定目标路径。
-- 推送分工：产品改动 → 公开仓（照旧走发布审查）；文档改动 → 进入同级目录 `SGME-internal` 提交推送（即 SGME 仓库的 `../SGME-internal`）。公开文档（README 等）不得引用上述内部路径。
+- 推送分工：产品改动 → 公开仓（照旧走发布审查）；文档改动 → 进入同级目录 `SGME-internal` 提交推送（即 SGME 仓库的 `../SGME-internal`）。README 及 docs/ 下面向用户的公开文档不得引用上述内部路径（本文件下方「文档索引」表面向本地协作、经 junction 照常可达，不在此限）。
 
 ### 研究先行
 
