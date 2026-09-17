@@ -124,7 +124,7 @@ DSH 桥接（sgme-bridge 0.2.0）新增 **wiki_page_add** 工具：创建知识�
 
 **向量健康检查**：health 的 vector.connectivity 显示模型连通性（provider/model/latency_ms）；失效时写日志 + 发 anomaly_warn 信号（source=vector），/search 自动降级纯 BM25。
 
-**免费 Key 申请**：Agnes https://agnes-ai.cn（邮箱注册，agnes-2.5-flash 免费）→ AGNESAI_API_KEY；硅基流动 https://cloud.siliconflow.cn（注册 + 实名认证解锁免费模型，BAAI/bge-m3 调用零费用）→ SILICONFLOW_API_KEY。完整流程见 docs/guide/免费模型Key申请指南.md。
+**免费 Key 申请**：Agnes https://agnes-ai.cn（邮箱注册，agnes-2.5-flash 免费）→ AGNESAI_API_KEY；硅基流动 https://cloud.siliconflow.cn（注册 + 实名认证解锁免费模型，BAAI/bge-m3 调用零费用）→ SILICONFLOW_API_KEY。完整流程见 AI-INSTALL/免费模型Key申请指南.md。
 
 > 来源: dsh-agent | hash: e1d4200d
 

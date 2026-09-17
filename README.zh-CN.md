@@ -127,7 +127,7 @@ python -m sgme
 # 不配置时使用内置默认 key（仅限本机首次体验，启动有告警；配置后默认 key 即失效 403）
 #   SGME_BEARER_TOKEN 可选：传输层令牌，默认关闭（localhost 旁路）
 # 模型 Key（可选，支持免费档）：提炼主链 agnes-2.5-flash（免费）→ 硅基流动 GLM-4-9B-0414（免费档备用；zhipu 已于 2026-08-29 移出链 B121，DeepSeek-V4-Flash 转付费已移出 B144）；向量检索硅基流动 BAAI/bge-m3（零费用）。
-# Key 缺失时 /v1/health 的 model_config.missing_keys 会列出缺哪些——按 docs/guide/免费模型Key申请指南.md 申请免费 Key 即可。
+# Key 缺失时 /v1/health 的 model_config.missing_keys 会列出缺哪些——按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key 即可。
 #   AGNESAI_API_KEY=<agnes>   SILICONFLOW_API_KEY=<硅基流动key>
 
 # 4.（可选）构建 WebUI 管理面板——需要 Node.js
@@ -195,7 +195,7 @@ dsh plugin --profile web add github:freehul/sgme
 
 **向量引擎接入**（`health()` 返回 `vector.available=false` 或 `vector.connectivity=false` 时执行）：本地优先、云端免费降级——推荐本地 Ollama 或 LM Studio 跑 `bge-m3`（1024 维；云端硅基流动 `BAAI/bge-m3` 免费自动兜底，同维度切换不重灌索引）。探测 `curl http://127.0.0.1:11434/api/tags`（Ollama）/ `curl http://127.0.0.1:1234/v1/models`（LM Studio）→ 缺模型则 `ollama pull bge-m3`（或 LM Studio 搜索下载）→ 在 `config/sgme.yaml` 写 `search.vector` 段（`base_url` / `model: bge-m3` / `fallbacks`）并重启 SGME → 再 `health()` 直到 `vector.connectivity=true`。不推荐 llama.cpp（模型状态无人维护，清理显存后即失联）。
 
-**完整工具清单与用法**：见 [docs/agent-onboarding.md](docs/agent-onboarding.md)，或连上 MCP 后调 `agent_onboarding` 工具
+**完整工具清单与用法**：见 [AI-INSTALL/agent-onboarding.md](AI-INSTALL/agent-onboarding.md)，或连上 MCP 后调 `agent_onboarding` 工具
 
 **接入自检**：连接成功后第一件事调 `agent_onboarding()`——返回版本、全部工具清单与快速上手，确认无 403/超时即接入成功
 

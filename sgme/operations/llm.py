@@ -52,7 +52,7 @@ MODEL_KEY_MISSING_NOTICE = (
     "申请免费 Key：Agnes agnes-2.5-flash（https://agnes-ai.cn 注册，当前免费）→ AGNESAI_API_KEY；"
     "硅基流动 GLM-4-9B-0414 + bge-m3（https://cloud.siliconflow.cn 实名后免费）→ SILICONFLOW_API_KEY。"
     "（zhipu 已移出降级链 B121；DeepSeek-V4-Flash 已转付费档移出 B144——均无需配置）"
-    "完整流程见 docs/guide/免费模型Key申请指南.md"
+    "完整流程见 AI-INSTALL/免费模型Key申请指南.md"
 )
 
 

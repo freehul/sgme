@@ -163,7 +163,7 @@ syncOnTurnEnd: true
 
 ## 接入纪律
 
-DSH 接入 SGME 后应遵守五条铁律（详见 [SGME 接入文档](https://github.com/freehul/sgme/blob/main/docs/agent-onboarding.md)）：
+DSH 接入 SGME 后应遵守五条铁律（详见 [SGME 接入文档](https://github.com/freehul/sgme/blob/main/AI-INSTALL/agent-onboarding.md)）：
 
 1. 每轮对话结束 `append` 当前轮次；
 2. 会话结束 `refine_trigger(async_mode=true)`；

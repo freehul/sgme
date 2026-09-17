@@ -132,7 +132,7 @@ python -m sgme
 #   DeepSeek-V4-Flash is now paid and removed 2026-09-01, B144);
 #   vector search uses siliconflow BAAI/bge-m3 (free). When a key is missing,
 #   /v1/health returns model_config.missing_keys — apply free keys per
-#   docs/guide/免费模型Key申请指南.md (Agnes agnes-2.5-flash 免费 / 硅基流动 bge-m3 零费用).
+#   AI-INSTALL/免费模型Key申请指南.md (Agnes agnes-2.5-flash 免费 / 硅基流动 bge-m3 零费用).
 #   AGNESAI_API_KEY=<agnes>   SILICONFLOW_API_KEY=<siliconflow>
 
 # 4. (Optional) Build the WebUI management panel — requires Node.js
@@ -201,7 +201,7 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 
 **Vector Engine Setup** (when `health()` reports `vector.available=false` / `vector.connectivity=false`): local-first, cloud fallback — prefer a local Ollama or LM Studio running `bge-m3` (1024-dim; cloud fallback `BAAI/bge-m3` on siliconflow is free and automatic, same dims → no index rebuild on switch). Probe `curl http://127.0.0.1:11434/api/tags` (Ollama) or `curl http://127.0.0.1:1234/v1/models` (LM Studio) → if no `bge-m3`, run `ollama pull bge-m3` (or download it in LM Studio) → write the `search.vector` block (`base_url`, `model: bge-m3`, `fallbacks`) into `config/sgme.yaml` and restart SGME → re-run `health()` until `vector.connectivity=true`. llama.cpp is NOT recommended (model state unmanaged, lost after VRAM cleanup).
 
-**Full tool list & usage**: see [docs/agent-onboarding.md](docs/agent-onboarding.md), or call the `agent_onboarding` tool once connected via MCP
+**Full tool list & usage**: see [AI-INSTALL/agent-onboarding.md](AI-INSTALL/agent-onboarding.md), or call the `agent_onboarding` tool once connected via MCP
 
 **Self-check on connect**: first call after connecting — `agent_onboarding()` returns the version, the full tool list and a quick start; no 403/timeout means you are in
 

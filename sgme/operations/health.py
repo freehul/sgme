@@ -172,7 +172,7 @@ def _publish_vector_signal(
                 "error": conn_check.get("error"),
                 "hint": "向量模型不可用：/search 向量通路将回退纯 BM25。"
                         "接入 agent 请提醒用户检查 SILICONFLOW_API_KEY / 硅基流动账户状态，"
-                        "申请流程见 docs/guide/免费模型Key申请指南.md",
+                        "申请流程见 AI-INSTALL/免费模型Key申请指南.md",
             },
             mem_conn=mem_conn,
         )

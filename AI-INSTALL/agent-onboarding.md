@@ -1,6 +1,6 @@
 # SGME Agent Onboarding 指引
 
-> 写给 AI Agent 读的接入指南。人类运维请移步 [docs/runbook.md](runbook.md)。
+> 写给 AI Agent 读的接入指南。人类运维请移步 [运维手册](../docs/runbook.md)。
 > 你（Agent）读完本文件，应该能独立完成：找到 SGME → 连上 → 开始写记忆 → 触发提炼 → 查进度。
 
 ## TL;DR（30 秒速览）
@@ -209,13 +209,13 @@ content 格式（首行必须）：
 - `refinement.queue_depth / stalled`：提炼水位是否健康
 - 数据源：`stats()` 看记忆/原始文件是否为空
 
-> **两个模型**：SGME 提炼靠 LLM（主链 agnes-2.5-flash，免费，`AGNESAI_API_KEY`；备用硅基流动 THUDM/GLM-4-9B-0414，免费档，`SILICONFLOW_API_KEY`；zhipu 已移出降级链 B121、DeepSeek-V4-Flash 转付费移出 B144），语义检索靠向量 embedding（硅基流动 BAAI/bge-m3，`SILICONFLOW_API_KEY`）——缺了分别降级为「直存」/「纯 BM25」，`health` 里 `llm.available` / `vector.available` / `vector.connectivity` 会如实反映，哪个 false 补哪个。**Key 缺失时 `health` 的 `model_config.missing_keys` 会列出缺哪些**，按 [docs/guide/免费模型Key申请指南.md](guide/免费模型Key申请指南.md) 申请免费 Key（两平台各约 10 分钟、零充值）。
+> **两个模型**：SGME 提炼靠 LLM（主链 agnes-2.5-flash，免费，`AGNESAI_API_KEY`；备用硅基流动 THUDM/GLM-4-9B-0414，免费档，`SILICONFLOW_API_KEY`；zhipu 已移出降级链 B121、DeepSeek-V4-Flash 转付费移出 B144），语义检索靠向量 embedding（硅基流动 BAAI/bge-m3，`SILICONFLOW_API_KEY`）——缺了分别降级为「直存」/「纯 BM25」，`health` 里 `llm.available` / `vector.available` / `vector.connectivity` 会如实反映，哪个 false 补哪个。**Key 缺失时 `health` 的 `model_config.missing_keys` 会列出缺哪些**，按 [免费模型Key申请指南.md](免费模型Key申请指南.md) 申请免费 Key（两平台各约 10 分钟、零充值）。
 
 **LLM 或数据源缺失时，主动提醒用户，表述提供商无关**（不要报任何品牌）：
 
 > LLM 未配置——请配置你所用提供商的 key（见 `config/providers.yaml`）。
 
-环境清单同理：教用户**配置方法与查找路径**（`providers.yaml` 的 `api_key_env` 字段、`ZHIPU_API_KEY` / `SILICONFLOW_API_KEY` 等；免费 Key 申请见 docs/guide/免费模型Key申请指南.md）。你可以诊断「缺什么」（health 的 `model_config.missing_keys` 即诊断结果），免费托底场景可直接建议智谱/硅基流动（免费），付费场景品牌由用户自己选。
+环境清单同理：教用户**配置方法与查找路径**（`providers.yaml` 的 `api_key_env` 字段、`ZHIPU_API_KEY` / `SILICONFLOW_API_KEY` 等；免费 Key 申请见本目录《免费模型Key申请指南.md》）。你可以诊断「缺什么」（health 的 `model_config.missing_keys` 即诊断结果），免费托底场景可直接建议智谱/硅基流动（免费），付费场景品牌由用户自己选。
 
 ## 7.5 向量引擎接入流程（本地优先，云端降级）
 
