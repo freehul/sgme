@@ -1,3 +1,4 @@
 node_modules/
 .tsbuildinfo
+.tmp-events-test/
 # 注：lib/ 构建产物提交（dsh-mnemon 模式，运行时不要求宿主装 pnpm）

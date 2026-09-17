@@ -166,8 +166,13 @@ var SgmeClient = class {
 			return [null, `fetch error: ${e instanceof Error ? e.message : String(e)}`];
 		}
 	}
-	/** 统一 PUT 请求（T-86：设置当前角色用），返回 [data, error]。失败时 data=null。 */
-	async put(path, body) {
+	/**
+	* 统一 PUT 请求（T-86：设置当前角色用），返回 [data, error]。失败时 data=null。
+	*
+	* ``keyType`` 默认 agent（角色切换等读侧语义）；技能写侧（skill_put）需传 admin。
+	*/
+	async put(path, body, keyType = "agent") {
+		const key = keyType === "agent" ? this.agentKey : this.adminKey;
 		const url = `${this.baseUrl}${path}`;
 		try {
 			const ctrl = new AbortController();
@@ -176,9 +181,35 @@ var SgmeClient = class {
 				method: "PUT",
 				headers: {
 					"Content-Type": "application/json",
-					"X-API-Key": this.agentKey
+					"X-API-Key": key
 				},
 				body: JSON.stringify(body),
+				signal: ctrl.signal
+			});
+			clearTimeout(timer);
+			if (!resp.ok) {
+				const text = await resp.text().catch(() => "");
+				return [null, `HTTP ${resp.status}: ${text.slice(0, 200)}`];
+			}
+			return [await resp.json(), null];
+		} catch (e) {
+			return [null, `fetch error: ${e instanceof Error ? e.message : String(e)}`];
+		}
+	}
+	/**
+	* 统一 DELETE 请求（技能删除用），返回 [data, error]。失败时 data=null。
+	*
+	* query 参数（hard/force 等）由调用方拼进 path——服务端读的是 Query 而非 body。
+	*/
+	async del(path, keyType) {
+		const key = keyType === "agent" ? this.agentKey : this.adminKey;
+		const url = `${this.baseUrl}${path}`;
+		try {
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+			const resp = await fetch(url, {
+				method: "DELETE",
+				headers: { "X-API-Key": key },
 				signal: ctrl.signal
 			});
 			clearTimeout(timer);
@@ -451,6 +482,186 @@ var SgmeClient = class {
 		const [data, err] = await this.post(`/v1/memory/${encodeURIComponent(memoryId)}/reject`, { reason: reason ?? null }, "agent");
 		if (err) {
 			console.warn(`[sgme-bridge] memoryReject failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 撤销「不采用」（POST /v1/memory/{id}/unreject，Agent Key；恢复为 active）。失败返回 null。 */
+	async memoryUnreject(memoryId) {
+		const [data, err] = await this.post(`/v1/memory/${encodeURIComponent(memoryId)}/unreject`, {}, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] memoryUnreject failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 聚合答案（POST /v1/answer，Agent Key）。
+	*
+	* 比 search 多一步：检索候选 → 题型分派 → LLM 生成答案。会消耗 LLM 调用，
+	* 与 search 的纯检索不是一回事。LLM 全链不可用时服务端返回 503 → null。
+	*/
+	async answer(query, questionType, limit) {
+		const [data, err] = await this.post("/v1/answer", {
+			query,
+			question_type: questionType ?? null,
+			...limit !== void 0 ? { limit } : {}
+		}, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] answer failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 统计：记忆/原始层计数 + 维度分布 + 提炼水位 + 注册 Agent（GET /v1/admin/stats）。失败返回 null。 */
+	async stats() {
+		const [data, err] = await this.get("/v1/admin/stats", "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] stats failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 读配置：整体读（section 省略）或单段读（GET /v1/admin/config[/{section}]）。失败返回 null。 */
+	async configGet(section) {
+		const path = section ? `/v1/admin/config/${encodeURIComponent(section)}` : "/v1/admin/config";
+		const [data, err] = await this.get(path, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] configGet failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 更新配置段（POST /v1/admin/config，Admin Key；服务端 POST 与 PUT 等价）。
+	*
+	* ⚠️ 热生效 + 落盘 sgme.yaml——会真实改变服务端运行行为，非试验性调用。
+	* section=null 时 values 的键即段名（单段形态）。
+	*/
+	async configUpdate(section, values) {
+		const [data, err] = await this.post("/v1/admin/config", {
+			section,
+			values
+		}, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] configUpdate failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 批量清空/全部消费未消费信号（POST /v1/admin/events/consume_all，Admin Key）。
+	*
+	* 幂等（二次调用 consumed=0）；subscriberId 传则同步推进该订阅者持久游标。
+	*/
+	async signalClear(eventType, subscriberId) {
+		const params = new URLSearchParams();
+		if (eventType) params.set("type", eventType);
+		if (subscriberId) params.set("subscriber_id", subscriberId);
+		const qs = params.toString();
+		const [data, err] = await this.post(`/v1/admin/events/consume_all${qs ? `?${qs}` : ""}`, {}, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] signalClear failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 同步触发提炼（POST /v1/admin/refine/trigger，Admin Key）。
+	*
+	* ⚠️ 同步阻塞：file_id 给定时处理单文件，否则批量扫 status=new。
+	* 会真实消耗 LLM 额度；批量场景优先用 triggerRefine（异步排队即返）。
+	*/
+	async refineTriggerSync(fileId, limit) {
+		const [data, err] = await this.post("/v1/admin/refine/trigger", {
+			file_id: fileId ?? null,
+			...limit !== void 0 ? { limit } : {}
+		}, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] refineTriggerSync failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 提炼记录分页（GET /v1/admin/refine_runs，Admin Key）。
+	*
+	* 做「提炼状态」观测用——服务端 refine_status 只有 MCP 侧无 HTTP 端点，
+	* 故以本端点 + stats 近似（默认不做 status 过滤，error/running 默认可见）。
+	*/
+	async refineRuns(opts) {
+		const params = new URLSearchParams();
+		if (opts?.page !== void 0) params.set("page", String(opts.page));
+		if (opts?.limit !== void 0) params.set("limit", String(opts.limit));
+		if (opts?.stage) params.set("stage", opts.stage);
+		if (opts?.status) params.set("status", opts.status);
+		if (opts?.since) params.set("since", opts.since);
+		if (opts?.until) params.set("until", opts.until);
+		const qs = params.toString();
+		const [data, err] = await this.get(`/v1/admin/refine_runs${qs ? `?${qs}` : ""}`, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] refineRuns failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 技能 L3 物化：字节保真写盘 dest_dir/<name>/SKILL.md（POST /v1/skills/{name}/materialize，Agent Key）。
+	*
+	* 不走 LLM 转写；返回落盘路径与 sha256，供脚本执行场景取真文件。
+	*/
+	async skillMaterialize(name, destDir) {
+		const [data, err] = await this.post(`/v1/skills/${encodeURIComponent(name)}/materialize`, { dest_dir: destDir }, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] skillMaterialize failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 写入/覆盖技能（PUT /v1/admin/skills/{name}，Admin Key；SKILL.md 全文自动解析 frontmatter）。
+	*
+	* ⚠️ 服务端过 lint 门禁 + 三层查重，会落盘并 git commit 到技能源仓。
+	*/
+	async skillPut(name, content, skipLimits = false) {
+		const [data, err] = await this.put(`/v1/admin/skills/${encodeURIComponent(name)}`, {
+			content,
+			skip_limits: skipLimits
+		}, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] skillPut failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 删除技能（DELETE /v1/admin/skills/{name}，Admin Key）。
+	*
+	* 默认软删（deprecated 标记）；hard=true 物理删目录。有入向 uses 引用且
+	* 未 force → 409 被拒。
+	*/
+	async skillDelete(name, hard = false, force = false) {
+		const params = new URLSearchParams();
+		if (hard) params.set("hard", "true");
+		if (force) params.set("force", "true");
+		const qs = params.toString();
+		const [data, err] = await this.del(`/v1/admin/skills/${encodeURIComponent(name)}${qs ? `?${qs}` : ""}`, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] skillDelete failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 技能改名（POST /v1/admin/skills/{name}/rename，Admin Key；墓碑制永不原地改名）。
+	*
+	* 写新名副本 + 旧位置留 superseded_by 墓碑 + 登记 tombstones.json。
+	* 需服务端 skills.source_dirs 指向 git 技能仓。
+	*/
+	async skillRename(name, newName) {
+		const [data, err] = await this.post(`/v1/admin/skills/${encodeURIComponent(name)}/rename`, { new_name: newName }, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] skillRename failed: ${err}`);
 			return null;
 		}
 		return data;
@@ -2047,7 +2258,7 @@ function formatSearchResults(results) {
 	return lines.join("\n\n");
 }
 /**
-* 向 dsh ctx 注册全部工具（检索 + 信号消费 + 三池登记 + 角色 + 记忆纠错 + 技能层）。
+* 向 dsh ctx 注册全部工具（检索 + 信号消费 + 三池登记 + 角色 + 记忆纠错 + 技能层 + 运维/写侧）。
 *
 * 调用方：index.ts apply() 内调用，传入 ctx 和 client。
 */
@@ -2076,6 +2287,21 @@ function registerTools(ctx, client, defaultLimit, eventSubscriber) {
 	ctx.tools.register(createSkillGetTool(client));
 	ctx.tools.register(createSkillListTool(client, defaultLimit));
 	ctx.tools.register(createSkillColdstartTool(client));
+	ctx.tools.register(createAnswerTool(client));
+	ctx.tools.register(createHealthTool(client));
+	ctx.tools.register(createStatsTool(client));
+	ctx.tools.register(createMemoryUnrejectTool(client));
+	ctx.tools.register(createSignalClearTool(client));
+	ctx.tools.register(createWikiEvolveTriggerTool(client));
+	ctx.tools.register(createConfigGetTool(client));
+	ctx.tools.register(createConfigUpdateTool(client));
+	ctx.tools.register(createRefineStatusTool(client));
+	ctx.tools.register(createRefineTriggerTool(client));
+	ctx.tools.register(createRefineBatchTool(client));
+	ctx.tools.register(createSkillMaterializeTool(client));
+	ctx.tools.register(createSkillPutTool(client));
+	ctx.tools.register(createSkillDeleteTool(client));
+	ctx.tools.register(createSkillRenameTool(client));
 }
 /** 创建 inject 工具（按场景模式拉取 SGME 画像，agent 主动注入）。 */
 function createInjectTool(client) {
@@ -2123,7 +2349,7 @@ function createSkillSearchTool(client, defaultLimit) {
 	return defineTool({
 		name: "skill_search",
 		description: [
-			"检索 SGME 技能库（403 个技能，BM25+向量融合）。需要某项专业能力但不确定 SGME 有没有时必用。",
+			"检索 SGME 技能库（BM25+向量融合，全量技能）。需要某项专业能力但不确定 SGME 有没有时必用。",
 			"只返回技能名与触发描述，**不含正文**——选定后调 skill_get 拉全文再执行。",
 			"范式（SGME 1.1.0）：技能不预载，按需检索→拉全文→注入，不要凭空编造操作步骤。"
 		].join(" "),
@@ -2262,7 +2488,7 @@ function createSkillColdstartTool(client) {
 		description: [
 			"拉取技能冷启动包（SGME 1.1.0 范式）——仅注入 1 个《技能检索协议》+ SGME 操作手册。",
 			"会话开始调一次：协议教你怎么按需检索技能，操作手册讲 SGME 自身怎么用。",
-			"全量 403 个技能不预载，需要时用 skill_search 检索、skill_get 拉全文。"
+			"全量技能不预载，需要时用 skill_search 检索、skill_get 拉全文。"
 		].join(" "),
 		parameters: {},
 		output: {
@@ -2699,6 +2925,560 @@ function createMemoryRejectTool(client) {
 			const resp = await client.memoryReject(a.memory_id, a.reason ?? null);
 			if (!resp) return `[memory_reject 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`;
 			return `[memory_reject 已标记不采用：memory_id=${resp.memory_id}（理由：${resp.reject_reason ?? "用户纠错"}）]`;
+		}
+	});
+}
+/**
+* 创建 answer 工具（T-149 聚合答案：跨会话计数/列举/时序推理）。
+*
+* 与 memory_search 的分工：search 返回候选条目让模型自己读；answer 多走一步
+* LLM 答案合成，适合「我一共提过几次 X」「什么时候改的 Y」这类聚合问题。
+*/
+function createAnswerTool(client) {
+	return defineTool({
+		name: "answer",
+		description: [
+			"向 SGME 提聚合型问题并直接拿答案（跨会话计数/列举/时序推理）。",
+			"适用：「我一共提过几次 X」「Y 是什么时候改的」「列出所有做过 Z 的项目」。",
+			"比 memory_search 多一步 LLM 答案合成——纯检索用 memory_search，要结论用本工具。",
+			"会消耗一次 LLM 调用；LLM 全链不可用时返回失败提示。"
+		].join(" "),
+		parameters: {
+			query: {
+				type: "string",
+				required: true,
+				description: "自然语言问题"
+			},
+			question_type: {
+				type: "string",
+				enum: [
+					"temporal",
+					"aggregate",
+					"generic"
+				],
+				description: "题型（temporal=时序 / aggregate=计数列举 / generic=通用；省略自动分派）"
+			},
+			limit: {
+				type: "number",
+				description: "检索候选条数（默认 8；服务端上限 20）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.answer(a.query, a.question_type ?? null, a.limit);
+			if (!resp) return "[answer 失败：SGME Gateway 不可达、LLM 全链不可用，或模块未启用，稍后重试]";
+			const meta = [
+				resp.question_type ? `题型=${resp.question_type}` : "",
+				resp.candidates_used !== void 0 ? `候选=${resp.candidates_used}` : "",
+				resp.provider ? `模型=${resp.provider}` : ""
+			].filter(Boolean).join(" ");
+			const evidence = Array.isArray(resp.evidence) && resp.evidence.length > 0 ? `\n\n依据（${resp.evidence.length} 条）：\n` + resp.evidence.slice(0, 5).map((e, i) => {
+				const c = e.content;
+				return `${i + 1}. ${c ? String(c).slice(0, 200) : JSON.stringify(e).slice(0, 200)}`;
+			}).join("\n") : "";
+			return `${resp.answer ?? "(服务端未返回答案)"}${meta ? `\n\n[${meta}]` : ""}${evidence}`;
+		}
+	});
+}
+/** 创建 health 工具（连接/版本/LLM/提炼水位/向量水位自检）。 */
+function createHealthTool(client) {
+	return defineTool({
+		name: "health",
+		description: ["SGME 健康自检：服务版本、LLM 可用性、提炼水位与是否停摆、向量库水位。", "排查「记忆检索没结果」「刚说的话没进记忆」时先跑本工具定位是哪一环断了。"].join(" "),
+		parameters: {},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(_args, _exec) {
+			const h = await client.health();
+			if (!h) return "[health 失败：SGME Gateway 不可达——本插件是桥接插件，请确认 SGME 本体在运行]";
+			return [
+				`status=${h.status} version=${h.version ?? "?"}`,
+				`LLM: ${h.llm?.available ? "可用" : "不可用"}（${h.llm?.provider ?? "?"}/${h.llm?.model ?? "?"}）`,
+				`提炼: 水位 ${h.refinement?.watermark_age_sec ?? "?"}s 队列 ${h.refinement?.queue_depth ?? "?"} ${h.refinement?.stalled ? "⚠️ 疑似停摆" : "正常"}`,
+				`向量: ${h.vector?.available ? "可用" : "不可用"}（记忆 ${h.vector?.memory_vectors ?? "?"} / 场景 ${h.vector?.scene_vectors ?? "?"}）`
+			].join("\n");
+		}
+	});
+}
+/** 创建 stats 工具（记忆/原始层计数 + 维度分布 + 水位 + 注册 Agent）。 */
+function createStatsTool(client) {
+	return defineTool({
+		name: "stats",
+		description: ["SGME 统计概览：记忆总数/归档数、原始文件各状态计数、维度分布、提炼水位、已注册 agent。", "用户问「记忆库现在多少条」「哪些维度用得最多」时用；需 Admin Key。"].join(" "),
+		parameters: {},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(_args, _exec) {
+			const s = await client.stats();
+			if (!s) return "[stats 失败：SGME Gateway 不可达或未配置 Admin Key，稍后重试]";
+			const dims = Object.entries(s.dimension_distribution ?? {}).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 10).map(([k, v]) => `${k}=${v}`).join(", ");
+			return [
+				`记忆: ${s.memories?.total ?? "?"} 条（归档 ${s.memories?.archived ?? "?"}）`,
+				`原始文件: 共 ${s.raw_files?.total ?? "?"}（new ${s.raw_files?.new ?? "?"} / refined ${s.raw_files?.refined ?? "?"} / error ${s.raw_files?.error ?? "?"}）`,
+				`提炼水位: ${s.refinement?.last_refined_at ?? "?"}（${s.refinement?.watermark_age_sec ?? "?"}s 前，队列 ${s.refinement?.queue_depth ?? "?"}）`,
+				`维度分布: ${dims || "-"}`,
+				`已注册 agent: ${(s.agents ?? []).map((a) => `${a.agent_id}(${a.role})`).join(", ") || "-"}`
+			].join("\n");
+		}
+	});
+}
+/** 创建 memory_unreject 工具（撤销「不采用」，T-163 补齐）。 */
+function createMemoryUnrejectTool(client) {
+	return defineTool({
+		name: "memory_unreject",
+		description: ["撤销记忆的「不采用」标记，恢复为 active（重新参与注入与检索）。", "用于 memory_reject 误操作后的恢复；memory_id 来自 memory_search 结果。"].join(" "),
+		parameters: { memory_id: {
+			type: "string",
+			required: true,
+			description: "记忆 id（memory_search / memory_get 返回）"
+		} },
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.memoryUnreject(a.memory_id);
+			if (!resp) return `[memory_unreject 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`;
+			return `[memory_unreject 已恢复：memory_id=${resp.memory_id} status=${resp.status}]`;
+		}
+	});
+}
+/** 创建 signal_clear 工具（批量清空未消费信号，T-87）。 */
+function createSignalClearTool(client) {
+	return defineTool({
+		name: "signal_clear",
+		description: [
+			"批量清空 SGME 未消费信号（全部标记已消费，幂等；二次调用 consumed=0）。",
+			"用于信号堆积（如历史 anomaly_warn/memory_updated）时的一次性清理。",
+			"⚠️ 清空后 pull/SSE 不再推送这些信号——仅在用户明确要求清理时调用。需 Admin Key。"
+		].join(" "),
+		parameters: {
+			signal_type: {
+				type: "string",
+				description: "只清空该类型（如 anomaly_warn / care_daily）；省略=全部类型"
+			},
+			subscriber_id: {
+				type: "string",
+				description: "同步推进该订阅者的持久游标（如 dsh）；省略则不推进"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.signalClear(a.signal_type ?? null, a.subscriber_id ?? null);
+			if (!resp) return "[signal_clear 失败：SGME Gateway 不可达或未配置 Admin Key，稍后重试]";
+			return `[signal_clear 已完成：消费 ${resp.consumed} 条（type=${resp.type ?? "全部"}，subscriber=${resp.subscriber_id ?? "-"}）]`;
+		}
+	});
+}
+/**
+* 创建 wiki_evolve_trigger 工具（自进化 W4）。
+*
+* session-sync 在 turn/end 后已自动触发（evolveEnabled 默认 true）；
+* 本工具用于手动补触发——例如某轮没触发到、或想对指定会话立即提炼经验。
+*/
+function createWikiEvolveTriggerTool(client) {
+	return defineTool({
+		name: "wiki_evolve_trigger",
+		description: [
+			"手动触发 SGME 自进化（会话经验 → 写回 wiki 手册）。",
+			"插件每轮结束已自动触发，本工具用于手动补触发（如指定某会话立即提炼）。",
+			"服务端有费用门禁与规则闸门兜底（消息块不足会跳过），但仍会计入 LLM 调用。"
+		].join(" "),
+		parameters: {
+			session_key: {
+				type: "string",
+				description: "指定会话（如 dsh-<会话id>）；省略则由服务端按游标处理"
+			},
+			min_rounds: {
+				type: "number",
+				description: "费用门禁：会话消息块下限（默认 5）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.evolveTrigger(a.session_key ?? null, a.min_rounds ?? 5);
+			if (!resp) return "[wiki_evolve_trigger 失败：SGME Gateway 不可达或自进化模块未启用，稍后重试]";
+			return `[wiki_evolve_trigger 已触发：status=${resp.status}]`;
+		}
+	});
+}
+/** 创建 config_get 工具（读服务端运行时配置）。 */
+function createConfigGetTool(client) {
+	return defineTool({
+		name: "config_get",
+		description: ["读取 SGME 服务端运行时配置（整体读或按段读：l1/l2/refine/search/backup 等）。", "用于核实服务端实际生效的配置值（如提炼开关、检索参数）。需 Admin Key。"].join(" "),
+		parameters: { section: {
+			type: "string",
+			description: "配置段名（l1/l2/refine/search/backup）；省略返回全部配置"
+		} },
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.configGet(a.section ?? null);
+			if (!resp) return `[config_get 失败：SGME Gateway 不可达、未配置 Admin Key，或段名不存在${a.section ? `（section="${a.section}"）` : ""}]`;
+			const writable = resp.writable_sections?.length ? `\n\n可写段：${resp.writable_sections.join(", ")}` : "";
+			return JSON.stringify(resp.config ?? resp, null, 2) + writable;
+		}
+	});
+}
+/**
+* 创建 config_update 工具（改服务端运行时配置）。
+*
+* ⚠️ 破坏面最大的工具：热生效 + 落盘，改错会直接改变记忆引擎的运行行为。
+* 描述里显式加护栏，且要求 section 必填（避免整段误覆盖）。
+*/
+function createConfigUpdateTool(client) {
+	return defineTool({
+		name: "config_update",
+		description: [
+			"更新 SGME 服务端配置段（部分更新，合并后落盘并热生效）。",
+			"⚠️ 会改变记忆引擎的实际运行行为（如提炼开关、检索参数）且立即生效。",
+			"仅在用户明确要求修改服务端配置时调用；不确定当前值先用 config_get 读。需 Admin Key。"
+		].join(" "),
+		parameters: {
+			section: {
+				type: "string",
+				required: true,
+				description: "要更新的配置段名（l1/l2/refine/search/backup）"
+			},
+			values: {
+				type: "object",
+				required: true,
+				additionalProperties: true,
+				description: "该段的键值对（只传要改的键，未传的保留）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.configUpdate(a.section, a.values ?? {});
+			if (!resp) return `[config_update 失败：SGME Gateway 不可达、未配置 Admin Key，或段名/取值非法（section="${a.section}"）]`;
+			return `[config_update 已生效：section=${resp.section ?? a.section} status=${resp.status}]`;
+		}
+	});
+}
+/**
+* 创建 refine_status 工具（提炼监控）。
+*
+* 服务端 refine_status 只有 MCP 侧（无 HTTP 端点），故此处以
+* GET /v1/admin/refine_runs + 提炼水位组合近似——结论等价，
+* 待服务端补 GET /v1/admin/refine/status 后可收敛为单次调用（已登记待办）。
+*/
+function createRefineStatusTool(client) {
+	return defineTool({
+		name: "refine_status",
+		description: ["查看 SGME 提炼状态：最近提炼批次记录（含 error/running）+ 待提炼队列与水位。", "用于排查「会话入库了但没变成记忆」——看队列是否堆积、最近批次是否报错。需 Admin Key。"].join(" "),
+		parameters: {
+			limit: {
+				type: "number",
+				description: "返回最近批次条数（默认 10）"
+			},
+			status: {
+				type: "string",
+				enum: [
+					"running",
+					"ok",
+					"error"
+				],
+				description: "只看该状态的批次（省略=全部，含 error/running）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const runs = await client.refineRuns({
+				limit: a.limit ?? 10,
+				status: a.status ?? null
+			});
+			if (!runs) return "[refine_status 失败：SGME Gateway 不可达或未配置 Admin Key，稍后重试]";
+			const lines = (runs.items ?? []).map((r, i) => {
+				const fileId = String(r.file_id ?? "?");
+				const status = String(r.status ?? "?");
+				const stage = String(r.stage ?? "-");
+				const started = String(r.started_at ?? "?");
+				return `${i + 1}. [${status}] ${stage} ${fileId}（${started}）`;
+			});
+			return `提炼记录：共 ${runs.total} 条，本次返回 ${runs.count} 条` + (lines.length > 0 ? "\n" + lines.join("\n") : "\n（无记录）");
+		}
+	});
+}
+/**
+* 创建 refine_trigger 工具（同步触发提炼）。
+*
+* ⚠️ 同步阻塞且真实消耗 LLM 额度：批量场景应走 refine_batch（异步排队即返）。
+*/
+function createRefineTriggerTool(client) {
+	return defineTool({
+		name: "refine_trigger",
+		description: [
+			"同步触发提炼：指定 file_id 提炼单个会话原文，或扫 status=new 批量提炼。",
+			"⚠️ 同步阻塞直到完成，且真实消耗 LLM 额度；批量任务优先用 refine_batch（异步）。",
+			"仅在用户明确要求立即提炼时调用。需 Admin Key。"
+		].join(" "),
+		parameters: {
+			file_id: {
+				type: "string",
+				description: "单个会话原文 id；省略则批量扫 status=new"
+			},
+			limit: {
+				type: "number",
+				description: "批量上限（默认 100）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.refineTriggerSync(a.file_id ?? null, a.limit);
+			if (!resp) return `[refine_trigger 失败：SGME Gateway 不可达、未配置 Admin Key，或 file_id 不存在${a.file_id ? `（"${a.file_id}"）` : ""}]`;
+			if (resp.triggered === "file") return `[refine_trigger 单文件完成：file_id=${resp.file_id} status=${resp.status ?? "?"} 记忆 ${resp.memories_count ?? "?"} 条${resp.error ? ` 错误=${resp.error}` : ""}]`;
+			return `[refine_trigger 批量完成：处理 ${resp.processed ?? "?"} 个文件，共产出记忆 ${resp.total_memories ?? "?"} 条]`;
+		}
+	});
+}
+/** 创建 refine_batch 工具（异步批量提炼，排队即返）。 */
+function createRefineBatchTool(client) {
+	return defineTool({
+		name: "refine_batch",
+		description: ["异步批量提炼：后台线程执行，立即返回排队结果（不阻塞对话）。", "⚠️ 会真实消耗 LLM 额度；仅在用户明确要求补提炼时调用。失败由服务端批扫兜底。需 Admin Key。"].join(" "),
+		parameters: {
+			file_id: {
+				type: "string",
+				description: "只提炼该文件；省略则批量扫 status=new"
+			},
+			limit: {
+				type: "number",
+				description: "批量上限（默认 100）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.triggerRefine({
+				file_id: a.file_id ?? null,
+				...a.limit !== void 0 ? { limit: a.limit } : {}
+			});
+			if (!resp) return "[refine_batch 失败：SGME Gateway 不可达或未配置 Admin Key，稍后重试]";
+			return `[refine_batch 已排队：status=${resp.status}（后台执行，可用 refine_status 查看进度）]`;
+		}
+	});
+}
+/** 创建 skill_materialize 工具（L3：字节保真落盘成真文件）。 */
+function createSkillMaterializeTool(client) {
+	return defineTool({
+		name: "skill_materialize",
+		description: [
+			"把 SGME 技能物化成真文件：字节保真写盘 dest_dir/<name>/SKILL.md，返回路径与 sha256。",
+			"⚠️ 落盘发生在 SGME **服务端**：dest_dir 是服务端可写路径、返回的 path 也是服务端路径。",
+			"SGME 与 agent 同机部署时可直接读该文件；跨机（如 agent 在 PC、SGME 在 NAS 容器）时",
+			"agent 本地拿不到产物，需两端共享挂载该目录才能访问——此时请改用 skill_get 取正文。"
+		].join(" "),
+		parameters: {
+			name: {
+				type: "string",
+				required: true,
+				description: "技能名（skill_search / skill_list 返回，kebab-case）"
+			},
+			dest_dir: {
+				type: "string",
+				required: true,
+				description: "目标目录（技能会写到 <dest_dir>/<name>/SKILL.md）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.skillMaterialize(a.name, a.dest_dir);
+			if (!resp) return `[skill_materialize 失败：技能不存在、dest_dir 非法或 Gateway 不可达（name="${a.name}"）]`;
+			return `[skill_materialize 已落盘（服务端路径）：${resp.path}\nsha256=${resp.sha256}]`;
+		}
+	});
+}
+/**
+* 创建 skill_put 工具（写入/覆盖技能）。
+*
+* ⚠️ 服务端会走 lint 门禁 + 三层查重，通过后落盘并 git commit 到技能源仓——
+* 属写侧治理动作，护栏写进描述。
+*/
+function createSkillPutTool(client) {
+	return defineTool({
+		name: "skill_put",
+		description: [
+			"写入/覆盖 SGME 技能（content 传 SKILL.md 全文，服务端自动解析 frontmatter）。",
+			"⚠️ 服务端过 lint 门禁 + 三层查重后落盘并提交技能源仓（同名同内容/同内容异名会 409 拒绝）。",
+			"仅在用户明确要求沉淀技能时调用；写入前建议先 skill_search 查重。需 Admin Key。",
+			"正文有 8K 上限（超限会被 lint 拦截，历史存量入库可传 skip_limits）。"
+		].join(" "),
+		parameters: {
+			name: {
+				type: "string",
+				required: true,
+				description: "技能名（kebab-case）"
+			},
+			content: {
+				type: "string",
+				required: true,
+				description: "SKILL.md 全文（含 frontmatter）"
+			},
+			skip_limits: {
+				type: "boolean",
+				description: "超限从拒绝降为警告（仅历史存量整体入库用，默认 false）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			if (!await client.skillPut(a.name, a.content, a.skip_limits ?? false)) return `[skill_put 失败：lint 门禁拦截 / 查重拒绝 / 未配置 Admin Key / Gateway 不可达（name="${a.name}"）]`;
+			return `[skill_put 已写入：name=${a.name}（落盘并提交技能源仓）]`;
+		}
+	});
+}
+/** 创建 skill_delete 工具（删除技能，默认软删）。 */
+function createSkillDeleteTool(client) {
+	return defineTool({
+		name: "skill_delete",
+		description: [
+			"删除 SGME 技能：默认软删（标记 deprecated，可恢复）；hard=true 物理删目录。",
+			"⚠️ 有入向 uses 引用时服务端会 409 拒绝，需 force=true 强制——属破坏性操作。",
+			"仅在用户明确要求删除时才调用。需 Admin Key。"
+		].join(" "),
+		parameters: {
+			name: {
+				type: "string",
+				required: true,
+				description: "技能名"
+			},
+			hard: {
+				type: "boolean",
+				description: "物理删除（默认 false=软删标记 deprecated）"
+			},
+			force: {
+				type: "boolean",
+				description: "强制清理入向引用后删除（默认 false）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			if (!await client.skillDelete(a.name, a.hard ?? false, a.force ?? false)) return `[skill_delete 失败：技能不存在、存在入向引用且未 force、未配置 Admin Key 或 Gateway 不可达（name="${a.name}"）]`;
+			return `[skill_delete 已完成：name=${a.name}（${a.hard ? "物理删除" : "软删 deprecated"}）]`;
+		}
+	});
+}
+/** 创建 skill_rename 工具（墓碑制改名）。 */
+function createSkillRenameTool(client) {
+	return defineTool({
+		name: "skill_rename",
+		description: [
+			"技能改名（墓碑制：写新名副本 + 旧位置留 superseded_by 墓碑 + 登记 tombstones.json，永不原地改名）。",
+			"⚠️ 需服务端 skills.source_dirs 指向 git 技能仓；新名已占用或过不了门禁会被拒。",
+			"仅在用户明确要求改名时调用。需 Admin Key。"
+		].join(" "),
+		parameters: {
+			name: {
+				type: "string",
+				required: true,
+				description: "旧技能名"
+			},
+			new_name: {
+				type: "string",
+				required: true,
+				description: "新技能名（kebab-case）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			if (!await client.skillRename(a.name, a.new_name)) return `[skill_rename 失败：旧名不存在 / 新名被占用 / 未配置 source_dirs / Gateway 不可达（"${a.name}" → "${a.new_name}"）]`;
+			return `[skill_rename 已完成：${a.name} → ${a.new_name}（旧位置留墓碑）]`;
 		}
 	});
 }
@@ -3283,7 +4063,7 @@ function apply(ctx, config) {
 		logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`);
 	}
 	registerTools({ tools: ctx.tools }, client, config.searchLimit, eventSubscriber);
-	logger.info("工具已注册：memory_search, wiki_search, wiki_pages, wiki_page, wiki_page_update, wiki_page_add, signal_*, idea_add, demand_create, project_register, role_*, memory_get/reject");
+	logger.info("工具已注册（39）：memory_search/answer/memory_get/memory_reject/memory_unreject, wiki_search/pages/page/page_add/page_update, inject, signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, skill_search/digest/get/list/coldstart/materialize/put/delete/rename, health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger");
 	const contextCtx = {
 		on: ctx.on,
 		logger: {

@@ -5,11 +5,20 @@
  * 复刻 context.ts 的真实注入循环（unnotifiedEvents → 注入 → markNotified）。
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { existsSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { resolve } from 'node:path'
 import { SgmeEventSubscriber } from '../src/events.js'
 import type { SgmeEvent } from '../src/events.js'
+
+// mock homedir → 项目内按用例唯一目录。
+//
+// 原实现直接用真实 homedir()，即 beforeEach 会删用户真实 `~/.sgme/` 下的队列文件
+// ——既污染真实个人目录，又是删除操作（宿主 node-safe-delete-shim 会拦递归删除）。
+// 硬约束见 events.test.ts 文件头；本文件靠「每用例独立目录、不删除」隔离。
+// 目录名带运行级唯一前缀，防复用上次运行的残留状态（见 events.test.ts 注释）。
+const runId = `${process.pid}-${Date.now()}`
+let caseHome = ''
+let caseSeq = 0
+vi.mock('node:os', () => ({ homedir: () => caseHome }))
 
 const AGENT_ID = 'b86-regression-test' // 独立 agentId，避免与其他测试文件持久化互相污染
 
@@ -43,9 +52,8 @@ describe('B86 回归：多轮 step 事件提醒不重复注入', () => {
 
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
-    // 清理上次运行的持久化队列（防跨运行/跨文件污染导致 unnotified 空）
-    const qp = join(homedir(), '.sgme', 'event-queue-' + AGENT_ID + '.json')
-    if (existsSync(qp)) rmSync(qp)
+    // 每用例独立 homedir（防跨用例/跨运行污染导致 unnotified 空）——不删旧目录
+    caseHome = resolve(process.cwd(), '.tmp-events-test', `${runId}-b86-${++caseSeq}`)
     sub = new SgmeEventSubscriber({ baseUrl: 'http://x', agentKey: '', agentId: AGENT_ID })
   })
 

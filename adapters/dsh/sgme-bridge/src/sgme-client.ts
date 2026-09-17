@@ -414,6 +414,126 @@ export interface MemoryRejectResponse {
   reject_reason?: string
 }
 
+/** POST /v1/memory/{id}/unreject 响应体（T-163 补齐；无 MCP 对端，data 即响应体）。 */
+export interface MemoryUnrejectResponse {
+  memory_id: string
+  status: string                   // active
+}
+
+// ---------- 聚合答案类型（T-149：跨会话计数/列举/时序推理） ----------
+
+/** POST /v1/answer 请求体（AnswerRequest）。 */
+export interface AnswerRequest {
+  query: string
+  question_type?: string | null    // temporal / aggregate / generic / null=自动分派
+  limit?: number                   // 检索候选条数，服务端再 min(limit, 20)
+}
+
+/** POST /v1/answer 响应体（比 search 多一步 LLM 答案合成）。 */
+export interface AnswerResponse {
+  answer: string
+  question_type: string
+  evidence?: Array<Record<string, unknown>>
+  provider?: string | null
+  usage?: Record<string, unknown> | null
+  prompt_meta?: Record<string, unknown> | null
+  candidates_used?: number
+}
+
+// ---------- 统计 / 配置（运维读侧，Admin Key） ----------
+
+/** GET /v1/admin/stats 响应体（http_payload 投影后的历史契约形态）。 */
+export interface StatsResponse {
+  memories: { total: number; archived: number }
+  raw_files: { total: number; new: number; refined: number; error: number; archived: number }
+  dimension_distribution: Record<string, number>
+  refinement: {
+    watermark_age_sec: number | null
+    last_refined_at: string | null
+    queue_depth: number
+  }
+  agents: Array<{ agent_id: string; role: string }>
+}
+
+/** GET /v1/admin/config 响应体（整体读带 writable_sections；单段读带 section）。 */
+export interface ConfigGetResponse {
+  config: Record<string, unknown>
+  writable_sections?: string[]
+  section?: string
+}
+
+/** PUT /v1/admin/config 请求体（单段或多段部分更新，合并后落盘热生效）。 */
+export interface ConfigUpdateRequest {
+  section: string | null           // null = 请求体 values 本身就是「段名 → 段内容」
+  values: Record<string, unknown>
+}
+
+/** PUT /v1/admin/config 响应体。 */
+export interface ConfigUpdateResponse {
+  status: string
+  config: Record<string, unknown>
+  section?: string
+}
+
+// ---------- 提炼监控（Admin Key） ----------
+
+/** POST /v1/admin/refine/trigger 响应体（同步提炼，file 或 batch 形态）。 */
+export interface RefineTriggerSyncResponse {
+  triggered: string                // "file" / "batch"
+  file_id?: string
+  status?: string
+  memories_count?: number
+  processed?: number
+  total_memories?: number
+  error?: string | null
+  [k: string]: unknown
+}
+
+/** GET /v1/admin/refine_runs 分页信封（契约 §5.5.2）。 */
+export interface RefineRunsResponse {
+  items: Array<Record<string, unknown>>
+  count: number
+  total: number
+  page: number
+  limit: number
+  generated_at?: string
+}
+
+// ---------- 信号批量清空（T-87，Admin Key） ----------
+
+/** POST /v1/admin/events/consume_all 响应体。 */
+export interface SignalClearResponse {
+  consumed: number
+  type: string | null
+  subscriber_id: string | null
+}
+
+// ---------- 技能写侧 + L3 物化 ----------
+
+/** POST /v1/skills/{name}/materialize 请求体（L3：字节保真落盘 dest_dir/<name>/SKILL.md）。 */
+export interface SkillMaterializeRequest {
+  dest_dir: string
+}
+
+/** POST /v1/skills/{name}/materialize 响应体。 */
+export interface SkillMaterializeResponse {
+  name: string
+  path: string
+  sha256: string
+}
+
+/**
+ * 技能写侧响应（PUT / DELETE / rename 共用）。
+ *
+ * 成功统一为 ``{ok: true, ...}``（具体字段随操作而异）；失败由非 2xx 状态码 +
+ * ``error.details`` 表达（lint_failed/referenced/conflict → 400/409），
+ * 客户端按 null 归一到「失败」。
+ */
+export interface SkillWriteResponse {
+  ok?: boolean
+  [k: string]: unknown
+}
+
 // ---------- 客户端实现 ----------
 
 /**
@@ -592,8 +712,17 @@ export class SgmeClient {
     }
   }
 
-  /** 统一 PUT 请求（T-86：设置当前角色用），返回 [data, error]。失败时 data=null。 */
-  private async put<T>(path: string, body: unknown): Promise<[T | null, string | null]> {
+  /**
+   * 统一 PUT 请求（T-86：设置当前角色用），返回 [data, error]。失败时 data=null。
+   *
+   * ``keyType`` 默认 agent（角色切换等读侧语义）；技能写侧（skill_put）需传 admin。
+   */
+  private async put<T>(
+    path: string,
+    body: unknown,
+    keyType: 'agent' | 'admin' = 'agent',
+  ): Promise<[T | null, string | null]> {
+    const key = keyType === 'agent' ? this.agentKey : this.adminKey
     const url = `${this.baseUrl}${path}`
     try {
       const ctrl = new AbortController()
@@ -602,12 +731,41 @@ export class SgmeClient {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': this.agentKey,
+          'X-API-Key': key,
         },
         body: JSON.stringify(body),
         signal: ctrl.signal,
         // 防代理劫持：不读环境变量代理（与 post/get/patch 一致）
         ...({} as Record<string, unknown>),
+      })
+      clearTimeout(timer)
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        return [null, `HTTP ${resp.status}: ${text.slice(0, 200)}`]
+      }
+      const data = (await resp.json()) as T
+      return [data, null]
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return [null, `fetch error: ${msg}`]
+    }
+  }
+
+  /**
+   * 统一 DELETE 请求（技能删除用），返回 [data, error]。失败时 data=null。
+   *
+   * query 参数（hard/force 等）由调用方拼进 path——服务端读的是 Query 而非 body。
+   */
+  private async del<T>(path: string, keyType: 'agent' | 'admin'): Promise<[T | null, string | null]> {
+    const key = keyType === 'agent' ? this.agentKey : this.adminKey
+    const url = `${this.baseUrl}${path}`
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs)
+      const resp = await fetch(url, {
+        method: 'DELETE',
+        headers: { 'X-API-Key': key },
+        signal: ctrl.signal,
       })
       clearTimeout(timer)
       if (!resp.ok) {
@@ -951,6 +1109,263 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] memoryReject failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 撤销「不采用」（POST /v1/memory/{id}/unreject，Agent Key；恢复为 active）。失败返回 null。 */
+  async memoryUnreject(memoryId: string): Promise<MemoryUnrejectResponse | null> {
+    const [data, err] = await this.post<MemoryUnrejectResponse>(
+      `/v1/memory/${encodeURIComponent(memoryId)}/unreject`,
+      {},
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] memoryUnreject failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 聚合答案（T-149：跨会话计数/列举/时序推理） ----------
+
+  /**
+   * 聚合答案（POST /v1/answer，Agent Key）。
+   *
+   * 比 search 多一步：检索候选 → 题型分派 → LLM 生成答案。会消耗 LLM 调用，
+   * 与 search 的纯检索不是一回事。LLM 全链不可用时服务端返回 503 → null。
+   */
+  async answer(
+    query: string,
+    questionType?: string | null,
+    limit?: number,
+  ): Promise<AnswerResponse | null> {
+    const [data, err] = await this.post<AnswerResponse>(
+      '/v1/answer',
+      { query, question_type: questionType ?? null, ...(limit !== undefined ? { limit } : {}) },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] answer failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 统计 / 配置（运维读侧，Admin Key） ----------
+
+  /** 统计：记忆/原始层计数 + 维度分布 + 提炼水位 + 注册 Agent（GET /v1/admin/stats）。失败返回 null。 */
+  async stats(): Promise<StatsResponse | null> {
+    const [data, err] = await this.get<StatsResponse>('/v1/admin/stats', 'admin')
+    if (err) {
+      console.warn(`[sgme-bridge] stats failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 读配置：整体读（section 省略）或单段读（GET /v1/admin/config[/{section}]）。失败返回 null。 */
+  async configGet(section?: string | null): Promise<ConfigGetResponse | null> {
+    const path = section
+      ? `/v1/admin/config/${encodeURIComponent(section)}`
+      : '/v1/admin/config'
+    const [data, err] = await this.get<ConfigGetResponse>(path, 'admin')
+    if (err) {
+      console.warn(`[sgme-bridge] configGet failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 更新配置段（POST /v1/admin/config，Admin Key；服务端 POST 与 PUT 等价）。
+   *
+   * ⚠️ 热生效 + 落盘 sgme.yaml——会真实改变服务端运行行为，非试验性调用。
+   * section=null 时 values 的键即段名（单段形态）。
+   */
+  async configUpdate(
+    section: string | null,
+    values: Record<string, unknown>,
+  ): Promise<ConfigUpdateResponse | null> {
+    const [data, err] = await this.post<ConfigUpdateResponse>(
+      '/v1/admin/config',
+      { section, values },
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] configUpdate failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 信号批量清空（T-87，Admin Key） ----------
+
+  /**
+   * 批量清空/全部消费未消费信号（POST /v1/admin/events/consume_all，Admin Key）。
+   *
+   * 幂等（二次调用 consumed=0）；subscriberId 传则同步推进该订阅者持久游标。
+   */
+  async signalClear(
+    eventType?: string | null,
+    subscriberId?: string | null,
+  ): Promise<SignalClearResponse | null> {
+    const params = new URLSearchParams()
+    if (eventType) params.set('type', eventType)
+    if (subscriberId) params.set('subscriber_id', subscriberId)
+    const qs = params.toString()
+    const [data, err] = await this.post<SignalClearResponse>(
+      `/v1/admin/events/consume_all${qs ? `?${qs}` : ''}`,
+      {},
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] signalClear failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 提炼监控（Admin Key） ----------
+
+  /**
+   * 同步触发提炼（POST /v1/admin/refine/trigger，Admin Key）。
+   *
+   * ⚠️ 同步阻塞：file_id 给定时处理单文件，否则批量扫 status=new。
+   * 会真实消耗 LLM 额度；批量场景优先用 triggerRefine（异步排队即返）。
+   */
+  async refineTriggerSync(
+    fileId?: string | null,
+    limit?: number,
+  ): Promise<RefineTriggerSyncResponse | null> {
+    const [data, err] = await this.post<RefineTriggerSyncResponse>(
+      '/v1/admin/refine/trigger',
+      { file_id: fileId ?? null, ...(limit !== undefined ? { limit } : {}) },
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] refineTriggerSync failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 提炼记录分页（GET /v1/admin/refine_runs，Admin Key）。
+   *
+   * 做「提炼状态」观测用——服务端 refine_status 只有 MCP 侧无 HTTP 端点，
+   * 故以本端点 + stats 近似（默认不做 status 过滤，error/running 默认可见）。
+   */
+  async refineRuns(opts?: {
+    page?: number
+    limit?: number
+    stage?: string | null
+    status?: string | null
+    since?: string | null
+    until?: string | null
+  }): Promise<RefineRunsResponse | null> {
+    const params = new URLSearchParams()
+    if (opts?.page !== undefined) params.set('page', String(opts.page))
+    if (opts?.limit !== undefined) params.set('limit', String(opts.limit))
+    if (opts?.stage) params.set('stage', opts.stage)
+    if (opts?.status) params.set('status', opts.status)
+    if (opts?.since) params.set('since', opts.since)
+    if (opts?.until) params.set('until', opts.until)
+    const qs = params.toString()
+    const [data, err] = await this.get<RefineRunsResponse>(
+      `/v1/admin/refine_runs${qs ? `?${qs}` : ''}`,
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] refineRuns failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 技能 L3 物化 + 写侧（ST-36 M3） ----------
+
+  /**
+   * 技能 L3 物化：字节保真写盘 dest_dir/<name>/SKILL.md（POST /v1/skills/{name}/materialize，Agent Key）。
+   *
+   * 不走 LLM 转写；返回落盘路径与 sha256，供脚本执行场景取真文件。
+   */
+  async skillMaterialize(name: string, destDir: string): Promise<SkillMaterializeResponse | null> {
+    const [data, err] = await this.post<SkillMaterializeResponse>(
+      `/v1/skills/${encodeURIComponent(name)}/materialize`,
+      { dest_dir: destDir },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillMaterialize failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 写入/覆盖技能（PUT /v1/admin/skills/{name}，Admin Key；SKILL.md 全文自动解析 frontmatter）。
+   *
+   * ⚠️ 服务端过 lint 门禁 + 三层查重，会落盘并 git commit 到技能源仓。
+   */
+  async skillPut(
+    name: string,
+    content: string,
+    skipLimits = false,
+  ): Promise<SkillWriteResponse | null> {
+    const [data, err] = await this.put<SkillWriteResponse>(
+      `/v1/admin/skills/${encodeURIComponent(name)}`,
+      { content, skip_limits: skipLimits },
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillPut failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 删除技能（DELETE /v1/admin/skills/{name}，Admin Key）。
+   *
+   * 默认软删（deprecated 标记）；hard=true 物理删目录。有入向 uses 引用且
+   * 未 force → 409 被拒。
+   */
+  async skillDelete(
+    name: string,
+    hard = false,
+    force = false,
+  ): Promise<SkillWriteResponse | null> {
+    const params = new URLSearchParams()
+    if (hard) params.set('hard', 'true')
+    if (force) params.set('force', 'true')
+    const qs = params.toString()
+    const [data, err] = await this.del<SkillWriteResponse>(
+      `/v1/admin/skills/${encodeURIComponent(name)}${qs ? `?${qs}` : ''}`,
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillDelete failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 技能改名（POST /v1/admin/skills/{name}/rename，Admin Key；墓碑制永不原地改名）。
+   *
+   * 写新名副本 + 旧位置留 superseded_by 墓碑 + 登记 tombstones.json。
+   * 需服务端 skills.source_dirs 指向 git 技能仓。
+   */
+  async skillRename(name: string, newName: string): Promise<SkillWriteResponse | null> {
+    const [data, err] = await this.post<SkillWriteResponse>(
+      `/v1/admin/skills/${encodeURIComponent(name)}/rename`,
+      { new_name: newName },
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillRename failed: ${err}`)
       return null
     }
     return data

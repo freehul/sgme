@@ -2,11 +2,24 @@
  * events.test.ts — SSE 事件订阅器测试（2026-08-18）。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { rmSync } from 'node:fs'
+import { resolve } from 'node:path'
 
-// mock homedir → tmp（避免污染真实 ~/.sgme）
-const tmpDir = '/tmp/dsh-sgme-test'
-vi.mock('node:os', () => ({ homedir: () => tmpDir }))
+// mock homedir → 项目内、按用例唯一的目录（避免污染真实 ~/.sgme）
+//
+// ⚠️ 两条硬约束（2026-09-18 实锤，改这里必读）：
+// 1. **不要写 `/tmp/...`**：Windows 下会被解析为 `<盘符>:\tmp`（系统临时区）。
+// 2. **不要用 `rmSync(dir, { recursive: true })` 清理**：宿主会注入
+//    node-safe-delete-shim 拦截 Node 的递归删除（无论路径在哪），
+//    整条 `pnpm run verify` 会被判为批量删除而失败。
+//    → 隔离改由「每用例独立 homedir、不删除」实现（残留目录已被 .gitignore 覆盖）。
+//
+// ⚠️ 目录名必须带**运行级唯一前缀**：早期只用 case-<n>，而 caseSeq 每次运行都从 1 起，
+//    于是复用上次运行的目录、读到残留的 notifiedIds，用例一开始就「已提醒」→ 断言失败
+//    （2026-09-18 实测：b86 4 例 + events 2 例挂，根因即此）。
+const runId = `${process.pid}-${Date.now()}`
+let caseHome = ''
+let caseSeq = 0
+vi.mock('node:os', () => ({ homedir: () => caseHome }))
 
 import { SgmeEventSubscriber, type SgmeEvent } from '../src/events.js'
 
@@ -27,8 +40,8 @@ const ev2: SgmeEvent = { event_id: 'e2', type: 'anomaly_warn', source: 'health',
 describe('SgmeEventSubscriber', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
-    // 清理持久化队列文件（跨用例隔离）
-    rmSync(tmpDir, { recursive: true, force: true })
+    // 每用例独立 homedir（跨用例 + 跨运行隔离）——不删旧目录，见文件头约束
+    caseHome = resolve(process.cwd(), '.tmp-events-test', `${runId}-case-${++caseSeq}`)
   })
 
   it('解析 SSE 事件并入队', async () => {
