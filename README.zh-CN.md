@@ -2,7 +2,7 @@
 
 # SGME — 拾光记忆引擎
 
-换 AI，不失忆。SGME 全面接管你的记忆、知识库与技能库——任意智能体，无缝切换，共享同一个大脑。
+换 AI，不失忆。SGME 全面接管你的记忆、技能库与 WIKI 知识库——跨会话、多智能体共享记忆，AI 会一直记得你的偏好。
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)

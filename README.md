@@ -2,7 +2,7 @@
 
 # SGME — ShiGuang Memory Engine
 
-Switch AIs, keep everything. SGME takes over your memory, your wiki, and your skills — seamless agent switching, one shared brain.
+Switch AIs, keep everything. SGME takes over your memory, skills, and wiki knowledge base — memory is shared across sessions and multiple agents, so your AI always remembers your preferences.
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
