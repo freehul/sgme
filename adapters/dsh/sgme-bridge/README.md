@@ -13,6 +13,9 @@
 | **记忆检索** | `memory_search` 检索 L1.5 标签化记忆池（带溯源） |
 | **知识库检索** | `wiki_search` 检索 L2 场景知识库（比记忆更精炼） |
 | **技能按需注入** | `skill_search` / `skill_digest` / `skill_get` / `skill_list` / `skill_coldstart` 五工具（v0.4.0）——对齐 SGME 1.1.0 范式：技能不预载，按需检索 → 拉全文注入 |
+| **聚合答案** | `answer`（v0.5.0）——跨会话计数/列举/时序推理（「我一共提过几次 X」），比记忆检索多一步 LLM 答案合成 |
+| **运维观测** | `health` / `stats` / `config_get` / `config_update` / `refine_status` / `refine_trigger` / `refine_batch` / `signal_clear`（v0.5.0）——连接自检、记忆水位、提炼监控与配置读写 |
+| **技能写侧** | `skill_materialize`（L3 字节保真落盘成真文件）/ `skill_put` / `skill_delete` / `skill_rename`（v0.5.0） |
 | **主动关怀** | `signal_pull` / `signal_claim` / `signal_ack` 三工具，消费 SGME 关怀信号——信号消费 = 主动关怀，谁消费谁标记 |
 | **DSH 规则注入** | 读取 `~/.dsh/dsg-rules/rules.md` 注册为 `dsg:rules` system section（order -70）——身份/铁律/SGME手册/偏好/环境进稳定层，前缀缓存全命中（v0.2，2026-08-16） |
 
@@ -101,7 +104,7 @@ syncOnTurnEnd: true
 
 ## 用法
 
-接入后，DSH 自动拥有 24 个工具：
+接入后，DSH 自动拥有 39 个工具（v0.5.0 起与 SGME 1.2.2 能力对齐）：
 
 **检索与知识库（6）**
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
@@ -130,10 +133,31 @@ syncOnTurnEnd: true
 - `demand_create(title, content, priority, project_id)` — 待办池（跨项目统一，会话中遇到要办的事主动登记）；
 - `project_register(project_id, path, name, git_repo, milestone)` — 项目池（用户立项时登记）。
 
-**角色与记忆纠错（6）**
+**角色与记忆纠错（8）**
 - `inject(mode)` — 按场景模式拉画像；
 - `role_list()` / `role_assemble(role_id, inject_mode)` / `role_active_get()` / `role_active_set(role_id)` — 角色模板（换皮不换芯）；
-- `memory_get(memory_id)` / `memory_reject(memory_id, reason)` — 记忆详情与纠错。
+- `memory_get(memory_id)` / `memory_reject(memory_id, reason)` / `memory_unreject(memory_id)` — 记忆详情、纠错与撤销纠错。
+
+**聚合答案（1，v0.5.0 对齐 T-149）**
+- `answer(query, question_type, limit)` — 聚合型问题直接拿答案（跨会话计数/列举/时序推理）；比 `memory_search` 多一步 LLM 答案合成，适合「我一共提过几次 X」「Y 是什么时候改的」。
+
+**运维观测与配置（7，v0.5.0）**
+- `health()` — 连接自检：版本 / LLM / 提炼水位与停摆 / 向量水位；
+- `stats()` — 记忆与原始层计数、维度分布、提炼水位、已注册 agent；
+- `config_get(section)` / `config_update(section, values)` — 读/写服务端运行时配置（热生效）；
+- `refine_status(limit, status)` / `refine_trigger(file_id, limit)` / `refine_batch(file_id, limit)` — 提炼监控与触发（前者只读；后两者**消耗 LLM 额度**）。
+
+**信号清理与自进化（2，v0.5.0）**
+- `signal_clear(signal_type, subscriber_id)` — 批量清空未消费信号（幂等）；
+- `wiki_evolve_trigger(session_key, min_rounds)` — 手动补触发自进化（每轮已自动触发）。
+
+**技能物化与写侧（4，v0.5.0 对齐 ST-36 M3）**
+- `skill_materialize(name, dest_dir)` — L3 字节保真落盘 `<dest_dir>/<name>/SKILL.md`，返回路径 + sha256（要按真文件路径执行脚本时用）；
+- `skill_put(name, content, skip_limits)` — 写入/覆盖技能（过 lint 门禁 + 三层查重后落盘并提交技能源仓）；
+- `skill_delete(name, hard, force)` — 删除技能（默认软删；有入向引用需 force）；
+- `skill_rename(name, new_name)` — 墓碑制改名。
+
+> ⚠️ 写侧工具（`config_update` / `skill_put` / `skill_delete` / `skill_rename` / `refine_*` / `signal_clear`）需 **Admin Key**，且会真实改变服务端状态或消耗额度——工具描述内已加护栏，仅在用户明确要求时调用。
 
 自进化（W4）：每个 turn 结束自动触发 SGME 经验回写（`/v1/wiki/evolve/trigger`，evolveEnabled 默认 true）——会话中的踩坑/新流程由 LLM 提炼后追加到知识库手册「踩坑记录」，多 agent 共享。
 
