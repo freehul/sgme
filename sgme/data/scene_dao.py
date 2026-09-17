@@ -295,6 +295,11 @@ def list_scenes_page(
     items = [dict(r) for r in rows]
     # related_memories（2026-08-18 T-55 后续：WebUI 场景详情展示关联记忆）：
     # 每场景关联记忆前 N 条（content 截断 + 维度标签），批量查询避免 N+1
+    # T-171（2026-09-18）：必须过滤 status='rejected'——此前无任何状态过滤，
+    # 已拒绝记忆的正文（截断 120 字）经 GET /v1/admin/scenes 泄漏给调用端。
+    # 依据：docs/design/SGME-架构设计-v1.0.md「rejected·expired 不参与查询/注入/时间线」。
+    # rejected 之外的态（expired / archived）本次**刻意不过滤**，属独立待裁决项，
+    # 改动面严格限定为 rejected 一种状态。
     if items:
         _RELATED_LIMIT = 5
         scene_ids = [it["scene_id"] for it in items]
@@ -305,6 +310,7 @@ def list_scenes_page(
             FROM scene_memories sm
             JOIN memories m ON m.memory_id = sm.memory_id
             WHERE sm.scene_id IN ({ph})
+              AND m.status != 'rejected'
             ORDER BY sm.scene_id, m.updated_at DESC
             """,
             scene_ids,
