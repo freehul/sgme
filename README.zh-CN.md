@@ -262,16 +262,6 @@ config/              # 运行时配置
 ui/                  # Vue 3 + Vite 前端（cd ui && npm ci && npm run build → ui/dist，由 FastAPI 静态托管）
 ```
 
-## 设计文档
-
-| 文档 | 内容 |
-|---|---|
-| [SGME-架构设计-v0.9.md](docs/design/SGME-架构设计-v0.9.md) | **架构总纲（v0.9 文档整理合并版）**——数据流/双库/维度/注入/鉴权/备份 + 接口契约/数据模型/LLM降级链/模板引擎/提示词/分词并入 |
-| [SGME-实施变更记录-v0.9.md](docs/design/SGME-实施变更记录-v0.9.md) | **实施变更记录（B 系列）**——每次改动的背景/方案/验证/教训，兼运维手册 |
-| [SGME-评测基线-PRD-v0.1.md](docs/design/SGME-评测基线-PRD-v0.1.md) | #32 提炼质量评测基线 |
-| [SGME-评测框架设计-v0.1.md](docs/design/SGME-评测框架设计-v0.1.md) | #32 评测框架 |
-| [SGME-L0文件格式-v0.1.md](docs/design/SGME-L0文件格式-v0.1.md) | 原始层文件格式/增量段 |
-
 ## 合规声明
 
 本项目为 Python 自研实现，仅借鉴 [TencentDB-Agent-Memory](https://github.com/Tencent/TencentDB-Agent-Memory)（MIT License）的设计思想（分层蒸馏、冲突提炼四动作、BM25+向量+RRF、heat 热度管理），**未直接引用其代码或提示词文本**。本项目代码遵循 MIT License（见 [LICENSE](LICENSE)）。

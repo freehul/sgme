@@ -268,16 +268,6 @@ config/              # runtime configuration
 ui/                  # Vue 3 + Vite frontend (cd ui && npm ci && npm run build → ui/dist, served by FastAPI)
 ```
 
-## Design Docs
-
-| Doc | Content |
-|---|---|
-| [SGME-架构设计-v0.9.md](docs/design/SGME-架构设计-v0.9.md) | **Architecture master doc (v0.9 consolidated edition)** — data flow / dual DB / dimensions / injection / auth / backup, with API contracts / data model / LLM fallback chain / template engine / prompts / tokenization merged in |
-| [SGME-实施变更记录-v0.9.md](docs/design/SGME-实施变更记录-v0.9.md) | **Implementation change log (B series)** — background/solution/verification/lessons of every change; doubles as an ops manual |
-| [SGME-评测基线-PRD-v0.1.md](docs/design/SGME-评测基线-PRD-v0.1.md) | #32 extraction-quality evaluation baseline |
-| [SGME-评测框架设计-v0.1.md](docs/design/SGME-评测框架设计-v0.1.md) | #32 evaluation framework |
-| [SGME-L0文件格式-v0.1.md](docs/design/SGME-L0文件格式-v0.1.md) | L0 raw-layer file format / incremental segments |
-
 ## Compliance
 
 This project is a self-built Python implementation. It only borrows design ideas from [TencentDB-Agent-Memory](https://github.com/Tencent/TencentDB-Agent-Memory) (MIT License) — layered distillation, four-action conflict resolution, BM25+vector+RRF retrieval, and heat management — **without directly reusing its code or prompt texts**.
