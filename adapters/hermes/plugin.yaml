@@ -1,5 +1,5 @@
 name: sgme
-version: "1.2.2"  # 版本口径跟随 SGME 版本（1.2.2 = MCP 41 工具能力面对齐批次），见 README
+version: "1.2.3"  # 版本口径跟随 SGME 版本（1.2.3 = 技能消费统计批次 T-174），见 README
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理（40 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"
 license: MIT

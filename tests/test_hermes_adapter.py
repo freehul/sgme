@@ -827,14 +827,14 @@ def test_httpx_missing_returns_structured_error(monkeypatch):
 
 
 def test_plugin_yaml_version_follows_sgme_version():
-    """version 口径归一：plugin.yaml 版本 == SGME 版本（1.2.2）。"""
+    """version 口径归一：plugin.yaml 版本 == SGME 版本（动态比对，不锁死具体值）。"""
     import sgme
 
     text = (REPO_ROOT / "adapters" / "hermes" / "plugin.yaml").read_text(encoding="utf-8")
     matched = re.search(r'^version:\s*"?([^"\s]+)"?', text, re.M)
     assert matched, "plugin.yaml 缺 version 字段"
     version = matched.group(1)
-    assert version == sgme.__version__ == "1.2.2", f"plugin.yaml 版本 {version} 应跟随 SGME {sgme.__version__}"
+    assert version == sgme.__version__, f"plugin.yaml 版本 {version} 应跟随 SGME {sgme.__version__}"
 
 
 def test_install_json_written_without_plaintext_key(tmp_path, monkeypatch):
