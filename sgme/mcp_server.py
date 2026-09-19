@@ -85,6 +85,40 @@ def _get_tool_io_limiter() -> anyio.CapacityLimiter:
 # 允许外部注入 app 状态（create_app 时设置）
 _app_state: Dict[str, Any] = {}
 
+
+def _usage_caller(ctx: "Context | None") -> str:
+    """工具实现内反查调用方（T-174；照 ``append`` 的 PR#2 先例）。
+
+    鉴权 key 由 ``ApiKeyMiddleware`` 写入 ``request.state.api_key`` → 反查 agent_id；
+    直调（无 HTTP 上下文）或反查失败 → ``unknown``（统计不得阻断主链路）。
+    """
+    try:
+        req = ctx.request_context.request if ctx is not None else None
+        key = getattr(req.state, "api_key", None) if req is not None else None
+        store = _app_state.get("key_store")
+        if store is None:
+            return "unknown"
+        return store.resolve_agent_id(key) or ("anonymous" if key is None else "unknown")
+    except Exception:
+        return "unknown"
+
+
+def _record_search_usage(query: str, hits, ctx: "Context | None") -> None:
+    """T-174：检索层消费记录（含命中数/首条命中；中间件不记 search——拿不到结果）。"""
+    try:
+        from sgme.operations.skill_usage import record_skill_usage, search_note
+
+        conn = _app_state.get("mem_conn")
+        if conn is None:
+            return
+        top = hits[0].get("name") if hits else None
+        record_skill_usage(
+            conn, "search", "-", _usage_caller(ctx),
+            note=search_note(query, len(hits or []), top),
+        )
+    except Exception:
+        pass  # 统计是旁路：任何失败不得影响检索
+
 # Trae 通知宽容补丁的幂等开关（ST-23⑤，进程级只打一次）
 _NOTIFICATION_PATCHED: bool = False
 
@@ -245,6 +279,31 @@ class ApiKeyMiddleware:
         client = scope.get("client")
         ip = client[0] if client else None
         record_usage(self._conn, "mcp", name, caller, ip)
+        self._record_skill_call(name, params, caller, ip)
+
+    def _record_skill_call(self, name, params, caller, ip) -> None:
+        """T-174：技能消费统计（技能名维度，MCP 侧）。
+
+        - 记可由「工具名 + 参数」推导的三层（digest / get / materialize）；
+          ``skill_search`` 要记命中结果，由工具实现侧记（见 operations/skill_usage.py）
+        - 物化层额外记目标目录**类型**（Windows 盘符路径落到 Linux 服务端 = 缺陷信号）
+        - 全静默：统计是旁路，任何失败不得影响请求
+        """
+        try:
+            if self._conn is None:
+                return
+            from sgme.operations.skill_usage import (
+                extract_mcp_middleware_call,
+                record_skill_usage as _record,
+            )
+
+            args = params.get("arguments") if isinstance(params, dict) else None
+            parsed = extract_mcp_middleware_call(name, args)
+            if parsed:
+                layer, skill, note = parsed
+                _record(self._conn, layer, skill, caller, note=note, ip=ip)
+        except Exception:
+            pass  # 统计是旁路：任何失败不得影响请求
 
 
 def run_mcp_server(mcp, key_store, host: str = "127.0.0.1", port: int = 9913, conn=None) -> None:
@@ -1241,7 +1300,7 @@ def build_mcp_server():
 
     @mcp.tool()
     @tool
-    def skill_search(query: str, limit: int = 5) -> str:
+    def skill_search(query: str, limit: int = 5, ctx: Context | None = None) -> str:
         """技能检索（ST-36 M2）：BM25+向量融合 → [{name,score,source}]，先搜后取。"""
         import json
         import sqlite3
@@ -1260,6 +1319,7 @@ def build_mcp_server():
             )
         except Exception as e:
             return json.dumps({"error": f"技能检索失败: {e}"}, ensure_ascii=False)
+        _record_search_usage(query, hits, ctx)
         return json.dumps(hits, ensure_ascii=False)
 
     @mcp.tool()

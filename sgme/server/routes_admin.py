@@ -985,6 +985,46 @@ def admin_usage(
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     return run_operation(query_usage_operation, mem_conn, days=days, kind=kind)
 
+
+# ---------- T-174：GET /v1/admin/skills/usage（技能消费统计） ----------
+# ⚠️ 注册顺序：必须在 /v1/admin/skills/{name}（技能 CRUD，本文件下方）之前，
+# 否则 "usage" 会被当成技能名命中动态路由（同 /v1/skills/search 先例）。
+
+
+@router.get("/v1/admin/skills/usage")
+def admin_skills_usage(
+    request: Request,
+    days: int = 30,
+    layer: str | None = None,
+    skill: str | None = None,
+    caller: str | None = None,
+    limit: int = 200,
+    _: str = Depends(require_admin_key),
+):
+    """技能消费统计（T-174）：近 N 天按「层 × 技能 × 调用方」聚合（次数降序）。
+
+    - days ∈ [1, 400]（默认 30）；layer ∈ {search, digest, get, materialize}
+    - skill / caller 为精确过滤；limit ∈ [1, 1000]（默认 200）
+    - 数据源 skill_usage_daily（memory.db 日聚合）：HTTP 中间件（digest/get）+
+      HTTP 端点（search/materialize）+ MCP 中间件（digest/get/materialize）+
+      MCP 工具（search）四处埋点，回答「四级披露哪一层在被用、哪个技能被取用、
+      谁在用」（api_usage_daily 只到端点/工具粒度，技能名被归一化丢弃）
+    - item.note = 该组最近一次诊断摘要（检索词与命中数 / 物化目标目录类型；
+      真实路径不入库）
+    """
+    from sgme.operations.skill_usage import query_skill_usage as query_skill_usage_operation
+
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    return run_operation(
+        query_skill_usage_operation,
+        mem_conn,
+        days=days,
+        layer=layer,
+        skill=skill,
+        caller=caller,
+        limit=limit,
+    )
+
 # ---------- POST /v1/admin/skills/sync（0.8 ST-11：skills-hub copy 模式真实同步） ----------
 
 class SkillsSyncRequest(BaseModel):

@@ -102,6 +102,25 @@ def skills_coldstart(
     return run_operation(cold_start_operation, cfg, wiki_conn)
 
 
+def _record_skill_usage(
+    request: Request, layer: str, skill: str, note: str | None = None
+) -> None:
+    """T-174：技能消费记录（静默旁路；caller 由 UsageMiddleware 写入 scope state）。
+
+    ``search`` / ``materialize`` 归本文件记（需要响应结果 / 请求体语义），
+    ``digest`` / ``get`` 由中间件按路由模板记——同一次调用只落一条。
+    """
+    try:
+        from sgme.operations.skill_usage import caller_from_state, record_skill_usage
+
+        conn = getattr(request.app.state, "mem_conn", None)
+        if conn is None:
+            return
+        record_skill_usage(conn, layer, skill, caller_from_state(request.state), note=note)
+    except Exception:
+        pass  # 统计是旁路：任何失败不得影响请求
+
+
 # ---------- GET /v1/skills/search （技能检索，须先于 /{name} 注册） ----------
 
 @router.get("/v1/skills/search")
@@ -123,6 +142,14 @@ def skills_search(
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
     skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
     items = search_skills_operation(q, cfg, wiki_conn, limit=limit, skills_conn=skills_conn)
+    # T-174：检索层消费记录（含命中数/首条命中；中间件不记 search——它拿不到结果）
+    try:
+        from sgme.operations.skill_usage import search_note
+
+        top = items[0].get("name") if items else None
+        _record_skill_usage(request, "search", "-", note=search_note(q, len(items), top))
+    except Exception:
+        pass  # 统计是旁路
     return {"query": q, "count": len(items), "items": items}
 
 # ---------- GET /v1/skills/{name}/digest （L1 摘要） ----------
@@ -174,7 +201,15 @@ def materialize_skill(
     字节保真铁律：不走 LLM 转写；成功记遥测日志一条（name/sha/ts）。
     dest_dir 缺失 → pydantic 422（框架层把关，镜像 idea_add 必填语义）。
     """
+    from sgme.operations.skill_usage import dest_kind
     from sgme.operations.skills import materialize as materialize_operation
+
+    # T-174：物化层消费记录（记调用事实与目标目录**类型**，不记真实路径）。
+    # Windows 盘符路径被跨机传进来时，Linux 服务端会当相对路径造出 /app/D:/…
+    # 垃圾目录——note=dest=windows 就是该缺陷的可观测信号。
+    _record_skill_usage(
+        request, "materialize", name, note=f"dest={dest_kind(payload.dest_dir)}"
+    )
 
     cfg = request.app.state.cfg
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)

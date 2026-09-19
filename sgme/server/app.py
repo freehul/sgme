@@ -495,6 +495,10 @@ class UsageMiddleware:
         if self._conn is None or scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
+        # T-174：caller 在请求进入时解析并写入 scope state——技能端点（请求处理中）
+        # 要用它补记，等到 response.start 再写就来不及了。
+        caller = self._resolve_caller(scope)
+        scope.setdefault("state", {})["usage_caller"] = caller
         recorded = False
 
         async def send_wrapper(message):
@@ -502,27 +506,15 @@ class UsageMiddleware:
             if not recorded and message.get("type") == "http.response.start":
                 recorded = True
                 try:
-                    self._record(scope)
+                    self._record(scope, caller)
                 except Exception:
                     pass  # 统计是旁路：任何失败不得影响响应
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
 
-    def _record(self, scope) -> None:
-        from sgme.operations.usage import record_usage
-
-        # name 归一化：路由模板（如 /v1/admin/demands/{demand_id}）。
-        # FastAPI 内置 catch-all（/{full_path:path}）捕获全部未匹配请求——
-        # 归为 "(unmatched)" 语义标记，防任意路径冲击统计行数（UUID 归一化的
-        # 同一目的：不可控输入不得无界增长行数）。
-        route_path = getattr(scope.get("route"), "path", None)
-        if route_path == "/{full_path:path}":
-            name = "(unmatched)"
-        elif route_path:
-            name = route_path
-        else:
-            name = scope.get("path") or "?"
+    def _resolve_caller(self, scope) -> str:
+        """X-API-Key → agent_id（env 主 key 落 default）；无 key → anonymous。"""
         key = None
         for h_name, h_value in scope.get("headers") or []:
             if h_name == b"x-api-key":
@@ -536,9 +528,53 @@ class UsageMiddleware:
                 caller = None
         if not caller:
             caller = "anonymous" if key is None else "unknown"
+        return caller
+
+    def _record(self, scope, caller: str) -> None:
+        from sgme.operations.usage import record_usage
+
+        # name 归一化：路由模板（如 /v1/admin/demands/{demand_id}）。
+        # FastAPI 内置 catch-all（/{full_path:path}）捕获全部未匹配请求——
+        # 归为 "(unmatched)" 语义标记，防任意路径冲击统计行数（UUID 归一化的
+        # 同一目的：不可控输入不得无界增长行数）。
+        route_path = getattr(scope.get("route"), "path", None)
+        if route_path == "/{full_path:path}":
+            name = "(unmatched)"
+        elif route_path:
+            name = route_path
+        else:
+            name = scope.get("path") or "?"
+        # caller 已在请求进入时解析（__call__ → _resolve_caller）：技能端点在请求
+        # 处理中就要用它补记 search/materialize 两层的 caller。
         client = scope.get("client")
         ip = client[0] if client else None
         record_usage(self._conn, "http", name, caller, ip)
+        self._record_skill(scope, name, route_path, caller, ip)
+
+    def _record_skill(self, scope, name, route_path, caller, ip) -> None:
+        """T-174：技能消费统计（技能名维度）+ caller 透传给技能端点。
+
+        - 只记可由「路由模板 + 路径参数」推导的两层（digest / get）；
+          ``search``（要命中结果）与 ``materialize``（要请求体语义）由业务侧记，
+          同一次调用只产生一条记录（见 operations/skill_usage.py 埋点分工）
+        - 把 caller 写进 scope state：技能端点补记时可复用，免二次反查
+        - 全静默：统计是旁路，任何失败不得影响响应
+        """
+        try:
+            if self._conn is None:
+                return
+            from sgme.operations.skill_usage import (
+                extract_middleware_skill_call,
+                record_skill_usage,
+            )
+
+            scope.setdefault("state", {})["usage_caller"] = caller
+            parsed = extract_middleware_skill_call(route_path, scope.get("path_params"))
+            if parsed:
+                layer, skill = parsed
+                record_skill_usage(self._conn, layer, skill, caller, ip=ip)
+        except Exception:
+            pass  # 统计是旁路：任何失败不得影响响应
 
 
 # ---------- 后台定时任务（T12 Tier0 每日摘要 / T15 心跳） ----------
