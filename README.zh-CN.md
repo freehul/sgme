@@ -209,6 +209,7 @@ dsh plugin --profile web add github:freehul/sgme
 | WorkBuddy | SOUL.md（身份 + 行为准则） |
 | Claude Code | CLAUDE.md |
 | DeepSeek Harness (DSH) | AGENTS.md（项目级自动加载） |
+| Doubao Work（豆包工作） | SKILL.md（豆包工作技能机制；官方适配器 `adapters/doubao`，install.py 部署） |
 | 通用 / 其它（走 MCP 通用接入） | AGENTS.md（项目级自动加载） |
 
 ## 服务化部署（Windows 服务）
