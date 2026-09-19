@@ -1,0 +1,87 @@
+# SGME 官方适配器能力面对账表
+#
+# 定位：SGME 每新增一个 agent 可消费能力（= 一个 MCP 工具）就新增一个基准项；
+#       三个官方适配器（hermes / dsh / doubao）**平级**，必须在同一批工作内评估对齐。
+#       背景见《SGME-接入契约》§2 与 Backlog ST-42。
+#
+# 用法：
+#   python scripts/adapter_parity.py            # 日常检查（未声明缺口 = 失败；待补齐 = 警告）
+#   python scripts/adapter_parity.py --strict   # 发布门禁（待补齐同样算失败）
+#   python scripts/adapter_parity.py --json     # 机器可读输出
+#
+# 纪律：**每一处缺口都必须显式落一处声明**，否则视为漂移（失败）。三种声明：
+#   exemptions  —— 永久豁免：能力语义上不该由该适配器承担，必须写理由
+#   passthrough —— 通配通道代偿：如 mcp_raw 直调，必须写通道与理由
+#   pending     —— 已登记待补齐：必须带 Backlog 任务号；--strict 下同样失败，
+#                  因此「pending 清零」是相关任务的验收标准，不能长期挂账
+#
+# 名字口径：除 aliases 外，所有比对都用「剥掉适配器前缀后的规范名」。
+version: 1
+
+# ---------- 基准：唯一真源 = MCP 工具面 ----------
+baseline:
+  file: sgme/mcp_server.py
+  pattern: '\{"name":\s*"([a-z_]+)"'
+  note: MCP 工具面即 SGME agent 能力全集
+
+# ---------- 三个平级适配器：解析规则 ----------
+adapters:
+  hermes:
+    file: adapters/hermes/__init__.py
+    pattern: '"name":\s*"([a-z_]+)"'
+    strip_prefix: sgme_          # 工具名统一带 sgme_ 前缀
+    note: memory.provider 槽位 Python 插件（Hermes 常驻）
+  dsh:
+    file: adapters/dsh/sgme-bridge/lib/index.js
+    pattern: 'name:\s*"([a-z_]+)"'
+    exclude: [sgme]              # /sgme 斜杠命令（lib/index.js 内注册），非工具
+    note: Cordis TS 原生插件（dsh 常驻）
+  doubao:
+    file: adapters/doubao/scripts/sgme_client.py
+    pattern: '^    def ([a-z_]+)\('
+    exclude: [__init__, _http, _mcp]   # 内部方法（`_` 开头的名字一律不计）
+    note: Skill + Python 客户端；工具面 = 客户端方法 + CLI 命令（SKILL.md 指示 agent 调用）
+    # 第二接口面：豆包 agent 实际是按 SKILL.md 调 CLI 的，
+    # 方法存在但 CLI 没入口 = 能力黑洞（T-172 实测过这个坑），故单独对账
+    secondary_face:
+      file: adapters/doubao/scripts/sgme_client.py
+      pattern: '"cli":\s*"([a-z0-9_-]+)"'
+      name_rule: dash                  # 基准名 x_y → CLI 名 x-y
+
+# ---------- 名称不同但语义等价的映射 ----------
+aliases:
+  search:
+    hermes: sgme_memory_search
+    dsh: memory_search
+    doubao: search
+
+# ---------- 永久豁免（能力语义上不该由该适配器承担）----------
+exemptions:
+  agent_onboarding:
+    hermes: provider 槽位接入，无 MCP 握手环节，「连接即发现」引导工具无落点
+    dsh: 原生插件接入，无 MCP 握手环节，同上
+  append:
+    hermes: sync_turn 每轮自动入库（含 tool 去重）；agent 手写 L0 会破坏查重与幂等语义
+    dsh: session-sync 自动入库；手写 L0 破坏查重与幂等（T-168 定）
+
+# ---------- 通配通道代偿 ----------
+# 形如：
+#   doubao:
+#     channel: mcp_raw
+#     tools: [some_tool]
+#     reason: "..."
+passthrough: {}
+
+# ---------- 基线之外的自有工具（登记，不算漂移）----------
+extra:
+  hermes: [conversation_search]      # 查 sessions 原始层，/v1/search 的 sessions scope
+  dsh: []
+  doubao: [events_pull, events_after, wiki_raw, mcp_raw, describe]
+
+# ---------- 已登记待补齐（必须带任务号）----------
+# 形如：
+#   hermes:
+#     task: T-171
+#     tools: [some_tool]
+#     note: "..."
+pending: {}

@@ -18,6 +18,40 @@ if [ "${GIT_PUSH_SKIP_SECRET_SCAN:-}" = "1" ]; then
 fi
 
 ROOT="$(git rev-parse --show-toplevel)"
+
+# ============================================================
+# 适配器能力面对账（T-170 / ST-42）
+# 三个平级官方适配器（hermes / dsh / doubao）对 MCP 工具面（=SGME 能力全集）
+# 必须无未声明漂移。历史教训：SGME 一路加能力，Hermes 适配器停了 20 天无人发现。
+# 逃生：GIT_PUSH_SKIP_PARITY=1 git push …（留痕）
+# ============================================================
+if [ "${GIT_PUSH_SKIP_PARITY:-}" = "1" ]; then
+    echo "[pre-push] GIT_PUSH_SKIP_PARITY=1 —— 已跳过适配器对账（留痕）" >&2
+else
+    PARITY_PY=""
+    for cand in "$ROOT/.venv/Scripts/python.exe" "$ROOT/.venv/bin/python" \
+                "$(command -v python3 2>/dev/null)" "$(command -v python 2>/dev/null)"; do
+        if [ -n "$cand" ] && [ -e "$cand" ]; then PARITY_PY="$cand"; break; fi
+    done
+    if [ -z "$PARITY_PY" ]; then
+        echo "[pre-push] ⚠ 找不到 python，跳过适配器对账（留痕）" >&2
+    else
+        # 注意：ROOT 是 MSYS 风格路径（/d/…），不能当参数喂给原生 python.exe
+        # （原生程序不做路径转换，会解析成 C:\d\… 而报「文件不存在」）——
+        # 先 cd（bash 内建，认 MSYS 路径）再用相对路径调用。
+        PARITY_OUT="$(cd "$ROOT" && "$PARITY_PY" scripts/adapter_parity.py 2>&1)"
+        PARITY_RC=$?
+        if [ "$PARITY_RC" -ne 0 ]; then
+            echo "[pre-push] ❌ 适配器能力面对账未通过——存在未声明漂移：" >&2
+            printf '%s\n' "$PARITY_OUT" | sed -n '/失败/,$p' >&2
+            echo "    处理方式：实现该能力，或在 scripts/adapter_parity_map.yaml 里显式声明" >&2
+            echo "    （exemptions 写理由 / passthrough 写通道 / pending 挂任务号）" >&2
+            exit 1
+        fi
+        echo "[pre-push] 适配器能力面对账通过"
+    fi
+fi
+
 . "$ROOT/.githooks/lib_scan.sh"
 
 ZERO=0000000000000000000000000000000000000000
