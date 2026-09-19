@@ -63,6 +63,45 @@ check 1 "本机用户目录拦截" "p = '${WIN_PATH}'"
 check 1 "真实姓名拦截" "author: ${NAME}"
 
 echo ""
+echo "=== 适配器对账钩子（pre-push）行为 ===（B189 沙箱审查实锤）"
+FAKEBIN="$TMP/fakebin"
+mkdir -p "$FAKEBIN"
+
+# 造假解释器：退出码可控（模拟「脚本报漂移」与「解释器不可用」两类）
+make_fake_py() {
+    _n="$1"; _rc="$2"
+    printf '#!/bin/sh\nexit %s\n' "$_rc" > "$FAKEBIN/$_n"
+    chmod +x "$FAKEBIN/$_n"
+    printf '%s' "$FAKEBIN/$_n"
+}
+
+# check_hook <期望退出码> <场景名> <解释器> <期望输出子串>
+check_hook() {
+    _want_rc="$1"; _name="$2"; _py="$3"; _want_out="$4"
+    _out="$( cd "$ROOT" && SGME_PARITY_PY="$_py" sh "$ROOT/.githooks/pre-push" </dev/null 2>&1 )"
+    _rc=$?
+    if [ "$_rc" = "$_want_rc" ] && printf '%s' "$_out" | grep -q "$_want_out"; then
+        PASS=$((PASS + 1)); printf '  [ok]   %s\n' "$_name"
+    else
+        FAIL=$((FAIL + 1))
+        printf '  [FAIL] %s（期望 rc=%s 且输出含「%s」，实得 rc=%s）\n' "$_name" "$_want_rc" "$_want_out" "$_rc"
+    fi
+}
+
+# 退出码 1 = 真漂移 → 必须拦截；其它码 = 环境问题 → 必须放行留痕，
+# 否则新克隆未建 venv 时用户的第一次推送会被锁死（progressive-skill 教训）。
+check_hook 1 "漂移（脚本 rc=1）必须拦截"            "$(make_fake_py drift 1)"   "未声明漂移"
+check_hook 0 "解释器不可用（rc=49）必须放行留痕"     "$(make_fake_py nostore 49)" "未能执行"
+check_hook 0 "解释器缺失（rc=127）必须放行留痕"      "$(make_fake_py noexec 127)" "未能执行"
+if [ -x "$ROOT/.venv/Scripts/python.exe" ] || [ -x "$ROOT/.venv/bin/python" ]; then
+    VPY="$ROOT/.venv/Scripts/python.exe"
+    [ -x "$VPY" ] || VPY="$ROOT/.venv/bin/python"
+    check_hook 0 "正常解释器：对账真实通过" "$VPY" "对账通过"
+else
+    printf '  [skip] 本机无项目 venv，跳过「正常解释器」用例\n'
+fi
+
+echo ""
 echo "=== 结果：通过 ${PASS} / 失败 ${FAIL} / 共 $((PASS + FAIL)) ==="
 [ "$FAIL" = "0" ] || exit 1
 exit 0
