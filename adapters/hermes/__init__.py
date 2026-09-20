@@ -863,7 +863,7 @@ class SGMEProvider(MemoryProvider):
                     "title": {"type": "string", "description": "待办标题（一句概括）"},
                     "content": {"type": "string", "description": "详情（可选）"},
                     "priority": {"type": "integer", "description": "优先级 0-100（默认 50）"},
-                    "project_id": {"type": "string", "description": "关联项目 id（自由标记，可选）"},
+                    "project_id": {"type": "string", "description": "关联项目 id（自由标记，一律大写，可选）"},
                     "source_ref": {"type": "string", "description": "溯源标识（可选）"},
                 },
                 "required": ["title"],
@@ -872,11 +872,11 @@ class SGMEProvider(MemoryProvider):
         {
             "name": "sgme_project_register",
             "description": "登记/创建项目到 SGME 项目池（仅当用户主动提出立项/创建时调用；upsert，二次登记=更新）。"
-                           "project_id 用纯英文；新建时 path 必填。需管理员 Key。",
+                           "project_id 用纯英文且一律大写；新建时 path 必填。需管理员 Key。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "项目 id（纯英文，如 sgme）"},
+                    "project_id": {"type": "string", "description": "项目 id（纯英文，一律大写，如 DHVS）"},
                     "path": {"type": "string", "description": "项目本地路径（新建时必填）"},
                     "name": {"type": "string", "description": "项目显示名（可选）"},
                     "git_repo": {"type": "string", "description": "git 仓库地址（可选）"},

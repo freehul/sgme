@@ -102,8 +102,8 @@ asyncio.run(main())
 | `config_get` | 读取运行时配置（l1/l2/refine/search/backup） | `config_get(section='refine')` |
 | `config_update` | 更新配置段（热生效 + 落盘） | 跨机部署远程设配置 |
 | `idea_add` | 创意池写入（用户主动提出的创意） | `idea_add(title, content)` |
-| `demand_create` | 待办池写入（跨项目统一待办，可带 project_id；支持 origin_idea_id 升格） | `demand_create(title, project_id?)` |
-| `project_register` | 项目池登记（用户主动立项的项目元数据） | `project_register(name, ...)` |
+| `demand_create` | 待办池写入（跨项目统一待办，可带 project_id——**一律大写**，如 DHVS；支持 origin_idea_id 升格） | `demand_create(title, project_id?)` |
+| `project_register` | 项目池登记（用户主动立项的项目元数据；project_id 纯英文且一律大写） | `project_register(project_id, path, ...)` |
 | `signal_pull` | 拉取未消费信号（care_*/memory_updated/anomaly_warn） | 对话开始 `signal_pull()` |
 | `signal_claim` | 原子认领信号（谁消费谁标记，防重复打扰） | `signal_claim(event_id)` |
 | `signal_ack` | 信号消费回执（claimed/acked/failed） | 关怀完成后 `signal_ack(event_id)` |
