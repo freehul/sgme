@@ -13,6 +13,8 @@
 7. 过滤与排序：status 多值 / project_id / q 子串 / since-until / sort=priority
 8. project_meta 软校验：表未就绪放行；表就绪后未知 project_id → 400
 9. 升格链路：origin_idea_id 只存不校验（跨模块耦合留集成阶段）
+10. **project_id 大小写归一**（2026-09-20 约定）：写入侧统一大写、过滤值同归一、
+    非 project_id 引用字段（origin_idea_id / source_ref）保持原样、读取侧大小写不敏感兜底
 
 fixture 范式参照 tests/test_operations_health.py 与 tests/test_routes_admin.py。
 """
@@ -819,3 +821,99 @@ def test_demands_does_not_touch_memories_table(client, mem_conn):
     _create(client, title="升格", origin_idea_id="mem-1")
     after = mem_conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     assert before == after
+
+
+# ==================== 10. project_id 大小写归一（2026-09-20 用户定） ====================
+# 约定：project_id 全系统一律大写（与 project_meta 主键口径一致）。
+# 写入侧归一（operations 层）→ 读取侧大小写不敏感兜底（demand_dao.project_exists）。
+# 背景：待办池里曾同时存在 'sgme' 与 'SGME'，过滤会漏召、项目池会重复登记。
+
+def test_create_demand_uppercases_project_id(client, mem_conn):
+    """新建待办：project_id 传小写 → 返回与落库均为大写。"""
+    body = _create(client, title="大小写归一", project_id="sgme")
+    assert body["project_id"] == "SGME"
+    stored = demand_dao.get_demand(mem_conn, body["demand_id"])
+    assert stored is not None and stored["project_id"] == "SGME"
+
+
+def test_patch_demand_uppercases_project_id(client, mem_conn):
+    """PATCH 改绑项目：同样归一为大写。"""
+    did = _create(client, title="x")["demand_id"]
+    resp = client.patch(
+        f"{BASE}/{did}", json={"project_id": "dhvs"}, headers=ADMIN_HEADERS
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["project_id"] == "DHVS"
+    stored = demand_dao.get_demand(mem_conn, did)
+    assert stored is not None and stored["project_id"] == "DHVS"
+
+
+def test_list_demands_filter_normalized_to_upper(client, mem_conn):
+    """过滤：查询参数也归一——用小写过滤能命中大写条目，反之亦然。"""
+    _seed(mem_conn, 1, project_id="SGME", title="大写项目")
+    _seed(mem_conn, 1, project_id="OTHER", title="别的项目")
+
+    lower = client.get(f"{BASE}?project_id=sgme", headers=ADMIN_HEADERS)
+    assert lower.status_code == 200, lower.text
+    assert [i["project_id"] for i in lower.json()["items"]] == ["SGME"]
+
+    upper = client.get(f"{BASE}?project_id=SGME", headers=ADMIN_HEADERS)
+    assert upper.status_code == 200, upper.text
+    assert [i["project_id"] for i in upper.json()["items"]] == ["SGME"]
+
+
+def test_null_project_id_still_unbinds(client):
+    """回归：显式 null 仍表示解绑，归一逻辑不得吞掉 None 语义。"""
+    did = _create(client, title="x", project_id="SGME")["demand_id"]
+    resp = client.patch(
+        f"{BASE}/{did}", json={"project_id": None}, headers=ADMIN_HEADERS
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["project_id"] is None
+
+
+def test_non_project_ref_fields_keep_case(client):
+    """边界：origin_idea_id / source_ref 不做大写归一（UUID 与 Backlog 引用大小写有语义）。"""
+    body = _create(
+        client,
+        title="溯源字段",
+        origin_idea_id="mem-AbC-123",
+        source_ref="SGME-Backlog:T-175",
+    )
+    assert body["origin_idea_id"] == "mem-AbC-123"
+    assert body["source_ref"] == "SGME-Backlog:T-175"
+
+
+def test_project_register_uppercases_id_and_upserts(client, mem_conn):
+    """项目池登记：小写 id 归一为大写；重复登记（大写）为更新，不产生第二条。"""
+    _make_project_meta(mem_conn)
+    first = client.post(
+        "/v1/admin/projects",
+        json={"project_id": "demoprj", "path": "<projects-root>/demoprj"},
+        headers=ADMIN_HEADERS,
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["project"]["project_id"] == "DEMOPRJ"
+    assert first.json()["created"] is True
+
+    again = client.post(
+        "/v1/admin/projects",
+        json={"project_id": "DEMOPRJ", "path": "<projects-root>/demoprj"},
+        headers=ADMIN_HEADERS,
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["created"] is False
+    rows = mem_conn.execute(
+        "SELECT COUNT(*) FROM project_meta WHERE project_id LIKE 'demoprj'"
+    ).fetchone()[0]
+    assert rows == 1
+
+
+def test_project_exists_case_insensitive_and_no_warning(client, mem_conn):
+    """读取侧兜底：project_meta 存大写、待办传小写 → 认作同一项目，无「未登记」warning。"""
+    _seed_project(mem_conn, "DHVS")  # project_meta 内为大写
+    assert demand_dao.project_exists(mem_conn, "dhvs") is True  # COLLATE NOCASE
+
+    body = _create(client, title="小写输入", project_id="dhvs")
+    assert body["project_id"] == "DHVS"
+    assert not any("未登记" in w for w in body["warnings"])

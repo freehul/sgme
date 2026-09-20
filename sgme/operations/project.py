@@ -36,8 +36,11 @@ from typing import Any
 from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult
 from sgme.data import project_dao
 
-# project_id = 项目名（纯英文，与 <projects-root> 目录名一致，数据模型 §二 project_meta）。
-# 同时是主键与未来跨项目检索的关联键，因此限制为目录名安全字符集。
+# project_id = 项目名（纯英文，**一律大写**——DHVS / AIRDT / SGME，数据模型 §二 project_meta）。
+# 与 <projects-root> 下的项目目录名按**大小写不敏感**对应：定位项目目录靠 project_meta.path
+# 字段（独立存储），不用 project_id 拼路径，故大写归一不影响目录定位。
+# 归一规则：写入侧统一 .upper()（本模块 _normalize_project_id + demand/idea 侧的 project_id 入参），
+# 读取侧 project_exists 走大小写不敏感匹配兜底。大小写不同视作同一项目。
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 PROJECT_ID_MAX_LEN = 64
 
@@ -69,20 +72,25 @@ def _now_iso() -> str:
 # ---------- 参数归一化 / 校验 ----------
 
 def _normalize_project_id(raw: Any) -> str:
-    """校验并归一化 project_id。
+    """校验并归一化 project_id（**去空白 + 转大写**）。
 
     Args:
         raw: 原始入参（可能是 None / 非字符串）。
 
     Returns:
-        去空白后的合法 project_id。
+        去空白并转大写后的合法 project_id（如 ``dhvs`` → ``DHVS``）。
 
     Raises:
         InvalidArgs: 缺失、非字符串、超长或含非法字符（→ 400 ERR_INVALID_ARGS）。
+
+    Note:
+        大写归一是全系统约定（2026-09-20 用户定）：project_id 是项目池主键，
+        大小写不同会造成同一项目两条登记（``dhvs`` vs ``DHVS``）与待办过滤漏召，
+        故在写入侧就统一，读取侧另有大小写不敏感兜底（demand_dao.project_exists）。
     """
     if raw is None or not isinstance(raw, str) or not raw.strip():
         raise InvalidArgs("project_id 必填（项目名，纯英文）")
-    value = raw.strip()
+    value = raw.strip().upper()
     if len(value) > PROJECT_ID_MAX_LEN:
         raise InvalidArgs(
             f"project_id 过长（最长 {PROJECT_ID_MAX_LEN} 字符）: {len(value)}"

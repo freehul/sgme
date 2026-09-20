@@ -196,17 +196,27 @@ def _parse_text(raw: Any, name: str, required: bool = False) -> str | None:
     return val
 
 
-def _parse_nullable_ref(raw: Any, name: str) -> str | None:
+def _parse_nullable_ref(raw: Any, name: str, upper: bool = False) -> str | None:
     """可空引用类字段（project_id / origin_idea_id / source_ref）。
 
     显式 null 或空串一律归一为 None（= 解绑），非字符串 → 400。
+
+    Args:
+        raw: 原始入参。
+        name: 字段名（错误文案用）。
+        upper: True 时再转大写——**只对 project_id 用**：project_id 是全系统约定
+            一律大写的关联键（与 project_meta 主键口径一致，2026-09-20 定）；
+            origin_idea_id（UUID 小写）与 source_ref（如 ``SGME-Backlog:T-xx``，
+            大小写有语义）必须保持原样。
     """
     if raw is None:
         return None
     if not isinstance(raw, str):
         raise InvalidArgs(f"{name} 必须是字符串或 null: {raw!r}")
     val = raw.strip()
-    return val or None
+    if not val:
+        return None
+    return val.upper() if upper else val
 
 
 # ---------- 投影与软校验 ----------
@@ -309,7 +319,7 @@ def list_demands(
     order_val = _parse_order(order)
     since_val = _parse_ts(since, "since")
     until_val = _parse_ts(until, "until")
-    project_val = _parse_nullable_ref(project_id, "project_id")
+    project_val = _parse_nullable_ref(project_id, "project_id", upper=True)
     q_val = _parse_text(q, "q")
 
     rows, total = demand_dao.list_demands(
@@ -375,7 +385,7 @@ def create_demand(
     content = _parse_text(b.get("content"), "content") or ""
     status = _parse_status(b["status"]) if b.get("status") is not None else DEFAULT_STATUS
     priority = _parse_priority(b.get("priority"))
-    project_id = _parse_nullable_ref(b.get("project_id"), "project_id")
+    project_id = _parse_nullable_ref(b.get("project_id"), "project_id", upper=True)
     # origin_idea_id 刻意不校验存在性：创意侧（memories.custom_flag）归 ST-14，
     # 跨模块存在性耦合留到集成阶段（边界约定，见模块 docstring）
     origin_idea_id = _parse_nullable_ref(b.get("origin_idea_id"), "origin_idea_id")
@@ -455,7 +465,9 @@ def update_demand(
             raise InvalidArgs("priority 不可为 null（0-100 整数）")
         changes["priority"] = _parse_priority(b["priority"])
     if "project_id" in b:
-        changes["project_id"] = _parse_nullable_ref(b["project_id"], "project_id")
+        changes["project_id"] = _parse_nullable_ref(
+            b["project_id"], "project_id", upper=True,
+        )
     if "source_ref" in b:
         changes["source_ref"] = _parse_nullable_ref(b["source_ref"], "source_ref")
 

@@ -1069,7 +1069,7 @@ def build_mcp_server():
     ) -> str:
         """登记/创建项目（用户主动立项；upsert，二次登记=更新）。
 
-        project_id 纯英文（必填）；新建时 path 必填（NOT NULL 列）。
+        project_id 纯英文且一律大写（必填）；新建时 path 必填（NOT NULL 列）。
         """
         import json
 
