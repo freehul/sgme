@@ -147,7 +147,7 @@
 
 - **创意池**（`ideas` 维度，WebUI 创意池页 / `POST /v1/admin/ideas` / MCP `idea_add`）：创意**只由用户主动提出**才记录，**提炼 LLM 不再自动打标**（prompts/l1_extraction.txt 已移除创意识别）；删除由用户主动（WebUI 删除或提出由 agent 删，软删可恢复）
 - **待办池**（`demands` 表，WebUI 待办页 / `/v1/admin/demands*` / MCP `demand_create`）：**跨项目统一待办**——不管哪个项目的待办都加进来，带 `project_id` 标记可过滤；`project_id` 是**自由标记**（未登记项目也允许，只回 warning）；状态机 pending→done 两态 + `created_at`/`resolved_at` 时间戳；**由 agent 主动维护（2026-08-18 强化）**：会话中遇到用户要办的事 / 项目要做的任务 / 后续待跟进事项，**主动调 `demand_create` 登记**（title 一句概括 + `project_id` 关联项目；跨项目统一收进待办池），不要只留在对话里；完成时标记 done
-- **项目池**（`project_meta` 表，WebUI 项目页 / `/v1/admin/projects*` / MCP `project_register`）：项目**由用户主动提出立项/创建**，agent 执行；可从创意升格（promote）
+- **项目池**（`project_meta` 表，WebUI 项目页 / `/v1/admin/projects*` / MCP `project_register`）：项目**由用户主动提出立项/创建**，agent 执行；可从创意升格（promote）。**project_id 一律用大写**（DHVS / AIRDT / SGME），大小写不同视作不同项目——写待办前先查 `/v1/admin/projects` 确认登记值，勿凭记忆或凭项目目录名大小写填写
 
 ### 动手纪律（报备）
 
