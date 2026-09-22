@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -110,6 +111,70 @@ def _commit_all(source_dir: Path, message: str) -> bool:
         return False
     _run_git(source_dir, ["commit", "-m", f"skills: {message}"], check=True)
     return True
+
+
+# ---------- 工作区 .gitignore（技能正文 + 资产目录白名单） ----------
+
+# 允许作为技能资产的顶层目录（与 WORKSPACE_GITIGNORE 白名单一致）。
+# 这三类正是 gates.py 承认的资产模型：references=引用资料、scripts=可执行脚本、
+# assets=素材；其余目录/杂项一律不入库。
+ASSET_DIRS: tuple[str, ...] = ("references", "scripts", "assets")
+
+# 技能工作区 .gitignore 内容。
+#
+# 语义：`*` 忽略一切 → `!*/` 让目录可进入 → 再按白名单放行 SKILL.md 与三类资产目录。
+#
+# 为什么从「仅 SKILL.md 单文件」放开（2026-09-22 ST-45 / B195）：
+# **收窄会冻结新增资产**——`.gitignore` 只影响「未跟踪」文件，存量 references/
+# （全库 438 技能中 245 个引用、远端校验显示 244 个文件真实存在）因 git 已跟踪
+# 故不受影响，于是形成「声明单文件、实际半多文件、新增进不来」的半冻结态。
+# 白名单仍挡住杂项（__pycache__/tmp/*.log 等），保留防护意图。
+WORKSPACE_GITIGNORE = (
+    "*\n"
+    "!*/\n"
+    "!*/SKILL.md\n"
+    "!*/references/**\n"
+    "!*/scripts/**\n"
+    "!*/assets/**\n"
+)
+
+
+def ensure_workspace_gitignore(source_dir: Path) -> bool:
+    """确保 ``<source_dir>/.gitignore`` 为当前白名单版；内容变更时写回并提交。
+
+    存量工作区持的是旧「单文件」版且**已 commit**，必须**幂等升级**——原实现
+    （``skills_hub._ensure_worktree``）是 ``if not exists()``，只覆盖首次初始化，
+    新白名单对既有部署永不生效。本函数是**升级的唯一触发点**，由写侧调用
+    （``write_skill`` / ``write_skill_file``）。
+
+    ⚠️ 刻意**不挂在 sync 路径**上：远端 hub 仓仍是旧版 .gitignore 时，sync 每次
+    拉取都会把本地打回旧版、再升级又产生提交，``from_remote`` / ``to_remote`` 的
+    「无变更 → noop」幂等契约双双失效（2026-09-22 实测 ``test_skills_hub_sync``
+    两个用例挂）。升级随第一次写侧 PUT 落库、随后续 ``to_remote`` 推到远端，
+    之后远端即新版，不再反复。
+
+    Returns:
+        True=本次发生了内容升级（旧版 → 白名单版）；False=已是目标内容。
+    """
+    path = Path(source_dir) / ".gitignore"
+    try:
+        current = path.read_text(encoding="utf-8")
+    except OSError:
+        current = None
+
+    upgraded = current != WORKSPACE_GITIGNORE
+    if upgraded:
+        path.write_text(WORKSPACE_GITIGNORE, encoding="utf-8")
+
+    tracked = _run_git(source_dir, ["ls-files", "--error-unmatch", ".gitignore"]).returncode == 0
+    # 初始化（未被跟踪）必须提交，否则 .gitignore 形同虚设；升级也要即时提交，
+    # 免得这次 PUT 的资产被 .gitignore 变更混批或漏批。
+    if upgraded or not tracked:
+        _run_git(source_dir, ["add", "-f", ".gitignore"], check=True)
+        note = ("技能工作区 .gitignore 升级为资产白名单（ST-45）" if upgraded
+                else "初始化技能工作区 .gitignore")
+        _run_git(source_dir, ["commit", "-m", f"chore: {note}"], check=True)
+    return upgraded
 
 
 # ---------- 记录收集 ----------
@@ -282,10 +347,158 @@ def write_skill(
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / SKILL_FILE).write_text(render_skill_md(meta, body), encoding="utf-8")
         _ensure_repo_identity(target)
+        # ST-45：确保工作区 .gitignore 为资产白名单版（存量工作区幂等升级）
+        ensure_workspace_gitignore(target)
+        # ST-45：引用完整性提示（只提示不拦；判据与理由见 _ASSET_REF_RE 注释）
+        warnings.extend(_dangling_asset_warnings(skill_dir, body))
         committed = _commit_all(target, f"write {name}")
 
     return {"ok": True, "warnings": warnings, "committed": committed,
             "path": str(skill_dir / SKILL_FILE)}
+
+
+# ---------- 资产文件写入（ST-45：参考/脚本/素材随技能分发） ----------
+
+# 正文里「资产路径」的粗匹配（references / scripts / assets 三类白名单目录）。
+# ⚠️ 仅用于**提示**（warning），不可据此硬拦：全库 438 技能中有 245 个正文出现这类
+# 字样，其中大量是占位与文档性提及（`xxx.md`、`0X-xxx.md`、`manual/`、`markdown/x.md`），
+# 硬拦会大面积误伤（同 gates.py 规则 5 的「按目录实体判据避免误伤」）。真断链由远端
+# hook 兜底拦截，本函数只让调用方**看得见**。
+_ASSET_REF_RE = re.compile(r"(?:references|scripts|assets)/[A-Za-z0-9._\-/]+")
+
+
+def _asset_usage(skill_dir: Path) -> tuple[int, int]:
+    """统计技能目录下白名单资产的 ``(总字节, 文件数)``（供配额判定）。"""
+    total = 0
+    count = 0
+    for d in ASSET_DIRS:
+        base = skill_dir / d
+        if not base.is_dir():
+            continue
+        for f in base.rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    continue
+                count += 1
+    return total, count
+
+
+def _dangling_asset_warnings(skill_dir: Path, body: str) -> list[str]:
+    """正文引用的资产路径若不存在 → 返回提示清单（**只提示不拦**，ST-45）。"""
+    if not body:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for rel in _ASSET_REF_RE.findall(body):
+        if rel in seen:
+            continue
+        seen.add(rel)
+        if not (skill_dir / rel).exists():
+            out.append(
+                f"引用完整性提示：正文出现 {rel}，但技能目录下无此文件——"
+                f"若确为引用，请用 PUT /v1/admin/skills/{skill_dir.name}/files/{rel} 补上；"
+                "若只是文档性提及可忽略")
+    return out
+
+
+def _validate_asset_relpath(relpath: str) -> str:
+    """校验并归一资产相对路径；非法抛 ``ValueError``。
+
+    规则（从严，防路径穿越）：
+    - 必须是相对路径（禁绝对路径与盘符；反斜杠归一为正斜杠）
+    - 禁 ``..`` 与空段
+    - 首段必须在 :data:`ASSET_DIRS` 白名单内（references / scripts / assets）
+
+    Returns:
+        归一后的相对路径（如 ``references/notes.md``）。
+    """
+    raw = str(relpath or "").strip().replace("\\", "/")
+    if not raw:
+        raise ValueError("资产路径不能为空")
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        raise ValueError(f"资产路径必须是相对路径: {relpath!r}")
+    parts = [p for p in raw.split("/") if p not in ("", ".")]
+    if not parts:
+        raise ValueError(f"资产路径非法: {relpath!r}")
+    if ".." in parts:
+        raise ValueError(f"资产路径不得包含 ..（防路径穿越）: {relpath!r}")
+    if parts[0] not in ASSET_DIRS:
+        raise ValueError(
+            f"资产目录不在白名单（仅允许 {'、'.join(ASSET_DIRS)}）: {parts[0]!r}")
+    return "/".join(parts)
+
+
+def write_skill_file(name: str, relpath: str, content: str, source_dirs: list[str],
+                     max_file_bytes: int = 0, max_total_bytes: int = 0,
+                     max_files: int = 0) -> dict:
+    """写入技能资产文件（ST-45）：路径白名单 → 配额 → 落盘 → commit。
+
+    与 :func:`write_skill` 同返回口径（ok / code / violations），供
+    ``PUT /v1/admin/skills/{name}/files/{relpath}`` 调用。
+
+    Args:
+        name: 技能名；目标技能必须**已存在**（先 PUT SKILL.md）。
+        relpath: 相对技能目录的路径，如 ``references/notes.md``。
+        content: 文件全文（UTF-8 文本）。
+        source_dirs: 技能源目录列表（取首个命中该技能者）。
+        max_file_bytes: 单文件字节上限；``<=0`` 表示不限制。
+        max_total_bytes: 该技能白名单资产**合计**字节上限；``<=0`` 表示不限制。
+        max_files: 该技能白名单资产文件数上限；``<=0`` 表示不限制。
+
+    Returns:
+        成功 ``{"ok": True, "path", "bytes", "committed"}``；
+        失败 ``{"ok": False, "code", "violations"}``，code ∈
+        ``invalid_name`` / ``invalid_path`` / ``not_found`` / ``quota_exceeded``。
+    """
+    try:
+        safe_name = validate_name(name)
+    except ValueError as e:
+        return _reject("invalid_name", [f"非法技能名: {e}"])
+
+    try:
+        rel = _validate_asset_relpath(relpath)
+    except ValueError as e:
+        return _reject("invalid_path", [str(e)])
+
+    target = _resolve_source_dir(safe_name, source_dirs)
+    if target is None:
+        return _reject("not_found", [f"技能不存在，请先写入 SKILL.md: {safe_name}"])
+
+    text = content if isinstance(content, str) else ""
+    nbytes = len(text.encode("utf-8"))
+    if max_file_bytes and nbytes > max_file_bytes:
+        return _reject(
+            "quota_exceeded",
+            [f"单资产超限：{nbytes} 字节 > {max_file_bytes} 字节"
+             "（配置项 skills.asset_quota.max_file_bytes）"])
+
+    dest = target / safe_name / rel
+    if max_total_bytes or max_files:
+        # 覆盖已存在文件时，旧大小要扣掉，否则重复写入会自我膨胀
+        prev_bytes = dest.stat().st_size if dest.is_file() else 0
+        used_bytes, used_count = _asset_usage(target / safe_name)
+        new_bytes = used_bytes - prev_bytes + nbytes
+        new_count = used_count + (0 if dest.is_file() else 1)
+        if max_total_bytes and new_bytes > max_total_bytes:
+            return _reject(
+                "quota_exceeded",
+                [f"资产总量超限：{new_bytes} 字节 > {max_total_bytes} 字节"
+                 "（配置项 skills.asset_quota.max_total_bytes）"])
+        if max_files and new_count > max_files:
+            return _reject(
+                "quota_exceeded",
+                [f"资产文件数超限：{new_count} > {max_files}"
+                 "（配置项 skills.asset_quota.max_files）"])
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+
+    _ensure_repo_identity(target)
+    ensure_workspace_gitignore(target)
+    committed = _commit_all(target, f"asset {safe_name}/{rel}")
+    return {"ok": True, "path": str(dest), "bytes": nbytes, "committed": committed}
 
 
 # ---------- 删除 ----------

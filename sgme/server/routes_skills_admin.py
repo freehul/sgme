@@ -9,6 +9,7 @@
 端点（读侧 GET 归 routes_skills.py，另一代理并行开发；本路由在 app.py 中
 先于 routes_admin 注册——同路径写端点由治理版优先接管）：
     PUT    /v1/admin/skills/{name}               写入（{meta,body} 或 {content} 自动解析）
+    PUT    /v1/admin/skills/{name}/files/{path}  资产写入（ST-45；references/scripts/assets 白名单目录）
     DELETE /v1/admin/skills/{name}?hard=&force=  删除（默认软删；入向引用未 force → 409）
     POST   /v1/admin/skills/{name}/rename        {new_name} 改名（墓碑制，永不原地改名）
 
@@ -26,6 +27,11 @@ from sgme.server.app import api_error, require_admin_key
 
 router = APIRouter()
 
+# 资产配额默认值（可由 cfg.skills.asset_quota.* 覆盖，见 config/sgme.yaml）
+DEFAULT_ASSET_MAX_BYTES = 256 * 1024            # 单文件 256 KiB
+DEFAULT_ASSET_TOTAL_BYTES = 2 * 1024 * 1024     # 单技能资产合计 2 MiB
+DEFAULT_ASSET_MAX_FILES = 100                   # 单技能资产文件数
+
 
 def _source_dirs(request: Request) -> list[str]:
     """取配置的技能源目录列表（cfg.skills.source_dirs）；未配置返回空列表。"""
@@ -38,6 +44,24 @@ def _registry_path(request: Request) -> str | None:
     """墓碑登记文件路径（cfg.skills.tombstone_registry 可覆盖默认）。"""
     cfg = request.app.state.cfg or {}
     return ((cfg.get("skills") or {}).get("tombstone_registry")) or None
+
+
+def _asset_quota(request: Request) -> dict:
+    """资产配额（cfg.skills.asset_quota）：单文件 / 单技能合计 / 文件数；非法取默认。"""
+    cfg = request.app.state.cfg or {}
+    quota = ((cfg.get("skills") or {}).get("asset_quota")) or {}
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return int(quota.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "max_file_bytes": _int("max_file_bytes", DEFAULT_ASSET_MAX_BYTES),
+        "max_total_bytes": _int("max_total_bytes", DEFAULT_ASSET_TOTAL_BYTES),
+        "max_files": _int("max_files", DEFAULT_ASSET_MAX_FILES),
+    }
 
 
 def _parse_body(body: dict | None) -> tuple[dict, str]:
@@ -130,6 +154,50 @@ def put_skill(
                             {"violations": result.get("violations", [])})
         raise api_error("ERR_DUPLICATE_SKILL", "查重拒绝（同名冲突或同内容异名）",
                         {"violations": result.get("violations", [])})
+    return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}
+
+
+@router.put("/v1/admin/skills/{name}/files/{relpath:path}")
+def put_skill_file(
+    name: str,
+    relpath: str,
+    request: Request,
+    body: dict | None = None,
+    _: str = Depends(require_admin_key),
+):
+    """写入技能**资产文件**（ST-45）：``references/`` ``scripts/`` ``assets/`` 白名单目录。
+
+    为什么需要：工作区 .gitignore 曾收窄为「仅 SKILL.md 单文件」，会**冻结新增资产**
+    （存量 references/ 因 git 已跟踪故不受影响），而 PUT SKILL.md 只带正文、
+    没有任何通道能把附件送进工作区——于是新技能一引用 references/ 就是断链（B195）。
+
+    Body：``{"content": "<文件全文>"}``。技能必须**已存在**（先 PUT SKILL.md）。
+    落盘后随 ``git add -A`` 进版本控制（工作区 .gitignore 已放开资产白名单）。
+
+    错误：路径非法（白名单外目录 / ``..`` / 绝对路径）/ 超配额 → 400 带
+    ``error.details.violations``；技能不存在 → 404。
+    """
+    from sgme.skills import store as skills_store
+
+    dirs = _source_dirs(request)
+    if not dirs:
+        raise api_error("ERR_INVALID_ARGS",
+                        "资产写入需要 skills.source_dirs 指向 git 技能仓")
+
+    content = (body or {}).get("content")
+    if not isinstance(content, str):
+        raise api_error("ERR_INVALID_ARGS", '请求体需要 {"content": "<文件全文>"}')
+
+    try:
+        result = skills_store.write_skill_file(name, relpath, content, dirs,
+                                               **_asset_quota(request))
+    except skills_store.StoreError as e:
+        raise api_error("ERR_INTERNAL", f"资产写入失败: {e.message}") from e
+    if not result.get("ok"):
+        details = {"violations": result.get("violations", [])}
+        if result.get("code") == "not_found":
+            raise api_error("ERR_NOT_FOUND", f"技能不存在: {name}", details)
+        raise api_error("ERR_INVALID_ARGS", "资产写入被拒", details)
     return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}
 
 

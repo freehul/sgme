@@ -37,6 +37,8 @@ from sgme.skills_hub.config import (
     SkillsHubConfig,
     parse_skills_hub_config,
 )
+# ST-45：工作区 .gitignore 的真相源在治理版写侧（正文 + 资产白名单）
+from sgme.skills.store import WORKSPACE_GITIGNORE
 
 __all__ = ["init", "SkillsHub", "SkillsHubConfig", "parse_skills_hub_config", "GitSyncError"]
 
@@ -55,8 +57,9 @@ _DISABLED_MSG = "技能仓库已禁用（skills_hub.enabled=false），操作被
 _GIT_REMOTE = "origin"
 # 冲突备份 ref 前缀（败方提交落地为本地 ref，数据永不丢）
 _CONFLICT_PREFIX = "conflict-backup-"
-# 工作区 .gitignore：只镜像 <name>/SKILL.md 单文件（§3.2）
-_GITIGNORE_CONTENT = "*\n!*/\n!*/SKILL.md\n"
+# 工作区 .gitignore 的真相源：sgme.skills.store.WORKSPACE_GITIGNORE（ST-45 放开资产白名单）。
+# 本模块不再自持常量——曾收窄为「仅 SKILL.md 单文件」，缺点是会**冻结新增资产**
+# （存量 references/ 因 git 已跟踪故不受影响）→ 详见实施变更记录 B195。
 # 同步提交/备份时间戳格式（YYYYmmddHHMMSS）
 _TS_FORMAT = "%Y%m%d%H%M%S"
 
@@ -581,13 +584,19 @@ class SkillsHub:
             self._run_git(["config", "user.email", "sgme-sync@local"], check=True)
         if not self._git_ok(["config", "user.name"]):
             self._run_git(["config", "user.name", "SGME Sync"], check=True)
-        # .gitignore：只镜像 <name>/SKILL.md 单文件（§3.2，首次写入并提交）
+        # .gitignore：正文 + 资产目录白名单（§3.2；ST-45 放开资产，见 B195）。
+        # ⚠️ 这里**只负责首次初始化**：存量工作区（持旧「单文件」版）的升级由**写侧**
+        #    触发（store.ensure_workspace_gitignore，走 PUT / PUT files）。
+        #    若把升级挂在本函数上，远端 hub 仓仍是旧版时每次 sync 都会「拉回旧版 →
+        #    再升级 → 产生额外提交」，from_remote / to_remote 的 noop 幂等双双失效
+        #    （2026-09-22 实测 test_skills_hub_sync 两个用例挂）。
         gitignore = self.root / ".gitignore"
         if not gitignore.exists():
-            gitignore.write_text(_GITIGNORE_CONTENT, encoding="utf-8")
+            gitignore.write_text(WORKSPACE_GITIGNORE, encoding="utf-8")
         if not self._git_ok(["ls-files", "--error-unmatch", ".gitignore"]):
             self._run_git(["add", "-f", ".gitignore"], check=True)
-            self._run_git(["commit", "-m", "chore: 初始化 skills-hub 工作区（.gitignore）"], check=True)
+            self._run_git(["commit", "-m", "chore: 初始化 skills-hub 工作区（.gitignore）"],
+                          check=True)
         # origin 远端：存在则 set-url（source 变更时更新），否则 add
         if self._git_ok(["remote", "get-url", _GIT_REMOTE]):
             self._run_git(["remote", "set-url", _GIT_REMOTE, source], check=True)
