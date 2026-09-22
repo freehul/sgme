@@ -299,7 +299,7 @@ def render(res: dict, strict: bool) -> str:
         for e in res["errors"]:
             lines.append(f"  · {e}")
     else:
-        lines.append("✅ 无漂移（所有基准工具在三个适配器上均有实现或显式声明）")
+        lines.append(f"✅ 无漂移（所有基准工具在 {len(ads)} 个适配器上均有实现或显式声明）")
     if strict and res["pending_count"]:
         lines.append(f"❌ 严格模式：仍有 {res['pending_count']} 项待补齐，发布门禁不通过")
     lines.append("=" * 78)

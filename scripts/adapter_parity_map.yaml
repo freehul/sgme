@@ -1,7 +1,7 @@
 # SGME 官方适配器能力面对账表
 #
 # 定位：SGME 每新增一个 agent 可消费能力（= 一个 MCP 工具）就新增一个基准项；
-#       四个官方适配器（hermes / dsh / doubao / mimo）**平级**，必须在同一批工作内评估对齐。
+#       五个官方适配器（hermes / dsh / doubao / mimo / workbuddy）**平级**，必须在同一批工作内评估对齐。
 #       背景见《SGME-接入契约》§2 与 Backlog ST-42。
 #
 # 用法：
@@ -24,7 +24,7 @@ baseline:
   pattern: '\{"name":\s*"([a-z_]+)"'
   note: MCP 工具面即 SGME agent 能力全集
 
-# ---------- 三个平级适配器：解析规则 ----------
+# ---------- 五个平级适配器：解析规则 ----------
 adapters:
   hermes:
     file: adapters/hermes/__init__.py
@@ -56,6 +56,15 @@ adapters:
       file: adapters/mimo/scripts/sgme_client.py
       pattern: '"cli":\s*"([a-z0-9_-]+)"'
       name_rule: dash
+  workbuddy:
+    file: adapters/workbuddy/scripts/sgme_client.py
+    pattern: '^    def ([a-z_]+)\('
+    exclude: [__init__, _http, _mcp]
+    note: WorkBuddy Skill + Python 客户端（原生 MCP 优先，CLI 兜底；从 mcp.json 零配置继承地址与密钥）
+    secondary_face:
+      file: adapters/workbuddy/scripts/sgme_client.py
+      pattern: '"cli":\s*"([a-z0-9_-]+)"'
+      name_rule: dash
 
 # ---------- 名称不同但语义等价的映射 ----------
 aliases:
@@ -64,6 +73,7 @@ aliases:
     dsh: memory_search
     doubao: search
     mimo: search
+    workbuddy: search
 
 # ---------- 永久豁免（能力语义上不该由该适配器承担）----------
 exemptions:
@@ -88,6 +98,7 @@ extra:
   dsh: []
   doubao: [events_pull, events_after, wiki_raw, mcp_raw, describe]
   mimo: [events_pull, events_after, wiki_raw, mcp_raw, describe]
+  workbuddy: [events_pull, events_after, wiki_raw, mcp_raw, describe]
 
 # ---------- 已登记待补齐（必须带任务号）----------
 # 形如：
