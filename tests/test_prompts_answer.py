@@ -28,3 +28,13 @@ def test_answer_prompts_registered(stage, required):
 def test_unknown_stage_still_errors():
     with pytest.raises(Exception):
         PromptStore().get("answer_nonexistent")
+
+
+@pytest.mark.parametrize("stage", ["answer_generic", "answer_aggregate", "answer_temporal"])
+def test_answer_prompts_product_mode_not_overstrict(stage):
+    """产品档：允许综合记忆作答；NO CONTEXT 仅在证据明显不足时。"""
+    pv = PromptStore().get(stage)
+    assert "NO CONTEXT" in pv.text
+    # 不得再是「只使用…如果记忆不包含答案就 NO CONTEXT」的评测拒答口径
+    assert "只使用上面检索到的记忆内容作答" not in pv.text
+    assert "综合" in pv.text or "综合所有" in pv.text or "可综合" in pv.text

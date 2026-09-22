@@ -186,11 +186,27 @@ class TestSkillGet:
         assert "netstat" in res.data["content"]
         assert "docker compose" not in res.data["content"]
 
+    def test_section_extract_accepts_digest_skeleton_form(self, skills_cfg, wiki_conn):
+        """digest.sections 带 # 前缀（`## 踩坑`）原样回传必须命中（契约对齐）。"""
+        from sgme.operations.skills import skill_digest, skill_get
+
+        skeleton = skill_digest(skills_cfg, wiki_conn, name="alpha").data["sections"]
+        assert any(s.strip().endswith("踩坑") and s.strip().startswith("#") for s in skeleton)
+
+        for section in ("## 踩坑", "  ## 踩坑  ", "踩坑"):
+            res = skill_get(skills_cfg, wiki_conn, name="alpha", section=section)
+            assert res.ok is True, f"section={section!r} 应命中: {res}"
+            assert "netstat" in res.data["content"]
+            assert "docker compose" not in res.data["content"]
+
     def test_unknown_section_fails(self, skills_cfg, wiki_conn):
         from sgme.operations.skills import skill_get
 
         res = skill_get(skills_cfg, wiki_conn, name="alpha", section="不存在的节")
         assert res.ok is False and res.error_code == ERR_NOT_FOUND
+        # 节缺失 ≠ 技能缺失：文案不得误导为「技能不存在」
+        assert "小节不存在" in (res.message or "")
+        assert "技能不存在" not in (res.message or "")
 
     def test_missing_skill_not_found(self, skills_cfg, wiki_conn):
         from sgme.operations.skills import skill_get

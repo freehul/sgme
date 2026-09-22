@@ -159,3 +159,31 @@ def test_answer_empty_query_raises(conns, cfg):
 def test_answer_bad_question_type(conns, cfg):
     with pytest.raises(InvalidArgs):
         answer(conns, None, cfg, query="问题", question_type="bogus", llm_fn=lambda p: "x")
+
+
+def test_answer_uses_term_aliases(conns, cfg):
+    """检索前做术语别名归一化，与 operations.search 对齐。"""
+    memory_dao.insert_memory(
+        conns, content="用户使用 SGME 拾光记忆引擎",
+        memory_type="persona", priority=80, time_velocity="static",
+        ttl_days=None, dimension_ids=["identity"], facts=[])
+    cfg2 = dict(cfg)
+    cfg2["term_aliases"] = {"拾光": "SGME"}
+
+    seen: list[str] = []
+
+    def fake_llm(prompt: str) -> str:
+        seen.append(prompt)
+        return "SGME"
+
+    res = answer(conns, None, cfg2, query="拾光是什么", llm_fn=fake_llm)
+    assert res.ok
+    assert res.data["candidates_used"] >= 1
+    assert "SGME" in seen[0]
+
+
+def test_answer_default_limit_is_generous(conns, cfg):
+    """默认候选条数不低于 10（对齐混合 search 召回口径）。"""
+    import inspect
+    sig = inspect.signature(answer)
+    assert sig.parameters["limit"].default >= 10
