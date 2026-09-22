@@ -183,7 +183,7 @@
 ### 验收纪律
 
 - 每完成一个任务：跑该模块测试，再进下一个
-- ⚠️ **适配器平级对齐（2026-09-19 用户定，ST-42；2026-09-22 扩至 MiMo）**：hermes / dsh / doubao / mimo 四个官方适配器**平级**。SGME 新增任何 agent 可消费能力（= 新增 MCP 工具）时，必须在同一批工作内评估四个适配器的对齐，**未评估不算完成**；每处缺口必须在 `scripts/adapter_parity_map.yaml` 显式声明（`exemptions` 写理由 / `passthrough` 写通道 / `pending` 挂任务号）。日常检查 `python scripts/adapter_parity.py`，发布前必须过 `--strict`（待补齐也算失败）。历史教训：能力面接入默认落在 DSH 名下，Hermes 适配器停了 20 天无人察觉，造成「技能收进 SGME 却调不到」的真实断点。
+- ⚠️ **适配器平级对齐（2026-09-19 用户定，ST-42；2026-09-22 扩至 MiMo 与 WorkBuddy）**：hermes / dsh / doubao / mimo / workbuddy 五个官方适配器**平级**。SGME 新增任何 agent 可消费能力（= 新增 MCP 工具）时，必须在同一批工作内评估五个适配器的对齐，**未评估不算完成**；每处缺口必须在 `scripts/adapter_parity_map.yaml` 显式声明（`exemptions` 写理由 / `passthrough` 写通道 / `pending` 挂任务号）。日常检查 `python scripts/adapter_parity.py`，发布前必须过 `--strict`（待补齐也算失败）。历史教训：能力面接入默认落在 DSH 名下，Hermes 适配器停了 20 天无人察觉，造成「技能收进 SGME 却调不到」的真实断点。
 - pytest 分档（2026-08-13 用户定）：**常规改动**提交前跑相关模块测试（`python scripts/test_fast.py <关键词>` 或按 git diff 自动推导，秒级）；**全量 pytest** 只在里程碑/发布/跨模块重构后跑（约 10 分钟，零 LLM/网络消耗）；两种都**汇报 passed/failed 数字**，仅 exit code 不算证据（2026-08-11 用户纠正）
 - 提炼相关改动必须真实 LLM 冒烟（`python scripts/e2e_smoke_v04.py`）+ 查 Server 日志无 `L1.5 输出解析失败` / `降级直存`（mock 全绿≠真实可用，见开发规范）
 - 测 API 用 Python requests（git-bash curl 会破坏中文 UTF-8）

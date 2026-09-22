@@ -212,7 +212,7 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 | Your platform | Identity file |
 |---|---|
 | Hermes | SOUL.md (identity + rules) |
-| WorkBuddy | SOUL.md (identity + rules) |
+| WorkBuddy | SOUL.md (identity + rules); SKILL.md (skill `sgme` — official adapter `adapters/workbuddy`, deployed via install.py; native MCP `sgme` also supported) |
 | Claude Code | CLAUDE.md |
 | DeepSeek Harness (DSH) | AGENTS.md (auto-loaded per project) |
 | Doubao Work (豆包工作) | SKILL.md (Doubao Work skill mechanism; official adapter `adapters/doubao`, deployed via install.py) |
