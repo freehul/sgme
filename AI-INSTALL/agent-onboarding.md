@@ -196,7 +196,7 @@ content 格式（首行必须）：
 | **自律型** | 无 hooks → 会话收尾主动调提炼 | Trae / ZCode | 指引要求：结束前 `refine_trigger(async_mode=true)`，别指望别人 |
 | **保底型** | 服务端兜底，不依赖 agent 自觉 | 任何 agent（最后防线） | 服务端 `batch_scan` 常驻定时器扫 status=new；`refine_on_append=true` 时 append 后自动单文件提炼 |
 
-> **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态，2026-09-19 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
+> **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态）、MiMo Desktop（`adapters/mimo`，Skill + 原生 MCP 优先，2026-09-22 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
 
 **判断方法**：有 SessionEnd/Stop 事件机制 = hooks 型；没有 = 自律型；两者都失效还有保底型兜底——记忆不会丢，只会晚提炼。
 

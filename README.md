@@ -216,6 +216,7 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 | Claude Code | CLAUDE.md |
 | DeepSeek Harness (DSH) | AGENTS.md (auto-loaded per project) |
 | Doubao Work (豆包工作) | SKILL.md (Doubao Work skill mechanism; official adapter `adapters/doubao`, deployed via install.py) |
+| MiMo Desktop | SKILL.md (MiMoCode skill `mimo`; official adapter `adapters/mimo`, deployed via install.py; native MCP `sgme` also supported) |
 | Generic / others (via MCP) | AGENTS.md (auto-loaded per project) |
 
 ## Deployment (Windows Service)
