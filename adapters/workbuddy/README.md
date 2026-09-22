@@ -138,4 +138,4 @@ python adapters/workbuddy/install.py --no-seed-identity
 - **记忆 agent_tag 打错**：`env-info` 看「agent key 来源」，若显示走了 `SGME_AGENT_KEY` 兜底，说明既没配 `SGME_WORKBUDDY_KEY` 也没读到 `mcp.json`。
 - **代理劫持内网**：客户端已显式忽略代理环境变量；若仍超时，检查系统代理（Clash 等）。
 - **技能不生效**：新增/更新技能后需**新开 WorkBuddy 对话**才被加载。
-- **selfcheck 写心跳**：会 append 一条 `sgme-selfcheck` 会话（幂等），`--no-append` 可跳过；`--static-only` 可离线只跑矩阵。
+- **selfcheck 写心跳**：会 append 一条 `workbuddy-selfcheck` 会话（幂等），`--no-append` 可跳过；`--static-only` 可离线只跑矩阵。

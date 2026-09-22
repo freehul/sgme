@@ -128,5 +128,5 @@ python adapters/doubao/install.py --no-selfcheck
 - **HTTP refine 403**：`/v1/admin/refine/*` 是 admin 端点——用 MCP 层 `refine-trigger`，不要绕行。
 - **代理劫持内网**：如果 SGME 偶发超时，检查系统代理（Clash 等）是否劫持内网地址；客户端已显式忽略代理环境变量。
 - **技能不生效**：新技能/更新后需重启豆包工作或开新会话才被 skill 发现机制加载。
-- **selfcheck 写心跳**：`selfcheck.py` 会 append 一条 `sgme-selfcheck` 会话（幂等），`--no-append` 可跳过；`--static-only` 可离线只跑能力矩阵。
+- **selfcheck 写心跳**：`selfcheck.py` 会 append 一条 `doubao-work-selfcheck` 会话（幂等），`--no-append` 可跳过；`--static-only` 可离线只跑能力矩阵。
 - **地址写错导致整轮不可用**：`env-info` 是离线命令，先跑它确认端点与来源，再排查环境变量/`client.env` 优先级。

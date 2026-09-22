@@ -109,7 +109,10 @@ def main(argv=None) -> int:
         def _append_heartbeat():
             if a.no_append:
                 return "skipped"
-            r = c.append("sgme-selfcheck", "接入自检心跳（selfcheck.py）", agent_id="workbuddy")
+            # session_key 必须带 agent 前缀：三个 Skill 型适配器曾共用 "sgme-selfcheck"，
+            # 导致心跳互相追加进同一个 L0 文件、agent 归属错乱（B194 实测发现）。
+            r = c.append(f"{AGENT_ID}-selfcheck", "接入自检心跳（selfcheck.py）",
+                         agent_id=AGENT_ID)
             return str(r.get("status") or r.get("file_id") or "ok")[:40]
         run("⑧ append（L0 写入心跳）", _append_heartbeat)
 
