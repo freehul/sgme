@@ -507,7 +507,7 @@ class UsageMiddleware:
             if not recorded and message.get("type") == "http.response.start":
                 recorded = True
                 try:
-                    self._record(scope, caller)
+                    self._record(scope, caller, status=message.get("status"))
                 except Exception:
                     pass  # 统计是旁路：任何失败不得影响响应
             await send(message)
@@ -531,15 +531,17 @@ class UsageMiddleware:
             caller = "anonymous" if key is None else "unknown"
         return caller
 
-    def _record(self, scope, caller: str) -> None:
+    def _record(self, scope, caller: str, status: int | None = None) -> None:
         from sgme.operations.usage import record_usage
 
         # name 归一化：路由模板（如 /v1/admin/demands/{demand_id}）。
-        # FastAPI 内置 catch-all（/{full_path:path}）捕获全部未匹配请求——
-        # 归为 "(unmatched)" 语义标记，防任意路径冲击统计行数（UUID 归一化的
-        # 同一目的：不可控输入不得无界增长行数）。
+        # 未匹配请求统一归 "(unmatched)" 语义标记，防任意路径冲击统计行数
+        # （UUID 归一化的同一目的：不可控输入不得无界增长行数）。
+        # 两种等价形态都必须归一（2026-09-23 CI 首跑暴露口径分裂）：
+        #   ① ui/dist 存在 → SPA catch-all 命中 → route_path == "/{full_path:path}"
+        #   ② 干净 checkout（无 ui/dist → catch-all 未注册）→ 路由级 404/405 且 scope 无 route
         route_path = getattr(scope.get("route"), "path", None)
-        if route_path == "/{full_path:path}":
+        if route_path == "/{full_path:path}" or (not route_path and status in (404, 405)):
             name = "(unmatched)"
         elif route_path:
             name = route_path

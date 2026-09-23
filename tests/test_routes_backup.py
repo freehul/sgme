@@ -40,11 +40,19 @@ def test_resolve_backup_dir_no_warn_for_relative(caplog, monkeypatch):
     ), "相对路径不应触发临时区告警"
 
 
-def test_resolve_backup_dir_absolute_non_temp_no_warn(caplog):
-    """绝对路径但不在临时区（如其他盘）→ 不告警（用户合法需求）。"""
+def test_resolve_backup_dir_absolute_non_temp_no_warn(caplog, tmp_path, monkeypatch):
+    """绝对路径但不在临时区（如其他盘/持久目录）→ 不告警（用户合法需求）。
+
+    跨平台要点（2026-09-23 CI 首跑实证）：Windows 下 ``Path(tempfile.gettempdir()).parent``
+    是用户目录（可写），Linux 下却是根目录 ``/``（**不可写**）——旧写法在 CI 直接
+    PermissionError。改为把「系统临时区根」伪装到 tmp_path 之下，再取 tmp_path 内的
+    可写绝对路径，语义（不在临时区 → 不告警）不变且两平台都成立。
+    """
+    import tempfile as tempfile_mod
+
     caplog.set_level(logging.WARNING, logger="sgme.server.backup")
-    # 用一个明显不在系统临时区的绝对路径
-    other = Path(tempfile.gettempdir()).parent / "sgme_persistent_backups"
+    monkeypatch.setattr(tempfile_mod, "gettempdir", lambda: str(tmp_path / "fake_tmp_zone"))
+    other = tmp_path / "sgme_persistent_backups"  # 绝对路径、可写、且不在伪装的临时区之下
     cfg = {"backup": {"dir": str(other)}}
     routes_backup._resolve_backup_dir(cfg)
     assert not any(
