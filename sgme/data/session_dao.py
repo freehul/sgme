@@ -92,6 +92,27 @@ def get_raw_file_by_session(conn: sqlite3.Connection, session_key: str) -> dict 
     return dict(zip(cols, row))
 
 
+def get_raw_file_by_session_started(
+    conn: sqlite3.Connection, session_key: str, started_at: str
+) -> dict | None:
+    """按 (session_key, started_at) 精确查询（F-4，2026-09-24：并发幂等回读）。
+
+    与 get_raw_file_by_session 的区别：后者按 session_key 取最新一条（供 append
+    追加语义），本函数按「同会话 + 同起时刻」精确定位——唯一索引冲突回读用。
+    """
+    cur = conn.execute(
+        "SELECT * FROM raw_files WHERE session_key=? AND started_at=? LIMIT 1",
+        (session_key, started_at),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        return dict(row)
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
+
+
 def update_refine_cursor(
     conn: sqlite3.Connection,
     file_id: str,

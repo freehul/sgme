@@ -170,7 +170,10 @@ python adapters/hermes/install.py --home <HERMES_HOME> --install-json <path>
 2. 确认 `config.yaml` 的 `memory.provider: sgme`
 3. 重启 Hermes 后，SGME Gateway（:9910）日志应出现 Hermes 的 `/v1/append` 与 `/v1/admin/refine/trigger_async` 调用
 4. 会话内验证：问一个历史问题 → 应触发 `sgme_memory_search`；问「有没有现成技能」→ 应触发 `sgme_skill_search` → `sgme_skill_get`
-5. 离线自证：`python -m pytest tests/test_hermes_adapter.py -q`（40 例，零网络零 LLM），或 `python scripts/test_fast.py hermes`
+5. 离线自证（零网络零 LLM）：
+   - **适配器自测**：`python -m pytest adapters/hermes/tests -q`（19 例：append 契约 / tool 去重 / 每轮 started_at / prefetch 分块 / 工具面自洽 / install.json 无明文密钥 / B152 client 重建）
+   - **服务端契约测试**：`python -m pytest tests/test_hermes_adapter.py -q`（40 例），或 `python scripts/test_fast.py hermes`
+   - 推送后 CI 自动跑全量套件（`.github/workflows/tests.yml`：main 推送 / PR / 手动触发）
 
 ## 常见坑
 

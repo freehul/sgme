@@ -357,7 +357,10 @@ def project_exists(conn: sqlite3.Connection, project_id: str) -> bool:
     """
     if not project_meta_available(conn):
         return False
+    # 大小写不敏感匹配（COLLATE NOCASE）：写入侧已统一大写（operations 层归一），
+    # 此处兜底历史/外部直接写库造成的 'dhvs' 与 'DHVS' 并存，避免误报「未登记」warning。
     cur = conn.execute(
-        "SELECT 1 FROM project_meta WHERE project_id=? LIMIT 1", (project_id,)
+        "SELECT 1 FROM project_meta WHERE project_id=? COLLATE NOCASE LIMIT 1",
+        (project_id,),
     )
     return cur.fetchone() is not None

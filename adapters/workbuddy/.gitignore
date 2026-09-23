@@ -1,0 +1,7 @@
+# 部署配置（install.py 生成，含本环境实况地址，不入库）
+client.env
+scripts/client.env
+# Python 缓存
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -147,7 +147,7 @@
 
 - **创意池**（`ideas` 维度，WebUI 创意池页 / `POST /v1/admin/ideas` / MCP `idea_add`）：创意**只由用户主动提出**才记录，**提炼 LLM 不再自动打标**（prompts/l1_extraction.txt 已移除创意识别）；删除由用户主动（WebUI 删除或提出由 agent 删，软删可恢复）
 - **待办池**（`demands` 表，WebUI 待办页 / `/v1/admin/demands*` / MCP `demand_create`）：**跨项目统一待办**——不管哪个项目的待办都加进来，带 `project_id` 标记可过滤；`project_id` 是**自由标记**（未登记项目也允许，只回 warning）；状态机 pending→done 两态 + `created_at`/`resolved_at` 时间戳；**由 agent 主动维护（2026-08-18 强化）**：会话中遇到用户要办的事 / 项目要做的任务 / 后续待跟进事项，**主动调 `demand_create` 登记**（title 一句概括 + `project_id` 关联项目；跨项目统一收进待办池），不要只留在对话里；完成时标记 done
-- **项目池**（`project_meta` 表，WebUI 项目页 / `/v1/admin/projects*` / MCP `project_register`）：项目**由用户主动提出立项/创建**，agent 执行；可从创意升格（promote）
+- **项目池**（`project_meta` 表，WebUI 项目页 / `/v1/admin/projects*` / MCP `project_register`）：项目**由用户主动提出立项/创建**，agent 执行；可从创意升格（promote）。**project_id 一律用大写**（DHVS / AIRDT / SGME），大小写不同视作不同项目——写待办前先查 `/v1/admin/projects` 确认登记值，勿凭记忆或凭项目目录名大小写填写
 
 ### 动手纪律（报备）
 
@@ -183,7 +183,7 @@
 ### 验收纪律
 
 - 每完成一个任务：跑该模块测试，再进下一个
-- ⚠️ **适配器平级对齐（2026-09-19 用户定，ST-42）**：hermes / dsh / doubao 三个官方适配器**平级**。SGME 新增任何 agent 可消费能力（= 新增 MCP 工具）时，必须在同一批工作内评估三个适配器的对齐，**未评估不算完成**；每处缺口必须在 `scripts/adapter_parity_map.yaml` 显式声明（`exemptions` 写理由 / `passthrough` 写通道 / `pending` 挂任务号）。日常检查 `python scripts/adapter_parity.py`，发布前必须过 `--strict`（待补齐也算失败）。历史教训：能力面接入默认落在 DSH 名下，Hermes 适配器停了 20 天无人察觉，造成「技能收进 SGME 却调不到」的真实断点。
+- ⚠️ **适配器平级对齐（2026-09-19 用户定，ST-42；2026-09-22 扩至 MiMo 与 WorkBuddy）**：hermes / dsh / doubao / mimo / workbuddy 五个官方适配器**平级**。SGME 新增任何 agent 可消费能力（= 新增 MCP 工具）时，必须在同一批工作内评估五个适配器的对齐，**未评估不算完成**；每处缺口必须在 `scripts/adapter_parity_map.yaml` 显式声明（`exemptions` 写理由 / `passthrough` 写通道 / `pending` 挂任务号）。日常检查 `python scripts/adapter_parity.py`，发布前必须过 `--strict`（待补齐也算失败）。历史教训：能力面接入默认落在 DSH 名下，Hermes 适配器停了 20 天无人察觉，造成「技能收进 SGME 却调不到」的真实断点。
 - pytest 分档（2026-08-13 用户定）：**常规改动**提交前跑相关模块测试（`python scripts/test_fast.py <关键词>` 或按 git diff 自动推导，秒级）；**全量 pytest** 只在里程碑/发布/跨模块重构后跑（约 10 分钟，零 LLM/网络消耗）；两种都**汇报 passed/failed 数字**，仅 exit code 不算证据（2026-08-11 用户纠正）
 - 提炼相关改动必须真实 LLM 冒烟（`python scripts/e2e_smoke_v04.py`）+ 查 Server 日志无 `L1.5 输出解析失败` / `降级直存`（mock 全绿≠真实可用，见开发规范）
 - 测 API 用 Python requests（git-bash curl 会破坏中文 UTF-8）

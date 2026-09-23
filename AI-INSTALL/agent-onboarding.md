@@ -102,8 +102,8 @@ asyncio.run(main())
 | `config_get` | 读取运行时配置（l1/l2/refine/search/backup） | `config_get(section='refine')` |
 | `config_update` | 更新配置段（热生效 + 落盘） | 跨机部署远程设配置 |
 | `idea_add` | 创意池写入（用户主动提出的创意） | `idea_add(title, content)` |
-| `demand_create` | 待办池写入（跨项目统一待办，可带 project_id；支持 origin_idea_id 升格） | `demand_create(title, project_id?)` |
-| `project_register` | 项目池登记（用户主动立项的项目元数据） | `project_register(name, ...)` |
+| `demand_create` | 待办池写入（跨项目统一待办，可带 project_id——**一律大写**，如 DHVS；支持 origin_idea_id 升格） | `demand_create(title, project_id?)` |
+| `project_register` | 项目池登记（用户主动立项的项目元数据；project_id 纯英文且一律大写） | `project_register(project_id, path, ...)` |
 | `signal_pull` | 拉取未消费信号（care_*/memory_updated/anomaly_warn） | 对话开始 `signal_pull()` |
 | `signal_claim` | 原子认领信号（谁消费谁标记，防重复打扰） | `signal_claim(event_id)` |
 | `signal_ack` | 信号消费回执（claimed/acked/failed） | 关怀完成后 `signal_ack(event_id)` |
@@ -196,7 +196,7 @@ content 格式（首行必须）：
 | **自律型** | 无 hooks → 会话收尾主动调提炼 | Trae / ZCode | 指引要求：结束前 `refine_trigger(async_mode=true)`，别指望别人 |
 | **保底型** | 服务端兜底，不依赖 agent 自觉 | 任何 agent（最后防线） | 服务端 `batch_scan` 常驻定时器扫 status=new；`refine_on_append=true` 时 append 后自动单文件提炼 |
 
-> **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态，2026-09-19 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
+> **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态）、MiMo Desktop（`adapters/mimo`，Skill + 原生 MCP 优先，2026-09-22 登记）、WorkBuddy（`adapters/workbuddy`，Skill + 原生 MCP 优先，从 `~/.workbuddy/mcp.json` 零配置继承，2026-09-22 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
 
 **判断方法**：有 SessionEnd/Stop 事件机制 = hooks 型；没有 = 自律型；两者都失效还有保底型兜底——记忆不会丢，只会晚提炼。
 

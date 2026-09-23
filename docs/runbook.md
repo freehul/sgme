@@ -382,14 +382,28 @@ A: 向量检索依赖 sqlite-vec 扩展 + 向量服务（`config/sgme.yaml` `sea
 
 ### Q: 恢复备份后数据不一致
 
-A: 恢复前系统会自动再备份当前状态（`pre_restore_` 前缀快照）。如恢复后异常，可用 `pre_restore_` 快照回滚。恢复后自动校验溯源链完整性（memories → sources → raw_files）。
+A: 恢复前系统会自动再备份当前状态（`pre_restore_` 前缀快照）。如恢复后异常，可用 `pre_restore_` 快照回滚。恢复后自动校验溯源链完整性（memories → sources → raw_files），校验结果随恢复响应返回（`integrity: {ok, broken_count, broken_samples}`）。
+
+恢复的 `raw/` 语义按快照级别区分（2026-09-24 F-7）：**增量快照 → 合并复制**（只回铺快照内文件，不删快照外文件）；**full / monthly → 覆盖**（可精确回滚）。响应中 `raw_restore.mode` 标出本次模式（merge / overwrite / skipped）。
+
+### Q: 浏览器跨源调用报 CORS 错误（局域网 HTML 工具连不上）
+
+A: CORS 默认只放行本机回环来源（`localhost` / `127.0.0.1` / `[::1]` 任意端口）。其它设备上的页面（如局域网 HTML 工具）需在 `config/sgme.yaml` 显式登记来源：
+
+```yaml
+server:
+  cors_origins:
+    - http://10.0.0.5:8080   # 你的工具页面来源（协议+主机+端口，不带路径）
+```
+
+（2026-09-24 F-1 安全收敛：原 `allow_origins=["*"]` 配合无鉴权的 `/v1/admin/keys` 使任意网页可跨源读取密钥，已改为「本机回环默认放行 + 白名单显式登记」。）
 
 ## 8.1 MCP 接口（v1.0.0b1）
 
 SGME Server 同进程提供 MCP 出口（streamable HTTP transport，端口 9913），与 HTTP API（9910）功能等价。
 
 - 端点：`http://<host>:9913/mcp`
-- 工具集（29）：append / inject / search / memory_get / memory_reject / refine_trigger / refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding / wiki_page / wiki_search / wiki_pages / idea_add / demand_create / project_register / role_list / role_assemble / role_active_get / role_active_set / signal_pull / signal_claim / signal_ack / refine_status 等（以 agent_onboarding 返回的 ONBOARDING_TOOLS 为准）
+- 工具集（41；权威清单以 `agent_onboarding` 返回的 ONBOARDING_TOOLS 为准，本行不再硬编码数量防漂移）：append / inject / search / memory_get / memory_reject / refine_trigger / refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding / wiki_page / wiki_search / wiki_pages / idea_add / demand_create / project_register / role_list / role_assemble / role_active_get / role_active_set / signal_pull / signal_claim / signal_ack / refine_status 等（以 agent_onboarding 返回的 ONBOARDING_TOOLS 为准）
 - 连接即发现：接入后先调 `agent_onboarding` 工具获取版本 / 能力清单 / 快速上手指引（self-serve，无需人工配置）
 - 用途：SCSM 或其他 Agent 经标准 MCP 协议调用 SGME（跨机部署无需改配置文件，配置经 config_update 远程设置）
 - 端口可配：环境变量 `SGME_MCP_PORT`（默认 9913）；`SGME_MCP_DISABLED=1` 可关闭
@@ -658,7 +672,7 @@ for e in body["events"]:
 - **轮转**：本地保留最近 7 份全量 + 月归档
 - **异地副本**：配置 `backup.remote_dir` 时推送副本到远程目录（NAS 挂载 / 异机），失败仅告警不阻塞
 - **冷归档**：`archive_raw_cold(days=90)` >90 天原始文件 zstd 压缩为只读冷归档
-- **恢复**：恢复前自动再备份当前状态（`pre_restore_` 前缀），恢复后校验溯源链完整性
+- **恢复**：恢复前自动再备份当前状态（`pre_restore_` 前缀）；raw/ 按快照级别恢复（增量=合并复制，full/monthly=覆盖，见 §8 FAQ）；恢复后自动校验溯源链完整性（结果见响应 `integrity` 字段）
 
 ### 14.4 配置
 

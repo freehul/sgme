@@ -53,7 +53,7 @@ description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME
 
 ## 待办 / 创意 / 项目主动登记
 
-会话中遇到用户要办的事 / 项目要做的任务 / 待跟进事项，主动 `demand-create` 登记（`--project-id` 关联），不要只留在对话里；用户主动提出创意走 `idea-add`；用户主动立项走 `project-register`（`project_id` 纯英文，新建需 `--path`）。
+会话中遇到用户要办的事 / 项目要做的任务 / 待跟进事项，主动 `demand-create` 登记（`--project-id` 关联），不要只留在对话里；用户主动提出创意走 `idea-add`；用户主动立项走 `project-register`（`project_id` 纯英文且**一律大写**，新建需 `--path`）。
 
 ## 通信渠道（兜底铁律）
 

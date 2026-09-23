@@ -457,3 +457,101 @@ def test_backup_endpoint_agent_forbidden(client):
     )
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "ERR_FORBIDDEN"
+
+
+def test_backup_restore_invalid_snapshot_id(client):
+    """非法 snapshot_id（路径穿越形态）→ 400 ERR_INVALID_ARGS（F-7/G-6）。"""
+    resp = client.post(
+        "/v1/admin/backup/restore",
+        json={"snapshot_id": "../evil"},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "ERR_INVALID_ARGS"
+
+
+def test_backup_restore_missing_snapshot_404(client):
+    """合法但不存在的 snapshot_id → 404（行为回归）。"""
+    resp = client.post(
+        "/v1/admin/backup/restore",
+        json={"snapshot_id": "full_20990101_000000_deadbeef"},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 404
+
+
+# ---------- 恢复语义：raw/ 按级别 + 溯源校验（F-7/F-8，2026-09-24） ----------
+
+
+def _close_new_conns(result):
+    for c in result.get("_new_conns") or ():
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def test_restore_incremental_merges_raw(data_dir, backup_dir, raw_dir, conns):
+    """增量快照恢复：raw/ 合并复制——快照外的文件不被删（F-7）。"""
+    old_file = raw_dir / "old.md"
+    old_file.write_text("old content", encoding="utf-8")
+    _set_old_mtime(old_file, days_ago=30)  # 不进增量快照
+    today = raw_dir / "today.md"
+    today.write_text("today content", encoding="utf-8")
+
+    snap = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="incremental", conn_pair=conns,
+    )
+
+    post = raw_dir / "post_snapshot.md"  # 快照后新增（快照外数据）
+    post.write_text("post", encoding="utf-8")
+
+    result = manager.restore(
+        snapshot_path=snap["path"], data_dir=data_dir, raw_dir=raw_dir, conn_pair=conns,
+    )
+    try:
+        assert result["raw_restore"]["mode"] == "merge"
+        # 原缺陷：覆盖式恢复会删掉快照外全部原始文件
+        assert old_file.exists()
+        assert post.exists()
+        assert today.exists()
+    finally:
+        _close_new_conns(result)
+
+
+def test_restore_full_overwrites_raw(data_dir, backup_dir, raw_dir, conns):
+    """全量快照恢复：raw/ 保持覆盖语义（可精确回滚）。"""
+    base = raw_dir / "base.md"
+    base.write_text("base", encoding="utf-8")
+    snap = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="full", conn_pair=conns,
+    )
+    extra = raw_dir / "added_later.md"
+    extra.write_text("extra", encoding="utf-8")
+
+    result = manager.restore(
+        snapshot_path=snap["path"], data_dir=data_dir, raw_dir=raw_dir, conn_pair=conns,
+    )
+    try:
+        assert result["raw_restore"]["mode"] == "overwrite"
+        assert base.exists()
+        assert not extra.exists()
+    finally:
+        _close_new_conns(result)
+
+
+def test_restore_includes_integrity_report(data_dir, backup_dir, raw_dir, conns):
+    """恢复后自动溯源校验（F-8）：integrity 结构并入返回体。"""
+    snap = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="full", conn_pair=conns,
+    )
+    result = manager.restore(
+        snapshot_path=snap["path"], data_dir=data_dir, raw_dir=raw_dir, conn_pair=conns,
+    )
+    try:
+        integrity = result["integrity"]
+        assert integrity is not None
+        assert set(integrity) >= {"ok", "broken_count", "broken_samples"}
+        assert integrity["ok"] is True  # 空库无孤儿引用
+    finally:
+        _close_new_conns(result)

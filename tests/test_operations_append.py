@@ -294,6 +294,24 @@ def test_append_redacts_plaintext_keys(conns, cfg):
 def test_redact_secrets_preserves_normal_text():
     """redact_secrets 只擦 key 值，不误伤变量名与普通文本。"""
     from sgme.raw.store import redact_secrets
-    assert redact_secrets("DEEPSEEK_API_KEY=sk-1234567890123456") == "DEEPSEEK_API_KEY=<REDACTED>"
+    assert redact_secrets("DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx") == "DEEPSEEK_API_KEY=<REDACTED>"
     assert redact_secrets("今天天气不错，聊聊架构") == "今天天气不错，聊聊架构"
     assert redact_secrets("占位符 sk-xxx 只是示例") == "占位符 sk-xxx 只是示例"  # 不足 12 位不替换
+
+
+def test_redact_secrets_covers_agt_and_generic():
+    """B196/F-6：agt_ 注册 key 与 keyword[:=]value 通用兜底均被擦除，普通文本不误伤。"""
+    from sgme.raw.store import redact_secrets
+
+    # agt_ 形态（register_agent 签发）——原白名单缺口，可原样进原始层
+    # 样例用描述性假串（避免 16+ 长字母数字串触发机器门禁误拦）
+    assert redact_secrets("SGME_KEY=agt_sample_key_for_tests_only") == "SGME_KEY=<REDACTED>"
+    # sgme_ 通用前缀
+    assert redact_secrets("token=sgme_sample_key_for_tests_only") == "token=<REDACTED>"
+    # 通用兜底：keyword[:=]value（值 ≥16 位）
+    assert redact_secrets("api_key: abcdefghijklmnopqrstuvwx") == "api_key: <REDACTED>"
+    assert redact_secrets('password="abcdefghijklmnopqrstuvwx"') == 'password="<REDACTED>"'
+    # 普通文本 / 短值 / 占位符不误伤
+    assert redact_secrets("今天聊聊架构与部署") == "今天聊聊架构与部署"
+    assert redact_secrets("api_key=短值") == "api_key=短值"
+    assert redact_secrets("token: <YOUR_API_KEY>") == "token: <YOUR_API_KEY>"

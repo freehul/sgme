@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 from sgme import config
 from sgme.engine import l1, l2, normalize
@@ -344,19 +344,29 @@ def refine_batch(
     cfg: dict,
     limit: int = 100,
     client=None,
-) -> list[RefineResult]:
-    """批量扫描 status=new 的文件提炼。
+) -> Iterator[RefineResult]:
+    """批量扫描 status=new 的文件提炼（F-2 修复，2026-09-24：逐文件容错生成器）。
 
-    2026-08-06 修复（崩溃丢数据）：原实现先全部文件 L1 再统一落库，
-    中途异常（如 LM Studio Model is unloaded）会导致已完成的 L1 成果
-    全部丢失（raw_files 已标记 refined 但记忆未落库）。
-    现改为：调用方在循环内逐文件 refine_file → _persist_memories
-    （L1.5/L2/embedding 每文件立即落库），本函数只做单文件提炼，
-    不持有跨文件状态。返回值语义不变（每个 RefineResult 对应一个文件）。
+    2026-08-06 修复（崩溃丢数据）说明：调用方必须逐文件即时落库。
+    2026-09-24 深度审查（F-2）：本函数原为「先全部提炼、返回列表」，
+    唯一调用方 refine_many 再统一落库——中途异常导致前序文件已被标记 refined
+    但记忆未落库（永久丢失；08-06 修复只覆盖了异步路径）。现改为**生成器**：
+    逐文件 yield，单文件异常收成 status=error 的结果项并继续，批次不再中断。
+
+    异常文件不主动改状态：异常发生在游标推进（update_refine_cursor）之前，
+    文件仍为 status=new → 下批扫描自动重试（不丢）。
+
+    Yields:
+        RefineResult：每个 status=new 文件一个（正常=refined；异常=error）。
     """
     new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
-    results = []
     for rf in new_files:
-        r = refine_file(rf["file_id"], mem_conn, session_conn, cfg, client=client)
-        results.append(r)
-    return results
+        file_id = rf["file_id"]
+        try:
+            yield refine_file(file_id, mem_conn, session_conn, cfg, client=client)
+        except Exception as e:
+            logger.warning("提炼异常（逐文件容错，继续下一文件）: file=%s error=%s", file_id, e)
+            result = RefineResult(file_id=file_id)
+            result.status = "error"
+            result.error = str(e)
+            yield result

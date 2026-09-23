@@ -34,17 +34,35 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-# 明文密钥值模式：常见 API key 前缀 + 12+ 位字母数字/连字符
-_SECRET_PATTERN = re.compile(r"(?:sk-|ark-|sgme_admin_|sgme_agent_)[A-Za-z0-9-]{12,}")
+# 明文密钥值模式：常见 API key 前缀 + 12+ 位字母数字/连字符/下划线
+# B196/F-6（2026-09-24）：补 agt_（register_agent 签发的注册 key）与 sgme_ 通用前缀——
+# 原白名单漏 agt_* 形态，注册 Agent Key 可原样写进原始层（已实测复现）。
+_SECRET_PATTERN = re.compile(r"(?:sk-|ark-|agt_|sgme_admin_|sgme_agent_|sgme_)[A-Za-z0-9_-]{12,}")
+
+# 通用兜底（B196/F-6，2026-09-24 用户拍板带上）：keyword[:=]value 形态的密钥。
+# 阈值从严（值 ≥16 位、仅字母数字与 _-、两侧引号可选）——只擦值不擦变量名/正文描述，
+# 覆盖未来新增格式（新前缀 key、自定义 token 变量名等）。
+_GENERIC_SECRET_PATTERN = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?token|secret[_-]?key|password)\b\s*[:=]\s*[\"']?)"
+    r"([A-Za-z0-9_\-]{16,})"
+    r"([\"']?)"
+)
+
+
+def _redact_generic(m: "re.Match[str]") -> str:
+    """通用兜底替换：保留 keyword/分隔符与收尾引号，只擦值。"""
+    return f"{m.group(1)}<REDACTED>{m.group(3)}"
 
 
 def redact_secrets(text: str) -> str:
     """擦除文本中的明文密钥值，防工具输出带 key 进 L0。
 
     只替换「key 前缀 + 长随机串」的 key 值本身，不误伤变量名
-    （DEEPSEEK_API_KEY / VOLC_API_KEY 等）与占位符说明。
+    （DEEPSEEK_API_KEY / VOLC_API_KEY 等）与占位符说明；
+    另有一层 keyword[:=]value 通用兜底（B196/F-6）。
     """
-    return _SECRET_PATTERN.sub("<REDACTED>", text)
+    text = _SECRET_PATTERN.sub("<REDACTED>", text)
+    return _GENERIC_SECRET_PATTERN.sub(_redact_generic, text)
 
 
 # ---------- 数据结构 ----------

@@ -206,10 +206,11 @@ dsh plugin --profile web add github:freehul/sgme
 | 你的平台 | 身份文件 |
 |---|---|
 | Hermes | SOUL.md（身份 + 行为准则） |
-| WorkBuddy | SOUL.md（身份 + 行为准则） |
+| WorkBuddy | SOUL.md（身份 + 行为准则）；SKILL.md（技能 `sgme`——官方适配器 `adapters/workbuddy`，install.py 部署；原生 MCP `sgme` 亦可挂） |
 | Claude Code | CLAUDE.md |
 | DeepSeek Harness (DSH) | AGENTS.md（项目级自动加载） |
 | Doubao Work（豆包工作） | SKILL.md（豆包工作技能机制；官方适配器 `adapters/doubao`，install.py 部署） |
+| MiMo Desktop（小米 MiMo） | SKILL.md（MiMoCode 技能 `mimo`；官方适配器 `adapters/mimo`，install.py 部署；亦可挂原生 MCP `sgme`） |
 | 通用 / 其它（走 MCP 通用接入） | AGENTS.md（项目级自动加载） |
 
 ## 服务化部署（Windows 服务）

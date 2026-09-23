@@ -885,7 +885,7 @@ CMD_SPECS: list[dict] = [
     },
     {
         "cli": "project-register", "help": "登记/更新项目（project_id 纯英文；新建需 --path）",
-        "positionals": [{"dest": "project_id", "help": "项目 ID（纯英文）"}],
+        "positionals": [{"dest": "project_id", "help": "项目 ID（纯英文，一律大写）"}],
         "options": [
             {"dest": "path", "flag": "path", "help": "项目路径（新建时必填）"},
             {"dest": "name", "flag": "name", "help": "项目显示名"},

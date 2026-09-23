@@ -94,12 +94,27 @@ def client(app):
 
 # ---------- 工具函数 ----------
 
+_SEED_STARTED_AT_N = 0
+
+
+def _next_started_at() -> str:
+    """生成互不相同的 started_at（F-4 唯一索引：(session_key, started_at)）。
+
+    同一 session_key 下每个 L0 文件自带独立起时刻——夹具不得复用同值，
+    否则与真实语义（同会话同起时刻 = 同一个文件）不符且会撞唯一索引。
+    """
+    global _SEED_STARTED_AT_N
+    _SEED_STARTED_AT_N += 1
+    n = _SEED_STARTED_AT_N
+    return f"2026-08-01T{n // 3600:02d}:{(n % 3600) // 60:02d}:{n % 60:02d}Z"
+
+
 def _seed_raw_file(
     session_conn: sqlite3.Connection,
     *,
     file_id: str,
     session_key: str = "dream-test",
-    started_at: str = "2026-08-01T00:00:00Z",
+    started_at: str | None = None,
     status: str = "new",
     write_disk: bool = True,
     n_msgs: int = 2,
@@ -109,6 +124,7 @@ def _seed_raw_file(
     磁盘文件消息数与 last_refined_seq 相等 → refine_file 提取到空增量，
     不触发 L1 LLM 链路（零 LLM 测试基建）。
     """
+    started_at = started_at or _next_started_at()
     msgs = [
         {"timestamp": f"2026-08-01T00:00:0{i}Z", "role": "user", "content": f"消息 {i}"}
         for i in range(1, n_msgs + 1)
@@ -395,8 +411,9 @@ def test_run_dream_cold_archive(conns, cfg):
     _seed_raw_file(session_conn, file_id="f-recent", status="refined",
                    started_at="2026-08-09T00:00:00Z")
     # new 文件（近期）：① 被抽取提炼为 refined，started_at 未超期 → ③ 不归档
+    # 起时刻与 f-recent 错开一秒：F-4 之后 (session_key, started_at) 唯一
     _seed_raw_file(session_conn, file_id="f-fresh-new", status="new",
-                   started_at="2026-08-09T00:00:00Z")
+                   started_at="2026-08-09T00:00:01Z")
 
     summary = dream_mod.run_dream(mem_conn, session_conn, cfg)
 

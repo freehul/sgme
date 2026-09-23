@@ -18,6 +18,7 @@
 - L1 摘要：frontmatter 字段 + 正文骨架（各标题行）+ uses 清单——审核媒介，
   agent 先看 L1 决定是否值得拉 L2
 - L2 全文：正文全文注入上下文（显式调用）；section 为标题名时截取该节省 token
+  （节名接受纯标题或 digest 骨架形态 `## 标题`，内部归一化后匹配）
 - L3 物化：字节保真写盘 dest_dir/<name>/SKILL.md（不走 LLM 转写），遥测一条
 
 数据源：``sgme.skills.index_all(source_dirs)``（git 工作区 SKILL.md，按名排序）。
@@ -98,18 +99,33 @@ def _skeleton(content: str) -> list[str]:
     return [m.group(0).strip() for m in _HEADING_RE.finditer(content or "")]
 
 
+_SECTION_PREFIX_RE = re.compile(r"^\s*#+\s*")
+
+
+def _normalize_section_title(section: str) -> str:
+    """节名归一化：剥掉 markdown 标题前缀（# / ## ...）与两侧空白。
+
+    digest.sections 骨架给的是带 # 的原样行（`## 踩坑`），而匹配只比标题
+    正文——两侧都归一化后 digest 骨架可原样回传（与 Hermes 适配器补丁对齐）。
+    """
+    return _SECTION_PREFIX_RE.sub("", str(section or "")).strip()
+
+
 def _extract_section(body: str, section: str) -> str | None:
     """按标题名截取小节：从匹配标题行起至同级或更高级标题前。
 
-    - 匹配规则：标题文本去空白后精确等于 section（忽略级别）；
-    - 找不到返回 None（调用方转 NOT_FOUND）。
+    - 匹配规则：标题文本与 section **归一化后**精确相等（忽略级别 / # 前缀）；
+    - 找不到返回 None（调用方转「小节不存在」）。
     """
     if not body or not section:
+        return None
+    want = _normalize_section_title(section)
+    if not want:
         return None
     matches = list(_HEADING_RE.finditer(body))
     for i, m in enumerate(matches):
         title_text = m.group(2).strip()
-        if title_text != section.strip():
+        if title_text != want:
             continue
         level = len(m.group(1))
         end = len(body)
@@ -281,7 +297,11 @@ def skill_get(
     if section is not None and section.strip():
         seg = _extract_section(rec.content, section)
         if seg is None:
-            return not_found(rec.name, extra=f"无标题节: {section}（先 digest 看骨架确认节名）")
+            # 节缺失 ≠ 技能缺失：文案不得误导排查方向
+            return OperationResult.fail(
+                ERR_NOT_FOUND,
+                f"小节不存在: {section}（技能 {rec.name} 在；先 digest 看骨架确认节名）",
+            )
         content = seg
     return OperationResult.succeed(
         {

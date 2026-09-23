@@ -136,7 +136,9 @@ def register_project_meta(name: str, path: str) -> bool:
     不传 last_active_at / milestone：图纸约定先留空（由提炼/commit 探测链路回填）。
 
     Args:
-        name: 项目名（纯英文，同目录名），作为 project_id 与 name。
+        name: 项目名（纯英文，同目录名）。写入 SGME 时**统一转大写**——
+            全系统约定 project_id 一律大写（``dhvs`` → ``DHVS``），与 project_meta
+            主键口径一致；本地目录名保持原样不动（Windows/NAS 两侧只按 path 定位）。
         path: 项目绝对路径。
 
     Returns:
@@ -147,7 +149,10 @@ def register_project_meta(name: str, path: str) -> bool:
         print("  ⚠️ 未设置环境变量 SGME_ADMIN_KEY，跳过项目注册表登记（稍后补登）")
         return False
 
-    payload = {"project_id": name, "name": name, "path": path}
+    pid = name.strip().upper()  # 与 operations/project.py::_normalize_project_id 同口径
+    if pid != name:
+        print(f"  ℹ️ project_id 统一为大写: {name} → {pid}（目录名不受影响）")
+    payload = {"project_id": pid, "name": pid, "path": path}
     try:
         req = urllib.request.Request(
             SGME_PROJECTS_URL,
@@ -176,16 +181,18 @@ def link_demands(name: str, admin_key: str | None) -> None:
     """检索待办池中标题含项目名的条目 → 标 planned + project_id=name。
 
     Args:
-        name: 项目名（project_id）。
+        name: 项目名（project_id）。写入 SGME 前**统一转大写**（全系统约定
+            project_id 一律大写，与 project_meta 主键口径一致）。
         admin_key: admin key；未设置时跳过（提示手动关联）。
     """
+    pid = name.strip().upper()
     if not admin_key:
         print("  ⚠️ 待办池关联跳过（未设置 SGME_ADMIN_KEY，稍后人工关联）")
         return
     headers = {"X-API-Key": admin_key}
     try:
         req = urllib.request.Request(
-            f"{SGME_DEMANDS_URL}?q={urllib.parse.quote(name)}&limit=50",
+            f"{SGME_DEMANDS_URL}?q={urllib.parse.quote(pid)}&limit=50",
             headers=headers,
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -197,7 +204,7 @@ def link_demands(name: str, admin_key: str | None) -> None:
             return
         linked = 0
         for d in hits:
-            body = {"status": "planned", "project_id": name}
+            body = {"status": "planned", "project_id": pid}
             upd = urllib.request.Request(
                 f"{SGME_DEMANDS_URL}/{d['demand_id']}/status",
                 data=json.dumps({"status": "planned"}).encode("utf-8"),
@@ -208,7 +215,7 @@ def link_demands(name: str, admin_key: str | None) -> None:
                 pass
             patch_req = urllib.request.Request(
                 f"{SGME_DEMANDS_URL}/{d['demand_id']}",
-                data=json.dumps({"project_id": name}).encode("utf-8"),
+                data=json.dumps({"project_id": pid}).encode("utf-8"),
                 method="PATCH",
                 headers={"Content-Type": "application/json", **headers},
             )
@@ -218,7 +225,7 @@ def link_demands(name: str, admin_key: str | None) -> None:
             except Exception:
                 pass  # project_id 绑定失败不阻断
             linked += 1
-        print(f"  ⑤ 待办池关联：{linked} 条待办标已立项并绑定 {name}")
+        print(f"  ⑤ 待办池关联：{linked} 条待办标已立项并绑定 {pid}")
     except Exception as e:
         print(f"  ⚠️ 待办池关联失败（不影响立项，稍后人工关联）: {e}")
 

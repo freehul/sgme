@@ -96,7 +96,8 @@ def main(argv=None) -> int:
         def _append_heartbeat():
             if a.no_append:
                 return "skipped"
-            r = c.append("sgme-selfcheck", "接入自检心跳（selfcheck.py）", agent_id="doubao-work")
+            r = c.append("doubao-work-selfcheck", "接入自检心跳（selfcheck.py）",
+                         agent_id="doubao-work")
             return str(r.get("status") or r.get("file_id") or "ok")[:40]
         run("⑧ append（L0 写入心跳）", _append_heartbeat)
 

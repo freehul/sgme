@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -26,6 +28,7 @@ from sgme.server.app import (
 )
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
+from sgme.mcp_server import ApiKeyMiddleware
 
 REMOTE_HOST = "203.0.113.9"  # TEST-NET-3 保留地址，仅用于测试
 
@@ -273,3 +276,133 @@ def test_keys_endpoint_remote_source_forbidden(default_key_app, monkeypatch):
     resp = client.get("/v1/admin/keys")
     assert resp.status_code == 403
     assert "仅限本机" in resp.json()["error"]["message"]
+
+
+# ---------- 8. CORS 收敛（F-1，2026-09-24 深度审查） ----------
+
+
+def _has_acao(resp) -> bool:
+    return "access-control-allow-origin" in {k.lower() for k in resp.headers}
+
+
+def test_cors_evil_origin_gets_no_allow_header(default_key_app):
+    """非白名单来源跨源请求 → 无 CORS 许可头（浏览器读不到响应体）。"""
+    client = TestClient(default_key_app)
+    resp = client.get("/v1/admin/keys", headers={"Origin": "https://evil.example"})
+
+    assert not _has_acao(resp)
+    # 端点对「本机来源」的行为不变（CORS 只是浏览器侧放行开关）
+    assert resp.status_code == 200
+
+
+def test_cors_localhost_origin_allowed(default_key_app):
+    """本机回环来源（任意端口）→ 回显许可头（本机 HTML 工具不受影响）。"""
+    client = TestClient(default_key_app)
+    resp = client.get("/v1/admin/keys", headers={"Origin": "http://localhost:8080"})
+
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "http://localhost:8080"
+
+
+def test_cors_preflight_evil_origin_denied(default_key_app):
+    """OPTIONS 预检带非白名单来源 → 不返回许可头。"""
+    client = TestClient(default_key_app)
+    resp = client.options(
+        "/v1/admin/keys",
+        headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "GET"},
+    )
+
+    assert not _has_acao(resp)
+
+
+def test_cors_configured_origin_allowed(conns, cfg, tmp_path):
+    """server.cors_origins 显式登记的来源 → 放行（局域网 HTML 工具的正规入口）。"""
+    cfg = dict(cfg)
+    cfg["server"] = {**cfg.get("server", {}), "cors_origins": ["http://10.0.0.5:8080"]}
+    mem_conn, session_conn, wiki_conn = conns
+    app = create_app(
+        cfg=cfg,
+        mem_conn=mem_conn,
+        session_conn=session_conn,
+        wiki_conn=wiki_conn,
+        admin_key="cust-admin-key",
+        agent_key="cust-agent-key",
+        bearer_token="",
+        agent_store_path=tmp_path / "agent_keys.json",
+    )
+    resp = TestClient(app).get("/v1/admin/keys", headers={"Origin": "http://10.0.0.5:8080"})
+
+    assert resp.headers.get("access-control-allow-origin") == "http://10.0.0.5:8080"
+
+
+def test_keys_endpoint_host_header_guard(default_key_app):
+    """Host 头非回环（DNS rebinding 形态）→ 403，即使来源地址是回环。"""
+    client = TestClient(default_key_app, base_url="http://evil.example")
+    resp = client.get("/v1/admin/keys")
+
+    assert resp.status_code == 403
+    assert "Host 校验失败" in resp.json()["error"]["message"]
+
+
+# ---------- 9. MCP 默认 Key 来源限制（F-3，2026-09-24 深度审查） ----------
+
+
+def _mcp_scope(client_host: str, key: str) -> dict:
+    return {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [(b"x-api-key", key.encode())],
+        "client": (client_host, 40000),
+    }
+
+
+async def _call_middleware(store, scope) -> list:
+    """直调 ApiKeyMiddleware：fake app 直接回 200，收集 sent 消息。"""
+
+    async def fake_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    mw = ApiKeyMiddleware(fake_app, key_store=store, conn=None)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    sent: list = []
+
+    async def send(message):
+        sent.append(message)
+
+    await mw(scope, receive, send)
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_mcp_default_key_remote_forbidden():
+    """MCP 默认开发 Key + 非本机来源 → 403（与 HTTP 侧同策略；此前缺口在此）。"""
+    store = AgentKeyStore(admin_key=DEFAULT_ADMIN_KEY, agent_key=DEFAULT_AGENT_KEY)
+    sent = await _call_middleware(store, _mcp_scope(REMOTE_HOST, store.agent_key))
+
+    assert sent[0]["status"] == 403
+    body = json.loads(sent[1]["body"].decode("utf-8"))
+    assert body["error"]["code"] == "ERR_FORBIDDEN"
+    assert "默认开发 Key" in body["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_default_key_localhost_ok():
+    """MCP 默认开发 Key + 本机回环 → 放行（本机开发工作流不受影响）。"""
+    store = AgentKeyStore(admin_key=DEFAULT_ADMIN_KEY, agent_key=DEFAULT_AGENT_KEY)
+    sent = await _call_middleware(store, _mcp_scope("127.0.0.1", store.agent_key))
+
+    assert sent[0]["status"] == 200
+
+
+@pytest.mark.asyncio
+async def test_mcp_custom_key_remote_ok():
+    """MCP 自定义 Key + 非本机来源 → 放行（不受默认 Key 限制）。"""
+    store = AgentKeyStore(admin_key="cust-admin-key", agent_key="cust-agent-key")
+    sent = await _call_middleware(store, _mcp_scope(REMOTE_HOST, store.agent_key))
+
+    assert sent[0]["status"] == 200

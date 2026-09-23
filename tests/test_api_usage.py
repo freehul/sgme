@@ -194,6 +194,33 @@ async def test_http_usage_anonymous_without_key(mem_conn, store):
 
 
 @pytest.mark.asyncio
+async def test_http_usage_unmatched_without_spa_catch_all(mem_conn, store):
+    """干净 checkout（无 ui/dist → 无 SPA catch-all）下，未匹配路径同样记 "(unmatched)"。
+
+    2026-09-23 CI 首跑实证：本地有 ui/dist 时未匹配请求被 SPA catch-all 捕获 →
+    "(unmatched)"；干净 checkout 无 catch-all 时旧逻辑回退原始 path → 任意路径可
+    无界增长统计行数（口径分裂）。现按路由级 404/405 归一，两形态结果一致。
+    """
+
+    async def fake_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 404, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    mw = UsageMiddleware(fake_app, conn=mem_conn, key_store=store)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/v1/definitely-not-a-route-db0a1c",
+        "headers": [],
+        "client": None,
+    }
+    await _run_middleware(mw, scope)
+
+    row = mem_conn.execute("SELECT * FROM api_usage_daily").fetchone()
+    assert row["name"] == "(unmatched)"  # 未匹配 → 语义标记（不落原始路径）
+
+
+@pytest.mark.asyncio
 async def test_http_usage_silent_on_error(mem_conn, store, monkeypatch):
     """记录过程抛异常（如连接坏）→ 请求照常完成、不抛出。"""
 
@@ -291,7 +318,8 @@ def test_http_usage_route_template_normalization(conns, cfg, tmp_path):
     assert row is not None
     assert row["name"] == "/v1/admin/demands/{demand_id}"  # 模板而非具体 UUID
 
-    # 未匹配路径（404）→ FastAPI catch-all 兜底 → 记为 "(unmatched)"（防行数爆炸）
+    # 未匹配路径（404）→ 归 "(unmatched)"（防行数爆炸）：有 SPA catch-all 时经
+    # /{full_path:path} 命中，干净检出（无 ui/dist）时走路由级 404 归一，两形态一致
     client.get("/v1/definitely-not-a-route", headers={"X-API-Key": "test-admin-key"})
     row2 = mem_conn.execute(
         "SELECT name, calls FROM api_usage_daily WHERE name = '(unmatched)'"

@@ -930,13 +930,13 @@ export function createProjectRegisterTool(client: SgmeClient) {
     name: 'project_register',
     description: [
       '登记/创建项目到 SGME 项目池（仅当用户主动提出立项/创建时调用；upsert，二次登记=更新）。',
-      'project_id 用纯英文；新建时 path 必填。',
+      'project_id 用纯英文且一律大写；新建时 path 必填。',
     ].join(' '),
     parameters: {
       project_id: {
         type: 'string',
         required: true,
-        description: '项目 id（纯英文，如 sgme）',
+        description: '项目 id（纯英文，一律大写，如 DHVS）',
       },
       path: {
         type: 'string',

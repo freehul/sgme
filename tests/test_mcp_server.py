@@ -134,11 +134,16 @@ def test_mcp_skill_digest_and_get_section(mcp, mcp_skills_env):
     d2 = json.loads(text2)
     assert "netstat" in d2["content"]
 
-    # section 截取
+    # section 截取（纯标题名 + digest 骨架形态均应命中）
     text3, _ = _call(mcp, "skill_get", {"name": "alpha", "section": "踩坑"})
     d3 = json.loads(text3)
     assert "netstat" in d3["content"]
     assert "docker compose" not in d3["content"]
+
+    text3b, _ = _call(mcp, "skill_get", {"name": "alpha", "section": "## 踩坑"})
+    d3b = json.loads(text3b)
+    assert "error" not in d3b, d3b
+    assert "netstat" in d3b["content"]
 
     # 不存在 → error（MCP 扁平错误约定）
     text4, _ = _call(mcp, "skill_get", {"name": "ghost"})
@@ -204,12 +209,15 @@ def test_mcp_idea_add(mcp):
 
 
 def test_mcp_demand_create(mcp):
-    """demand_create：新建待办（可带 project_id 标记）→ 状态 pending + 时间戳。"""
+    """demand_create：新建待办（可带 project_id 标记）→ 状态 pending + 时间戳。
+
+    project_id 走 operations 层归一：小写入参落库为大写（2026-09-20 全系统约定）。
+    """
     text, _ = _call(mcp, "demand_create", {"title": "MCP 待办：接通项目过滤", "project_id": "sgme"})
     data = json.loads(text)
     assert "error" not in data, data
     assert data["title"] == "MCP 待办：接通项目过滤"
-    assert data["project_id"] == "sgme"
+    assert data["project_id"] == "SGME"
     assert data["status"] == "pending"
     assert data["created_at"] and data["resolved_at"] is None
 

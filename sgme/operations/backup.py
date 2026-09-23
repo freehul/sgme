@@ -40,6 +40,7 @@ MCP 工具面向 Agent Key，故 backup 不存在 MCP 出口；超集 == HTTP �
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -47,9 +48,13 @@ from typing import Any
 
 from sgme import config as sgme_config
 from sgme.backup import manager
-from sgme.operations.errors import ERR_NOT_FOUND, OperationResult
+from sgme.operations.errors import ERR_INVALID_ARGS, ERR_NOT_FOUND, OperationResult
 
 logger = logging.getLogger("sgme.operations.backup")
+
+# snapshot_id 白名单（F-7/G-6，2026-09-24）：快照目录名只允许字母数字与 _-，
+# 防路径分隔符/穿越（如 ../ 或绝对路径）注入
+_SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 # ---------- 私有工具 ----------
@@ -81,16 +86,8 @@ def _resolve_backup_dir(cfg: dict[str, Any]) -> Path:
 
 
 def _parse_level(name: str) -> str:
-    """从 snapshot_id 名称解析 level。"""
-    if name.startswith("pre_restore_"):
-        return "pre_restore"
-    if name.startswith("incremental_"):
-        return "incremental"
-    if name.startswith("full_"):
-        return "full"
-    if name.startswith("monthly_"):
-        return "monthly"
-    return "unknown"
+    """从 snapshot_id 名称解析 level（委托 backup.manager 单一实现，F-7）。"""
+    return manager.parse_snapshot_level(name)
 
 
 # ---------- 操作函数 ----------
@@ -182,14 +179,22 @@ def backup_restore(
 
     Returns:
         OperationResult：
-        - 成功：data 含 restored{files, snapshot_id} / pre_restore_snapshot /
+        - 成功：data 含 restored{files, snapshot_id} / raw_restore{mode} /
+          integrity{ok, broken_count, broken_samples} / pre_restore_snapshot /
           **_new_conns**（restore 重开的三库连接三元组——入口层用它更新
           app.state 引用，属于协议无关超集里的**私有传输字段**，
           http_payload 投影时会剔除，绝不落入 HTTP 响应）。
+        - snapshot_id 非法（含路径分隔符等特殊字符）：
+          OperationResult(ok=False, error_code=ERR_INVALID_ARGS)。
         - 快照不存在：OperationResult(ok=False, error_code=ERR_NOT_FOUND,
           message="快照不存在: {snapshot_id}")，入口层 run_operation 翻译为 404。
     """
     backup_dir = _resolve_backup_dir(cfg)
+
+    if not _SNAPSHOT_ID_RE.match(snapshot_id or ""):
+        return OperationResult.fail(
+            ERR_INVALID_ARGS, f"非法 snapshot_id（仅允许字母数字与 _-）: {snapshot_id!r}"
+        )
 
     snapshot_path = backup_dir / snapshot_id
     if not snapshot_path.exists() or not snapshot_path.is_dir():

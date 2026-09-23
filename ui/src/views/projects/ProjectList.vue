@@ -136,8 +136,8 @@ async function saveEdit() {
     <div v-if="creating" class="modal">
       <div class="modal-box">
         <h3>新建项目（立项）</h3>
-        <label>项目 ID（纯英文）*</label>
-        <input v-model="newId" placeholder="如 sgme" autofocus />
+        <label>项目 ID（纯英文，一律大写）*</label>
+        <input v-model="newId" placeholder="如 DHVS" autofocus />
         <label>展示名</label>
         <input v-model="newName" placeholder="缺省同 ID" />
         <label>项目路径 *</label>

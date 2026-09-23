@@ -71,6 +71,12 @@ skills:
   source_dirs:
     - /app/cache/skills/
   budget: 40
+  # ST-45 资产配额：正文之外随技能分发的 references/ scripts/ assets/ 三类文件。
+  # 未配置时代码回落到 routes_skills_admin.DEFAULT_ASSET_*（同值）。
+  asset_quota:
+    max_file_bytes: 262144      # 单文件上限 256 KiB
+    max_total_bytes: 2097152    # 单技能资产合计上限 2 MiB
+    max_files: 100              # 单技能资产文件数上限
 skills_hub:
   enabled: true
   path: ''

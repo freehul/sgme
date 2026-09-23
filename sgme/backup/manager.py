@@ -17,6 +17,7 @@ v0.7 三库拆分：raw_files 迁入 session.db，scenes 系列迁入 memory.db�
 from __future__ import annotations
 
 import gzip
+import logging
 import shutil
 import sqlite3
 import time
@@ -26,6 +27,8 @@ from pathlib import Path
 
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
+
+logger = logging.getLogger("sgme.backup")
 
 # 三库文件名（快照/恢复统一口径，顺序 = (memory, session, wiki)）
 DB_FILENAMES: tuple[str, str, str] = ("memory.db", "session.db", "wiki.db")
@@ -382,6 +385,23 @@ def archive_raw_cold(
     return {"archived_count": len(archived), "files": archived}
 
 
+def parse_snapshot_level(name: str) -> str:
+    """从快照目录名解析 level（F-7，2026-09-24：恢复语义按级别区分）。
+
+    唯一实现——operations/backup._parse_level 委托到这里
+    （依赖方向：operations → backup.manager，反向禁止）。
+    """
+    if name.startswith("pre_restore_"):
+        return "pre_restore"
+    if name.startswith("incremental_"):
+        return "incremental"
+    if name.startswith("full_"):
+        return "full"
+    if name.startswith("monthly_"):
+        return "monthly"
+    return "unknown"
+
+
 def restore(
     snapshot_path: str | Path,
     data_dir: str | Path,
@@ -392,7 +412,11 @@ def restore(
 
     - 恢复前自动再备份当前状态（snapshot_id 前缀 pre_restore_）
     - 关闭当前 conn（若提供）→ 覆盖 data_dir 下 db 文件 → 恢复 raw/ → 重开 conn
-    - 返回 {restored: {...}, pre_restore_snapshot: ...}
+    - raw/ 恢复模式（F-7，2026-09-24）：增量快照 → merge（合并复制，不删快照外
+      文件）；full/monthly → overwrite（覆盖，可精确回滚）；快照无 raw/ → skipped
+    - 恢复后自动做溯源链校验（F-8，2026-09-24）：integrity = {ok, broken_count,
+      broken_samples}；校验异常不影响恢复（integrity=None）
+    - 返回 {restored: {...}, raw_restore: {mode}, integrity, pre_restore_snapshot}
     - 结果中 _new_conns 字段包含重开后的三元组
       `(mem_conn, session_conn, wiki_conn)`，供调用方更新引用
     - conn_pair 语义同 `create_snapshot`（三元组优先，兼容旧二元组）
@@ -428,12 +452,22 @@ def restore(
             _restore_db_file(src_db, data_dir / db_name)
             restored_files.append(db_name)
 
-    # 4. 恢复 raw/
+    # 4. 恢复 raw/（F-7 修复，2026-09-24 深度审查）
+    # 增量快照的 raw/ 只含「当日」子集：覆盖式恢复会删除快照外的全部原始文件
+    # （真实数据风险）→ 增量改为合并复制（不删任何文件）；full/monthly 保持
+    # 覆盖语义（完整副本，可精确回滚）。
     src_raw = snapshot_path / "raw"
+    raw_mode = "skipped"
     if src_raw.exists():
+        level = parse_snapshot_level(snapshot_path.name)
         raw_dir.mkdir(parents=True, exist_ok=True)
-        shutil.rmtree(raw_dir, ignore_errors=True)
-        shutil.copytree(src_raw, raw_dir)
+        if level == "incremental":
+            shutil.copytree(src_raw, raw_dir, dirs_exist_ok=True)
+            raw_mode = "merge"
+        else:
+            shutil.rmtree(raw_dir, ignore_errors=True)
+            shutil.copytree(src_raw, raw_dir)
+            raw_mode = "overwrite"
         restored_files.append("raw/")
 
     # 5. 重开 conn（v0.7：三库）
@@ -441,11 +475,21 @@ def restore(
     new_session = db_mod.connect_session(data_dir)
     new_wiki = db_mod.connect_wiki(data_dir)
 
+    # 6. 溯源链校验（F-8，2026-09-24 深度审查）：runbook 承诺的「恢复后自动校验」
+    #    此前只写在文档里、代码未接——现补上；校验失败绝不影响恢复结果。
+    integrity: dict | None = None
+    try:
+        integrity = verify_integrity(new_mem, new_session)
+    except Exception as e:
+        logger.warning("恢复后溯源链校验失败（不影响恢复）: %s", e)
+
     return {
         "restored": {
             "files": restored_files,
             "snapshot_id": snapshot_path.name,
         },
+        "raw_restore": {"mode": raw_mode},
+        "integrity": integrity,
         "pre_restore_snapshot": pre_snap["snapshot_id"],
         "_new_conns": (new_mem, new_session, new_wiki),
     }

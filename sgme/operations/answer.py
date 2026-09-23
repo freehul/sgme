@@ -24,6 +24,7 @@ from sgme.data.search import search_memories
 from sgme.llm import chain as llm_chain
 from sgme.llm import provider as llm_provider
 from sgme.operations.errors import ERR_LLM_UNAVAILABLE, InvalidArgs, OperationResult
+from sgme.operations.search import normalize_query_terms
 from sgme.prompts.manager import PromptStore
 
 # ---------- 题型分派 ----------
@@ -120,7 +121,7 @@ def answer(
     *,
     query: str,
     question_type: str | None = None,
-    limit: int = 8,
+    limit: int = 10,
     client: Any = None,
     llm_fn: Callable[[str], str] | None = None,
 ) -> OperationResult:
@@ -131,7 +132,7 @@ def answer(
         cfg: 运行时配置（含 llm 段与 answer 段）。
         query: 用户问题。
         question_type: 显式题型覆盖（temporal/aggregate/generic）；None 自动分派。
-        limit: 检索候选条数（默认 8 = LongMemEval recall@8 口径）。
+        limit: 检索候选条数（默认 10，对齐混合 search 召回口径）。
         client: 可选 httpx 客户端（测试 mock）。
         llm_fn: 可选 LLM 函数注入（测试 mock）；缺省 call_with_fallback。
 
@@ -154,9 +155,11 @@ def answer(
         )
 
     # 检索候选（memory 层；T-149① 起结果带 occurred_at/facts）
+    # 术语别名归一化与 operations.search 对齐，避免旧术语问句召回为空
+    retrieval_query = normalize_query_terms(query, cfg.get("term_aliases") or {})
     candidates = search_memories(
         mem_conn, session_conn,
-        query=query, limit=limit,
+        query=retrieval_query, limit=limit,
         include_sources=False, cfg=cfg,
     )
 
