@@ -11,14 +11,16 @@ on:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    # 固定 24.04 而非 ubuntu-latest：GitHub 将于 2026-10-19 起把 latest 迁到 Ubuntu 26，
+    # 固定版本防镜像换代带来的无预告行为漂移（升级窗口由本仓显式决定）。
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -46,7 +48,7 @@ jobs:
 
       - name: Upload junit report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: junit-report
           path: tmp/junit.xml
