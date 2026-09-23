@@ -30,6 +30,7 @@ logger = logging.getLogger("sgme.server")
 
 from sgme import config as sgme_config
 from sgme import __version__  # FastAPI 文档页版本（单源 sgme.__version__，B123）
+from sgme import net_guard  # F-3：本机来源 / 默认 Key 守卫（HTTP 与 MCP 单一策略源）
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
 from sgme.operations.llm import model_keys_notice
@@ -78,10 +79,10 @@ def api_error(code: str, message: str, details: dict | None = None) -> HTTPExcep
 DEFAULT_AGENT_KEY = "dev-agent-key-change-me"
 DEFAULT_ADMIN_KEY = "dev-admin-key-change-me"
 
-# 本机回环来源集合：真实回环地址 + Starlette TestClient 的固定 client host
-# （"testclient" 是测试工具的主机名，非网络来源——放行它保证「默认 key + 本机开发」
-# 工作流在测试环境下同样成立）。
-_LOCALHOST_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+# 本机回环来源 / 默认开发 Key 守卫统一住在 sgme/net_guard.py（F-3，2026-09-24 深度审查）：
+# 原先 HTTP（本模块）与 MCP（mcp_server.ApiKeyMiddleware）各自实现「默认 Key 仅限本机」，
+# MCP 侧漏实现即策略漂移缺口；现收敛为单一策略源，两入口共用（入口层互不依赖，同依赖叶子模块）。
+_LOCALHOST_HOSTS = net_guard.LOCALHOST_HOSTS
 
 
 def _is_localhost_source(request: Request) -> bool:
@@ -90,9 +91,9 @@ def _is_localhost_source(request: Request) -> bool:
     client 信息缺失（None）→ 视为非本机来源（安全侧失败：宁可误拒不可漏放）。
     """
     client = getattr(request, "client", None)
-    if client is None or not getattr(client, "host", None):
+    if client is None:
         return False
-    return client.host.lower() in _LOCALHOST_HOSTS
+    return net_guard.is_localhost_host(getattr(client, "host", None))
 
 
 # ---------- operations 层 → HTTP 协议翻译（v0.7 §7） ----------
@@ -426,9 +427,9 @@ def _reject_default_key_from_remote(request: Request, key: str) -> None:
     - 自定义 key（含 register_agent 签发的 agt_*）→ 不受限
     """
     store: AgentKeyStore = request.app.state.key_store
-    if not store.is_default_dev_key(key):
-        return
-    if _is_localhost_source(request):
+    client = getattr(request, "client", None)
+    client_host = getattr(client, "host", None) if client else None
+    if not net_guard.is_default_key_from_remote(store, key, client_host):
         return
     raise api_error(
         "ERR_FORBIDDEN",
@@ -894,11 +895,16 @@ def create_app(
 
     app = FastAPI(title="SGME", version=__version__, docs_url="/docs", lifespan=lifespan)
 
-    # CORS：允许局域网来源（TackMark 等 HTML 工具需 fetch 页面内容做标注；
-    # 鉴权仍由 X-API-Key 承担，开放 CORS 不降低安全性）
+    # CORS：浏览器侧跨源访问控制（F-1 修复，2026-09-24 深度审查）。
+    # 原实现 allow_origins=["*"]（当时理由：TackMark 等 HTML 工具需跨源 fetch），
+    # 但通配 CORS + /v1/admin/keys 无鉴权端点 = 任意网页可跨源读取 admin/agent key。
+    # 现收敛为：默认仅放行本机回环来源（WebUI 同源、本机 HTML 工具不受影响）；
+    # 局域网/自定义来源须在 config server.cors_origins 显式登记（默认空表）。
+    # 鉴权仍由 X-API-Key 承担，本改动只关闭「任意来源可读」的浏览器通道。
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=list((cfg.get("server", {}) or {}).get("cors_origins") or []),
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -971,6 +977,15 @@ def create_app(
             raise api_error(
                 "ERR_FORBIDDEN",
                 "密钥自动填充仅限本机回环来源（127.0.0.1/localhost）：远程访问请手动配置 key",
+            )
+        # F-1 纵深（2026-09-24）：来源地址是回环时 Host 头也必须是回环——
+        # 防 DNS rebinding：evil.com 解析到 127.0.0.1 时来源校验会被骗过，
+        # 但浏览器发出的 Host 头仍是 evil.com，据此拦截跨站读取。
+        if not net_guard.is_localhost_host_header(request.headers.get("host")):
+            raise api_error(
+                "ERR_FORBIDDEN",
+                "密钥自动填充仅限本机回环访问（Host 校验失败）："
+                "请使用 127.0.0.1 / localhost 访问本机服务",
             )
         store: AgentKeyStore = request.app.state.key_store
         return {

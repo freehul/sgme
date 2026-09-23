@@ -37,6 +37,8 @@ from typing import Any, Callable, Dict
 import anyio
 from mcp.server.fastmcp import Context
 
+from sgme.net_guard import is_default_key_from_remote
+
 logger = logging.getLogger("sgme.mcp")
 
 
@@ -190,23 +192,25 @@ class ApiKeyMiddleware:
                 break
         if not self._key_store.is_agent(key):
             # 鉴权失败：先发响应开始再发 body（ASGI 契约），鉴权拦截不透传任何上游字节
-            body = json.dumps(
-                {"error": {
-                    "code": "ERR_FORBIDDEN",
-                    "message": "缺失或无效的 X-API-Key：请携带 Agent Key"
-                               "（环境变量 SGME_AGENT_KEY 或经 /v1/admin/agents 注册）",
-                }},
-                ensure_ascii=False,
-            ).encode("utf-8")
-            await send({
-                "type": "http.response.start",
-                "status": 403,
-                "headers": [
-                    (b"content-type", b"application/json; charset=utf-8"),
-                    (b"content-length", str(len(body)).encode("latin-1")),
-                ],
-            })
-            await send({"type": "http.response.body", "body": body})
+            await self._send_forbidden(
+                send,
+                "缺失或无效的 X-API-Key：请携带 Agent Key"
+                "（环境变量 SGME_AGENT_KEY 或经 /v1/admin/agents 注册）",
+            )
+            return
+        # F-3（2026-09-24 深度审查）：默认开发 Key 仅限本机回环——与 HTTP 侧
+        # （server/app.py require_agent_key → _reject_default_key_from_remote）
+        # 同策略、同实现（sgme.net_guard）。此前该限制只在 HTTP 侧落地，
+        # MCP 侧默认 Key 远程可用，构成鉴权缺口（实测 MCP 默认 Key + 远程 → 200）。
+        client = scope.get("client")
+        client_host = client[0] if client else None
+        if is_default_key_from_remote(self._key_store, key, client_host):
+            await self._send_forbidden(
+                send,
+                "检测到默认开发 Key 来自非本机来源：远程调用禁止使用默认 Key。"
+                "请设置环境变量 SGME_AGENT_KEY / SGME_ADMIN_KEY 为自定义 Key 后重试"
+                "（本机 127.0.0.1 调用不受影响）",
+            )
             return
         # 供工具内 resolve_agent_id 反查（PR#2）——Request.state 即 scope["state"] 视图
         scope.setdefault("state", {})["api_key"] = key
@@ -214,6 +218,23 @@ class ApiKeyMiddleware:
         if self._conn is not None and scope.get("method") == "POST":
             receive = await self._wrap_receive_with_usage(scope, receive, key)
         await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _send_forbidden(send, message: str) -> None:
+        """下发 403 ERR_FORBIDDEN JSON（鉴权拦截统一出口，不透传任何上游字节）。"""
+        body = json.dumps(
+            {"error": {"code": "ERR_FORBIDDEN", "message": message}},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": 403,
+            "headers": [
+                (b"content-type", b"application/json; charset=utf-8"),
+                (b"content-length", str(len(body)).encode("latin-1")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
 
     async def _wrap_receive_with_usage(self, scope, receive, key):
         """T-163：读取 POST body（完整缓存）→ 解析 tools/call → 记录 → 返回重放版 receive。

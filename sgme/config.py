@@ -394,6 +394,10 @@ DEFAULT_AGENT_SCOPE_CONFIG = {
 # 限流段默认兜底（§6 限流，T-7）：默认 120 req/min/Key；0 = 关闭
 DEFAULT_SERVER_CONFIG = {
     "rate_limit_per_min": 120,
+    # 浏览器跨源白名单（F-1，2026-09-24）：默认空 = 仅放行本机回环来源；
+    # 局域网/自定义来源（如其它设备上的 HTML 工具）在此显式登记，
+    # 例：["http://10.0.0.5:8080", "http://tools.example.com"]
+    "cors_origins": [],
 }
 
 # Dream 夜间整理段默认兜底（0.8 ST-10，设计文档 SGME-Dream夜间整理设计-v0.1.md §3）
@@ -1006,16 +1010,25 @@ def _merge_backup_config(user_cfg: dict | None) -> dict:
 
 
 def _merge_server_config(user_cfg: dict | None) -> dict:
-    """合并 server 段默认值与用户配置（T-7 §6 限流阈值）。
+    """合并 server 段默认值与用户配置（T-7 §6 限流阈值 + F-1 CORS 白名单）。
 
     ``rate_limit_per_min`` 必须为非负整数；非法值（负数/非整数/缺失）回退默认 120。
+    ``cors_origins``（F-1，2026-09-24）只接受非空字符串列表；非法项过滤，
+    非法类型（非 list）回退默认空表（空表 = 仅本机回环来源）。
     """
     base = dict(DEFAULT_SERVER_CONFIG)
+    # 防可变默认值串改：浅拷贝仍与 DEFAULT_SERVER_CONFIG 共享同一 list 引用
+    base["cors_origins"] = list(DEFAULT_SERVER_CONFIG["cors_origins"])
     if not isinstance(user_cfg, dict):
         return base
     rlm = user_cfg.get("rate_limit_per_min")
     if isinstance(rlm, int) and rlm >= 0:
         base["rate_limit_per_min"] = rlm
+    cors = user_cfg.get("cors_origins")
+    if isinstance(cors, list):
+        base["cors_origins"] = [
+            str(x).strip() for x in cors if isinstance(x, str) and str(x).strip()
+        ]
     return base
 
 
