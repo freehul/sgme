@@ -44,7 +44,8 @@ CREATE_TOP_KEYS = ["snapshot_id", "level", "path", "created_at", "files", "push_
 LIST_TOP_KEYS = ["snapshots", "total"]
 LIST_SNAPSHOT_KEYS = ["snapshot_id", "level", "path"]
 # POST /v1/admin/backup/restore 响应体（_new_conns 不得出现——入口层私有传输字段）
-RESTORE_TOP_KEYS = ["restored", "pre_restore_snapshot"]
+# F-7/F-8（2026-09-24）：新增 raw_restore（raw/ 恢复模式）与 integrity（恢复后溯源校验）
+RESTORE_TOP_KEYS = ["restored", "raw_restore", "integrity", "pre_restore_snapshot"]
 RESTORE_RESTORED_KEYS = ["files", "snapshot_id"]
 # 错误结构
 ERROR_KEYS = ["error"]
@@ -365,8 +366,8 @@ def test_http_list_contract_unchanged(client):
 
 
 def test_http_restore_contract_unchanged(client, app, raw_dir):
-    """POST /v1/admin/backup/restore：响应 = {restored, pre_restore_snapshot}，
-    不含 _new_conns；且 app.state 连接已交换为新连接。"""
+    """POST /v1/admin/backup/restore：响应 = {restored, raw_restore, integrity,
+    pre_restore_snapshot}，不含 _new_conns；且 app.state 连接已交换为新连接。"""
     # Arrange：先经端点造快照
     snap_id = client.post(
         "/v1/admin/backup/create", json={"level": "full"}, headers=ADMIN_HEADERS,
@@ -386,6 +387,9 @@ def test_http_restore_contract_unchanged(client, app, raw_dir):
     assert body["restored"]["snapshot_id"] == snap_id
     assert body["pre_restore_snapshot"].startswith("pre_restore_")
     assert set(body["restored"]["files"]) >= {"memory.db", "session.db", "wiki.db", "raw/"}
+    # F-7/F-8（2026-09-24）：raw 恢复模式 + 恢复后溯源校验并入响应
+    assert body["raw_restore"] == {"mode": "overwrite"}  # full 快照 → 覆盖语义
+    assert body["integrity"]["ok"] is True
 
     # Assert：入口层职责——app.state 连接已交换（旧 conn 已被 restore 关闭）
     assert app.state.mem_conn is not old_mem_conn
