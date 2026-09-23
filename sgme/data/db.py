@@ -24,11 +24,14 @@ db.py 保持零 FTS、零 search 依赖。
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import UTC
 from pathlib import Path
 
 from sgme import config
+
+logger = logging.getLogger("sgme.data.db")
 
 # 当前 schema 版本（每次 DDL 变更 +1）
 SCHEMA_VERSION = 4
@@ -499,6 +502,7 @@ def connect_session(data_dir: str | Path | None = None) -> sqlite3.Connection:
     conn = _connect(d / "session.db")
     _ensure_schema(conn, SESSION_DDL, SCHEMA_VERSION, "session_v1")
     _migrate_session_agent_model(conn)
+    _migrate_raw_files_session_uniq(conn)
     return conn
 
 
@@ -779,6 +783,36 @@ def _migrate_session_agent_model(conn: sqlite3.Connection) -> None:
     if "agent_model" not in cols:
         conn.execute("ALTER TABLE raw_files ADD COLUMN agent_model TEXT")
         conn.commit()
+
+
+def _migrate_raw_files_session_uniq(conn: sqlite3.Connection) -> None:
+    """raw_files (session_key, started_at) 唯一索引（F-4，2026-09-24 深度审查）。
+
+    目的：为 append_l0 的「同会话同起时刻幂等」提供数据库级兜底（跨进程防线；
+    进程内锁见 engine/pipeline.py::_APPEND_L0_LOCK）。
+
+    幂等：索引已存在则无操作。存量库可能已有竞态产生的重复行——此时**跳过建索引
+    并告警**（不动存量数据；人工处置后重启自动补建）。排查 SQL：
+      SELECT session_key, started_at, COUNT(*) c FROM raw_files
+      WHERE started_at IS NOT NULL GROUP BY 1,2 HAVING c>1;
+    """
+    dup = conn.execute(
+        "SELECT session_key, started_at, COUNT(*) AS c FROM raw_files "
+        "WHERE started_at IS NOT NULL GROUP BY session_key, started_at "
+        "HAVING c > 1 LIMIT 1"
+    ).fetchone()
+    if dup is not None:
+        logger.warning(
+            "raw_files 存在重复 (session_key, started_at)（如 %s / %s，共 %d 行）——"
+            "跳过唯一索引创建（不动存量数据）；人工去重后重启自动补建",
+            dup[0], dup[1], dup[2],
+        )
+        return
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_files_session_started "
+        "ON raw_files(session_key, started_at)"
+    )
+    conn.commit()
 
 
 def _migrate_mem_prompt_version(conn: sqlite3.Connection) -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import uuid
 
 from sgme.engine import l15 as l15_mod
@@ -25,6 +26,12 @@ from sgme.data import memory_dao
 from sgme.data import session_dao
 
 logger = logging.getLogger("sgme.engine.pipeline")
+
+# F-4（2026-09-24 深度审查）：append_l0「查-写-插」临界区串行化锁（进程内）。
+# 部署形态是单进程（uvicorn 主循环 + MCP 独立线程 + FastAPI 线程池），
+# 进程内锁即覆盖全部入口；跨进程场景由 raw_files (session_key, started_at)
+# 唯一索引兜底（见 data/db.py::_migrate_raw_files_session_uniq）。
+_APPEND_L0_LOCK = threading.Lock()
 
 # 零值统计（无记忆可落库时返回，与 L1.5 正常路径同构）
 _ZERO_STATS = {
@@ -237,14 +244,23 @@ def refine_many(
     session_conn: sqlite3.Connection,
     cfg: dict,
 ) -> list[tuple[refine_mod.RefineResult, dict]]:
-    """批量提炼（同步）：refine_batch 收集全部 L1 结果 → 逐个 L1.5 落库。"""
-    results = refine_mod.refine_batch(mem_conn, session_conn, cfg, limit=limit)
-    return [
-        (r, persist_memories(r, mem_conn, cfg,
+    """批量提炼（同步）：逐文件「提炼 → 立即落库」（F-2 修复，2026-09-24）。
+
+    原实现「refine_batch 集齐全部 L1 → 统一落库」：中途异常时前序文件已被标记
+    refined 但记忆未落库（永久丢失）——异步路径 2026-08-06 已修，同步路径残留
+    同款缺陷（深度审查 F-2 实测复现）。现逐文件立即落库，单文件失败只影响该文件
+    （refine_batch 收成 status=error 项，批次继续），与 async_refine_worker /
+    显式列表同步路径三者行为对齐。
+    """
+    pairs: list[tuple[refine_mod.RefineResult, dict]] = []
+    for r in refine_mod.refine_batch(mem_conn, session_conn, cfg, limit=limit):
+        l15_stats = (
+            persist_memories(r, mem_conn, cfg,
                              agent_tag=_resolve_file_agent(session_conn, r.file_id))
-         if r.memories else dict(_ZERO_STATS))
-        for r in results
-    ]
+            if r.memories else dict(_ZERO_STATS)
+        )
+        pairs.append((r, l15_stats))
+    return pairs
 
 
 def async_refine_worker(
@@ -275,7 +291,10 @@ def async_refine_worker(
                 try:
                     r = refine_mod.refine_file(rf["file_id"], mem_conn, session_conn, cfg)
                     if r.memories:
-                        persist_memories(r, mem_conn, cfg)
+                        # F-5（2026-09-24 深度审查）：批量分支补 agent_tag——
+                        # 此前漏传，T-140 多 Agent 隔离打标在异步默认路径静默缺失。
+                        persist_memories(r, mem_conn, cfg,
+                                         agent_tag=_resolve_file_agent(session_conn, rf["file_id"]))
                     processed += 1
                 except Exception as e:
                     logger.warning("async refine 文件 %s 失败（继续下一文件）: %s", rf.get("file_id"), e)
@@ -322,74 +341,95 @@ def append_l0(
         for m in messages
     ]
 
-    # 查既有文件（按 session_key）
-    existing = session_dao.get_raw_file_by_session(session_conn, session_key)
+    # 查既有文件（按 session_key）→ F-4（2026-09-24 深度审查）：整个「查-写-插」
+    # 临界区串行化——并发同参请求各自查空、各自新建会产出重复 L0 文件
+    #（20 线程实测：11~13 份重复 + 共享连接 InterfaceError）。
+    # 跨进程兜底另见 db.py 的 (session_key, started_at) 唯一索引 + IntegrityError 回读。
+    with _APPEND_L0_LOCK:
+        existing = session_dao.get_raw_file_by_session(session_conn, session_key)
 
-    if existing and existing.get("started_at") == started_at:
-        # 幂等：同 session_key + 同 started_at → 不重复写
-        return {
-            "file_id": existing["file_id"],
-            "path": existing["path"],
-            "status": existing["status"],
-            "idempotent": True,
-        }
+        if existing and existing.get("started_at") == started_at:
+            # 幂等：同 session_key + 同 started_at → 不重复写
+            return {
+                "file_id": existing["file_id"],
+                "path": existing["path"],
+                "status": existing["status"],
+                "idempotent": True,
+            }
 
-    if existing:
-        # 同 session_key 不同 started_at → 追加
-        file_id = existing["file_id"]
-        st = existing.get("source_type") or source_type
-        try:
-            raw_store.append_messages(file_id, msg_dicts, source_type=st)
-        except FileNotFoundError as e:
-            raise FileNotFoundError(f"raw 文件丢失: {e}") from e
-        # 重置 status=new 触发重新提炼增量段；更新文件哈希（内容已变）
-        size = raw_store.file_size(file_id, source_type=st)
-        new_hash = _file_content_hash(file_id, st)
-        session_dao.mark_status(
-            session_conn, file_id, status="new",
-            ended_at=ended_at, size=size,
+        if existing:
+            # 同 session_key 不同 started_at → 追加
+            file_id = existing["file_id"]
+            st = existing.get("source_type") or source_type
+            try:
+                raw_store.append_messages(file_id, msg_dicts, source_type=st)
+            except FileNotFoundError as e:
+                raise FileNotFoundError(f"raw 文件丢失: {e}") from e
+            # 重置 status=new 触发重新提炼增量段；更新文件哈希（内容已变）
+            size = raw_store.file_size(file_id, source_type=st)
+            new_hash = _file_content_hash(file_id, st)
+            session_dao.mark_status(
+                session_conn, file_id, status="new",
+                ended_at=ended_at, size=size,
+            )
+            session_dao.update_content_hash(session_conn, file_id, new_hash)
+            _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id)
+            return {
+                "file_id": file_id,
+                "path": existing["path"],
+                "status": "new",
+                "appended": True,
+            }
+
+        # 新文件
+        file_id = str(uuid.uuid4())
+        raw_store.write_new_file(
+            file_id=file_id,
+            session_key=session_key,
+            started_at=started_at,
+            agent_id=agent_id,
+            source_type=source_type,
+            first_messages=msg_dicts,
+            metadata=metadata,
         )
-        session_dao.update_content_hash(session_conn, file_id, new_hash)
+        rel_path = raw_store.relative_path(file_id, source_type=source_type)
+        size = raw_store.file_size(file_id, source_type=source_type)
+        try:
+            session_dao.insert_raw_file(
+                session_conn,
+                file_id=file_id,
+                path=rel_path,
+                session_key=session_key,
+                started_at=started_at,
+                agent_id=agent_id,
+                agent_model=agent_model,
+                ended_at=ended_at,
+                status="new",
+                size=size,
+                content_hash=_file_content_hash(file_id, source_type),
+            )
+        except sqlite3.IntegrityError:
+            # F-4 跨进程兜底：唯一索引冲突 → 回读既有行返回幂等结果。
+            # （本次已写入的 raw 文件成为孤儿副本——不删，仅告警，保留排查线索。）
+            row = session_dao.get_raw_file_by_session_started(session_conn, session_key, started_at)
+            if row is not None:
+                logger.warning(
+                    "append_l0 唯一约束冲突（跨进程并发）→ 回读既有文件: session=%s started_at=%s file=%s",
+                    session_key, started_at, row["file_id"],
+                )
+                return {
+                    "file_id": row["file_id"],
+                    "path": row["path"],
+                    "status": row["status"],
+                    "idempotent": True,
+                }
+            raise
         _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id)
         return {
             "file_id": file_id,
-            "path": existing["path"],
+            "path": rel_path,
             "status": "new",
-            "appended": True,
         }
-
-    # 新文件
-    file_id = str(uuid.uuid4())
-    raw_store.write_new_file(
-        file_id=file_id,
-        session_key=session_key,
-        started_at=started_at,
-        agent_id=agent_id,
-        source_type=source_type,
-        first_messages=msg_dicts,
-        metadata=metadata,
-    )
-    rel_path = raw_store.relative_path(file_id, source_type=source_type)
-    size = raw_store.file_size(file_id, source_type=source_type)
-    session_dao.insert_raw_file(
-        session_conn,
-        file_id=file_id,
-        path=rel_path,
-        session_key=session_key,
-        started_at=started_at,
-        agent_id=agent_id,
-        agent_model=agent_model,
-        ended_at=ended_at,
-        status="new",
-        size=size,
-        content_hash=_file_content_hash(file_id, source_type),
-    )
-    _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id)
-    return {
-        "file_id": file_id,
-        "path": rel_path,
-        "status": "new",
-    }
 
 
 def _file_content_hash(file_id: str, source_type: str = "session") -> str:
