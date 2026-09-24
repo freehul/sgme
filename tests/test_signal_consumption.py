@@ -4,7 +4,7 @@
 - mark_consumed 原子认领（谁抢到谁消费 + consumed_by 溯源）
 - signal.engine.claim 封装
 - ack_signal 回执 upsert（claimed → acked 覆盖）
-- purge_expired_signals TTL 分级清理（异常类 30d / memory_updated 7d / care 消费后 7d）
+- purge_expired_signals TTL 分级清理（异常类 30d / memory_updated 7d / care 消费后 7d / 未消费 3d）
 """
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def test_ack_signal_claimed_no_acked_at(mem_conn):
 # ---------- 3. TTL 归档 ----------
 
 def test_purge_expired_signals(mem_conn):
-    """TTL 分级清理：超期异常/心跳/已消费 care 被删，未超期 care 保留。"""
+    """TTL 分级清理：超期异常/心跳/已消费 care 被删；未消费 care 超 3 天被清、未超期保留。"""
     # 超期异常类（35 天前）
     signal_dao.insert_event(mem_conn, "a1", "anomaly_warn", "health", "{}", _iso_minus_days(35))
     signal_dao.insert_event(mem_conn, "a2", "batch_scan_error", "batch_scan", "{}", _iso_minus_days(35))
@@ -107,7 +107,9 @@ def test_purge_expired_signals(mem_conn):
     old_care_ts = _iso_minus_days(10)
     signal_dao.insert_event(mem_conn, "c1", "care_todo_due", "care", "{}", old_care_ts)
     mem_conn.execute("UPDATE signal_events SET consumed_at=? WHERE event_id='c1'", (old_care_ts,))
-    # 未超期未消费 care（1 天前）—— 保留（待 agent 消费）
+    # 超期未消费 care（5 天前，超未消费 TTL=3 天）—— 过期即清
+    signal_dao.insert_event(mem_conn, "c3", "care_overwork", "care", "{}", _iso_minus_days(5))
+    # 未超期未消费 care（1 天前）—— 保留（仍在消费窗口内）
     signal_dao.insert_event(mem_conn, "c2", "care_mood", "care", "{}", _iso_minus_days(1))
     mem_conn.commit()
 
@@ -116,7 +118,10 @@ def test_purge_expired_signals(mem_conn):
     assert counts["anomaly"] == 3
     assert counts["memory_updated"] == 1
     assert counts["care"] == 1
+    assert counts["care_unconsumed"] == 1
     # 未超期未消费 care 保留
     assert signal_dao.get_event(mem_conn, "c2") is not None
+    # 超期未消费 care 被清（2026-09-24 用户定：未消费 TTL = 3 天）
+    assert signal_dao.get_event(mem_conn, "c3") is None
     # 已消费 care 被删
     assert signal_dao.get_event(mem_conn, "c1") is None

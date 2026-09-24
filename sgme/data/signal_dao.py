@@ -190,20 +190,25 @@ def purge_expired_signals(
     anomaly_days: int = 30,
     heartbeat_days: int = 7,
     care_days: int = 7,
+    care_unconsumed_days: int = 3,
 ) -> dict:
     """TTL 归档：清理超期信号（ST-27 T-57）。
 
     - 异常类（anomaly_warn / batch_scan_error / dream_error）：保留 anomaly_days 天
     - memory_updated（纯心跳）：保留 heartbeat_days 天
-    - care_*：已消费且超 care_days 天（未消费的 care 信号不清理——待 agent 消费）
+    - care_*：已消费且超 care_days 天；未消费的保留 care_unconsumed_days 天
+      （2026-09-24 用户定：未消费 care TTL = 3 天，超期即清，防长期滞留）
 
     信号是衍生数据（非「原件」——原件=记忆/会话），超期物理删除不归档。
-    返回 {anomaly, memory_updated, care} 各类删除条数。
+    返回 {anomaly, memory_updated, care, care_unconsumed} 各类删除条数。
     """
     now = datetime.now(timezone.utc)
     anomaly_cutoff = (now - timedelta(days=anomaly_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     heartbeat_cutoff = (now - timedelta(days=heartbeat_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     care_cutoff = (now - timedelta(days=care_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    care_unconsumed_cutoff = (now - timedelta(days=care_unconsumed_days)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
     counts: dict = {}
 
@@ -226,6 +231,13 @@ def purge_expired_signals(
         (care_cutoff,),
     )
     counts["care"] = cur.rowcount
+
+    cur = conn.execute(
+        "DELETE FROM signal_events WHERE type LIKE 'care_%' "
+        "AND consumed_at IS NULL AND ts < ?",
+        (care_unconsumed_cutoff,),
+    )
+    counts["care_unconsumed"] = cur.rowcount
 
     conn.commit()
     return counts
