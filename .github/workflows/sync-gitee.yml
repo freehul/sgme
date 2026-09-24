@@ -25,5 +25,26 @@ jobs:
           # tag 触发时 checkout 为 detached HEAD（无本地 main）→ 先显式建/复位 main 分支再推
           # （B161：v1.2.0 tag 同步曾因 `src refspec main does not match any` 失败）
           git checkout -B main "$GITHUB_SHA" 2>/dev/null || git checkout -B main
-          git push gitee main --force
-          git push gitee --tags --force
+
+          # 重试包裹（B204）：Gitee 从 GitHub runner 出发偶发连接重置——2026-09-24 合并 PR 时
+          # `main -> main` 已推成功、`--tags` 卡 2 分钟后 exit 128（Recv failure: Connection reset
+          # by peer），复跑即绿。两条 push 都是幂等（--force），故各重试 3 次、退避 5/15 秒，
+          # 仍失败才判红（网络抖动不该长期记成工作流红）。
+          push_with_retry() {
+            desc="$1"; shift
+            n=0
+            for delay in 0 5 15; do
+              [ "$delay" -gt 0 ] && sleep "$delay"
+              n=$((n + 1))
+              if "$@"; then
+                echo "[sync] ${desc} 成功（第 ${n} 次尝试）"
+                return 0
+              fi
+              echo "[sync] ${desc} 第 ${n} 次尝试失败"
+            done
+            echo "[sync] ${desc} 重试 3 次仍失败"
+            return 1
+          }
+
+          push_with_retry "main 推送" git push gitee main --force
+          push_with_retry "tag 推送" git push gitee --tags --force
