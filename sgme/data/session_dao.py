@@ -315,24 +315,26 @@ def search_raw_files(
     results = [dict(r) for r in rows]
     # T-207 ①：正文 FTS 命中并入（raw_fts 命中的文件优先级更高——正文才是
     # 「搜得到」的核心语义）。元数据命中标 matched_in=meta，正文命中标 body。
+    # ⚠️ extra 必须带**完整 raw_files 元数据行**：调用方（operations 层装饰）
+    # 直接取 session_key/agent_id/started_at/status 等键，缺键即 KeyError→500
+    # （v1.4.0 生产实证，v1.4.1 修复）。
     try:
         from sgme.data.search import raw_fts as raw_fts_mod
 
         body_hits = raw_fts_mod.search_raw_body(conn, stripped, limit=limit)
         if body_hits:
             meta_ids = {r["file_id"] for r in results}
-            known = {
-                r["file_id"]
-                for r in conn.execute(
-                    f"SELECT file_id FROM raw_files WHERE file_id IN "
-                    f"({','.join('?' * len(body_hits))})",
-                    [h["file_id"] for h in body_hits],
-                ).fetchall()
-            }
+            hit_ids = [h["file_id"] for h in body_hits]
+            ph = ",".join("?" * len(hit_ids))
+            score_by_id = {h["file_id"]: h["score"] for h in body_hits}
             extra = [
-                {"file_id": h["file_id"], "matched_in": "body", "score": h["score"]}
-                for h in body_hits
-                if h["file_id"] in known and h["file_id"] not in meta_ids
+                {**dict(r), "matched_in": "body", "score": score_by_id.get(r["file_id"])}
+                for r in conn.execute(
+                    f"SELECT file_id, session_key, agent_id, started_at, ended_at, "
+                    f"status, path FROM raw_files WHERE file_id IN ({ph})",
+                    hit_ids,
+                ).fetchall()
+                if r["file_id"] not in meta_ids
             ]
             for r in results:
                 r["matched_in"] = "meta"

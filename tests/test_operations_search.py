@@ -581,6 +581,36 @@ def test_search_sessions_scope_returns_raw_files(conns, cfg, mock_vector, raw_di
     assert "l0_like" in res.data["routes"]
 
 
+def test_search_sessions_body_hit_full_metadata(conns, cfg, mock_vector, raw_dir):
+    """T-207 ① 集成回归（v1.4.1）：正文 FTS 命中（元数据不含检索词）→
+    结果带完整元数据行。v1.4.0 实证缺陷：body 命中只带 file_id/matched_in/score，
+    operations 层装饰取 session_key → KeyError → HTTP 500。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    cfg["paths"]["raw_dir"] = str(raw_dir)
+    _insert_raw_file(session_conn, "sess-b1", "hermes-20260925", agent_id="hermes")
+    _write_raw_md(raw_dir, "sess-b1",
+                  "# 2026-09-25T10:00:00Z user\n甲功报告需要复诊时携带")
+    from sgme.data.search import raw_fts
+
+    raw_fts.init_raw_fts(session_conn)
+    raw_fts.index_raw_file(session_conn, Path(cfg["paths"]["raw_dir"]) / "sessions" / "sess-b1.md")
+
+    # Act：query 与元数据（sess-b1/hermes-20260925）零交集，只能靠正文命中
+    res = search(mem_conn, session_conn, cfg, query="甲功报告", scopes=["sessions"])
+
+    # Assert
+    assert res.ok is True, res.data
+    first = res.data["results"][0]
+    assert first["file_id"] == "sess-b1"
+    assert first["matched_in"] == "body"
+    assert first["routes"] == ["l0_fts"]
+    # v1.4.1 回归点：完整元数据（此前缺键即 500）
+    assert first["session_key"] == "hermes-20260925"
+    assert first["agent_id"] == "hermes"
+    assert "甲功报告" in first["content"]
+
+
 def test_search_sessions_no_match_empty(conns, cfg, mock_vector, raw_dir):
     """sessions scope 无命中 → ok=True，results 空数组。"""
     # Arrange
