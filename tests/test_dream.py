@@ -219,6 +219,7 @@ def test_dream_config_defaults_and_merge(tmp_path):
     assert cfg["dream"] == {
         "enabled": True, "schedule": "03:00", "max_files": 200,
         "ttl_mark": True, "archive_days": 90, "report_dir": "data/reports/",
+        "purge_expired": False,  # T-205 v0.4②：出池开关（默认关）
     }
 
     yml2 = tmp_path / "sgme2.yaml"
@@ -244,7 +245,8 @@ def test_dream_config_defaults_and_merge(tmp_path):
     # 可写段白名单含 dream（/v1/admin/config 可管理）
     assert "dream" in sgme_config.CONFIG_SECTIONS
     assert sgme_config.SECTION_KEYS["dream"] == {
-        "enabled", "schedule", "max_files", "ttl_mark", "archive_days", "report_dir",
+        "enabled", "schedule", "max_files", "ttl_mark", "archive_days",
+        "report_dir", "purge_expired",
     }
 
 

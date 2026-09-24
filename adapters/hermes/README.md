@@ -23,7 +23,7 @@ SGME 作为 Hermes **原生 memory.provider** 的桥接插件（架构 §18）�
 
 ## 版本口径
 
-- `plugin.yaml` 的 `version` **跟随 SGME 版本号**（当前 `1.4.1` = ST-48 维度治理 T-201~T-207 合并发版），
+- `plugin.yaml` 的 `version` **跟随 SGME 版本号**（当前 `1.4.2` = ST-48 维度治理 T-201~T-207 合并发版），
   由 `tests/test_hermes_adapter.py::test_plugin_yaml_version_follows_sgme_version` 守门。
 - 适配器能力面唯一基准 = **SGME MCP 工具面**（`sgme/mcp_server.py`，41 个工具）；
   五个官方适配器（hermes / dsh / doubao / mimo / workbuddy）平级，对账走 `python scripts/adapter_parity.py`。
@@ -131,7 +131,7 @@ Key 口径：**agent** = Agent Key（`SGME_AGENT_KEY`）；**admin** = 管理员
 {
   "schema_version": 1,
   "adapter": "hermes",
-  "adapter_version": "1.4.1",
+  "adapter_version": "1.4.2",
   "base_url": "http://127.0.0.1:9910",
   "http": { "host": "127.0.0.1", "port": 9910 },
   "mcp": { "port": 9913 },

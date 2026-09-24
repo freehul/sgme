@@ -412,6 +412,7 @@ DEFAULT_DREAM_CONFIG = {
     "ttl_mark": True,
     "archive_days": 90,
     "report_dir": "data/reports/",
+    "purge_expired": False,  # T-205 v0.4②：expired 出池归档（默认关，灰度）
 }
 
 
@@ -974,6 +975,8 @@ def _merge_dream_config(user_cfg: dict | None) -> dict:
         base["archive_days"] = user_cfg["archive_days"]
     if isinstance(user_cfg.get("report_dir"), str) and user_cfg["report_dir"].strip():
         base["report_dir"] = user_cfg["report_dir"]
+    if isinstance(user_cfg.get("purge_expired"), bool):
+        base["purge_expired"] = user_cfg["purge_expired"]
     return base
 
 
@@ -1129,7 +1132,7 @@ SECTION_KEYS: dict[str, set[str]] = {
     "refine": {"refine_on_append", "batch_scan"},
     "search": {"vector", "rrf"},
     "backup": {"dir", "schedule", "raw_cold_days", "remote_dir"},
-    "dream": {"enabled", "schedule", "max_files", "ttl_mark", "archive_days", "report_dir"},
+    "dream": {"enabled", "schedule", "max_files", "ttl_mark", "archive_days", "report_dir", "purge_expired"},
     "scene_gc": {"enabled", "merge_threshold", "min_threshold", "trigger_at", "max_merges"},
 }
 
