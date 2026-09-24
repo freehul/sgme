@@ -31,7 +31,8 @@ def mem_conn(tmp_path, cfg):
     conn.close()
 
 
-def _insert_existing(mem_conn, content, dim_ids, priority=60, memory_id=None):
+def _insert_existing(mem_conn, content, dim_ids, priority=60, memory_id=None,
+                     updated_at="2026-01-01T00:00:00Z"):
     """插入一条旧记忆，返回 memory_id。"""
     return memory_dao.insert_memory(
         mem_conn, content=content,
@@ -39,7 +40,7 @@ def _insert_existing(mem_conn, content, dim_ids, priority=60, memory_id=None):
         time_velocity="static", ttl_days=None,
         dimension_ids=dim_ids,
         created_at="2026-01-01T00:00:00Z",
-        updated_at="2026-01-01T00:00:00Z",
+        updated_at=updated_at,
     )
 
 
@@ -95,11 +96,14 @@ def test_prescreen_limits_dimension_candidates(mem_conn, cfg, monkeypatch):
     assert len(groups[0].candidates) == 50  # 恰好 dimension_top_n
 
 
-def test_prescreen_dimension_candidates_priority_ordered(mem_conn, cfg, monkeypatch):
-    """维度候选截断按 priority 降序保留高价值候选。"""
+def test_prescreen_dimension_candidates_recency_ordered(mem_conn, cfg, monkeypatch):
+    """T-202 B2：维度候选截断按 updated_at 降序——priority 排序会让高优先级
+    老记忆永久霸榜占满 top_n，「新替旧」在候选池侧被对冲。"""
     for i in range(80):
-        _insert_existing(mem_conn, f"低价值{i}内容", ["tech_stack"], priority=10)
-    _insert_existing(mem_conn, "高价值记忆内容", ["tech_stack"], priority=99)
+        _insert_existing(mem_conn, f"陈旧记忆{i}内容", ["tech_stack"],
+                         priority=99, updated_at="2026-01-01T00:00:00Z")
+    _insert_existing(mem_conn, "新近更新记忆", ["tech_stack"],
+                     priority=10, updated_at="2026-09-25T00:00:00Z")
 
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: [])
@@ -111,8 +115,8 @@ def test_prescreen_dimension_candidates_priority_ordered(mem_conn, cfg, monkeypa
     )
     cands = groups[0].candidates
     assert len(cands) == 50
-    assert cands[0]["priority"] == 99  # 高价值候选优先保留
-    assert any(c["content"] == "高价值记忆内容" for c in cands)
+    # updated_at DESC：新近更新的候选优先保留（即使 priority 低）
+    assert cands[0]["content"] == "新近更新记忆"
 
 
 # ---------- 2. 向量并集 ----------

@@ -1147,6 +1147,25 @@ class SGMEProvider(MemoryProvider):
         """工具失败返回：结构化错误（不抛异常，不阻塞 Hermes 主流程）。"""
         return json.dumps({"error": message}, ensure_ascii=False)
 
+    @staticmethod
+    def _ok_receipt(data: Any) -> str:
+        """登记类工具回执**精简**（T-204 D0：输入侧防污染）。
+
+        背景：工具返回值会进入会话上下文，随下一轮 ``append`` 写入 L0，再被 L1
+        当「用户事实」提炼 → 生产实证残迹 ``…已建档（source_ref=「hermes 会话…」），
+        priority=70``。登记类回执里的 ``priority`` / ``source_ref`` / ``content``
+        等结构化字段本就不是事实，回显即污染源。
+
+        故只保留 id 类与 status，其余一律不回显（信息不丢：需要详情走对应查询工具）。
+        """
+        if not isinstance(data, dict):
+            return SGMEProvider._ok({"status": "ok"})
+        out: Dict[str, Any] = {"status": "ok"}
+        for key in ("demand_id", "idea_id", "project_id", "page_id", "memory_id"):
+            if key in data:
+                out[key] = data[key]
+        return SGMEProvider._ok(out)
+
     def _t_search(self, args: Dict[str, Any]) -> str:
         """sgme_memory_search：统一检索（默认 memory + skills 两层，可按 scopes 覆盖）。"""
         query = _arg_str(args, "query", 200)
@@ -1461,7 +1480,7 @@ class SGMEProvider(MemoryProvider):
         data, err = self._request("POST", "/v1/admin/ideas", key="admin", json_body=body)
         if err:
             return self._err(f"登记创意失败: {err}")
-        return self._ok(data if isinstance(data, dict) else {"status": "ok"})
+        return self._ok_receipt(data)  # T-204 D0：回执精简，防结构化字段进 L0
 
     def _t_demand_create(self, args: Dict[str, Any]) -> str:
         """sgme_demand_create：登记待办池（跨项目统一）。需管理员 Key。"""
@@ -1481,7 +1500,7 @@ class SGMEProvider(MemoryProvider):
         data, err = self._request("POST", "/v1/admin/demands", key="admin", json_body=body)
         if err:
             return self._err(f"登记待办失败: {err}")
-        return self._ok(data if isinstance(data, dict) else {"status": "ok"})
+        return self._ok_receipt(data)  # T-204 D0：回执精简，防结构化字段进 L0
 
     def _t_project_register(self, args: Dict[str, Any]) -> str:
         """sgme_project_register：登记/更新项目池（upsert）。需管理员 Key。"""
@@ -1496,7 +1515,14 @@ class SGMEProvider(MemoryProvider):
         data, err = self._request("POST", "/v1/admin/projects", key="admin", json_body=body)
         if err:
             return self._err(f"登记项目失败: {err}")
-        return self._ok(data if isinstance(data, dict) else {"project_id": project_id, "status": "ok"})
+        receipt = self._ok_receipt(data)  # T-204 D0：回执精简
+        # project_id 是调用方自己传的登记值，回显无污染风险且便于串联后续调用
+        if isinstance(data, dict) and "project_id" not in data:
+            import json as _json
+            payload = _json.loads(receipt)
+            payload["project_id"] = project_id
+            receipt = self._ok(payload)
+        return receipt
 
     def _t_signal_clear(self, args: Dict[str, Any]) -> str:
         """sgme_signal_clear：批量清空未消费信号（幂等）。需管理员 Key。"""

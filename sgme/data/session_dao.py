@@ -13,6 +13,7 @@ raw_files 是原始层索引：file_id → path/session/agent/时间/提炼游�
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timezone
 
@@ -271,12 +272,15 @@ def search_raw_files(
     query: str,
     limit: int = 10,
 ) -> list[dict]:
-    """L0 会话原文索引检索（ST-33 scope="sessions"）：LIKE 子串匹配元数据列。
+    """L0 会话原文索引检索（ST-33 scope="sessions"；T-207 ① 扩展正文 FTS）。
 
     raw_files 是原始层**索引表**——正文在磁盘 ``raw/<subdir>/<file_id>.md``
-    （表内无正文列），故匹配目标是可检索的元数据列：file_id / session_key /
-    agent_id / path（任一命中即召回，OR 语义）。正文摘要由 operations 层
-    按需读盘（best-effort，见 ``operations/search.py::_search_sessions``）。
+    （表内无正文列）。检索两路：
+    1. 元数据 LIKE：file_id / session_key / agent_id / path（任一命中即召回，OR）；
+    2. **正文 FTS（T-207 ①）**：``raw_fts`` 虚表 MATCH（分词口径与 memories_fts
+       同源），命中文件标 ``matched_in="body"`` 并优先返回——推翻 2026-08-11
+       「正文不检索」裁定（v0.4：expired 出池减肥的前提 = L0 可回溯）。
+    正文摘要与命中片段由 operations 层按需读盘（best-effort）。
 
     命中行按最近会话排序（``COALESCE(ended_at, started_at) DESC``），
     与 ``list_raw_files_page`` 浏览分页同口径；空 query → 空列表（v0.6
@@ -289,7 +293,7 @@ def search_raw_files(
 
     Returns:
         list[dict]：file_id / session_key / agent_id / started_at / ended_at /
-        status / path（按最近会话倒序）。
+        status / path（+ matched_in: meta|body，按最近会话倒序）。
     """
     stripped = (query or "").strip()
     if not stripped:
@@ -308,4 +312,47 @@ def search_raw_files(
         """,
         (like, like, like, like, int(limit)),
     ).fetchall()
-    return [dict(r) for r in rows]
+    results = [dict(r) for r in rows]
+    # T-207 ①：正文 FTS 命中并入（raw_fts 命中的文件优先级更高——正文才是
+    # 「搜得到」的核心语义）。元数据命中标 matched_in=meta，正文命中标 body。
+    try:
+        from sgme.data.search import raw_fts as raw_fts_mod
+
+        body_hits = raw_fts_mod.search_raw_body(conn, stripped, limit=limit)
+        if body_hits:
+            meta_ids = {r["file_id"] for r in results}
+            known = {
+                r["file_id"]
+                for r in conn.execute(
+                    f"SELECT file_id FROM raw_files WHERE file_id IN "
+                    f"({','.join('?' * len(body_hits))})",
+                    [h["file_id"] for h in body_hits],
+                ).fetchall()
+            }
+            extra = [
+                {"file_id": h["file_id"], "matched_in": "body", "score": h["score"]}
+                for h in body_hits
+                if h["file_id"] in known and h["file_id"] not in meta_ids
+            ]
+            for r in results:
+                r["matched_in"] = "meta"
+            # body 命中排前（相关度高），meta 命中殿后
+            results = [*extra, *results][: int(limit)]
+            if extra:
+                results = _order_by_recency(conn, results)
+    except Exception as e:  # raw_fts 未初始化/FTS5 缺失 → 纯 meta LIKE（原行为）
+        logging.getLogger(__name__).debug("raw 正文检索不可用，退回元数据 LIKE: %s", e)
+    return results
+
+
+def _order_by_recency(conn: sqlite3.Connection, results: list[dict]) -> list[dict]:
+    """按 COALESCE(ended_at, started_at) DESC 复排（body 命中插入后保持同口径）。"""
+    ids = [r["file_id"] for r in results]
+    ph = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT file_id, COALESCE(ended_at, started_at) AS ts FROM raw_files "
+        f"WHERE file_id IN ({ph})",
+        ids,
+    ).fetchall()
+    ts = {r["file_id"]: r["ts"] or "" for r in rows}
+    return sorted(results, key=lambda r: ts.get(r["file_id"], ""), reverse=True)

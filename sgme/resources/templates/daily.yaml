@@ -6,6 +6,7 @@ sections:
   - title: "👤 基本信息"
     query:
       dimensions: [identity, family]
+      match: any  # T-203：2 维 AND 会漏掉仅带 identity 或仅带 family 单标签的记忆
       priority_min: 70
       limit: 5
   - title: "📅 近期节奏"

@@ -27,8 +27,10 @@ from sgme.operations.errors import ERR_CONFLICT, ERR_INTERNAL, ERR_INVALID_ARGS,
 logger = logging.getLogger("sgme.operations.care")
 
 # persona 画像素材的维度白名单（静态/半静态，喂给四层扫描）
+# T-203 G2：原含 "style"，该维度已停用并并入 preferences（preferences 已在列，
+# 迁移后的原 style 记忆由它覆盖），保留会查不到任何记忆导致画像素材缺失。
 _PROFILE_DIMENSIONS = (
-    "identity", "preferences", "habits", "values", "style", "skills", "family", "social",
+    "identity", "preferences", "habits", "values", "skills", "family", "social",
 )
 _PROFILE_LIMIT = 30  # 素材记忆条数上限（防 token 爆预算）
 _PROFILE_MAX_CHARS = 8000  # 素材字符上限（≤ 甜点区）

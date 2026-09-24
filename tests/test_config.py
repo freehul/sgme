@@ -20,10 +20,14 @@ def test_load_config_returns_dict_with_required_keys():
 
 
 def test_dimensions_count():
-    """维度注册表必须含 14 维（2026-08-18 三池重构移除 projects/tasks 两维，
-    16 → 14；ideas 创意池维度 2026-08-12 加入）。"""
+    """维度注册表必须含 13 维。
+
+    沿革：16 → 14（2026-08-18 三池重构移除 projects/tasks，ideas 于
+    2026-08-12 加入）→ **13（2026-09-25 T-203 G2：style 语义与 preferences
+    重叠，停用并入 preferences）**。
+    """
     cfg = config.load_config()
-    assert len(cfg["dimensions"]) == 14
+    assert len(cfg["dimensions"]) == 13
 
 
 def test_dimension_fields_complete():
@@ -46,15 +50,17 @@ def test_known_dimension_ids_present():
     """关键维度 id 必须存在（identity/tech_stack/status 等）。
 
     projects/tasks 已移除（2026-08-18 三池重构：项目池 project_meta /
-    待办池 demands 为专用落地点），不再出现在注册表。
+    待办池 demands 为专用落地点）；**style 已停用**（2026-09-25 T-203 G2，
+    并入 preferences）——二者都不应再出现在注册表。
     """
     cfg = config.load_config()
     ids = {d["id"] for d in cfg["dimensions"]}
     for must in ("identity", "family", "social", "values", "skills", "tech_stack",
-                 "preferences", "habits", "environment", "style",
+                 "preferences", "habits", "environment",
                  "focus", "goals", "status", "ideas"):
         assert must in ids, f"缺关键维度 {must}"
     assert "projects" not in ids and "tasks" not in ids, "projects/tasks 已移除，不应回潜"
+    assert "style" not in ids, "style 已并入 preferences，不应回潜"
 
 
 def test_dynamic_dimensions_have_ttl():

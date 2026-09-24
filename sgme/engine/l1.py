@@ -25,6 +25,85 @@ logger = logging.getLogger("sgme.engine.l1")
 VALID_MEMORY_TYPES = {"persona", "episodic", "instruction", "fact"}
 VALID_TIME_VELOCITY = {"static", "dynamic"}
 
+# ---------- T-201：类型 ↔ 维度映射硬约束（l1_extraction v007 提示词的校验兜底） ----------
+
+# 单条记忆维度标签上限（提示词要求 1-3 个；实测出现过 4 个，属免费模型执行不稳）
+MAX_DIMENSIONS_PER_MEMORY = 3
+
+# episodic 事件类记忆**仅限动态维度**（v007 映射规则）。
+# 治理依据：静态维度 ttl_days=null → dream 的 _mark_expired_ttl 天然跳过 →
+# 事件流水一旦打静态标签即永久滞留（生产实测 tech_stack 72% 为 episodic/fact）。
+EPISODIC_ALLOWED_DYNAMIC_DIMS = {"focus", "goals", "status"}
+
+# 违规降级时的兜底维度（episodic 标签全被剔除后落此）
+EPISODIC_FALLBACK_DIM = "status"
+
+# T-201：空结果重试的会话长度门槛（字符）。
+# B164 引入「空结果加提示重试 1 次」防本地模型静默漏抽（实测 12.6% 块静默空产出），
+# 但 v007 允许输出空数组（A3）后，寒暄/纯执行类短会话也会触发重试 → 每次多花一次调用。
+# 故加门槛：会话正文短于此值 → 视为「有意空」，不再重试；长会话仍重试以保住防漏抽收益。
+EMPTY_RETRY_MIN_CONV_CHARS = 200
+
+# 违规计数（进程内累计，供测试与运维观测；不写库、不影响落库字段结构，
+# 避免重演 B147——新增字段若未同步 refine.py 归一化白名单会被静默丢弃）
+_VIOLATION_COUNTER: dict[str, int] = {
+    "dim_overflow": 0,       # 维度数超上限被截断
+    "episodic_degraded": 0,  # episodic 打静态维度被降级
+}
+
+
+def violation_counts() -> dict[str, int]:
+    """返回类型↔维度违规累计计数（只读副本）。"""
+    return dict(_VIOLATION_COUNTER)
+
+
+def reset_violation_counts() -> None:
+    """重置违规计数（测试用）。"""
+    for k in _VIOLATION_COUNTER:
+        _VIOLATION_COUNTER[k] = 0
+
+
+def _enforce_type_dimension_rule(
+    dims: list[str],
+    memory_type: str,
+    dimensions: list[dict],
+) -> tuple[list[str], bool]:
+    """执行类型↔维度映射规则，返回 (修正后的维度列表, 是否发生过降级)。
+
+    v007 提示词规定了映射规则，但免费链模型执行不稳（T-136 教训：纯规则 80%，
+    加示例才 100%），故在校验层再兜一次底——提示词管引导、代码管兜底，缺一不可。
+
+    规则：
+    - persona / instruction / fact → 不限制维度
+    - episodic → 仅保留动态维度（registry 的 time_velocity='dynamic'）；
+      被剔除后若为空 → 兜底为 status（事件流水归"当前状态"，带 TTL 7d 自动过期）
+    - 降级即返回 True，供调用方记 anomaly_warn 计数（可观测）
+
+    维度类别取自注册表（time_velocity 字段），不在此硬编码维度清单。
+    """
+    if memory_type != "episodic":
+        return dims, False
+
+    # 动态维度集合 = id + display_name 双形态：
+    # LLM 输出既可能是英文 id（status），也可能是中文展示名（"目标"）——
+    # 归一化到 id 发生在 refine.py 之后，此处必须双形态都认，否则会误降级合法标签。
+    dynamic_ids: set[str] = set()
+    for d in dimensions:
+        if d.get("time_velocity") != "dynamic" or d.get("active", 1) != 1:
+            continue
+        dynamic_ids.add(d["id"])
+        display = d.get("display_name")
+        if display:
+            dynamic_ids.add(str(display).strip())
+    allowed = dynamic_ids or set(EPISODIC_ALLOWED_DYNAMIC_DIMS)
+    kept = [d for d in dims if d in allowed]
+    if kept == dims:
+        return dims, False
+    if not kept:
+        # 全部静态标签被剔除 → 兜底动态维度（仍有 TTL，不会永久滞留）
+        return [EPISODIC_FALLBACK_DIM], True
+    return kept, True
+
 
 class RefineError(Exception):
     """L1 提炼失败（JSON 解析/校验失败）。"""
@@ -123,10 +202,29 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
     dims = item.get("dimensions")
     if not isinstance(dims, list) or not dims:
         return None
+    dims = [str(x) for x in dims]
     memory_type = item.get("memory_type")
     if memory_type not in VALID_MEMORY_TYPES:
         # 不合法类型 → 默认 persona
         memory_type = "persona"
+
+    # T-201：维度数量上限（提示词要求 1-3 个；实测免费模型偶发 4 个）
+    if len(dims) > MAX_DIMENSIONS_PER_MEMORY:
+        logger.warning(
+            "L1 维度标签超上限：%d 个 > %d，截断保留前 %d 个: %r",
+            len(dims), MAX_DIMENSIONS_PER_MEMORY, MAX_DIMENSIONS_PER_MEMORY, dims,
+        )
+        dims = dims[:MAX_DIMENSIONS_PER_MEMORY]
+        _VIOLATION_COUNTER["dim_overflow"] += 1
+
+    # T-201：类型 ↔ 维度映射硬约束（v007 提示词规则的代码兜底）
+    dims, degraded = _enforce_type_dimension_rule(dims, memory_type, dimensions)
+    if degraded:
+        logger.warning(
+            "L1 类型↔维度违规已降级：memory_type=%s → 维度修正为 %r（episodic 仅限动态维度）",
+            memory_type, dims,
+        )
+        _VIOLATION_COUNTER["episodic_degraded"] += 1
     priority = item.get("priority", 50)
     try:
         priority = int(priority)
@@ -515,7 +613,11 @@ def _extract_l1_chunk(
         # 空结果视为可疑：模型可能漏抽整块内容（2026-09-11 实测本地模型 12.6% 的块
         # 静默空产出，其中含答案所在块 → longmemeval recall@8 归零）。
         # 加提示重试一次；仍空则正常返回（空块合法，不抛错）。
-        if not memories and attempt < max_attempts:
+        # T-201：短会话（寒暄/单轮播报）的空结果是「有意空」，不再重试（省一次调用）
+        conv_chars = len(conversation) if isinstance(conversation, str) else sum(
+            len(c) for c in conversation
+        )
+        if not memories and attempt < max_attempts and conv_chars >= EMPTY_RETRY_MIN_CONV_CHARS:
             logger.warning("L1 空结果 (attempt=%s)，加提示重试", attempt)
             prompt = _render_l1_text(pv.text, conversation, dimensions) + \
                 "\n\n# 注意\n上次输出为空数组 []，但对话中可能仍有值得长期保存的记忆。" \
@@ -541,9 +643,20 @@ def _extract_l1_chunk(
                 version=pv.version, variant=pv.variant,
                 provider=provider_name, bucket_key=bucket_key,
             )
+            # T-202 B3：L1 run 补 action 计数采样（衔接提示词分析 P2-2）——
+            # extracted/empty 反映提取产出形态；violation_* 为进程内累计口径
+            # （_VIOLATION_COUNTER 不写库的设计约束不变，这里只是计数快照），
+            # 随时间增长的趋势即可定位 v007 规约的遵守情况。
+            vc = violation_counts()
             RefineRunRecorder.finish(
                 mem_conn, run_id, memories_count=len(memories),
-                action_counts={}, status="ok", usage=usage,
+                action_counts={
+                    "extracted": len(memories),
+                    "empty": 1 if not memories else 0,
+                    "violation_dim_overflow_cum": vc.get("dim_overflow", 0),
+                    "violation_episodic_degraded_cum": vc.get("episodic_degraded", 0),
+                },
+                status="ok", usage=usage,
             )
         meta = {"stage": "l1_extraction", "version": pv.version, "variant": pv.variant}
         logger.info("L1 块完成: version=%s variant=%s memories=%d",

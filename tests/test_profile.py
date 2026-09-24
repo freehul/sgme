@@ -3,9 +3,12 @@
 - load_template 加载 4 个预定义模板
 - validate 拒绝越界 section / limit 超范围 / token 预算超限
 - extends 继承展开
-- query_section：TTL 过滤 / 排序 / time_window
+- query_section：TTL 过滤 / 排序 / time_window / match / priority_min 下推
 - build_inject_blocks：blocks + stats
 - Tier0 降级：摘要不存在 → present:false
+
+T-203（2026-09-25）：注入层三项修正 —— match:any / F1 排序改 updated_at /
+G1 priority_min 下推 SQL / G2 style 维度并入 preferences。
 """
 
 from __future__ import annotations
@@ -73,7 +76,9 @@ def test_load_work_template(cfg):
 def test_load_full_template(cfg):
     t = template.load_template("full", cfg["dimensions"])
     assert t["name"] == "full"
-    assert len(t["memory_types"]) == 13  # 全量（2026-08-18 三池重构移除 projects/tasks，15→13；ideas 不入注入模板）
+    # 全量：2026-08-18 移除 projects/tasks（15→13）→ 2026-09-25 T-203 G2
+    # 停用 style（13→12）；ideas 创意池不入注入模板
+    assert len(t["memory_types"]) == 12
 
 
 def test_load_template_not_found_raises():
@@ -284,23 +289,29 @@ def test_query_section_ttl_filter_excludes_expired(mem_conn, cfg):
     assert "过时状态" not in contents
 
 
-def test_query_section_static_sorts_by_priority(mem_conn, cfg):
-    """静态维度默认 priority DESC。"""
+def test_query_section_static_sorts_by_updated_at(mem_conn, cfg):
+    """T-203 F1：静态维度默认也按 updated_at DESC（原为 priority DESC）。
+
+    原语义下高 priority 的老记忆永久霸榜，「新替旧」在注入侧被对冲；
+    修正后 priority 只保留 priority_min 的过滤语义。
+    """
+    old = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     memory_dao.insert_memory(
-        mem_conn, content="低优先级", memory_type="persona",
-        priority=50, time_velocity="static", ttl_days=None,
-        dimension_ids=["identity"],
+        mem_conn, content="旧身份(高优先级)", memory_type="persona",
+        priority=90, time_velocity="static", ttl_days=None,
+        dimension_ids=["identity"], created_at=old, updated_at=old,
     )
     memory_dao.insert_memory(
-        mem_conn, content="高优先级", memory_type="persona",
-        priority=90, time_velocity="static", ttl_days=None,
-        dimension_ids=["identity"],
+        mem_conn, content="新身份(低优先级)", memory_type="persona",
+        priority=50, time_velocity="static", ttl_days=None,
+        dimension_ids=["identity"], created_at=now, updated_at=now,
     )
     section = {"title": "身份", "query": {"dimensions": ["identity"], "limit": 10}}
     results = inject.query_section(mem_conn, section, cfg["dimensions"])
-    # priority DESC：高优先级在前
-    assert results[0]["content"] == "高优先级"
-    assert results[1]["content"] == "低优先级"
+    # updated_at DESC：新记忆在前（即使 priority 低）
+    assert results[0]["content"] == "新身份(低优先级)"
+    assert results[-1]["content"] == "旧身份(高优先级)"
 
 
 def test_query_section_dynamic_sorts_by_updated_at(mem_conn, cfg):
@@ -387,6 +398,76 @@ def test_query_section_match_all(mem_conn, cfg):
     results = inject.query_section(mem_conn, section, cfg["dimensions"])
     contents = {r["content"] for r in results}
     assert contents == {"双标签"}
+
+
+def test_query_section_match_any_hits_single_tag(mem_conn, cfg):
+    """T-203：多维 section match=any → 仅带 1 个标签的记忆也要命中。
+
+    修前 full 首节 [identity,family,social,values] 默认 all，而单记忆最多 3 个
+    标签（T-201 MAX_DIMENSIONS_PER_MEMORY）→ 结构性不可能命中 → 生产实测 0/10。
+    """
+    memory_dao.insert_memory(
+        mem_conn, content="双标签", memory_type="persona",
+        priority=80, time_velocity="static", ttl_days=None,
+        dimension_ids=["identity", "family"],
+    )
+    memory_dao.insert_memory(
+        mem_conn, content="单标签", memory_type="persona",
+        priority=80, time_velocity="static", ttl_days=None,
+        dimension_ids=["identity"],
+    )
+    section = {
+        "title": "x",
+        "query": {
+            "dimensions": ["identity", "family", "social", "values"],
+            "match": "any", "limit": 10,
+        },
+    }
+    results = inject.query_section(mem_conn, section, cfg["dimensions"])
+    contents = {r["content"] for r in results}
+    assert contents == {"双标签", "单标签"}
+
+
+def test_query_section_priority_min_pushed_down_to_sql(mem_conn, cfg):
+    """T-203 G1：priority_min 下推 SQL——LIMIT 之前过滤，section 不缩水。
+
+    修前在 Python 侧「先 LIMIT 后滤」：limit=2 取到 2 条低优先级记忆，
+    过滤后返回 0 条。下推后应先滤掉低优先级，再取 2 条高优先级。
+    """
+    for i in range(4):
+        memory_dao.insert_memory(
+            mem_conn, content=f"低优先级{i}", memory_type="persona",
+            priority=10, time_velocity="static", ttl_days=None,
+            dimension_ids=["identity"],
+        )
+    for i in range(2):
+        memory_dao.insert_memory(
+            mem_conn, content=f"高优先级{i}", memory_type="persona",
+            priority=90, time_velocity="static", ttl_days=None,
+            dimension_ids=["identity"],
+        )
+    section = {
+        "title": "身份",
+        "query": {"dimensions": ["identity"], "priority_min": 70, "limit": 2},
+    }
+    results = inject.query_section(mem_conn, section, cfg["dimensions"])
+    contents = {r["content"] for r in results}
+    assert len(results) == 2, f"下推后应满载 2 条，实际 {len(results)}"
+    assert contents == {"高优先级0", "高优先级1"}
+
+
+def test_templates_no_longer_reference_style(cfg):
+    """T-203 G2：style 停用后，4 个内置模板不得再引用该维度（漏改即注入 500）。
+
+    ``validate_template`` 要求 memory_types/section dimensions 全部为已注册维度，
+    style 从注册表移除后，任何残留引用都会让模板加载抛 TemplateError（B81 先例）。
+    """
+    for name in ("daily", "full", "work", "coding"):
+        t = template.load_template(name, cfg["dimensions"])
+        assert "style" not in t["memory_types"], f"{name} 仍引用 style"
+        for s in t["sections"]:
+            assert "style" not in s.get("query", {}).get("dimensions", []), \
+                f"{name} section {s['title']!r} 仍引用 style"
 
 
 # ---------- build_inject_blocks ----------

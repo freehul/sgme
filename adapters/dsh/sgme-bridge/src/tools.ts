@@ -5,6 +5,7 @@
  *
  * 契约对齐：POST /v1/search（Agent Key）
  * - memory_search：scopes=["memory"]
+ * - conversation_search：scopes=["sessions"]（T-207 ③：L0 原文正文 FTS 检索）
  * - wiki_search：scopes=["wiki","wiki_pages"]
  *
  * dsh 工具规范（2026-08-14 T-53 本地加载确认，对齐 @deepseek-ai/dsh-tools 官方文档）：
@@ -77,6 +78,55 @@ export function createMemorySearchTool(client: SgmeClient, defaultLimit: number)
       }
       if (resp.results.length === 0) {
         return `[memory_search 无结果：query="${a.query}"]`
+      }
+      return formatSearchResults(resp.results)
+    },
+  })
+}
+
+/**
+ * 创建 conversation_search 工具（检索 L0 会话原文，T-207 ③ 对齐 hermes 平级能力）。
+ *
+ * scopes=["sessions"]：FTS5 正文检索（raw_fts，命中带 matched_in=body + 命中片段）——
+ * 用于「那次会话里到底说了什么」的原文回溯（记忆已过期出池 / 需要上下文细节时）。
+ */
+export function createConversationSearchTool(client: SgmeClient, defaultLimit: number) {
+  return defineTool({
+    name: 'conversation_search',
+    description: [
+      '检索 SGME 的 L0 会话原文（原始对话记录，非提炼记忆）。',
+      '用于回溯"那次会话具体怎么说的"——记忆池查不到细节、或记忆已过期出池时用。',
+      '与 memory_search 互补：memory 是提炼后的事实，conversation_search 是原始正文。',
+    ].join(' '),
+    parameters: {
+      query: {
+        type: 'string',
+        required: true,
+        description: '检索关键词（正文全文检索）',
+      },
+      limit: {
+        type: 'number',
+        description: `返回条数上限（默认 ${defaultLimit}）`,
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { query: string; limit?: number }
+      const resp = await client.search({
+        query: a.query,
+        scopes: ['sessions'],
+        limit: a.limit ?? defaultLimit,
+        dimensions: null,
+        match: 'any',
+      })
+      if (!resp) {
+        return '[conversation_search 失败：SGME Gateway 不可达，稍后重试]'
+      }
+      if (resp.results.length === 0) {
+        return `[conversation_search 无结果：query="${a.query}"]`
       }
       return formatSearchResults(resp.results)
     },
@@ -408,6 +458,8 @@ export function registerTools(
   eventSubscriber?: SgmeEventSubscriber | null,
 ): void {
   ctx.tools.register(createMemorySearchTool(client, defaultLimit))
+  // T-207 ③：L0 原文检索（对齐 hermes conversation_search，T-173 平级条款）
+  ctx.tools.register(createConversationSearchTool(client, defaultLimit))
   ctx.tools.register(createWikiSearchTool(client, defaultLimit))
   ctx.tools.register(createWikiPagesTool(client, defaultLimit))
   ctx.tools.register(createWikiPageTool(client))

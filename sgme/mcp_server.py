@@ -446,6 +446,34 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
 
 # ---------- operations 层 → MCP 协议翻译（v0.7 §7） ----------
 
+def _receipt_brief(data: Dict[str, Any], keep: tuple[str, ...] = ()) -> Dict[str, Any]:
+    """登记类工具回执**精简**（T-204 D0：输入侧防污染）。
+
+    背景：MCP 工具返回值进入会话上下文，随下一轮 ``append`` 写入 L0，再被 L1
+    当「用户事实」提炼 → 生产实证残迹 ``…已建档（source_ref=「hermes 会话…」），
+    priority=70``。登记类回执里的 ``priority`` / ``source_ref`` / ``content``
+    等结构化字段本就不是事实，回显即污染源。
+
+    只保留 id 类字段与 status（嵌套对象如 ``{"idea": {...}}`` 递归提取 id）；
+    需要详情走对应查询工具（信息不丢）。
+    失败态（含 ``error`` 键）原样透传，不做投影。
+    """
+    if not isinstance(data, dict) or "error" in data:
+        return data
+    out: Dict[str, Any] = {"status": "ok"}
+    id_keys = ("demand_id", "idea_id", "project_id", "page_id", "memory_id", *keep)
+
+    def _scan(d: Dict[str, Any]) -> None:
+        for key, value in d.items():
+            if key in id_keys and key not in out:
+                out[key] = value
+            elif isinstance(value, dict):
+                _scan(value)
+
+    _scan(data)
+    return out
+
+
 def _op_json(op: Callable[..., Any], *args: Any, **kwargs: Any) -> Dict[str, Any]:
     """调 operations 层操作并翻译为 MCP 语义（所有工具共用，避免每个工具重写一遍）。
 
@@ -514,6 +542,11 @@ def build_mcp_server():
     def append(session_key: str, started_at: str, content: str, source_type: str = "session", agent_id: str | None = None, ctx: Context | None = None) -> str:
         """L0 捕获：写入原始会话（幂等）。content 需 # {ISO时间戳} {role} 格式。
 
+        T-204 D0 契约（2026-09-25）：**系统回执不得作为 user/assistant 消息提交**——
+        工具回执（demand_create/idea_add 等登记类返回）不是对话事实；提交会在 L0
+        留下结构化残迹并被 L1 误提炼（生产实证：``（priority 70）`` / ``source_ref=``）。
+        登记类工具回执已由服务端精简，但调用方仍须只提交真实对话消息。
+
         B35/PR#2（2026-08-11）：agent_id 解析优先级 = 显式参数 > 鉴权 key 反查
         （ApiKeyMiddleware 存入 request.state.api_key → resolve_agent_id）> None。
         与 HTTP 通道同语义：注册 key 落绑定 agent_id，env 主 key 落 default。
@@ -578,7 +611,10 @@ def build_mcp_server():
     ) -> str:
         """混合检索：BM25 + 向量 + RRF，带溯源。
 
-        scopes: 检索层列表，None → ["memory"]（记忆池）；可含 "wiki"/"skills"/"sessions" 等。
+        scopes: 检索层列表，None → ["memory"]（记忆池）；可含
+        "wiki"/"skills"/"sessions" 等。T-207 ① 后 "sessions" 层支持 **L0 正文
+        FTS**（raw_fts，命中带 matched_in=body 与命中片段）——过期出池的技术
+        细节可经此回溯原文。
         dimensions: 维度标签过滤（可选，如 ["goals", "status"]）。
         match: "any"=命中任一维度 / "all"=全部命中（缺省 any）。
         include_sources: 是否展开溯源 trace（缺省 True）。
@@ -1043,7 +1079,7 @@ def build_mcp_server():
             add_idea_operation, mem_conn,
             content=content, priority=priority, source_ref=source_ref,
         )
-        return json.dumps(data, ensure_ascii=False)
+        return json.dumps(_receipt_brief(data), ensure_ascii=False)  # T-204 D0 回执精简
 
     @mcp.tool()
     @tool
@@ -1077,7 +1113,7 @@ def build_mcp_server():
                 **({"origin_idea_id": origin_idea_id} if origin_idea_id is not None else {}),
             },
         )
-        return json.dumps(data, ensure_ascii=False)
+        return json.dumps(_receipt_brief(data), ensure_ascii=False)  # T-204 D0 回执精简
 
     @mcp.tool()
     @tool
@@ -1102,7 +1138,7 @@ def build_mcp_server():
             project_id=project_id, path=path, name=name,
             git_repo=git_repo, milestone=milestone,
         )
-        return json.dumps(data, ensure_ascii=False)
+        return json.dumps(_receipt_brief(data), ensure_ascii=False)  # T-204 D0 回执精简
 
     # ---------- 信号消费（ST-27 T-60：agent 成为消费者，谁消费谁标记） ----------
 

@@ -373,6 +373,7 @@ def append_l0(
                 ended_at=ended_at, size=size,
             )
             session_dao.update_content_hash(session_conn, file_id, new_hash)
+            _index_raw_fts_best_effort(session_conn, file_id, st)
             _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id)
             return {
                 "file_id": file_id,
@@ -424,12 +425,28 @@ def append_l0(
                     "idempotent": True,
                 }
             raise
+        _index_raw_fts_best_effort(session_conn, file_id, source_type)
         _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id)
         return {
             "file_id": file_id,
             "path": rel_path,
             "status": "new",
         }
+
+
+def _index_raw_fts_best_effort(
+    session_conn: sqlite3.Connection, file_id: str, source_type: str
+) -> None:
+    """raw 正文 FTS 单文件增量索引（T-207 ①，best-effort 不炸 append 主流程）。"""
+    try:
+        from sgme.data.search import raw_fts as raw_fts_mod
+        from sgme.raw import store as raw_store
+
+        raw_fts_mod.index_raw_file(
+            session_conn, raw_store.file_path(file_id, source_type=source_type)
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("raw_fts 增量索引跳过 file=%s: %s", file_id, e)
 
 
 def _file_content_hash(file_id: str, source_type: str = "session") -> str:

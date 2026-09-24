@@ -14,7 +14,7 @@
 --------------------------------------------------
 - query: 检索词（HTTP 必填 str；MCP 必填 str）。**空串不报错**——
   v0.6 行为是返回空结果（tests/test_server.py::test_search_empty_query_returns_empty）
-- scopes: 检索层列表，HTTP 缺省 ["memory","skills"]；MCP 固定 memory-only（无 scopes 参数）
+- scopes: 检索层列表，HTTP 缺省 ["memory","skills"]；MCP 缺省 ["memory"]（scopes 参数已开放，T-207 ②核实；"sessions" 层 T-207 ① 起支持正文 FTS）
   - "memory" → 记忆池（FTS5 BM25 + 维度标签过滤 + 向量 + RRF + 溯源 trace）
   - "wiki" / "scenes" → wiki 场景叙事文档（L2，FTS + LIKE 兜底 + 预留向量路）
   - "wiki_pages" → wiki 知识库页面（wiki_pages 表，T-34 新增；FTS5 BM25 + LIKE 兜底，
@@ -81,6 +81,9 @@ logger = logging.getLogger("sgme.operations.search")
 META_RRF_K: int = 60
 
 # scopes 缺省值：与 v0.6 SearchRequest 的 pydantic 缺省一致（HTTP 侧）。
+# T-207 ② 评估结论（2026-09-25）：HTTP 默认**不纳入** "sessions"——sessions 层
+# 是 best-effort 读盘 + FTS，纳入默认会让每次 search 都读盘（开销↑），且 L0
+# 原文（未提炼流水）混入常规检索会稀释注入质量；按需显式 scopes=["sessions"]。
 DEFAULT_SCOPES: list[str] = ["memory", "skills"]
 
 # T-143②：搜索空结果的通用可行动引导（HTTP meta.note 用；缺失模型 Key 时
@@ -262,12 +265,15 @@ def _raw_snippet(
     file_id: str,
     stored_path: str | None,
     max_len: int = 200,
+    query: str | None = None,
 ) -> str:
     """读取 L0 原文并生成正文摘要（**best-effort**，永不抛异常）。
 
     - raw_dir 未配置（cfg 无 paths.raw_dir）→ 空串（检索不依赖读盘）；
     - 路径越界（脏数据 file_id 含穿越片段）/ 文件缺失 / 读失败 → 空串，
-      结果仍返回元数据命中，不拖累检索（对称 wiki_pages 层的容错隔离）。
+      结果仍返回元数据命中，不拖累检索（对称 wiki_pages 层的容错隔离）；
+    - T-207 ①：query 提供时改用「命中片段」——在原文中定位检索词并截取
+      前后窗口（未命中或片段提取失败回退固定开头摘要）。
     """
     if not raw_dir:
         return ""
@@ -276,6 +282,13 @@ def _raw_snippet(
         if path is None or not path.is_file():
             return ""
         text = path.read_text(encoding="utf-8", errors="replace")
+        if query:
+            from sgme.data.search import raw_fts as raw_fts_mod
+
+            body = text.split("---", 2)[-1] if text.startswith("---") else text
+            hit = raw_fts_mod.extract_hit_snippet(body, query, window=max_len // 2)
+            if hit:
+                return hit[:max_len]
         return _snippet_from_raw_text(text, max_len)
     except OSError:
         return ""
@@ -310,10 +323,16 @@ def _search_sessions(
             "file_id": r["file_id"],
             "session_key": r["session_key"],
             "agent_id": r["agent_id"],
-            "content": _raw_snippet(raw_dir, r["file_id"], r.get("path")),
+            # T-207 ①：正文命中（matched_in=body）时用「query 命中片段」替代
+            # 固定前 200 字符——片段与检索词对齐才可读
+            "content": _raw_snippet(
+                raw_dir, r["file_id"], r.get("path"),
+                query=query if r.get("matched_in") == "body" else None,
+            ),
             "started_at": r.get("started_at"),
             "status": r.get("status"),
-            "routes": ["l0_like"],
+            "matched_in": r.get("matched_in", "meta"),
+            "routes": ["l0_fts"] if r.get("matched_in") == "body" else ["l0_like"],
         }
         for i, r in enumerate(rows)
     ]

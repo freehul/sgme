@@ -72,26 +72,24 @@ def query_section(
     results = memory_dao.list_memories_by_dimension(
         mem_conn, dims, match=match, limit=limit,
         include_expired=include_expired, time_window_start=time_window_start,
-        order_by=sort,
+        order_by=sort, priority_min=priority_min,
     )
     # 记录注入统计（best-effort：失败不打断注入主流程）
+    # T-203 G1：priority_min 已下推 SQL，此处 results 即最终注入集，统计不再虚高
     from sgme.data.memory_stats_dao import record_inject
     for r in results:
         record_inject(mem_conn, r["memory_id"])
-    # priority_min 过滤（memory_dao 未支持，这里过滤）
-    if priority_min > 0:
-        results = [r for r in results if r.get("priority", 0) >= priority_min]
     return results
 
 
 def _default_sort(dimensions: list[dict], section_dims: list[str]) -> str:
-    """默认排序：section 维度全为动态 → updated_at DESC；其余 → priority DESC。"""
-    dim_map = {d["id"]: d for d in dimensions}
-    all_dynamic = all(
-        dim_map.get(d, {}).get("time_velocity") == "dynamic"
-        for d in section_dims
-    ) if section_dims else False
-    return "updated_at DESC" if all_dynamic else "priority DESC"
+    """默认排序：统一委托 ``template.default_sort``（T-203 F1）。
+
+    此前 inject 与 template 各维护一份判定逻辑（同签名同语义），改一处漏一处
+    即产生口径漂移，故收敛为单一实现。
+    """
+    from sgme.profile.template import default_sort
+    return default_sort(dimensions, section_dims)
 
 
 # ---------- 注入拼装 ----------

@@ -176,6 +176,41 @@ def _archive_old_raw_files(session_conn: sqlite3.Connection, archive_days: int) 
     return cur.rowcount
 
 
+# T-205 v0.4②：出池归档时写入 superseded_by 的固定标记（可溯源本机制）
+PURGE_SUPERSEDED_BY = "dream_purge_expired"
+# 每批处理条数（生产 expired 数千条，分批防大事务长时间持锁）
+PURGE_BATCH_SIZE = 500
+
+
+def _purge_expired_to_archive(mem_conn: sqlite3.Connection) -> int:
+    """expired 记忆出池（T-205 v0.4②「给数据库减肥」）：归档到 memory_archive
+    并从 memories 移除（保留 superseded_by 溯源，符合原件永不删铁律）。
+
+    - 候选：status='expired'（_mark_expired_ttl 的产物；rejected 不动）；
+    - 逐条走 ``memory_dao.archive_memory``（事务 = 复制到 archive + 删 active 行），
+      分批循环防大事务持锁；幂等：出池后行已不在 memories，重跑自然跳过；
+    - 前置（运维纪律）：T-207 L0 正文检索必须已生效，否则知识既不在记忆池、
+      又搜不到 L0。
+    """
+    from sgme.data import memory_dao
+
+    total = 0
+    while True:
+        rows = mem_conn.execute(
+            "SELECT memory_id FROM memories WHERE status='expired' LIMIT ?",
+            (PURGE_BATCH_SIZE,),
+        ).fetchall()
+        if not rows:
+            break
+        for r in rows:
+            if memory_dao.archive_memory(
+                mem_conn, r["memory_id"], superseded_by=PURGE_SUPERSEDED_BY
+            ):
+                total += 1
+        logger.info("Dream 出池归档批次完成：累计 %d 条", total)
+    return total
+
+
 # ======================================================================
 # ④ 日报：MD 落盘 + dream_reports 表 + signal_events
 # ======================================================================
@@ -444,6 +479,17 @@ def _run_dream_locked(
         logger.exception("Dream 信号 TTL 归档失败（该阶段中止）: %s", e)
         stage_errors.append(f"信号 TTL 归档失败: {e}")
 
+    # ③-b expired 出池归档（T-205 v0.4②「给数据库减肥」）
+    # 开关 dream.purge_expired 默认**关**（灰度）：生产启用须满足前置——
+    # T-207 L0 正文检索已生效（否则知识既不在记忆池又搜不到 L0）+ 用户确认口径。
+    purged_pool_count = 0
+    if bool(dream_cfg.get("purge_expired", False)):
+        try:
+            purged_pool_count = _purge_expired_to_archive(mem_conn)
+        except Exception as e:
+            logger.exception("Dream expired 出池归档失败（该阶段中止）: %s", e)
+            stage_errors.append(f"expired 出池归档失败: {e}")
+
     # 关怀信号扫描（ST-28：主动关怀闭环——信号自动产生，零 LLM 幂等去重）。
     # 受 care.enabled 控制（与 routes_care 挂载同开关）；消费仍由 agent 会话开始
     # signal_pull 拉取——SGME 只发信号不做决策（架构铁律）。
@@ -489,6 +535,7 @@ def _run_dream_locked(
         "expired_count": expired_count,
         "archived_count": archived_count,
         "signal_purged_count": signal_purged_count,
+        "purged_pool_count": purged_pool_count,
         "care_signal_count": care_signal_count,
         "scene_gc_merged": scene_gc_merged,
         "scene_gc_archived": scene_gc_archived,
@@ -499,6 +546,7 @@ def _run_dream_locked(
         f" / TTL 过期 {expired_count} / 冷归档 {archived_count}"
         f" / 信号归档 {signal_purged_count} / 关怀信号 {care_signal_count}"
         f" / 场景治理 合并 {scene_gc_merged} 归档 {scene_gc_archived} / 失败 {error_count}"
+        + (f" / 出池归档 {purged_pool_count}" if purged_pool_count else "")
     )
     rel_path = _write_report_md(cfg, date_label, _render_report_md(
         date_label, stats, errors, stage_errors, pool,

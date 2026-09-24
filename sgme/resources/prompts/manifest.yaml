@@ -73,6 +73,12 @@ versions:
     sha256: 899acbe453efcb3a9a34e8b6a67434afda7fb9ac5d43fe97edb3dbf52a852c22
     created_at: '2026-09-11T23:34:37Z'
     note: 事实保真版二稿：语言守则前置+文末再强调，压中文示例诱导（2026-09-12 A/B 驱动）
+  - version: v007
+    file: versions/l1_extraction/v007.txt
+    sha256: 126037f063676c1d04e333489c6f022256d86aad8dddec2c1be4e9d9e867c343
+    created_at: '2026-09-24T17:01:45Z'
+    note: T-201 维度治理：①类型↔维度映射硬规则（episodic 仅限动态维度 focus/goals/status；fact 保留原维度）②收窄提取：助手单方面操作流水不提取
+      ③允许空数组 ④content 禁写结构化字段（priority/source_ref）⑤≥3 组正反示例锚定（免费模型执行率）
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt
@@ -84,6 +90,12 @@ versions:
     sha256: 90eb728bf7541b56b182b25827156d8c31777fb502934963ffce30649498d425
     created_at: '2026-08-31T05:22:55Z'
     note: T-135 语义边：新增 relations 关系判定输出列（similar/causes/contradicts + confidence），零新增调用
+  - version: v003
+    file: versions/l1_conflict/v003.txt
+    sha256: e6d9a33fd21029b0a5031917697361eaea6f62a4a19f1405bafc6ac719a6dec3
+    created_at: '2026-09-24T19:54:42Z'
+    note: T-202 B1 裁决放宽：update 门槛由「同一事实」放宽为「同一主体+信息增量」双条件；补主体判定正反示例（NAS 部署/ModelScope/双4K/skip
+      模糊）；保守原则保留（宁 store 勿误合并）
   l2_scene:
   - version: v001
     file: versions/l2_scene/v001.txt

@@ -724,7 +724,7 @@ CMD_SPECS: list[dict] = [
         "positionals": [{"dest": "query", "help": "检索关键词"}],
         "options": [
             {"dest": "limit", "flag": "limit", "type": int, "default": 5, "help": "条数"},
-            {"dest": "scopes", "flag": "scopes", "help": "逗号分隔：memory,skills,wiki"},
+            {"dest": "scopes", "flag": "scopes", "help": "逗号分隔：memory,skills,wiki,sessions"（sessions=L0 原文正文检索，T-207）},
         ],
         "run": lambda c, a: c.search(a.query, a.limit, _split_csv(a.scopes)),
     },

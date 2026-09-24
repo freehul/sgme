@@ -709,13 +709,14 @@ describe('skill_put / skill_delete / skill_rename tool', () => {
 })
 
 describe('registerTools 1.2.2 对齐注册', () => {
-  it('新增 15 工具全部挂载且总数 39', () => {
+  it('新增 15 工具全部挂载且总数 40（T-207 ③ 加 conversation_search）', () => {
     const registered: string[] = []
     const ctx = {
       tools: { register: (tool: unknown) => { registered.push((tool as ToolLike).name); return () => {} } },
     }
     registerTools(ctx as unknown as Parameters<typeof registerTools>[0], makeMockClient({}), 5)
-    expect(registered).toHaveLength(39)
+    expect(registered).toHaveLength(40)
+    expect(registered).toContain('conversation_search')
     for (const name of [
       'answer', 'health', 'stats', 'memory_unreject', 'signal_clear',
       'wiki_evolve_trigger', 'config_get', 'config_update',

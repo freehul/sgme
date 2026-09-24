@@ -26,6 +26,7 @@ import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
@@ -1234,6 +1235,46 @@ def dream_trigger(
         "triggered": "async",
         "status": "queued",
         "note": "后台线程执行四步编排（抽取→判决→生命周期→日报），结果见 /v1/admin/dream/reports",
+    })
+
+
+@router.post("/v1/admin/raw-fts/rebuild")
+def raw_fts_rebuild(
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """手动触发 raw 正文 FTS 重建（T-207 ①；202 异步，幂等增量）。
+
+    - 启动时已有后台线程补建，本端点用于手动补跑 / 排障；
+    - incremental：body_hash 未变的文件跳过（重跑幂等，秒级）；
+    - 覆盖率查询：GET /v1/health 的 raw_fts 段（indexed 数）。
+    """
+    incremental = True
+    data_dir = getattr(request.app.state, "data_dir", None)
+
+    def _run() -> dict:
+        from sgme import config as sgme_config
+        from sgme.data import db as db_mod
+        from sgme.data.search import raw_fts as raw_fts_mod
+
+        conn = db_mod.connect_session(Path(data_dir)) if data_dir else None
+        if conn is None:
+            raise RuntimeError("data_dir 未配置，无法建立独立连接")
+        try:
+            return raw_fts_mod.rebuild_raw_fts(
+                conn, Path(str(sgme_config.RAW_DIR)), incremental=incremental
+            )
+        finally:
+            conn.close()
+
+    try:
+        threading.Thread(target=_run, daemon=True, name="raw-fts-rebuild-manual").start()
+    except Exception as e:
+        raise api_error("ERR_INTERNAL", f"raw_fts 重建触发失败: {e}") from e
+    return JSONResponse(status_code=202, content={
+        "triggered": "async",
+        "incremental": incremental,
+        "note": "后台线程幂等重建 raw 正文索引；统计见服务日志 raw_fts 重建完成",
     })
 
 

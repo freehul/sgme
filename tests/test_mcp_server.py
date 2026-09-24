@@ -190,15 +190,25 @@ def test_mcp_stats(mcp):
 
 
 def test_mcp_idea_add(mcp):
-    """idea_add：人工添加创意 → ideas 独立表（T-56）+ 列表可见（用户主动记录）。"""
+    """idea_add：人工添加创意 → ideas 独立表（T-56）。
+
+    T-204 D0：MCP 回执已精简（status + idea_id，不再回显 content/priority，
+    防回执进上下文被 L1 误提炼）；落库正确性直查 DB 断言。
+    """
     text, _ = _call(mcp, "idea_add", {"content": "MCP 测试创意：做待办看板", "priority": 85})
     data = json.loads(text)
     assert "error" not in data, data
-    idea = data["idea"]
-    assert idea["content"] == "MCP 测试创意：做待办看板"
-    assert idea["priority"] == 85
-    assert idea["idea_id"]
-    assert idea["status"] == "active"
+    assert data["status"] == "ok"
+    assert data["idea_id"]
+    assert set(data.keys()) == {"status", "idea_id"}, f"回执应精简，实际 {data.keys()}"
+
+    from sgme.mcp_server import _app_state
+    row = _app_state["mem_conn"].execute(
+        "SELECT content, priority, status FROM ideas WHERE idea_id=?", (data["idea_id"],)
+    ).fetchone()
+    assert row[0] == "MCP 测试创意：做待办看板"
+    assert row[1] == 85
+    assert row[2] == "active"
 
     # 缺失 content → FastMCP 参数校验层拒绝（必填参数由框架把关）
     import pytest
@@ -212,33 +222,57 @@ def test_mcp_demand_create(mcp):
     """demand_create：新建待办（可带 project_id 标记）→ 状态 pending + 时间戳。
 
     project_id 走 operations 层归一：小写入参落库为大写（2026-09-20 全系统约定）。
+    T-204 D0：回执精简（status + demand_id），落库正确性直查 DB 断言。
     """
     text, _ = _call(mcp, "demand_create", {"title": "MCP 待办：接通项目过滤", "project_id": "sgme"})
     data = json.loads(text)
     assert "error" not in data, data
-    assert data["title"] == "MCP 待办：接通项目过滤"
-    assert data["project_id"] == "SGME"
-    assert data["status"] == "pending"
-    assert data["created_at"] and data["resolved_at"] is None
+    assert data["status"] == "ok"
+    assert data["demand_id"]
+    # project_id 是调用方传入的登记值，回显无害且便于串联
+    assert set(data.keys()) == {"status", "demand_id", "project_id"}, f"回执应精简，实际 {data.keys()}"
+
+    from sgme.mcp_server import _app_state
+    row = _app_state["mem_conn"].execute(
+        "SELECT title, project_id, status, created_at, resolved_at "
+        "FROM demands WHERE demand_id=?", (data["demand_id"],)
+    ).fetchone()
+    assert row[0] == "MCP 待办：接通项目过滤"
+    assert row[1] == "SGME"  # 小写入参落库为大写
+    assert row[2] == "pending"
+    assert row[3] and row[4] is None
 
 
 def test_mcp_project_register(mcp):
-    """project_register：登记项目 → project_meta 落库；二次登记=更新（created=False）。"""
+    """project_register：登记项目 → project_meta 落库；二次登记=更新。
+
+    T-204 D0：回执精简（status + project_id），created/详情改直查 DB 断言。
+    """
     text, _ = _call(mcp, "project_register", {
         "project_id": "testproj", "path": "<projects-root>/testproj", "name": "测试项目",
     })
     data = json.loads(text)
     assert "error" not in data, data
-    assert data["created"] is True
-    assert data["project"]["name"] == "测试项目"
+    # project_id 归一大写（operations 层 2026-09-20 约定）
+    assert data == {"status": "ok", "project_id": "TESTPROJ"}
+
+    from sgme.mcp_server import _app_state
+    conn = _app_state["mem_conn"]
+    row = conn.execute(
+        "SELECT name FROM project_meta WHERE project_id=?", ("TESTPROJ",)
+    ).fetchone()
+    assert row and row[0] == "测试项目"
 
     text2, _ = _call(mcp, "project_register", {
         "project_id": "testproj", "path": "<projects-root>/testproj", "milestone": "v1.0",
     })
     data2 = json.loads(text2)
     assert "error" not in data2, data2
-    assert data2["created"] is False
-    assert data2["project"]["milestone"] == "v1.0"
+    assert data2 == {"status": "ok", "project_id": "TESTPROJ"}
+    row2 = conn.execute(
+        "SELECT milestone FROM project_meta WHERE project_id=?", ("TESTPROJ",)
+    ).fetchone()
+    assert row2 and row2[0] == "v1.0"
 
 
 def test_mcp_append_and_inject(mcp):

@@ -319,14 +319,20 @@ def _build_prescreened_candidates(
         logger.warning("L1.5 向量预筛异常，回退全量召回: %s", e)
         return None
 
-    # 2. 维度 OR 候选（现状召回语义），截断到 dimension_top_n（priority 降序）
+    # 2. 维度 OR 候选（现状召回语义），截断到 dimension_top_n
+    # T-202 B2：排序由 priority DESC 改为 updated_at DESC——priority 排序让
+    # 高优先级老记忆永久霸榜占满 top_n，「新替旧」在候选池侧被对冲（与
+    # T-203 F1 注入侧排序修正同理）；新记忆 updated_at 更近，最可能与新记忆
+    # 形成同主体关系，才是裁决需要的候选。
     dim_cands: list[dict] = []
     if dims:
         dim_cands = memory_dao.list_memories_by_dimension(
             mem_conn, list(dims), match="any",
-            limit=_UNLIMITED_RECALL_LIMIT, include_expired=True,
+            # T-205 v0.4②：expired 记忆退出候选池（减肥——过期记忆不再参与
+            # 裁决对照；知识仍可经 /v1/search 与 L0 正文检索回溯）
+            limit=_UNLIMITED_RECALL_LIMIT, include_expired=False,
         )
-        dim_cands.sort(key=lambda c: (c.get("priority", 0) or 0), reverse=True)
+        dim_cands.sort(key=lambda c: (c.get("updated_at", "") or ""), reverse=True)
         dim_cands = dim_cands[:dimension_top_n]
 
     # 3. 并集去重（向量候选在前，维度候选补充）
@@ -400,7 +406,8 @@ def build_candidate_groups(
             cands = memory_dao.list_memories_by_dimension(
                 mem_conn, list(dims), match="any",
                 # 全量召回不截断（铁律 #7）：等效 LIMIT 无限
-                limit=_UNLIMITED_RECALL_LIMIT, include_expired=True,
+                # T-205 v0.4②：expired 记忆退出候选池
+                limit=_UNLIMITED_RECALL_LIMIT, include_expired=False,
             )
             # 候选按 priority 降序：超预算截断时优先保留高价值候选
             cands.sort(key=lambda c: (c.get("priority", 0) or 0), reverse=True)
@@ -530,26 +537,14 @@ def build_batches(
     return batches
 
 
-# ---------- TTL 回填 ----------
+# ---------- TTL 回填（T-205：收敛到 ttl_policy 单一实现，防两份漂移） ----------
 
-def _backfill_ttl(ttl_days: int | None, dimension_ids: list[str], dimensions: list[dict]) -> int | None:
-    """TTL 字段按维度默认回填：ttl_days=None 时取维度默认。
+def _backfill_ttl(ttl_days: int | None, dimension_ids: list[str], dimensions: list[dict],
+                  memory_type: str | None = None) -> int | None:
+    """委托 ``ttl_policy.backfill_ttl``（C2 语义：episodic/fact 按 v0.4 案 A 变体）。"""
+    from sgme.engine.ttl_policy import backfill_ttl
 
-    创意池铁律（T-26，2026-08-13 强化）：dimension_ids 含 ``ideas`` → 强制 None——
-    创意长期保存，覆盖其他维度 TTL（否则 ideas+goals/projects 共存的创意会取 90d，
-    90 天后过期退出注入，违背创意池「ideas + ttl_days=NULL」定义）。
-    """
-    if "ideas" in dimension_ids:
-        return None
-    if ttl_days is not None:
-        return ttl_days
-    dim_map = {d["id"]: d for d in dimensions}
-    # 任一动态维度有 ttl → 取该 ttl
-    for dim_id in dimension_ids:
-        d = dim_map.get(dim_id)
-        if d and d.get("ttl_days"):
-            return d["ttl_days"]
-    return None
+    return backfill_ttl(ttl_days, dimension_ids, dimensions, memory_type=memory_type)
 
 
 # ---------- 四动作落库 ----------
@@ -566,6 +561,7 @@ def _store_memory(
         new_mem.get("ttl_days"),
         new_mem.get("dimension_ids", new_mem.get("dimensions", [])),
         dimensions,
+        memory_type=new_mem.get("memory_type"),
     )
     sources = [(source_ref, "session")] if source_ref else None
     return memory_dao.insert_memory(
@@ -720,7 +716,9 @@ def apply_supersession_linkage(
         if dims:
             candidates = memory_dao.list_memories_by_dimension(
                 mem_conn, list(dims), match="any",
-                limit=_UNLIMITED_RECALL_LIMIT, include_expired=True,
+                # T-205 v0.4②：expired 退出候选池（替代标记只作用于在池记忆；
+                # 已过期记忆即将出池，再标记无实质意义）
+                limit=_UNLIMITED_RECALL_LIMIT, include_expired=False,
             )
         for subject in subjects:
             for cand in candidates:

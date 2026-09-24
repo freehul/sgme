@@ -84,13 +84,15 @@ dimensions:
     description: 设备/工具/物理环境（PC/NAS/笔记本、3 块显示器）。
     boundaries: "vs 技术栈：环境=硬件与部署位置，技术栈=软件选型与方案"
 
-  - id: style
-    display_name: 风格
-    category: 偏好
-    time_velocity: static
-    ttl_days: null
-    description: 决策风格与工作方式（先计划后行动、独立解决问题、主动执行）。
-    boundaries: "vs 偏好：见偏好；vs 价值观：流程性 vs 信念性"
+  # style 维度已停用（2026-09-25 T-203 G2）：语义与 preferences 重叠，14→13 维度。
+  # 存量标签由运维迁移至 preferences（见 B207）；此行保留为留痕，不再作为种子导入。
+  # - id: style
+  #   display_name: 风格
+  #   category: 偏好
+  #   time_velocity: static
+  #   ttl_days: null
+  #   description: 决策风格与工作方式（先计划后行动、独立解决问题、主动执行）。
+  #   boundaries: "vs 偏好：见偏好；vs 价值观：流程性 vs 信念性"
 
   # ── 动态/快变（天~周，time_velocity=dynamic，默认 TTL）──
   - id: focus

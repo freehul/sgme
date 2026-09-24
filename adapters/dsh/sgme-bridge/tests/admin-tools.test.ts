@@ -247,14 +247,15 @@ describe('memory_get / memory_reject tool', () => {
 // ---------- 注册 + dimensions 描述修正 ----------
 
 describe('registerTools 注册（T-86 扩充 → SGME 1.2.2 对齐）', () => {
-  it('注册全部 39 个工具（9 旧 + 9 新 + inject + 5 技能层 + 15 对齐）', () => {
+  it('注册全部 40 个工具（9 旧 + 9 新 + inject + 5 技能层 + 15 对齐 + conversation_search）', () => {
     const registered: string[] = []
     const ctx = {
       tools: { register: (tool: unknown) => { registered.push((tool as ToolLike).name); return () => {} } },
     }
     registerTools(ctx as unknown as Parameters<typeof registerTools>[0], makeMockClient({}), 5)
-    expect(registered).toHaveLength(39)
+    expect(registered).toHaveLength(40)
     for (const name of [
+      'memory_search', 'conversation_search',
       'idea_add', 'demand_create', 'project_register',
       'role_list', 'role_assemble', 'role_active_get', 'role_active_set',
       'memory_get', 'memory_reject',

@@ -27,7 +27,7 @@ export interface SgmeClientConfig {
 /** /v1/search 请求体（SearchRequest）。 */
 export interface SearchRequest {
   query: string
-  scopes?: string[]              // 默认 ["memory"]；可选值：memory/wiki/scenes/wiki_pages
+  scopes?: string[]              // 默认 ["memory"]；可选值：memory/wiki/scenes/wiki_pages/sessions（T-207：L0 原文正文 FTS）
   dimensions?: string[] | null   // 维度标签过滤，用注册表 id
   match?: 'any' | 'all'          // 维度匹配语义，默认 "any"
   limit?: number                 // 每层结果上限，默认 10

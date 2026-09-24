@@ -136,7 +136,12 @@ def test_list_section_view_has_flat_keys_and_raw_query(tpl_dir, dimensions):
     assert s0["dimensions"] == ["identity", "family"]
     assert s0["limit"] == 5
     assert s0["priority_min"] == 70
-    assert s0["query"] == {"dimensions": ["identity", "family"], "priority_min": 70, "limit": 5}
+    # T-203：daily 首节加 match: any（2 维 AND 会漏掉单标签记忆）
+    assert s0["match"] == "any"
+    assert s0["query"] == {
+        "dimensions": ["identity", "family"], "match": "any",
+        "priority_min": 70, "limit": 5,
+    }
 
     s2 = daily["sections"][2]  # 🔥 当前状态：带 ttl_filter + sort + match
     assert s2["match"] == "any"

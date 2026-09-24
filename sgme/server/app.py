@@ -681,6 +681,34 @@ def _start_batch_scan_scheduler(app) -> None:
 
 # ---------- 应用工厂 ----------
 
+def _start_raw_fts_background_rebuild(app) -> None:
+    """后台补建 raw 正文索引（T-207 ①，daemon 线程，启动零阻塞）。
+
+    - init_raw_fts 只建表（毫秒级）；存量文件的分词索引在这里补齐
+      （1225 文件 × 分词，分钟级，不挡健康检查与首批请求）；
+    - rebuild 幂等（body_hash 判重），重启重跑只补增量；
+    - 任何异常只 WARNING：正文检索不可用时 sessions 层退回元数据 LIKE。
+    """
+    def _rebuild() -> None:
+        try:
+            from sgme import config as sgme_config
+            from sgme.data import db as db_mod
+            from sgme.data.search import raw_fts as raw_fts_mod
+
+            raw_dir = Path(str(sgme_config.RAW_DIR))
+            conn = db_mod.connect_session(Path(app.state.data_dir))
+            try:
+                raw_fts_mod.rebuild_raw_fts(conn, raw_dir, incremental=True)
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger("sgme.server.app").warning(
+                "raw_fts 后台重建失败（sessions 正文检索降级）: %s", e
+            )
+
+    threading.Thread(target=_rebuild, name="raw-fts-rebuild", daemon=True).start()
+
+
 def create_app(
     cfg: dict | None = None,
     mem_conn: sqlite3.Connection | None = None,
@@ -923,10 +951,12 @@ def create_app(
     app.state.bearer_token = bearer
     app.state.started_at = _now_iso()
 
-    # 初始化 FTS5（search 模块）：记忆层 + 场景层（v5）
-    from sgme.data.search import init_fts, init_scenes_fts
+    # 初始化 FTS5（search 模块）：记忆层 + 场景层（v5）+ raw 正文层（T-207 ①）
+    from sgme.data.search import init_fts, init_scenes_fts, raw_fts as raw_fts_mod
     init_fts(mem_conn)
     init_scenes_fts(mem_conn)
+    raw_fts_mod.init_raw_fts(session_conn)
+    _start_raw_fts_background_rebuild(app)
 
     # 注册路由
     from sgme.server.routes_memory import router as memory_router

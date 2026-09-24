@@ -31,6 +31,21 @@ _MEM = {
 }
 _MEM_BODY = __import__("json").dumps([_MEM], ensure_ascii=False)
 
+# B206（T-201）：新增 EMPTY_RETRY_MIN_CONV_CHARS=200 —— 短会话的空结果视为
+# 「有意空」不重试（寒暄类会话不再多花一次调用）。本文件原用 12 字短文本，
+# 现统一改用 ≥200 字长文本以命中「长会话仍重试」分支（短会话分支见末尾用例）。
+_LONG_CONV = (
+    "用户说：我每天通勤单程 45 分钟，早上七点半出门，先骑共享单车到地铁站，"
+    "再坐四号线换乘二号线，到公司楼下的便利店买杯美式，九点前打卡。"
+    "最近在考虑搬家到公司附近，通勤时间能压到十五分钟以内，"
+    "但那边的房租比现在贵两千块左右，还在权衡要不要为了通勤方便多花这笔钱。"
+    "助手回复：如果按每天来回一个半小时算，一个月就是三十多个小时，"
+    "折算成时薪其实不低；不过搬家还有押金、中介费和通勤之外的生活半径变化，"
+    "建议先列一下那边的菜市场、健身房和地铁末班车时间再决定。"
+    "用户又说：也是，我主要还是想在路上听播客，坐地铁比骑车方便，"
+    "先把现在的续租合同看到年底，到时候再看房价和通勤的取舍。"
+)
+
 
 def _client_seq(bodies: list[str]):
     """按顺序返回响应，并记录每次请求体（用于断言重试次数与提示词）。"""
@@ -52,7 +67,7 @@ def _client_seq(bodies: list[str]):
 def test_empty_then_memories_retries(cfg):
     """首次空数组 → 重试 → 第二次返回记忆：应拿到记忆，且确实调了 2 次。"""
     cli, calls = _client_seq(["[]", _MEM_BODY])
-    memories, _, _ = l1_mod.extract_l1("用户说每天通勤 45 分钟", cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l1_mod.extract_l1(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
     assert len(calls) == 2, f"空结果应重试一次，实际调用 {len(calls)} 次"
     assert len(memories) == 1, "重试后应拿到记忆"
     assert "45" in memories[0]["content"]
@@ -61,7 +76,7 @@ def test_empty_then_memories_retries(cfg):
 def test_empty_twice_returns_empty_without_raise(cfg):
     """两次都空 → 正常返回空列表，不抛异常（空块合法）。"""
     cli, calls = _client_seq(["[]", "[]"])
-    memories, _, _ = l1_mod.extract_l1("嗯嗯好的", cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l1_mod.extract_l1(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
     assert len(calls) == 2, f"空结果应重试且只重试一次，实际调用 {len(calls)} 次"
     assert memories == []
 
@@ -77,8 +92,19 @@ def test_nonempty_no_extra_call(cfg):
 def test_retry_prompt_adds_empty_hint(cfg):
     """重试时的提示词应带上「上次为空」的追加提示。"""
     cli, calls = _client_seq(["[]", _MEM_BODY])
-    l1_mod.extract_l1("用户说每天通勤 45 分钟", cfg["dimensions"], cfg["llm"], client=cli)
+    l1_mod.extract_l1(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
     assert len(calls) == 2
     first, second = calls[0], calls[1]
     assert "上次" in second or "空" in second, "重试提示词应说明上次输出为空"
     assert second != first, "重试提示词必须与首次不同"
+
+
+def test_short_conv_empty_no_retry(cfg):
+    """B206：短会话（<200 字）的空结果视为「有意空」，不重试。
+
+    v007 允许空数组后，寒暄类会话若仍走空重试会平白多花一次 LLM 调用。
+    """
+    cli, calls = _client_seq(["[]", _MEM_BODY])
+    memories, _, _ = l1_mod.extract_l1("嗯嗯好的", cfg["dimensions"], cfg["llm"], client=cli)
+    assert len(calls) == 1, f"短会话空结果不应重试，实际调用 {len(calls)} 次"
+    assert memories == []

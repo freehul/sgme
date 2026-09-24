@@ -574,16 +574,16 @@ def check_scene_threshold(mem_conn: sqlite3.Connection, cfg: dict) -> tuple[str 
 
 # ---------- 完整 L2 聚合 ----------
 
-def _backfill_ttl(ttl_days: int | None, dimension_ids: list[str], dimensions: list[dict]) -> int | None:
-    """TTL 字段按维度默认回填：ttl_days=None 时取任一动态维度默认 ttl。"""
-    if ttl_days is not None:
-        return ttl_days
-    dim_map = {d["id"]: d for d in dimensions}
-    for dim_id in dimension_ids:
-        d = dim_map.get(dim_id)
-        if d and d.get("ttl_days"):
-            return d["ttl_days"]
-    return None
+def _backfill_ttl(ttl_days: int | None, dimension_ids: list[str], dimensions: list[dict],
+                  memory_type: str | None = None) -> int | None:
+    """TTL 回填（T-205：委托 ttl_policy 单一实现，C2 语义）。
+
+    旧实现（按维度默认，ideas 铁律）已在 T-205 收敛到 ``sgme/engine/ttl_policy.py``；
+    本模块与 l15 均委托之，防止两份实现漂移。
+    """
+    from sgme.engine.ttl_policy import backfill_ttl
+
+    return backfill_ttl(ttl_days, dimension_ids, dimensions, memory_type=memory_type)
 
 
 def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: dict) -> list[dict]:
@@ -598,7 +598,8 @@ def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: d
         if m.get("memory_id"):
             continue
         dim_ids = m.get("dimension_ids", m.get("dimensions", []))
-        ttl = _backfill_ttl(m.get("ttl_days"), dim_ids, dimensions)
+        ttl = _backfill_ttl(m.get("ttl_days"), dim_ids, dimensions,
+                            memory_type=m.get("memory_type"))
         sources = []
         if m.get("file_id"):
             sources.append((m["file_id"], "session"))

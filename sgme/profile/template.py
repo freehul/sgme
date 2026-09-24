@@ -244,10 +244,13 @@ def time_window_to_threshold(tw: str) -> str:
 # ---------- 默认排序 ----------
 
 def default_sort(dimensions: list[dict], section_dims: list[str]) -> str:
-    """默认排序：section 维度全为动态 → updated_at DESC；其余 → priority DESC。"""
-    dim_map = {d["id"]: d for d in dimensions}
-    all_dynamic = all(
-        dim_map.get(d, {}).get("time_velocity") == "dynamic"
-        for d in section_dims
-    ) if section_dims else False
-    return "updated_at DESC" if all_dynamic else "priority DESC"
+    """默认排序（T-203 F1 修正）：一律 ``updated_at DESC``。
+
+    - 修正前：动态维度 → updated_at DESC；静态维度 → priority DESC。
+    - 问题：静态维度按 priority 排序 = 高 priority 的老记忆永久霸榜，
+      「新替旧」在注入侧被对冲（L1.5 update 续期了 updated_at，注入却看不到）。
+    - 修正后：静态 section 同样取最近更新的记忆，priority 只保留
+      ``priority_min`` 的过滤语义（且已下推到 SQL，见 memory_dao）。
+    - ``dimensions`` 参数保留用于兼容既有调用签名（time_velocity 不再参与判定）。
+    """
+    return "updated_at DESC"

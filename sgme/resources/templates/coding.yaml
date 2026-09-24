@@ -1,6 +1,6 @@
 name: coding
 display_name: 编码模式
-memory_types: [tech_stack, style, skills]  # 2026-08-18：projects 维度移除（项目池专用）
+memory_types: [tech_stack, skills, preferences]  # T-203 G2：style 并入 preferences
 token_budget: 600
 sections:
   - title: "🧩 技术栈与踩坑"
@@ -10,7 +10,7 @@ sections:
       limit: 5
   - title: "⚙️ 工作方式"
     query:
-      dimensions: [style, skills]
+      dimensions: [skills, preferences]  # T-203 G2：原 [style, skills]，style 并入 preferences
       match: any
       priority_min: 60
       limit: 3

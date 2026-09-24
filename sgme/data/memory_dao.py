@@ -456,6 +456,7 @@ def list_memories_by_dimension(
     include_expired: bool = False,
     time_window_start: str | None = None,
     order_by: str = "updated_at DESC",
+    priority_min: int = 0,
 ) -> list[dict]:
     """按维度过滤记忆（模板查询用，纯 SQL 零 LLM）。
 
@@ -463,7 +464,9 @@ def list_memories_by_dimension(
     - match='all'：维度 AND（GROUP BY HAVING COUNT(DISTINCT)=N）
     - include_expired=False：TTL 过滤（ttl_days IS NULL OR updated_at > now-ttl）
     - time_window_start：updated_at > 阈值
-    - order_by：动态维度 updated_at DESC / 静态 priority DESC（调用方决定）
+    - order_by：默认 updated_at DESC（T-203 F1：静态 section 亦按更新时间取新）
+    - priority_min>0：**下推到 SQL**（T-203 G1）——修正前由注入侧在 LIMIT 之后
+      过滤，导致「先截断后滤」使 section 缩水；下推后才能保证满载率。
     """
     dims = list(dimension_ids)
     if not dims:
@@ -483,6 +486,10 @@ def list_memories_by_dimension(
     if time_window_start:
         sql += " AND m.updated_at > ?"
         params.append(time_window_start)
+    if priority_min > 0:
+        # T-203 G1：priority_min 下推（LIMIT 之前过滤，防 section 缩水）
+        sql += " AND m.priority >= ?"
+        params.append(priority_min)
     if match == "all":
         sql += " GROUP BY m.memory_id HAVING COUNT(DISTINCT t.dimension_id)=?"
         params.append(len(dims))

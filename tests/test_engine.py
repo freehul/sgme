@@ -306,6 +306,113 @@ def test_parse_l1_output_empty_dimensions_skipped(cfg):
     assert result == []
 
 
+# ---------- T-201：类型 ↔ 维度映射硬约束（l1_extraction v007 校验兜底） ----------
+
+def test_t201_dimension_cap_truncates(cfg):
+    """维度标签超上限（4 个）→ 截断到 3 个并计数。"""
+    l1.reset_violation_counts()
+    text = json.dumps([
+        {"content": "x", "dimensions": ["identity", "tech_stack", "environment", "status"],
+         "memory_type": "persona", "priority": 70, "time_velocity": "static"},
+    ])
+    result = l1.parse_l1_output(text, cfg["dimensions"])
+    assert len(result[0]["dimensions"]) == l1.MAX_DIMENSIONS_PER_MEMORY
+    assert l1.violation_counts()["dim_overflow"] == 1
+
+
+def test_t201_episodic_static_dim_degraded_to_dynamic(cfg):
+    """episodic 打静态维度 → 降级为动态维度（防事件流水永久滞留）。"""
+    l1.reset_violation_counts()
+    text = json.dumps([
+        {"content": "用户今天把 D 盘目录整理了一遍",
+         "dimensions": ["tech_stack", "identity"],
+         "memory_type": "episodic", "priority": 60, "time_velocity": "dynamic"},
+    ])
+    result = l1.parse_l1_output(text, cfg["dimensions"])
+    # 两个静态标签均被剔除 → 兜底 status（带 TTL，会自动过期）
+    assert result[0]["dimensions"] == [l1.EPISODIC_FALLBACK_DIM]
+    assert l1.violation_counts()["episodic_degraded"] == 1
+
+
+def test_t201_episodic_keeps_dynamic_dim(cfg):
+    """episodic 打动态维度 → 原样保留，不计违规。"""
+    l1.reset_violation_counts()
+    text = json.dumps([
+        {"content": "SGME 治理方案已定稿", "dimensions": ["status"],
+         "memory_type": "episodic", "priority": 70, "time_velocity": "dynamic"},
+    ])
+    result = l1.parse_l1_output(text, cfg["dimensions"])
+    assert result[0]["dimensions"] == ["status"]
+    assert l1.violation_counts()["episodic_degraded"] == 0
+
+
+def test_t201_persona_and_fact_unrestricted(cfg):
+    """persona / fact 不受维度限制（fact 保留原维度，避免知识资产被赶进短期维度）。"""
+    l1.reset_violation_counts()
+    text = json.dumps([
+        {"content": "用户是 Python 开发者", "dimensions": ["identity"],
+         "memory_type": "persona", "priority": 85, "time_velocity": "static"},
+        {"content": "LM Studio 的 64K 上下文限制会截断长会话", "dimensions": ["tech_stack"],
+         "memory_type": "fact", "priority": 80, "time_velocity": "static"},
+    ])
+    result = l1.parse_l1_output(text, cfg["dimensions"])
+    assert result[0]["dimensions"] == ["identity"]
+    assert result[1]["dimensions"] == ["tech_stack"]
+    assert l1.violation_counts()["episodic_degraded"] == 0
+
+
+def test_t201_degradation_survives_refine_file_normalization(raw_dir, mem_conn, session_conn, cfg):
+    """全链回归（照 B147 先例）：降级后的维度能穿过 refine 归一化层存活到落库前。
+
+    B147 教训：归一化层手写字段白名单曾漏 facts → 生产全库静默丢弃。
+    本用例守住「_validate_item 的维度修正不会被归一化层吃掉」。
+    """
+    fid = _setup_raw_file(raw_dir, session_conn, file_id="t201-episodic")
+    body = json.dumps([
+        {"content": "用户今天把 D 盘 45 个目录整理成 33 个",
+         "dimensions": ["技术栈"],           # LLM 错标（提示词禁止但模型会犯）
+         "memory_type": "episodic", "priority": 60, "time_velocity": "dynamic",
+         "source_message_ids": [1]},
+    ])
+    cli = _mock_llm_client(body)
+    result = refine.refine_file(fid, mem_conn, session_conn, cfg, client=cli)
+    assert result.status == "refined"
+    assert len(result.memories) == 1
+    # 归一化后仍是动态维度（未被打回 tech_stack，也未因归一化丢弃）
+    assert result.memories[0]["dimension_ids"] == ["status"]
+    assert result.memories[0]["memory_type"] == "episodic"
+
+
+def test_t201_short_conversation_empty_result_no_retry(cfg):
+    """短会话空结果 = 有意空（A3），不再重试 → 只调用 1 次（省一次调用）。"""
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "[]"}}]})
+
+    cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
+    short_conv = "user: 继续。\nassistant: 好的。"  # 远低于 EMPTY_RETRY_MIN_CONV_CHARS
+    memories, _, _ = l1.extract_l1(short_conv, cfg["dimensions"], cfg["llm"], client=cli)
+    assert memories == []
+    assert calls["n"] == 1, "短会话空结果不应重试"
+
+
+def test_t201_long_conversation_empty_result_still_retries(cfg):
+    """长会话空结果仍重试（保住 B164 防静默漏抽的收益）。"""
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "[]"}}]})
+
+    cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
+    long_conv = "user: " + "内容" * 300  # 远超门槛
+    memories, _, _ = l1.extract_l1(long_conv, cfg["dimensions"], cfg["llm"], client=cli)
+    assert memories == []
+    assert calls["n"] == 2, "长会话空结果应重试 1 次"
+
+
 # ---------- l1.extract_l1 测试（含重试） ----------
 
 def test_extract_l1_success(cfg):

@@ -528,6 +528,7 @@ def test_http_endpoint_wiki_pages_scope(client, conns, mock_vector):
 SESSIONS_RESULT_KEYS = [
     "rank", "source", "file_id", "session_key", "agent_id",
     "content", "started_at", "status", "routes",
+    "matched_in",  # T-207 ①：meta（元数据命中）| body（正文 FTS 命中）
 ]
 
 
