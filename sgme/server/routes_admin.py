@@ -277,6 +277,23 @@ def admin_stats(
 
 # ---------- POST /v1/admin/refine/trigger ----------
 
+@router.get("/v1/admin/refine/status")
+def refine_status(
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """提炼进度（T-169）：待提炼/已完成/失败计数 + 提炼水位 + 最近失败。
+
+    MCP 侧早有同名工具（refine_status），HTTP 端点此为补齐（T-168 对齐调研发现）——
+    数据源同 MCP：stats_dao.raw_files_summary + health 水位口径 + refine_runs 最近失败。
+    """
+    from sgme.operations.refine import refine_status as refine_status_operation
+
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    session_conn: sqlite3.Connection = request.app.state.session_conn
+    return run_operation(refine_status_operation, mem_conn, session_conn)
+
+
 @router.post("/v1/admin/refine/trigger")
 def refine_trigger(
     payload: RefineTriggerRequest,

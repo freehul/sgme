@@ -549,6 +549,23 @@ def _backfill_ttl(ttl_days: int | None, dimension_ids: list[str], dimensions: li
 
 # ---------- 四动作落库 ----------
 
+def _exact_dup_check(mem_conn: sqlite3.Connection, content: str | None) -> str | None:
+    """T-167：落库前 content **全池**精确查重（active），命中返回既有 memory_id。
+
+    背景：候选池按上下文预算分批+截断（架构约束 7），早期记忆沉底后同事实
+    反复 store（2026-09-14 清理 3,874 条后立此治本项，实测 TOP 重复组 68 条、
+    月增约 1,200 条多余）。LLM 裁决只能看到候选池内的重复，全池短路补上
+    「候选池外已存在同 content」的盲区。附带 benefit：省一次 INSERT + FTS 同步。
+    """
+    if not content:
+        return None
+    row = mem_conn.execute(
+        "SELECT memory_id FROM memories WHERE content=? AND status='active' LIMIT 1",
+        (content,),
+    ).fetchone()
+    return row[0] if row else None
+
+
 def _store_memory(
     mem_conn: sqlite3.Connection,
     new_mem: dict,
@@ -873,6 +890,9 @@ def resolve_conflicts(
             if i in idem_skip:
                 result.skipped.append(i)
                 continue
+            if _exact_dup_check(mem_conn, new_mem.get("content")):  # T-167 全池查重短路
+                result.skipped.append(i)
+                continue
             new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
             new_mem["memory_id"] = new_id
             result.stored.append(new_id)
@@ -991,6 +1011,9 @@ def resolve_conflicts(
         decision = by_index.get(i, ConflictDecision(i, [], "store", reason="无裁决默认 store"))
         action = decision.action
         if action == "store":
+            if _exact_dup_check(mem_conn, new_mem.get("content")):  # T-167 全池查重短路
+                result.skipped.append(i)
+                continue
             new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
             new_mem["memory_id"] = new_id  # 写回，供 L2 场景关联
             result.stored.append(new_id)
@@ -1006,7 +1029,10 @@ def resolve_conflicts(
                 result.updated.append(new_id)
                 result.archived.extend(decision.candidate_ids)
             else:
-                # 无候选 → 退化为 store
+                # 无候选 → 退化为 store（T-167：仍做全池查重短路）
+                if _exact_dup_check(mem_conn, new_mem.get("content")):
+                    result.skipped.append(i)
+                    continue
                 new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
@@ -1020,6 +1046,10 @@ def resolve_conflicts(
                 result.merged.append(new_id)
                 result.archived.extend(decision.candidate_ids)
             else:
+                # 无候选/无 merged_content → 退化为 store（T-167：仍做全池查重短路）
+                if _exact_dup_check(mem_conn, new_mem.get("content")):
+                    result.skipped.append(i)
+                    continue
                 new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
