@@ -65,6 +65,15 @@ adapters:
       file: adapters/workbuddy/scripts/sgme_client.py
       pattern: '"cli":\s*"([a-z0-9_-]+)"'
       name_rule: dash
+  zcode:
+    file: adapters/zcode/scripts/sgme_client.py
+    pattern: '^    def ([a-z_]+)\('
+    exclude: [__init__, _http, _mcp]
+    note: ZCode Skill + Python 客户端（自律型；从 ~/.zcode/cli/config.json 的 sgme server 零配置继承，含 import_history 历史补导入）
+    secondary_face:
+      file: adapters/zcode/scripts/sgme_client.py
+      pattern: '"cli":\s*"([a-z0-9_-]+)"'
+      name_rule: dash
 
 # ---------- 名称不同但语义等价的映射 ----------
 aliases:
@@ -74,6 +83,7 @@ aliases:
     doubao: search
     mimo: search
     workbuddy: search
+    zcode: search
 
 # ---------- 永久豁免（能力语义上不该由该适配器承担）----------
 exemptions:
@@ -99,6 +109,7 @@ extra:
   doubao: [events_pull, events_after, wiki_raw, mcp_raw, describe]
   mimo: [events_pull, events_after, wiki_raw, mcp_raw, describe]
   workbuddy: [events_pull, events_after, wiki_raw, mcp_raw, describe]
+  zcode: [events_pull, events_after, wiki_raw, mcp_raw, describe]
 
 # ---------- 已登记待补齐（必须带任务号）----------
 # 形如：
