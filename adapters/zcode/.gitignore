@@ -1,0 +1,7 @@
+# 部署产物与本地运行时状态（install.py 生成/使用，不入 git）
+.env
+client.env
+access-log.md
+.export_cursor.json
+__pycache__/
+*.pyc

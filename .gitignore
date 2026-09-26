@@ -104,3 +104,6 @@ exports/skills-migration-preview/
 /docs/QA_评测基线_验收报告.md
 /docs/QA_提示词版本管理_验收报告.md
 /exports/
+
+# ZCode 本会话运行时状态（plan 等），不入 git
+/.zcode/
