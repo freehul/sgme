@@ -17,7 +17,7 @@
   丢弃」语义配合，宁可重导不可丢（重复窗口由服务端幂等兜底）。
 
 用法：
-  python adapters/zcode/import_history.py --dry-run          # 预览（不发任何写请求）
+  python adapters/zcode/import_history.py --dry-run          # 预览（本地只读、零依赖：无需 SGME 配置/连接）
   python adapters/zcode/import_history.py                    # 全量补导入（已导入自动跳过）
   python adapters/zcode/import_history.py --limit 5          # 只导最近 5 个会话
   python adapters/zcode/import_history.py --session-id sess_xxx
@@ -200,16 +200,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     load_repo_env()
 
-    try:
-        client = SGME(base_url=args.base_url)
-    except SGMEError as e:
-        print(f"❌ {e}")
-        return 2
-    http, _, _ = resolve_addresses(args.base_url)
-    admin_key = os.environ.get(ADMIN_KEY_ENV, "")
-    if not admin_key:
-        print(f"⚠️ 未设置 {ADMIN_KEY_ENV}：无法查已有会话（幂等跳过失效）与触发提炼；"
-              "建议从仓库 config/.env 环境运行")
+    # dry-run 零依赖（2026-09-28 修 CI 红：无密钥环境构造即抛 SGMEError；
+    # 预览本不需要 SGME 连接——客户端与地址解析仅在真实导入时构建）
+    client = None
+    http = ""
+    admin_key = ""
+    if not args.dry_run:
+        try:
+            client = SGME(base_url=args.base_url)
+        except SGMEError as e:
+            print(f"❌ {e}")
+            return 2
+        http, _, _ = resolve_addresses(args.base_url)
+        admin_key = os.environ.get(ADMIN_KEY_ENV, "")
+        if not admin_key:
+            print(f"⚠️ 未设置 {ADMIN_KEY_ENV}：无法查已有会话（幂等跳过失效）与触发提炼；"
+                  "建议从仓库 config/.env 环境运行")
 
     conn = connect_ro(db_path)
     imported = skipped_existing = skipped_size = 0
@@ -245,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
                 skipped_existing += 1
                 continue
             started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            assert client is not None  # dry-run 已在循环内提前 continue；此处置只为类型收窄
             try:
                 resp = client._http("POST", "/v1/append", {
                     "session_key": session_key,
