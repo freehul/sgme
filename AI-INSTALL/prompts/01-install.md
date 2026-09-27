@@ -27,7 +27,7 @@
 
 ### 3. 部署后必做
 
-1. 初始化鉴权：在 `config/.env` 写入 `SGME_ADMIN_KEY` 与 `SGME_AGENT_KEY`（随机串，**只进环境文件，不进任何文档/对话**）。
+1. 初始化鉴权：在 `config/.env` 写入 `SGME_ADMIN_KEY` 与 `SGME_AGENT_KEY`（随机串，**只进环境文件，不进任何文档/对话**）。**`SGME_ADMIN_KEY` 请留存**——接入步骤（任务卡 ②）用它为每个 Agent 签发专属 Key，并同步到接入方环境。
 2. 检查模型 Key：`health` 的 `model_config.missing_keys` 非空时，把 `../免费模型Key申请指南.md` 指给用户自行申请（零充值）；**不要要求用户在对话里粘贴 Key**，让用户写入 `config/.env`。
 3. 再次探测 `health` 直到 `status: ok`。
 
@@ -59,7 +59,7 @@
 
 ## English
 
-**Task card ① — Deploy / discover SGME.** Discover first, deploy only if nothing is found: probe `http://<NAS_IP>:9910/v1/health` → fall back to `~/.sgme/install.json` → otherwise report "not found" and deploy (Docker per `docs/deployment-docker.md`, or Python 3.12). After deploy: create `SGME_ADMIN_KEY` / `SGME_AGENT_KEY` in `config/.env`; if `model_config.missing_keys` is non-empty, point the user to `免费模型Key申请指南.md` (free keys) — never ask the user to paste secrets into chat. Acceptance: health 200 with `version` + `capabilities`, missing keys reported, endpoint + version reported to the user.
+**Task card ① — Deploy / discover SGME.** Discover first, deploy only if nothing is found: probe `http://<NAS_IP>:9910/v1/health` → fall back to `~/.sgme/install.json` → otherwise report "not found" and deploy (Docker per `docs/deployment-docker.md`, or Python 3.12). After deploy: create `SGME_ADMIN_KEY` / `SGME_AGENT_KEY` in `config/.env` — keep the admin key: task card ② uses it to mint each agent's dedicated key and sync it to the client environment. If `model_config.missing_keys` is non-empty, point the user to `免费模型Key申请指南.md` (free keys) — never ask the user to paste secrets into chat. Acceptance: health 200 with `version` + `capabilities`, missing keys reported, endpoint + version reported to the user.
 
 **Copy block (English):**
 

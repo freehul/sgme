@@ -14,8 +14,9 @@
 ### ② 连通与身份
 - **目的**：确认鉴权通、Agent 身份独立
 - **动作**：调用 `agent_onboarding`（MCP）并确认返回能力清单
-- **判据**：调用成功；密钥为 `SGME_AGENT_KEY` / `agt_*`（远程不要用 admin key）
-- **失败**：403 → 检查 Key 与来源（远程仅 Agent Key 可用）
+- **判据**：调用成功；密钥为本 Agent 专属 `agt_*`（由 register 签发；非共享主 key、非默认 key）
+- **admin 通道**：配置了 admin key 时，调一个 admin 端点（如 `GET /v1/admin/agents`）确认 200；未配置则标注「待用户补充」
+- **失败**：403 → 检查 Key 与来源（默认开发 Key 仅限本机回环；日常调用用 Agent Key）
 
 ### ③ 写入
 - **目的**：确认本轮落盘链路通
@@ -64,4 +65,4 @@
 
 ## English
 
-**Post-setup self-check — run all six; all green means you're done.** ① Discovery: `GET /v1/health` → 200 with `version` + `capabilities`. ② Auth/identity: call `agent_onboarding`; remote calls use an Agent key only (403 otherwise). ③ Write: `POST /v1/append` with `session_key` + `started_at` + `# {ISO} {role}` first line → `status: new`. ④ Read: `POST /v1/search` retrieves the new entry with provenance. ⑤ Refine: `POST /v1/refine_trigger` (`async_mode=true`) returns a job id. ⑥ Skills: `skill_search("…")` returns hits; load with `skill_get`. Report a short summary (endpoint, version, six checkmarks, gaps). Common issues: 403 auth/origin, 400 params, connection (proxy — set `trust_env=False`), retrieval (write success? vector configured?), refine (missing keys / rate limit).
+**Post-setup self-check — run all six; all green means you're done.** ① Discovery: `GET /v1/health` → 200 with `version` + `capabilities`. ② Auth/identity: call `agent_onboarding`; your key must be the dedicated `agt_*` minted via register (not a shared master or default key). If an admin key is configured, call one admin endpoint (e.g. `GET /v1/admin/agents`) and expect 200; otherwise note it as pending user input. Default dev keys are loopback-only (remote → 403). ③ Write: `POST /v1/append` with `session_key` + `started_at` + `# {ISO} {role}` first line → `status: new`. ④ Read: `POST /v1/search` retrieves the new entry with provenance. ⑤ Refine: `POST /v1/refine_trigger` (`async_mode=true`) returns a job id. ⑥ Skills: `skill_search("…")` returns hits; load with `skill_get`. Report a short summary (endpoint, version, six checkmarks, gaps). Common issues: 403 auth/origin, 400 params, connection (proxy — set `trust_env=False`), retrieval (write success? vector configured?), refine (missing keys / rate limit).

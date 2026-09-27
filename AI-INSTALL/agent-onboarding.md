@@ -35,7 +35,7 @@ SGME 装在哪、端口多少、用什么 Key——三步定位，零人工依�
 | Agent Key | 请求头 `X-API-Key`（HTTP）；MCP 按客户端配置注入 |
 | 默认开发 Key | `dev-agent-key-change-me` / `dev-admin-key-change-me`——**仅限本机回环**（127.0.0.1/::1/localhost），远程调用一律 403 |
 
-**多 Agent 共存的正确姿势**：管理员先为每个 Agent 签发独立 Key（`POST /v1/admin/agents/register`，返回 `agt_*` 明文仅此一次），见 runbook §9.1。用默认 Key 做远程接入会撞 403，别试。
+**多 Agent 共存的正确姿势**：**接入时每个 Agent 必须申请自己的专属 Key**——调用 `POST /v1/admin/agents/register`（需 admin key；`agent_id` 按宿主名命名，小写字母 / 数字 / 连字符，如 `hermes` / `dsh`），返回 `agt_*` 明文仅此一次；AI-INSTALL 任务卡 ② 此为规定步骤。推荐把 admin key 随接入一并同步到接入侧环境文件（`SGME_ADMIN_KEY`，仅环境文件，不进对话/文档）。见 runbook §9.1。用默认 Key 做远程接入会撞 403，别试。
 
 ### MCP 连接示例（Python，官方 mcp 库，2026-08-14 实测跑通）
 
