@@ -14,8 +14,9 @@ G-2（2026-09-24 深度审查观察项）补齐：hermes 适配器此前无自�
 - 工具面：数量与 schema 形状、未知工具结构化错误、网关不可达不抛异常
 - install.py：插件幂等部署、install.json 三键只写环境变量名、回环默认
 - B152：client 关闭后自动重建（防「Cannot send a request, as the client has been closed」）
-- T-211 配置面板：11 字段 schema / save_config（sgme.json + 角色同步·取消·自定义角色卡）/ initialize 应用本地配置 / is_available 判定
+- T-211 配置面板：11 字段 schema / save_config（sgme/config.json + 角色同步·取消·自定义角色卡）/ initialize 应用本地配置 / is_available 判定
 - T-211 角色系统：角色提示词注入（会话缓存）+ sgme_role_save / sgme_role_delete 工具
+- T-214 声明式面板：config_schema.py（桌面渲染数据源）/ 双路径本地配置（sgme/config.json 优先）/ 角色本机优先解析（惰性自定义角色）
 
 运行：
   python -m pytest adapters/hermes/tests -q
@@ -443,7 +444,7 @@ def test_config_schema_role_fallback_on_gateway_error():
 
 
 def test_save_config_writes_json_and_skips_secrets(tmp_path):
-    """保存：非密钥值 → sgme.json（密钥与 role_id 不落本地）。"""
+    """保存：非密钥值 → sgme/config.json（密钥与 role_id 不落本地）。"""
     p, fake = _provider(_Client(_resp({"role_id": None})))
     p.save_config({
         "base_url": "http://10.0.0.9:9910",
@@ -459,7 +460,7 @@ def test_save_config_writes_json_and_skips_secrets(tmp_path):
         "admin_key": "should-not-be-persisted",
     }, str(tmp_path))
 
-    data = json.loads((tmp_path / "sgme.json").read_text(encoding="utf-8"))
+    data = json.loads((tmp_path / "sgme" / "config.json").read_text(encoding="utf-8"))
     assert data["base_url"] == "http://10.0.0.9:9910"
     assert data["inject_mode"] == "coding"
     assert data["inject_max_tokens"] == 1200
@@ -525,18 +526,18 @@ def test_save_config_custom_role_upsert_and_activate(tmp_path):
 
 
 def test_save_config_role_failure_raises_and_json_untouched(tmp_path):
-    """角色同步失败 → 抛错且不写 sgme.json（失败即报，不脏数据）。"""
+    """角色同步失败 → 抛错且不写本地 json（失败即报，不脏数据）。"""
     p, _ = _provider(_Client(responses=[
         _resp({"role_id": None}),
         _Response(status_code=500, json_body={}, text="boom"),
     ]))
     with pytest.raises(ValueError):
         p.save_config({"role_id": "butler", "inject_mode": "coding"}, str(tmp_path))
-    assert not (tmp_path / "sgme.json").exists()
+    assert not (tmp_path / "sgme" / "config.json").exists()
 
 
 def test_initialize_applies_local_config(monkeypatch, tmp_path):
-    """会话初始化应用 sgme.json（面板值；开新会话生效）。"""
+    """会话初始化应用旧路径 sgme.json（兼容读取；开新会话生效）。"""
     (tmp_path / "sgme.json").write_text(json.dumps({
         "base_url": "http://10.0.0.9:9910",
         "inject_mode": "coding",
@@ -639,3 +640,205 @@ def test_new_role_tools_in_schema_and_dispatch():
     assert {"sgme_role_save", "sgme_role_delete"} <= names
     out = json.loads(p.handle_tool_call("sgme_role_save", {"system_prompt": "x"}))
     assert "error" not in out  # 派发到 _t_role_save（role_id 回退 custom）
+
+# ---------- T-214：声明式面板（桌面「设置 → 记忆 → 持久记忆」数据源） ----------
+
+
+def _load_declared_schema():
+    """加载 adapters/hermes/config_schema.py（Hermes 框架按路径加载的同款方式）。
+
+    优先用开发者机器上的真实框架模块；无框架环境（本仓 venv）退回最小 shim——
+    shim 与 plugins/memory/config_schema.py 的数据类逐字段对齐，仅供自测。
+    """
+    import importlib.util
+    import types
+
+    try:
+        import plugins.memory.config_schema  # noqa: F401  （真实框架在场时直接可用）
+    except Exception:
+        pkg = sys.modules.setdefault("plugins", types.ModuleType("plugins"))
+        pkg.__path__ = []
+        mem = sys.modules.setdefault("plugins.memory", types.ModuleType("plugins.memory"))
+        mem.__path__ = []
+        shim = types.ModuleType("plugins.memory.config_schema")
+        from dataclasses import dataclass, field as dc_field
+
+        shim.KIND_TEXT = "text"
+        shim.KIND_SELECT = "select"
+        shim.KIND_SECRET = "secret"
+        shim.KIND_BOOL = "bool"
+        shim.KIND_NUMBER = "number"
+        shim.KIND_JSON = "json"
+
+        @dataclass(frozen=True)
+        class ProviderFieldOption:
+            value: str
+            label: str
+            description: str = ""
+
+        @dataclass(frozen=True)
+        class ProviderField:
+            key: str
+            label: str
+            kind: str = "text"
+            default: str = ""
+            description: str = ""
+            placeholder: str = ""
+            options: tuple = ()
+            env_key: Any = None
+            aliases: tuple = ()
+            env_fallbacks: tuple = ()
+            inline: bool = False
+            group: str = ""
+            info: str = ""
+            scope: str = "host"
+
+            @property
+            def is_secret(self) -> bool:
+                return self.kind == "secret"
+
+            def allowed_values(self):
+                return {o.value for o in self.options}
+
+        @dataclass(frozen=True)
+        class ProviderConfigSchema:
+            name: str
+            label: str
+            storage: str = "flat_json"
+            docs_url: str = ""
+            fields: tuple = dc_field(default_factory=tuple)
+
+        shim.ProviderFieldOption = ProviderFieldOption
+        shim.ProviderField = ProviderField
+        shim.ProviderConfigSchema = ProviderConfigSchema
+        sys.modules["plugins.memory.config_schema"] = shim
+
+    path = REPO_ROOT / "adapters" / "hermes" / "config_schema.py"
+    spec = importlib.util.spec_from_file_location("_sgme_test_declared_schema", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.CONFIG_SCHEMA
+
+
+def test_declared_schema_shape():
+    """T-214：config_schema.py 的 CONFIG_SCHEMA——11 字段 / 密钥声明 / 角色选项 / inline 子集。"""
+    schema = _load_declared_schema()
+    assert schema.name == "sgme"
+    keys = [f.key for f in schema.fields]
+    assert keys == [
+        "base_url", "agent_key", "admin_key", "inject_mode", "inject_max_tokens",
+        "capture_enabled", "refine_on_end", "agent_id", "role_id",
+        "custom_role_name", "custom_role_prompt",
+    ]
+    by = {f.key: f for f in schema.fields}
+    assert by["agent_key"].is_secret and by["agent_key"].env_key == "SGME_AGENT_KEY"
+    assert by["admin_key"].is_secret and by["admin_key"].env_key == "SGME_ADMIN_KEY"
+    assert by["inject_mode"].kind == "select"
+    assert by["inject_mode"].default in by["inject_mode"].allowed_values()
+    opts = [o.value for o in by["role_id"].options]
+    assert opts[0] == "（不使用角色）"
+    assert {"butler", "companion", "friend", "mentor"} <= set(opts)
+    assert by["role_id"].default in by["role_id"].allowed_values()
+    assert by["role_id"].inline and not by["custom_role_prompt"].inline
+
+
+def test_declared_schema_keys_match_method():
+    """T-214：声明式 schema（桌面路径）与 get_config_schema()（向导路径）字段键一一对应。"""
+    import adapters.hermes as hermes_mod
+
+    hermes_mod._role_board_cache_reset()
+    p, _ = _provider(_Client(responses=[
+        _resp({"roles": [{"role_id": "butler", "name": "管家"}], "total": 1}),
+        _resp({"role_id": "butler"}),
+    ]))
+    declared = [f.key for f in _load_declared_schema().fields]
+    assert declared == [f["key"] for f in p.get_config_schema()]
+
+
+def test_local_config_declared_path_overrides_legacy(tmp_path):
+    """T-214：双路径合并——sgme/config.json（桌面面板）优先于旧 sgme.json。"""
+    import adapters.hermes as hermes_mod
+
+    (tmp_path / "sgme.json").write_text(json.dumps({
+        "inject_mode": "work", "agent_id": "legacy-id",
+    }), encoding="utf-8")
+    (tmp_path / "sgme").mkdir()
+    (tmp_path / "sgme" / "config.json").write_text(json.dumps({
+        "inject_mode": "coding", "base_url": "http://10.0.0.8:9910",
+    }), encoding="utf-8")
+    merged = hermes_mod._read_local_config(str(tmp_path))
+    assert merged["inject_mode"] == "coding"      # 新路径优先
+    assert merged["agent_id"] == "legacy-id"      # 旧路径兜底
+    assert merged["base_url"] == "http://10.0.0.8:9910"
+
+
+def test_initialize_applies_declared_config(tmp_path, monkeypatch):
+    """T-214：会话初始化应用 sgme/config.json（桌面面板写入点）。"""
+    (tmp_path / "sgme").mkdir()
+    (tmp_path / "sgme" / "config.json").write_text(json.dumps({
+        "base_url": "http://10.0.0.9:9910",
+        "inject_mode": "coding",
+        "inject_max_tokens": 1500,
+        "capture_enabled": False,
+        "refine_on_end": False,
+        "agent_id": "hermes-x",
+    }), encoding="utf-8")
+    p, _ = _provider(monkeypatch=monkeypatch)
+    p.initialize("sess-t214", hermes_home=str(tmp_path))
+    assert p.base_url == "http://10.0.0.9:9910"
+    assert p.inject_mode == "coding"
+    assert p.inject_max_tokens == 1500
+    assert p.capture_enabled is False
+    assert p.refine_on_end is False
+    assert p.agent_id == "hermes-x"
+
+
+def test_role_block_local_sentinel_skips_server(tmp_path):
+    """T-214：本机显式「不使用角色」→ 不回退服务端当前角色（也不触网）。"""
+    p, fake = _provider(_Client(responses=[_resp({"role_id": "butler"})]))
+    (tmp_path / "sgme").mkdir()
+    (tmp_path / "sgme" / "config.json").write_text(
+        json.dumps({"role_id": "（不使用角色）"}), encoding="utf-8")
+    p._hermes_home = str(tmp_path)
+    assert p._role_prompt_block() == ""
+    assert not fake.calls
+
+
+def test_role_block_local_role_wins_over_server(tmp_path):
+    """T-214：本机 role_id 已设置 → 直接采用（不查服务端当前角色）。"""
+    p, fake = _provider(_Client(responses=[
+        _resp({"role_id": "companion", "role_name": "伴侣", "system_prompt": "你是伴侣。"}),
+    ]))
+    (tmp_path / "sgme").mkdir()
+    (tmp_path / "sgme" / "config.json").write_text(
+        json.dumps({"role_id": "companion"}), encoding="utf-8")
+    p._hermes_home = str(tmp_path)
+    block = p._role_prompt_block()
+    assert "沟通角色：伴侣" in block and "你是伴侣。" in block
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["url"].endswith("/v1/admin/roles/companion/assemble")
+
+
+def test_role_block_custom_prompt_lazy_upsert(tmp_path):
+    """T-214：自定义提示词 → 惰性 upsert 角色卡（内容变化才写）+ 采用；二次调用走缓存。"""
+    p, fake = _provider(_Client(responses=[
+        _Response(status_code=404, json_body={}, text="角色不存在"),
+        _resp({"role_id": "my-secretary", "status": "saved"}),
+        _resp({"role_id": "my-secretary", "role_name": "My Secretary", "system_prompt": "你是秘书。"}),
+    ]))
+    (tmp_path / "sgme").mkdir()
+    (tmp_path / "sgme" / "config.json").write_text(json.dumps({
+        "custom_role_name": "My Secretary",
+        "custom_role_prompt": "你是秘书。",
+    }), encoding="utf-8")
+    p._hermes_home = str(tmp_path)
+    block = p._role_prompt_block()
+    assert "你是秘书。" in block
+    posts = [c for c in fake.calls if c["method"] == "POST"]
+    assert len(posts) == 1 and posts[0]["url"].endswith("/v1/admin/roles/my-secretary")
+    assert posts[0]["json"]["data"]["system_prompt"] == "你是秘书。"
+
+    before = len(fake.calls)
+    assert p._role_prompt_block() == block  # 会话缓存：不再触网
+    assert len(fake.calls) == before
+

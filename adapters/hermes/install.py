@@ -7,7 +7,7 @@
     python adapters/hermes/install.py --install-json <path>     # 指定服务发现清单落点
 
 行为：
-- 复制 adapters/hermes/{__init__.py,plugin.yaml} → $HERMES_HOME/plugins/sgme/
+- 复制 adapters/hermes/{__init__.py,config_schema.py,plugin.yaml} → $HERMES_HOME/plugins/sgme/
 - 生成**服务发现清单**（默认 ~/.sgme/install.json）：HTTP 地址端口 + Key 的**环境变量名引用**，
   不落任何明文密钥（字段形态与 sgme/config.py::write_client_install_json、adapters/dsh/install.py 对齐）
 - 幂等：覆盖旧副本，保留已启用状态（config.yaml 的 memory.provider: sgme 不动）
@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 # 本项目 adapters/hermes/ 目录（脚本所在位置）
 SRC_DIR = Path(__file__).resolve().parent
-FILES = ("__init__.py", "plugin.yaml")
+FILES = ("__init__.py", "config_schema.py", "plugin.yaml")
 
 # 默认 SGME 地址（回环）；生产部署用 SGME_BASE_URL 指向远端 SGME（如 http://<NAS_IP>:9910）
 DEFAULT_BASE_URL = "http://127.0.0.1:9910"

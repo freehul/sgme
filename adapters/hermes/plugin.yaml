@@ -13,4 +13,4 @@ config:
   capture_enabled: true
   refine_on_end: true
   # T-211（2026-09-27）：以上行为项与「沟通角色」均可在桌面「设置 → 记忆扩展 → SGME」
-  # 面板配置（落 $HERMES_HOME/sgme.json，开新会话生效）；密钥只走环境变量。
+  # 面板配置（落 $HERMES_HOME/sgme/config.json，开新会话生效）；密钥只走环境变量。

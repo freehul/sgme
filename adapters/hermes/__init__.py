@@ -94,7 +94,7 @@ _DEFAULT_ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", _DEV_ADMIN_KEY)
 _DEFAULT_MODE = os.environ.get("SGME_INJECT_MODE", "daily")
 _DEFAULT_MAX_TOKENS = int(os.environ.get("SGME_INJECT_MAX_TOKENS", "800"))
 _DEFAULT_TIMEOUT = float(os.environ.get("SGME_HTTP_TIMEOUT", "5.0"))
-# T-211（2026-09-27）：行为偏好环境变量（桌面设置面板亦可在 $HERMES_HOME/sgme.json 覆盖）
+# T-211/T-214（2026-09-27）：行为偏好环境变量（桌面设置面板值落 $HERMES_HOME/sgme/config.json）
 _DEFAULT_CAPTURE_ENABLED = _env_bool("SGME_CAPTURE_ENABLED", True)
 _DEFAULT_REFINE_ON_END = _env_bool("SGME_REFINE_ON_END", True)
 # 溯源 agent_id（B35 自报，2026-08-11）：append body 带唯一标识，
@@ -215,25 +215,41 @@ def _is_loopback_url(base_url: Any) -> bool:
 
 
 def _read_local_config(hermes_home: str) -> Dict[str, Any]:
-    """读 ``$HERMES_HOME/sgme.json``（面板非密钥配置）；缺失/损坏 → {}。"""
+    """读本地配置（双路径合并，后者优先）；缺失/损坏 → {}。
+
+    - ``$HERMES_HOME/sgme.json``——旧向导 / raw 面板写入点（兼容读取）
+    - ``$HERMES_HOME/sgme/config.json``——桌面声明式面板（config_schema.py）写入点
+
+    T-214（2026-09-27）：桌面「设置 → 记忆 → 持久记忆」面板由 Hermes 框架直接写
+    ``sgme/config.json``（插件无保存钩子），此前只读 sgme.json 导致面板值不生效。
+    """
     if not hermes_home:
         return {}
-    try:
-        path = os.path.join(str(hermes_home), "sgme.json")
-        if not os.path.exists(path):
-            return {}
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    merged: Dict[str, Any] = {}
+    for rel in ("sgme.json", os.path.join("sgme", "config.json")):
+        try:
+            path = os.path.join(str(hermes_home), rel)
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                merged.update(data)
+        except Exception:
+            continue
+    return merged
 
 
 def _write_local_config(hermes_home: str, values: Dict[str, Any]) -> None:
-    """原子写 ``$HERMES_HOME/sgme.json``（0600；临时文件 + 替换，防写一半）。"""
+    """原子写 ``$HERMES_HOME/sgme/config.json``（0600；临时文件 + 替换，防写一半）。
+
+    T-214：写入点与桌面声明式面板统一（此前写 sgme.json；旧值仍经
+    _read_local_config 兼容读取）。
+    """
     if not hermes_home:
         return
-    path = os.path.join(str(hermes_home), "sgme.json")
+    path = os.path.join(str(hermes_home), "sgme", "config.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(json.dumps(values, ensure_ascii=False, indent=2) + "\n")
@@ -259,8 +275,9 @@ def _coerce_local_value(key: str, value: Any) -> Any:
 class SGMEProvider(MemoryProvider):
     """SGME 记忆引擎 Hermes 桥接 provider。
 
-    配置优先级：$HERMES_HOME/sgme.json（设置面板值）> plugin.yaml config 段
-    > 环境变量 > 默认值；密钥只从环境变量读（框架 .env），不进本地 json。
+    配置优先级：$HERMES_HOME/sgme/config.json（桌面面板值，T-214）> $HERMES_HOME/sgme.json
+    （旧向导写入，兼容）> plugin.yaml config 段 > 环境变量 > 默认值；密钥只从环境变量读
+    （框架 .env），不进本地 json。角色：本机面板值优先于服务端「当前角色」（T-214）。
     """
 
     def __init__(
@@ -301,6 +318,7 @@ class SGMEProvider(MemoryProvider):
         self._probe_at: Optional[float] = None  # 上次探测时间戳（time.monotonic）
         self._role_block_cache: Optional[str] = None  # 角色提示词块（会话级缓存，T-211）
         self._role_block_fetched: bool = False  # 本会话是否已取过角色块
+        self._custom_role_applied: Optional[tuple] = None  # 惰性自定义角色 (id, prompt) 去重标记（T-214）
 
     # ---------- 基础 ----------
 
@@ -389,7 +407,7 @@ class SGMEProvider(MemoryProvider):
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
-        """面板 / 向导保存：非密钥值 → ``$HERMES_HOME/sgme.json``（原子写 0600）。
+        """面板 / 向导保存：非密钥值 → ``$HERMES_HOME/sgme/config.json``（原子写 0600；T-214 起）。
 
         角色同步（T-211）：``role_id`` 选择即收敛为服务端「当前角色」
         （「不使用角色」= 取消）；``custom_role_prompt`` 非空且变化 → 生成/更新
@@ -424,7 +442,7 @@ class SGMEProvider(MemoryProvider):
         elif target != current:
             self._set_active_role_or_raise(target)
 
-        # ③ 非密钥值落盘（密钥由框架写 .env；role_id 是动作字段、不回写本地）
+        # ③ 非密钥值落盘（密钥由框架写 .env；role_id 走服务端动作，不由本方法回写本地）
         payload: Dict[str, Any] = {}
         for key in ("base_url", "inject_mode", "inject_max_tokens", "capture_enabled",
                     "refine_on_end", "agent_id", "custom_role_name", "custom_role_prompt"):
@@ -586,15 +604,42 @@ class SGMEProvider(MemoryProvider):
         return "\n\n".join(parts)
 
     def _role_prompt_block(self) -> str:
-        """当前角色提示词块（每会话缓存一次；未设置/失败 → 空串）。"""
+        """当前角色提示词块（每会话缓存一次；未设置/失败 → 空串）。
+
+        T-214 本机优先序（桌面面板值 → 服务端状态）：
+        ① ``custom_role_prompt`` 非空 → 惰性 upsert 角色卡（内容变化才写服务端）并采用；
+        ② 本机 ``role_id`` 已设置 → 采用（「不使用角色」= 显式关闭，不回退服务端）；
+        ③ 本机均未设置 → 跟随服务端「当前角色」（与旧行为一致）。
+        """
         if self._role_block_fetched:
             return self._role_block_cache or ""
         self._role_block_fetched = True
         block = ""
         try:
-            data, err = self._request("GET", "/v1/admin/care/active-role")
-            role_id = str((data or {}).get("role_id") or "").strip() if isinstance(data, dict) else ""
-            if not err and role_id:
+            cfg = _read_local_config(self._hermes_home or "")
+            role_id = ""
+            custom_prompt = str(cfg.get("custom_role_prompt") or "").strip()
+            if custom_prompt:
+                custom_name = str(cfg.get("custom_role_name") or "").strip()
+                custom_id = _slugify_role_id(custom_name)
+                applied = (custom_id, custom_prompt)
+                if applied != self._custom_role_applied:
+                    try:
+                        self._upsert_custom_role(custom_id, custom_name, custom_prompt)
+                        self._custom_role_applied = applied
+                    except ValueError as e:
+                        logger.warning("sgme 自定义角色惰性生成失败: %s", e)
+                if self._custom_role_applied == applied:
+                    role_id = custom_id
+            if not role_id:
+                if "role_id" in cfg:
+                    local_role = str(cfg.get("role_id") or "").strip()
+                    role_id = "" if local_role == _NO_ROLE_LABEL else local_role
+                else:
+                    data, err = self._request("GET", "/v1/admin/care/active-role")
+                    if not err and isinstance(data, dict):
+                        role_id = str(data.get("role_id") or "").strip()
+            if role_id:
                 asm, err2 = self._request("GET", f"/v1/admin/roles/{_path_seg(role_id)}/assemble")
                 if not err2 and isinstance(asm, dict):
                     prompt = str(asm.get("system_prompt") or "").strip()
@@ -611,7 +656,7 @@ class SGMEProvider(MemoryProvider):
         return block
 
     def _apply_runtime_config(self, hermes_home: str) -> None:
-        """应用 $HERMES_HOME/sgme.json 覆盖（面板值优先；密钥不在文件内）。"""
+        """应用本地配置覆盖（$HERMES_HOME/sgme/config.json 优先、sgme.json 兼容；密钥不在文件内）。"""
         cfg = _read_local_config(hermes_home)
         if not cfg:
             return
