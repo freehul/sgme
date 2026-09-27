@@ -451,6 +451,16 @@ def test_health_watermark_advances_after_refine(client, raw_dir, monkeypatch):
 
     monkeypatch.setattr(l1, "extract_l1", fake_extract_l1)
 
+    # L2 场景聚合会调真实 LLM 降级链：整体打桩为「全链不可用」→ 走降级分支，
+    # 测试零网络、结果确定（2026-09-28 修本地全量回归挂起：此前依赖网络快速失败）
+    from sgme.llm import chain as llm_chain
+    from sgme.llm.provider import LLMUnavailable
+
+    def _llm_down(*a, **k):
+        raise LLMUnavailable("mock down（测试零网络）")
+
+    monkeypatch.setattr(llm_chain, "call_with_fallback", _llm_down)
+
     # 触发提炼
     rt = client.post("/v1/admin/refine/trigger", json={
         "file_id": file_id,
