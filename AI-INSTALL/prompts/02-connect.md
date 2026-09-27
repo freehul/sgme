@@ -42,7 +42,7 @@ print(r.json())   # 已存在则返回 409 ERR_CONFLICT（见「失败处置」�
 
 **c. 保存专属 Key**：`agt_*` 明文**仅此一次返回**——立即写入接入侧环境变量 `SGME_AGENT_KEY`（Hermes：`HERMES_HOME/.env`；DSH / 其他：各自环境变量机制）。密钥只进环境文件。
 
-**d. 立即验证**：用新 Key 调 `GET /v1/health`（或任一非 admin 端点）确认返回 200。
+**d. 立即验证**：用新 Key 调 `POST /v1/search`（body `{"query": "接入自检"}`）——返回 200 且带 `results` 即 Key 生效（`GET /v1/health` 免鉴权，验不出 Key）。
 
 ### 3. 配置（只走环境变量）
 
@@ -95,7 +95,7 @@ print(r.json())   # 已存在则返回 409 ERR_CONFLICT（见「失败处置」�
 
 ## English
 
-**Task card ② — Connect & verify.** Pick a path: generic (HTTP `http://<NAS_IP>:9910` / MCP `:9913/mcp` with `X-API-Key`), Hermes (`adapters/hermes/`), or DSH (`dsh-sgme` npm package). Mandatory first: mint your own dedicated key — obtain an admin key (client-side env `SGME_ADMIN_KEY`, else read the server's `config/.env` on the same host / via SSH; if neither is possible, ask the user for the minimal manual step and continue without blocking), then call `POST /v1/admin/agents/register` with an `agent_id` named after your host (lowercase letters/digits/hyphens, e.g. `hermes` / `dsh` / `claude-code`). The returned `agt_*` plaintext is shown once — write it to the client env `SGME_AGENT_KEY`, verify with a non-admin endpoint (`GET /v1/health` → 200), and sync the admin key into the client env file too (`SGME_ADMIN_KEY`). Configure via env vars only — secrets live in env files, never in code, docs, or chat. Run 4 checks: discovery (version/capabilities), write (append → `status: new`), read (search hits the new content), refine (async trigger, optional but recommended). Daily calls use an Agent key; admin endpoints (e.g. register) use the admin key; default dev keys are loopback-only (remote → 403). Use Python `requests` with `trust_env=False`; avoid git-bash curl for UTF-8 payloads.
+**Task card ② — Connect & verify.** Pick a path: generic (HTTP `http://<NAS_IP>:9910` / MCP `:9913/mcp` with `X-API-Key`), Hermes (`adapters/hermes/`), or DSH (`dsh-sgme` npm package). Mandatory first: mint your own dedicated key — obtain an admin key (client-side env `SGME_ADMIN_KEY`, else read the server's `config/.env` on the same host / via SSH; if neither is possible, ask the user for the minimal manual step and continue without blocking), then call `POST /v1/admin/agents/register` with an `agent_id` named after your host (lowercase letters/digits/hyphens, e.g. `hermes` / `dsh` / `claude-code`). The returned `agt_*` plaintext is shown once — write it to the client env `SGME_AGENT_KEY`, verify with an authenticated endpoint (`POST /v1/search` → 200; `GET /v1/health` needs no key and proves nothing about it), and sync the admin key into the client env file too (`SGME_ADMIN_KEY`). Configure via env vars only — secrets live in env files, never in code, docs, or chat. Run 4 checks: discovery (version/capabilities), write (append → `status: new`), read (search hits the new content), refine (async trigger, optional but recommended). Daily calls use an Agent key; admin endpoints (e.g. register) use the admin key; default dev keys are loopback-only (remote → 403). Use Python `requests` with `trust_env=False`; avoid git-bash curl for UTF-8 payloads.
 
 **Copy block (English):**
 
