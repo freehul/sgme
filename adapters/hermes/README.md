@@ -81,11 +81,12 @@ Restart Hermes. Verify with `hermes plugins list` (the sgme row should read
 
 ## Configuration
 
-Desktop → **Settings → Memory → SGME** shows every option; `hermes memory setup`
-offers the same form in the CLI.
+Desktop → **Settings → Memory & Context → Persistent memory** shows every option (the SGME
+panel renders under the *Memory provider* row); `hermes memory setup` offers the
+same form in the CLI.
 
 - **Secrets** are stored by Hermes in `.env` (never echoed back — the panel only shows *set / not set*).
-- **Non-secret values** are stored in `$HERMES_HOME/sgme.json` and take effect on the **next session**.
+- **Non-secret values** are stored in `$HERMES_HOME/sgme/config.json` (legacy `sgme.json` is still read) and take effect on the **next session**.
 
 | Field | Default | Notes |
 |---|---|---|
@@ -97,21 +98,22 @@ offers the same form in the CLI.
 | `capture_enabled` | `true` | write turns to SGME (off = read-only) |
 | `refine_on_end` | `true` | trigger refinement when a session ends |
 | `agent_id` | `hermes` | provenance tag attached to appended turns |
-| `role_id` | *(none)* | current communication role; pick “（不使用角色）” to clear it |
+| `role_id` | *(none)* | communication role for this Hermes (local override; falls back to the server-wide active role when unset); “（不使用角色）” = explicit off |
 | `custom_role_name` | — | optional name for a quick custom role |
-| `custom_role_prompt` | — | role system prompt; saving creates/updates the role card **and activates it** |
+| `custom_role_prompt` | — | role system prompt; from the next session on the card is created/updated and used |
 
-Precedence for non-secret values: `sgme.json` (panel) > `plugin.yaml` > environment > built-in default.
+Precedence for non-secret values: `sgme/config.json` (panel) > `sgme.json` (legacy) > `plugin.yaml` > environment > built-in default.
 
 ## Communication roles (skin swap, same core)
 
-A role is server-side state shared by every client — set it once, and every new
-session opens with that persona. Memory, facts and decisions are never
-role-scoped: the role is a communication skin, not a separate brain.
+The server keeps one active role shared by every client — set it once and every new
+session opens with that persona. A client may also pin a local role override in its
+settings panel. Memory, facts and decisions are never role-scoped: the role is a
+communication skin, not a separate brain.
 
 Three ways to manage roles:
 
-1. **Settings panel** — choose a `role_id` from the live list (built-ins + your own), or fill `custom_role_name` + `custom_role_prompt` and save.
+1. **Settings panel** — pick a built-in `role_id`, or fill `custom_role_name` + `custom_role_prompt` (used from the next session on).
 2. **Ask your agent** — `sgme_role_save` / `sgme_role_delete` / `sgme_role_active_set` let the agent write or switch roles for you.
 3. **SGME WebUI → Roles** — full visual card editor (best for long prompts; desktop text fields are brief by nature).
 
@@ -220,7 +222,7 @@ Admin tools state their requirement in their description.
 {
   "schema_version": 1,
   "adapter": "hermes",
-  "adapter_version": "1.4.3",
+  "adapter_version": "1.5.0",
   "base_url": "http://127.0.0.1:9910",
   "http": { "host": "127.0.0.1", "port": 9910 },
   "mcp": { "port": 9913 },
@@ -261,7 +263,7 @@ Your memories stay on the SGME server, untouched.
 
 ## Version & compatibility
 
-- The plugin version tracks the SGME engine version (currently `1.4.3`) — keep bridge and engine on the same minor line.
+- The plugin version tracks the SGME engine version (currently `1.5.0`) — keep bridge and engine on the same minor line.
 - Capability baseline = SGME's MCP tool surface (41 tools); this adapter implements 39 of them, declares 2 exemptions, and adds 3 of its own → **42 tools**. Drift is checked by `python scripts/adapter_parity.py`.
 
 ## Links

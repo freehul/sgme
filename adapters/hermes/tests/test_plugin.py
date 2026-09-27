@@ -641,7 +641,7 @@ def test_new_role_tools_in_schema_and_dispatch():
     out = json.loads(p.handle_tool_call("sgme_role_save", {"system_prompt": "x"}))
     assert "error" not in out  # 派发到 _t_role_save（role_id 回退 custom）
 
-# ---------- T-214：声明式面板（桌面「设置 → 记忆 → 持久记忆」数据源） ----------
+# ---------- T-214：声明式面板（桌面「设置 → 记忆与上下文 → 持久记忆」数据源） ----------
 
 
 def _load_declared_schema():
