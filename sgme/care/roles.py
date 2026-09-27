@@ -283,3 +283,15 @@ def set_active_role(role_id: str, data_dir: Path | None = None) -> Path:
     )
     logger.info("当前角色已设置: %s", role_id)
     return fp
+
+
+def clear_active_role(data_dir: Path | None = None) -> Path:
+    """取消当前角色（写 role_id=None；幂等——重复取消仍成功）。"""
+    fp = _active_role_file(data_dir)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text(
+        json.dumps({"role_id": None, "set_at": _now_iso()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    logger.info("当前角色已取消（cleared）")
+    return fp

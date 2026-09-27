@@ -602,6 +602,26 @@ def test_set_and_get_active_role(conns, cfg, roles_dir, tmp_path, monkeypatch):
     assert (tmp_path / "care" / "active_role.json").exists()
 
 
+def test_clear_active_role(conns, cfg, roles_dir, tmp_path, monkeypatch):
+    """空串 = 取消当前角色（T-211 面板「不使用角色」语义；幂等）。"""
+    from sgme.operations.care import get_active_role, set_active_role
+
+    monkeypatch.setattr(sgme_config, "DATA_DIR", tmp_path)
+    roles_mod.save_role(roles_dir, "butler", _valid_card("管家"))
+    assert set_active_role("butler").ok is True
+
+    res = set_active_role("")
+    assert res.ok is True
+    assert res.data["role_id"] is None
+    assert res.data["status"] == "cleared"
+    assert get_active_role().data["role_id"] is None
+
+    # 幂等：再取消一次仍成功（不报 ERR_NOT_FOUND）；纯空白也按取消处理
+    assert set_active_role("").ok is True
+    assert set_active_role("   ").ok is True
+    assert get_active_role().data["role_id"] is None
+
+
 def test_set_active_role_missing(conns, cfg, roles_dir, tmp_path, monkeypatch):
     """角色不存在 → ERR_NOT_FOUND。"""
     from sgme.operations.care import set_active_role
@@ -631,3 +651,10 @@ def test_http_active_role_flow(client, roles_dir, tmp_path, monkeypatch):
     r = client.put("/v1/admin/care/active-role", json={"role_id": "ghost"},
                    headers=AGENT_HEADERS)
     assert r.status_code == 404
+
+    # T-211：空串 = 取消当前角色（面板「不使用角色」）
+    r = client.put("/v1/admin/care/active-role", json={"role_id": ""},
+                   headers=AGENT_HEADERS)
+    assert r.status_code == 200, r.text
+    r = client.get("/v1/admin/care/active-role", headers=AGENT_HEADERS)
+    assert r.json()["role_id"] is None

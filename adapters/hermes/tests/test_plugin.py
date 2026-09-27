@@ -14,6 +14,8 @@ G-2（2026-09-24 深度审查观察项）补齐：hermes 适配器此前无自�
 - 工具面：数量与 schema 形状、未知工具结构化错误、网关不可达不抛异常
 - install.py：插件幂等部署、install.json 三键只写环境变量名、回环默认
 - B152：client 关闭后自动重建（防「Cannot send a request, as the client has been closed」）
+- T-211 配置面板：11 字段 schema / save_config（sgme.json + 角色同步·取消·自定义角色卡）/ initialize 应用本地配置 / is_available 判定
+- T-211 角色系统：角色提示词注入（会话缓存）+ sgme_role_save / sgme_role_delete 工具
 
 运行：
   python -m pytest adapters/hermes/tests -q
@@ -65,12 +67,14 @@ class _Response:
 class _Client:
     """记录全部 HTTP 调用；closed 后按 httpx 语义抛 RuntimeError。"""
 
-    def __init__(self, response: _Response | None = None, raise_error: bool = False):
+    def __init__(self, response: _Response | None = None, raise_error: bool = False,
+                 responses: List[_Response] | None = None):
         self.calls: List[Dict[str, Any]] = []
         self.closed = False
         self.close_calls = 0
         self._response = response or _Response()
         self._raise = raise_error
+        self._responses: List[_Response] = list(responses or [])
 
     @property
     def is_closed(self) -> bool:
@@ -82,6 +86,8 @@ class _Client:
         self.calls.append({"method": method, "url": url, **kwargs})
         if self._raise:
             raise ConnectionError("Connection refused（Gateway 未启动）")
+        if self._responses:
+            return self._responses.pop(0)
         return self._response
 
     def get(self, url: str, **kwargs):
@@ -381,3 +387,255 @@ def test_install_json_path_env_override(tmp_path, monkeypatch):
     assert hermes_install.install_json_path() == target
     assert hermes_install.write_install_json() == target
     assert target.exists()
+
+
+# ---------- T-211：配置面板（schema / save_config / initialize / is_available） ----------
+
+
+def _resp(body: Any, status: int = 200) -> _Response:
+    return _Response(status_code=status, json_body=body)
+
+
+def test_config_schema_shape_and_role_choices():
+    """配置面板 schema：11 字段 + 类型/密钥标记；角色下拉实时拉取服务端角色。"""
+    import adapters.hermes as hermes_mod
+
+    hermes_mod._role_board_cache_reset()
+    fake = _Client(responses=[
+        _resp({"roles": [{"role_id": "butler", "name": "管家"},
+                         {"role_id": "companion", "name": "伴侣"}], "total": 2}),
+        _resp({"role_id": "butler"}),
+    ])
+    p, _ = _provider(fake)
+
+    schema = p.get_config_schema()
+    assert [f["key"] for f in schema] == [
+        "base_url", "agent_key", "admin_key", "inject_mode", "inject_max_tokens",
+        "capture_enabled", "refine_on_end", "agent_id", "role_id",
+        "custom_role_name", "custom_role_prompt",
+    ]
+    by = {f["key"]: f for f in schema}
+    assert by["agent_key"]["secret"] is True and by["agent_key"]["env_var"] == "SGME_AGENT_KEY"
+    assert by["admin_key"]["secret"] is True
+    assert by["inject_mode"]["choices"] == ["daily", "coding", "work", "full"]
+    assert by["inject_max_tokens"]["type"] == "integer"
+    assert by["capture_enabled"]["type"] == "boolean"
+    role = by["role_id"]
+    assert role["choices"][0] == "（不使用角色）"
+    assert "butler" in role["choices"] and "companion" in role["choices"]
+    assert role["default"] == "butler"
+
+    calls = len(fake.calls)  # 缓存：二次调用不再触网
+    p.get_config_schema()
+    assert len(fake.calls) == calls
+
+
+def test_config_schema_role_fallback_on_gateway_error():
+    """网关不可达 → 角色下拉退化为「不使用角色」单项且不抛异常。"""
+    import adapters.hermes as hermes_mod
+
+    hermes_mod._role_board_cache_reset()
+    p, _ = _provider(_Client(raise_error=True))
+    schema = p.get_config_schema()
+    role = [f for f in schema if f["key"] == "role_id"][0]
+    assert role["choices"] == ["（不使用角色）"]
+    assert role["default"] == "（不使用角色）"
+
+
+def test_save_config_writes_json_and_skips_secrets(tmp_path):
+    """保存：非密钥值 → sgme.json（密钥与 role_id 不落本地）。"""
+    p, fake = _provider(_Client(_resp({"role_id": None})))
+    p.save_config({
+        "base_url": "http://10.0.0.9:9910",
+        "inject_mode": "coding",
+        "inject_max_tokens": 1200,
+        "capture_enabled": False,
+        "refine_on_end": True,
+        "agent_id": "hermes-x",
+        "role_id": "（不使用角色）",
+        "custom_role_name": "",
+        "custom_role_prompt": "",
+        "agent_key": "should-not-be-persisted",
+        "admin_key": "should-not-be-persisted",
+    }, str(tmp_path))
+
+    data = json.loads((tmp_path / "sgme.json").read_text(encoding="utf-8"))
+    assert data["base_url"] == "http://10.0.0.9:9910"
+    assert data["inject_mode"] == "coding"
+    assert data["inject_max_tokens"] == 1200
+    assert data["capture_enabled"] is False
+    assert data["refine_on_end"] is True
+    assert data["agent_id"] == "hermes-x"
+    assert "agent_key" not in data and "admin_key" not in data
+    assert "role_id" not in data
+    assert not [c for c in fake.calls if c["method"] == "PUT"], "空态+服务端无角色 → 不发动作"
+
+
+def test_save_config_syncs_selected_role(tmp_path):
+    """选择具体角色并保存 → PUT 服务端「当前角色」。"""
+    p, fake = _provider(_Client(responses=[
+        _resp({"role_id": None}),
+        _resp({"role_id": "companion", "status": "active"}),
+    ]))
+    p.save_config({"role_id": "companion"}, str(tmp_path))
+    puts = [c for c in fake.calls if c["method"] == "PUT"]
+    assert len(puts) == 1
+    assert puts[0]["url"].endswith("/v1/admin/care/active-role")
+    assert puts[0]["json"] == {"role_id": "companion"}
+
+
+def test_save_config_clears_role_with_sentinel(tmp_path):
+    """选「不使用角色」且服务端有角色 → PUT 空串（取消当前角色）。"""
+    p, fake = _provider(_Client(responses=[
+        _resp({"role_id": "butler"}),
+        _resp({"role_id": None, "status": "cleared"}),
+    ]))
+    p.save_config({"role_id": "（不使用角色）"}, str(tmp_path))
+    puts = [c for c in fake.calls if c["method"] == "PUT"]
+    assert len(puts) == 1 and puts[0]["json"] == {"role_id": ""}
+
+
+def test_save_config_role_noop_when_same(tmp_path):
+    """提交值与服务端当前一致 → 不发 PUT（避免每次保存空转）。"""
+    p, fake = _provider(_Client(responses=[_resp({"role_id": "butler"})]))
+    p.save_config({"role_id": "butler"}, str(tmp_path))
+    assert not [c for c in fake.calls if c["method"] == "PUT"]
+
+
+def test_save_config_custom_role_upsert_and_activate(tmp_path):
+    """自定义角色提示词：upsert 角色卡 → 自动启用为当前角色。"""
+    p, fake = _provider(_Client(responses=[
+        _Response(status_code=404, json_body={}, text="角色不存在"),
+        _resp({"role_id": "my-secretary", "status": "saved"}),
+        _resp({"role_id": None}),
+        _resp({"role_id": "my-secretary", "status": "active"}),
+    ]))
+    p.save_config({
+        "custom_role_name": "My Secretary",
+        "custom_role_prompt": "你是{{user}}的秘书，先结论后细节。",
+        "role_id": "（不使用角色）",
+    }, str(tmp_path))
+
+    posts = [c for c in fake.calls if c["method"] == "POST"]
+    assert len(posts) == 1
+    assert posts[0]["url"].endswith("/v1/admin/roles/my-secretary")
+    assert posts[0]["json"]["data"]["system_prompt"].startswith("你是{{user}}的秘书")
+    puts = [c for c in fake.calls if c["method"] == "PUT"]
+    assert puts and puts[0]["json"] == {"role_id": "my-secretary"}
+
+
+def test_save_config_role_failure_raises_and_json_untouched(tmp_path):
+    """角色同步失败 → 抛错且不写 sgme.json（失败即报，不脏数据）。"""
+    p, _ = _provider(_Client(responses=[
+        _resp({"role_id": None}),
+        _Response(status_code=500, json_body={}, text="boom"),
+    ]))
+    with pytest.raises(ValueError):
+        p.save_config({"role_id": "butler", "inject_mode": "coding"}, str(tmp_path))
+    assert not (tmp_path / "sgme.json").exists()
+
+
+def test_initialize_applies_local_config(monkeypatch, tmp_path):
+    """会话初始化应用 sgme.json（面板值；开新会话生效）。"""
+    (tmp_path / "sgme.json").write_text(json.dumps({
+        "base_url": "http://10.0.0.9:9910",
+        "inject_mode": "coding",
+        "inject_max_tokens": 1500,
+        "capture_enabled": False,
+        "refine_on_end": False,
+        "agent_id": "hermes-x",
+    }), encoding="utf-8")
+    p, _ = _provider(monkeypatch=monkeypatch)
+    p.initialize("sess-t211", hermes_home=str(tmp_path))
+    assert p.base_url == "http://10.0.0.9:9910"
+    assert p.inject_mode == "coding"
+    assert p.inject_max_tokens == 1500
+    assert p.capture_enabled is False
+    assert p.refine_on_end is False
+    assert p.agent_id == "hermes-x"
+
+
+def test_initialize_non_primary_disables_capture(monkeypatch, tmp_path):
+    """cron/subagent 上下文禁用写入（即使配置开启）。"""
+    (tmp_path / "sgme.json").write_text(json.dumps({"capture_enabled": True}), encoding="utf-8")
+    p, _ = _provider(monkeypatch=monkeypatch)
+    p.initialize("sess-x", hermes_home=str(tmp_path), agent_context="cron")
+    assert p.capture_enabled is False
+
+
+def test_is_available_gates_fallback_key_on_remote():
+    """兜底开发 key + 非回环 → 不可用；回环或真 key → 可用。"""
+    from adapters.hermes import _DEV_AGENT_KEY
+
+    assert SGMEProvider(base_url="http://10.0.0.5:9910", agent_key=_DEV_AGENT_KEY).is_available() is False
+    assert SGMEProvider(base_url="http://127.0.0.1:9910", agent_key=_DEV_AGENT_KEY).is_available() is True
+    assert SGMEProvider(base_url="http://localhost:9910", agent_key=_DEV_AGENT_KEY).is_available() is True
+    assert SGMEProvider(base_url="http://10.0.0.5:9910", agent_key=AGENT_KEY).is_available() is True
+
+
+# ---------- T-211：角色注入与新工具 ----------
+
+
+def test_system_prompt_block_injects_role_and_profile():
+    """角色提示词 + 画像同块注入；角色块按会话缓存（不重复拉取）。"""
+    p, fake = _provider(_Client(responses=[
+        _resp({"role_id": "butler"}),
+        _resp({"role_id": "butler", "role_name": "管家",
+               "system_prompt": "你是{{user}}的管家，说话简洁。",
+               "persona": None, "profile_blocks": [], "care_policy": None}),
+        _resp({"blocks": [{"title": "近期", "items": [{"content": "用户在搞 SGME"}]}]}),
+        _resp({"blocks": [{"title": "近期", "items": [{"content": "用户在搞 SGME"}]}]}),
+    ]))
+    block = p.system_prompt_block()
+    assert "沟通角色：管家" in block
+    assert "说话简洁" in block
+    assert "用户画像" in block and "SGME" in block
+    assert len(fake.calls) == 3
+
+    again = p.system_prompt_block()
+    assert "沟通角色：管家" in again
+    assert len(fake.calls) == 4  # 角色块命中缓存，仅重拉画像
+
+
+def test_system_prompt_block_no_role_only_profile():
+    """未设置角色 → 仅画像（与旧版行为一致）。"""
+    p, _ = _provider(_Client(responses=[
+        _resp({"role_id": None}),
+        _resp({"blocks": [{"title": "近期", "items": [{"content": "x"}]}]}),
+    ]))
+    block = p.system_prompt_block()
+    assert "沟通角色" not in block
+    assert "用户画像" in block
+
+
+def test_role_save_tool_posts_card():
+    """sgme_role_save：既有卡不存在 → POST 新卡（提示词透传）。"""
+    p, fake = _provider(_Client(responses=[
+        _Response(status_code=404, json_body={}, text="角色不存在"),
+        _resp({"role_id": "coach", "status": "saved"}),
+    ]))
+    out = json.loads(p.handle_tool_call("sgme_role_save", {
+        "role_id": "coach", "name": "教练", "system_prompt": "你是教练，先问目标再给建议。",
+    }))
+    assert "error" not in out and out.get("role_id") == "coach"
+    post = [c for c in fake.calls if c["method"] == "POST"][0]
+    assert post["url"].endswith("/v1/admin/roles/coach")
+    assert post["json"]["data"]["name"] == "教练"
+
+
+def test_role_delete_tool_archives():
+    """sgme_role_delete：DELETE 归档（原件永不删由服务端保证）。"""
+    p, fake = _provider(_Client(_resp({"role_id": "coach", "status": "archived"})))
+    out = json.loads(p.handle_tool_call("sgme_role_delete", {"role_id": "coach"}))
+    assert out.get("status") == "archived"
+    assert fake.calls[0]["method"] == "DELETE"
+    assert fake.calls[0]["url"].endswith("/v1/admin/roles/coach")
+
+
+def test_new_role_tools_in_schema_and_dispatch():
+    """新工具入列 schema 且可经统一派发触达。"""
+    p, _ = _provider(_Client(_resp({"role_id": "custom", "status": "saved"})))
+    names = {s["name"] for s in p.get_tool_schemas()}
+    assert {"sgme_role_save", "sgme_role_delete"} <= names
+    out = json.loads(p.handle_tool_call("sgme_role_save", {"system_prompt": "x"}))
+    assert "error" not in out  # 派发到 _t_role_save（role_id 回退 custom）

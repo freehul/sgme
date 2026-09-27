@@ -368,9 +368,10 @@ def test_shutdown_is_idempotent_and_concurrent_safe(monkeypatch):
 
 
 # ==========================================================================
-# T-171：能力面对齐 MCP 41 工具基准（40 工具 + 2 项永久豁免）
-# 基准唯一真源 = sgme/mcp_server.py 的工具面；hermes 侧只允许 2 项豁免
-# （agent_onboarding：provider 槽位接入无 MCP 握手；append：sync_turn 自动入库）。
+# T-171 / T-211：能力面对齐 MCP 41 工具基准
+# 42 工具 = 39 基准覆盖 + 2 项永久豁免（agent_onboarding / append，理由见 README）
+#           + 3 项适配器自有（conversation_search / role_save / role_delete，登记 parity extra）。
+# 基准唯一真源 = sgme/mcp_server.py 的工具面。
 # ==========================================================================
 
 import re  # noqa: E402
@@ -385,11 +386,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # 永久豁免（理由见 adapters/hermes/README.md「工具清单」）
 EXEMPT_TOOLS = {"agent_onboarding", "append"}
 # 适配器自有工具（不在基准内，登记在 scripts/adapter_parity_map.yaml extra）
-HERMES_EXTRA_TOOLS = {"sgme_conversation_search"}
+HERMES_EXTRA_TOOLS = {"sgme_conversation_search", "sgme_role_save", "sgme_role_delete"}
 # 基准名 → 适配器名的别名（parity map 的 aliases.search.hermes）
 ALIASED = {"search": "sgme_memory_search"}
 
-# 工具 → 期望 HTTP 端点（方法, 路径）；覆盖全部 40 个工具
+# 工具 → 期望 HTTP 端点（方法, 路径）或调用序列；覆盖全部 42 个工具
+# role_save 为双调用序列：[GET 既有卡, POST upsert]
 _ENDPOINTS = {
     "sgme_memory_search": ("POST", "/v1/search"),
     "sgme_conversation_search": ("POST", "/v1/search"),
@@ -422,6 +424,8 @@ _ENDPOINTS = {
     "sgme_role_assemble": ("GET", "/v1/admin/roles/steward/assemble"),
     "sgme_role_active_get": ("GET", "/v1/admin/care/active-role"),
     "sgme_role_active_set": ("PUT", "/v1/admin/care/active-role"),
+    "sgme_role_save": [("GET", "/v1/admin/roles/coach"), ("POST", "/v1/admin/roles/coach")],
+    "sgme_role_delete": ("DELETE", "/v1/admin/roles/coach"),
     "sgme_skill_search": ("POST", "/v1/search"),
     "sgme_skill_digest": ("GET", "/v1/skills/demo-skill/digest"),
     "sgme_skill_get": ("GET", "/v1/skills/demo-skill"),
@@ -466,6 +470,8 @@ _CALL_ARGS = {
     "sgme_role_assemble": {"role_id": "steward"},
     "sgme_role_active_get": {},
     "sgme_role_active_set": {"role_id": "steward"},
+    "sgme_role_save": {"role_id": "coach", "system_prompt": "你是教练。"},
+    "sgme_role_delete": {"role_id": "coach"},
     "sgme_skill_search": {"query": "docker 部署"},
     "sgme_skill_digest": {"name": "demo-skill"},
     "sgme_skill_get": {"name": "demo-skill"},
@@ -565,11 +571,11 @@ def _baseline_tools() -> set:
 
 
 def test_tool_count_and_names():
-    """注册 40 个工具：39 个基准覆盖 + conversation_search 自有工具。"""
+    """注册 42 个工具：39 个基准覆盖 + 3 个自有工具（conversation_search / role_save / role_delete）。"""
     p, _ = _tool_provider()
     names = [s["name"] for s in p.get_tool_schemas()]
-    assert len(names) == 40, f"工具数应为 40，实际 {len(names)}"
-    assert len(set(names)) == 40, "工具名重复"
+    assert len(names) == 42, f"工具数应为 42，实际 {len(names)}"
+    assert len(set(names)) == 42, "工具名重复"
     assert set(EXEMPT_TOOLS).isdisjoint({n[len("sgme_"):] for n in names}), "豁免工具不应被实现"
     expected = (
         {f"sgme_{t}" for t in _baseline_tools() - EXEMPT_TOOLS - set(ALIASED)}
@@ -605,16 +611,17 @@ def test_every_tool_resolves_to_handler():
 
 
 def test_endpoint_matrix():
-    """40 个工具各自的 HTTP 方法与端点正确（契约矩阵）。"""
+    """42 个工具各自的 HTTP 方法与端点正确（契约矩阵；值为 (方法, 路径) 或调用序列）。"""
     p, fake = _tool_provider()
     assert set(_ENDPOINTS) == set(_CALL_ARGS), "端点矩阵与参数矩阵工具集不一致"
-    for tool, (method, path) in _ENDPOINTS.items():
+    for tool, spec in _ENDPOINTS.items():
+        expected = spec if isinstance(spec, list) else [spec]
         fake.calls.clear()
         p.handle_tool_call(tool, dict(_CALL_ARGS[tool]))
-        assert len(fake.calls) == 1, f"{tool} 期望 1 次 HTTP 调用，实际 {len(fake.calls)}"
-        call = fake.calls[0]
-        assert call["method"] == method, f"{tool} 方法应为 {method}，实际 {call['method']}"
-        assert call["url"] == f"http://127.0.0.1:9910{path}", f"{tool} 端点应为 {path}，实际 {call['url']}"
+        assert len(fake.calls) == len(expected), f"{tool} 期望 {len(expected)} 次 HTTP 调用，实际 {len(fake.calls)}"
+        for call, (method, path) in zip(fake.calls, expected):
+            assert call["method"] == method, f"{tool} 方法应为 {method}，实际 {call['method']}"
+            assert call["url"] == f"http://127.0.0.1:9910{path}", f"{tool} 端点应为 {path}，实际 {call['url']}"
 
 
 # ---------- Key 口径：写侧 admin / 读侧 agent / health 免鉴权 ----------
@@ -784,7 +791,7 @@ def test_signal_clear_query_params():
 
 
 def test_gateway_unreachable_returns_structured_error_for_all_tools():
-    """全部 40 个工具在 Gateway 不可达时都返回 {"error": ...}，不抛异常。"""
+    """全部 42 个工具在 Gateway 不可达时都返回 {"error": ...}，不抛异常。"""
     p, _ = _tool_provider(raise_error=True)
     for tool in sorted(_CALL_ARGS):
         try:

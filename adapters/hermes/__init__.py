@@ -8,12 +8,13 @@
   config.yaml → memory.provider: sgme
 
 生命周期（MemoryProvider ABC）：
-  - system_prompt_block(): SGME 画像摘要（Tier0，/v1/inject mode=full 精简）
+  - system_prompt_block(): 当前角色提示词（T-211）+ SGME 画像摘要（Tier0，/v1/inject）
   - prefetch(query): 每轮 LLM 前召回相关记忆（/v1/search，<100ms 预算）
   - sync_turn(): 每轮对话后写原始层（/v1/append，后台线程异步）
   - on_session_end(): 会话结束触发提炼（/v1/admin/refine/trigger）
-  - get_tool_schemas()/handle_tool_call(): 40 个 sgme_* 工具（对齐 MCP 41 工具基准；
-    agent_onboarding / append 两项永久豁免，理由见 adapters/hermes/README.md）
+  - get_tool_schemas()/handle_tool_call(): 42 个 sgme_* 工具（对齐 MCP 41 工具基准；
+    agent_onboarding / append 两项永久豁免 + role_save/role_delete 适配器自有工具，
+    详见 adapters/hermes/README.md）
 
 故障隔离：SGME Gateway 不可达 → 静默降级（is_available=false / try-except），
 绝不阻塞 Hermes 主流程。
@@ -27,7 +28,7 @@ import re
 import threading
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 try:
     import httpx
@@ -75,13 +76,27 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger("sgme.provider")
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    """环境变量布尔解析（容忍 1/true/yes/on；缺失/非法 → 默认值）。"""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 # 默认 SGME 端点与 Key 环境变量（可经 plugin.yaml config 段覆盖）
+_DEV_AGENT_KEY = "dev-agent-key-change-me"  # 兜底 key：回环开发默认；远端接入必须换真 key
+_DEV_ADMIN_KEY = "dev-admin-key-change-me"
 _DEFAULT_BASE_URL = os.environ.get("SGME_BASE_URL", "http://127.0.0.1:9910")
-_DEFAULT_AGENT_KEY = os.environ.get("SGME_AGENT_KEY", "dev-agent-key-change-me")
-_DEFAULT_ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", "dev-admin-key-change-me")
+_DEFAULT_AGENT_KEY = os.environ.get("SGME_AGENT_KEY", _DEV_AGENT_KEY)
+_DEFAULT_ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", _DEV_ADMIN_KEY)
 _DEFAULT_MODE = os.environ.get("SGME_INJECT_MODE", "daily")
 _DEFAULT_MAX_TOKENS = int(os.environ.get("SGME_INJECT_MAX_TOKENS", "800"))
 _DEFAULT_TIMEOUT = float(os.environ.get("SGME_HTTP_TIMEOUT", "5.0"))
+# T-211（2026-09-27）：行为偏好环境变量（桌面设置面板亦可在 $HERMES_HOME/sgme.json 覆盖）
+_DEFAULT_CAPTURE_ENABLED = _env_bool("SGME_CAPTURE_ENABLED", True)
+_DEFAULT_REFINE_ON_END = _env_bool("SGME_REFINE_ON_END", True)
 # 溯源 agent_id（B35 自报，2026-08-11）：append body 带唯一标识，
 # 与共享鉴权 key 解耦——Hermes 写入的记忆可正确溯源到 hermes
 _DEFAULT_AGENT_ID = os.environ.get("SGME_HERMES_AGENT_ID", "hermes")
@@ -106,6 +121,15 @@ _TOOL_HANDLERS: Dict[str, str] = {
 }
 # 技能节名前缀（# / ## ...）剥除正则
 _SECTION_PREFIX_RE = re.compile(r"^#+\s*")
+
+# ---------- T-211：配置面板 / 角色看板 ----------
+
+# 角色下拉「空态」选项（同时是「取消当前角色」的提交值）
+_NO_ROLE_LABEL = "（不使用角色）"
+# 角色看板（下拉选项 + 服务端当前角色）进程级 TTL 缓存：面板轮询不放大网络调用
+_ROLE_BOARD_TTL = 60.0
+_ROLE_BOARD_FAIL_TTL = 15.0
+_ROLE_BOARD_CACHE: Dict[str, Any] = {"at": 0.0, "choices": None, "active": "", "ok": False}
 
 
 def _path_seg(value: Any) -> str:
@@ -170,10 +194,73 @@ def _as_tags(value: Any) -> Optional[List[str]]:
     return items or None
 
 
+def _role_board_cache_reset() -> None:
+    """清空角色看板缓存（测试 / 手动刷新用）。"""
+    _ROLE_BOARD_CACHE.update({"at": 0.0, "choices": None, "active": "", "ok": False})
+
+
+def _slugify_role_id(name: Any) -> str:
+    """角色名 → 角色 id（小写字母/数字/连字符；全非 ASCII 名回退 custom）。"""
+    text = re.sub(r"[^a-z0-9]+", "-", str(name or "").strip().lower()).strip("-")
+    return text[:64] or "custom"
+
+
+def _is_loopback_url(base_url: Any) -> bool:
+    """base_url 是否回环地址（localhost / 127.0.0.0/8 / ::1）。"""
+    try:
+        host = (urlsplit(str(base_url or "")).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "localhost" or host == "::1" or host.startswith("127.")
+
+
+def _read_local_config(hermes_home: str) -> Dict[str, Any]:
+    """读 ``$HERMES_HOME/sgme.json``（面板非密钥配置）；缺失/损坏 → {}。"""
+    if not hermes_home:
+        return {}
+    try:
+        path = os.path.join(str(hermes_home), "sgme.json")
+        if not os.path.exists(path):
+            return {}
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_local_config(hermes_home: str, values: Dict[str, Any]) -> None:
+    """原子写 ``$HERMES_HOME/sgme.json``（0600；临时文件 + 替换，防写一半）。"""
+    if not hermes_home:
+        return
+    path = os.path.join(str(hermes_home), "sgme.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(values, ensure_ascii=False, indent=2) + "\n")
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _coerce_local_value(key: str, value: Any) -> Any:
+    """本地 json 值归一（int / bool / str）；非法 int 抛 ValueError。"""
+    if key == "inject_max_tokens":
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"inject_max_tokens 非法: {value!r}") from None
+    if key in ("capture_enabled", "refine_on_end"):
+        return _bool_arg(value, True)
+    return str(value if value is not None else "").strip()
+
+
 class SGMEProvider(MemoryProvider):
     """SGME 记忆引擎 Hermes 桥接 provider。
 
-    配置优先级：plugin.yaml config 段 > 环境变量 > 默认值。
+    配置优先级：$HERMES_HOME/sgme.json（设置面板值）> plugin.yaml config 段
+    > 环境变量 > 默认值；密钥只从环境变量读（框架 .env），不进本地 json。
     """
 
     def __init__(
@@ -184,8 +271,8 @@ class SGMEProvider(MemoryProvider):
         inject_mode: Optional[str] = None,
         inject_max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
-        capture_enabled: bool = True,
-        refine_on_end: bool = True,
+        capture_enabled: Optional[bool] = None,
+        refine_on_end: Optional[bool] = None,
         agent_id: Optional[str] = None,
         **kwargs,
     ) -> None:
@@ -195,8 +282,8 @@ class SGMEProvider(MemoryProvider):
         self.inject_mode = inject_mode or _DEFAULT_MODE
         self.inject_max_tokens = inject_max_tokens or _DEFAULT_MAX_TOKENS
         self.timeout = timeout or _DEFAULT_TIMEOUT
-        self.capture_enabled = capture_enabled
-        self.refine_on_end = refine_on_end
+        self.capture_enabled = _DEFAULT_CAPTURE_ENABLED if capture_enabled is None else bool(capture_enabled)
+        self.refine_on_end = _DEFAULT_REFINE_ON_END if refine_on_end is None else bool(refine_on_end)
         # 溯源标识（B35）：append body 自报，可经 plugin.yaml config 段覆盖
         self.agent_id = agent_id or _DEFAULT_AGENT_ID
 
@@ -212,12 +299,168 @@ class SGMEProvider(MemoryProvider):
         self._last_started_at: str = ""  # 上次 append 的 started_at（单调兜底，防同刻碰撞）
         self._available: Optional[bool] = None  # 探测缓存（带 TTL，见 _probe）
         self._probe_at: Optional[float] = None  # 上次探测时间戳（time.monotonic）
+        self._role_block_cache: Optional[str] = None  # 角色提示词块（会话级缓存，T-211）
+        self._role_block_fetched: bool = False  # 本会话是否已取过角色块
 
     # ---------- 基础 ----------
 
     @property
     def name(self) -> str:
         return "sgme"
+
+    # ---------- 配置面板（T-211：桌面设置 / hermes memory setup） ----------
+
+    def _role_board(self) -> "tuple[List[str], str]":
+        """角色看板（进程级 TTL 缓存）：下拉选项（含「不使用角色」）+ 服务端当前角色。
+
+        失败短缓存 + 回退旧值——网关重启期间面板不炸、不放大网络调用。
+        """
+        cache = _ROLE_BOARD_CACHE
+        now = time.monotonic()
+        ttl = _ROLE_BOARD_TTL if cache.get("ok") else _ROLE_BOARD_FAIL_TTL
+        if cache.get("choices") is not None and now - float(cache.get("at") or 0.0) < ttl:
+            return list(cache["choices"]), str(cache.get("active") or "")
+        ids: List[str] = []
+        active = ""
+        ok = False
+        try:
+            data, err = self._request("GET", "/v1/admin/roles", timeout=1.5)
+            if not err and isinstance(data, dict):
+                ids = [str(r.get("role_id")).strip() for r in (data.get("roles") or [])
+                       if isinstance(r, dict) and r.get("role_id")]
+                ok = True
+            data2, err2 = self._request("GET", "/v1/admin/care/active-role", timeout=1.5)
+            if not err2 and isinstance(data2, dict):
+                active = str(data2.get("role_id") or "").strip()
+            else:
+                ok = False
+        except Exception:
+            ok = False
+        if ok or cache.get("choices") is None:
+            choices = [_NO_ROLE_LABEL, *ids]
+            if active and active not in choices:
+                choices.append(active)
+            cache.update({"at": now, "choices": choices, "active": active, "ok": ok})
+        return list(cache.get("choices") or [_NO_ROLE_LABEL]), str(cache.get("active") or "")
+
+    def get_config_schema(self) -> List[Dict[str, Any]]:
+        """桌面设置面板 / ``hermes memory setup`` 字段（11 项：连接·鉴权·行为·角色）。
+
+        角色下拉实时拉取服务端角色（含自建；失败优雅回退「不使用角色」）；
+        role_id 默认值 = 服务端当前角色——打开面板所见即所得。
+        """
+        choices, active = self._role_board()
+        return [
+            {"key": "base_url",
+             "description": "SGME 服务地址（本机默认 http://127.0.0.1:9910；远端填完整地址）",
+             "default": "http://127.0.0.1:9910", "env_var": "SGME_BASE_URL"},
+            {"key": "agent_key",
+             "description": "Agent Key（远端接入必填；本机回环可留空用开发默认）——建议用 register 签发的专属 key",
+             "secret": True, "env_var": "SGME_AGENT_KEY"},
+            {"key": "admin_key",
+             "description": "Admin Key（可选：记忆纠错 / wiki 写入 / 三池登记等管理类工具需要）",
+             "secret": True, "env_var": "SGME_ADMIN_KEY"},
+            {"key": "inject_mode",
+             "description": "画像注入模式（daily 日常 / coding 编码 / work 工作 / full 全量）",
+             "default": "daily", "choices": ["daily", "coding", "work", "full"],
+             "env_var": "SGME_INJECT_MODE"},
+            {"key": "inject_max_tokens",
+             "description": "画像注入 token 预算", "default": 800,
+             "type": "integer", "minimum": 100, "maximum": 4000,
+             "env_var": "SGME_INJECT_MAX_TOKENS"},
+            {"key": "capture_enabled",
+             "description": "会话写入开关（关闭 = 只读不记录）", "default": True,
+             "type": "boolean", "env_var": "SGME_CAPTURE_ENABLED"},
+            {"key": "refine_on_end",
+             "description": "会话结束触发提炼（需写入开启）", "default": True,
+             "type": "boolean", "env_var": "SGME_REFINE_ON_END"},
+            {"key": "agent_id",
+             "description": "写入溯源标识（append 自报的 agent_id）", "default": "hermes",
+             "env_var": "SGME_HERMES_AGENT_ID"},
+            {"key": "role_id",
+             "description": "会话角色（换皮不换芯）：选择即设为服务端当前角色；「不使用角色」= 取消",
+             "choices": choices, "default": active or _NO_ROLE_LABEL},
+            {"key": "custom_role_name",
+             "description": "自定义角色名（配合下一条：填写提示词后保存即生成/更新角色卡并启用）",
+             "default": ""},
+            {"key": "custom_role_prompt",
+             "description": "自定义角色提示词（长文本建议用 SGME WebUI 角色页编辑；留空不改动）",
+             "default": ""},
+        ]
+
+    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+        """面板 / 向导保存：非密钥值 → ``$HERMES_HOME/sgme.json``（原子写 0600）。
+
+        角色同步（T-211）：``role_id`` 选择即收敛为服务端「当前角色」
+        （「不使用角色」= 取消）；``custom_role_prompt`` 非空且变化 → 生成/更新
+        角色卡（id 由名称归一）并启用。角色动作失败 → 抛 ValueError（面板/向导
+        回报错误），本地不落半成品。密钥（agent_key/admin_key）不经本方法——
+        由 Hermes 框架写 .env。
+        """
+        values = dict(values or {})
+        home = str(hermes_home or "")
+        existing = _read_local_config(home)
+
+        # ① 自定义角色：提示词非空且（名称/提示词）有变化 → upsert 角色卡
+        name_in = str(values.get("custom_role_name") or "").strip()
+        prompt_in = str(values.get("custom_role_prompt") or "").strip()
+        custom_role_id = ""
+        if prompt_in and (
+            prompt_in != str(existing.get("custom_role_prompt") or "").strip()
+            or name_in != str(existing.get("custom_role_name") or "").strip()
+        ):
+            custom_role_id = _slugify_role_id(name_in)
+            self._upsert_custom_role(custom_role_id, name_in, prompt_in)
+
+        # ② 当前角色同步（与服务端对账：相同不发动作；不同才发）
+        role_in = str(values.get("role_id") or "").strip()
+        target = custom_role_id or ("" if role_in in ("", _NO_ROLE_LABEL) else role_in)
+        data, cerr = self._request("GET", "/v1/admin/care/active-role")
+        current = str((data or {}).get("role_id") or "").strip() if isinstance(data, dict) else ""
+        if cerr:
+            if target:
+                self._set_active_role_or_raise(target)  # 意图明确：照发，失败即报
+            # 空态 + 网关不可达 → 静默跳过（不阻塞其它字段保存）
+        elif target != current:
+            self._set_active_role_or_raise(target)
+
+        # ③ 非密钥值落盘（密钥由框架写 .env；role_id 是动作字段、不回写本地）
+        payload: Dict[str, Any] = {}
+        for key in ("base_url", "inject_mode", "inject_max_tokens", "capture_enabled",
+                    "refine_on_end", "agent_id", "custom_role_name", "custom_role_prompt"):
+            if key in values:
+                payload[key] = _coerce_local_value(key, values[key])
+        _write_local_config(home, {**existing, **payload})
+
+    def _upsert_custom_role(self, role_id: str, name: str, system_prompt: str) -> None:
+        """生成/更新自定义角色卡（合并既有卡其它字段；失败抛 ValueError）。"""
+        payload_data: Dict[str, Any] = {
+            "name": name or role_id,
+            "description": "自定义角色（Hermes 设置面板）",
+            "system_prompt": system_prompt,
+        }
+        cur, cerr = self._request("GET", f"/v1/admin/roles/{_path_seg(role_id)}")
+        if not cerr and isinstance(cur, dict) and isinstance(cur.get("role"), dict):
+            old = cur["role"].get("data") or {}
+            if not name and old.get("name"):
+                payload_data["name"] = str(old["name"])
+            if old.get("description"):
+                payload_data["description"] = str(old["description"])
+            for key in ("personality", "scenario", "first_mes", "mes_example",
+                        "post_history_instructions", "character_book", "extensions"):
+                if key in old:
+                    payload_data[key] = old[key]
+        _data, err = self._request("POST", f"/v1/admin/roles/{_path_seg(role_id)}",
+                                   json_body={"data": payload_data})
+        if err:
+            raise ValueError(f"自定义角色保存失败（{role_id}）: {err}")
+
+    def _set_active_role_or_raise(self, role_id: str) -> None:
+        """PUT 服务端当前角色（空串 = 取消）；失败抛 ValueError。"""
+        _data, err = self._request("PUT", "/v1/admin/care/active-role",
+                                   json_body={"role_id": role_id})
+        if err:
+            raise ValueError(f"设置当前角色失败（{role_id or '取消'}）: {err}")
 
     def _http(self) -> Optional[httpx.Client]:
         """懒创建 httpx 客户端（trust_env=False 防 Clash 劫持 localhost）。
@@ -264,18 +507,29 @@ class SGMEProvider(MemoryProvider):
         return self._available
 
     def is_available(self) -> bool:
-        """只检查配置与依赖（不网络调用——ABC 约束）。"""
+        """只检查配置与依赖（不网络调用——ABC 约束）。
+
+        T-211 修正：兜底开发 key + 非回环地址 = 尚未完成配置（远端接入必须
+        真 key，否则请求必被 403）→ 不可用，面板显示「待配置」而非「就绪」。
+        """
         if not _HAS_HTTPX:
             return False
         if not self.agent_key:
+            return False
+        if self.agent_key == _DEV_AGENT_KEY and not _is_loopback_url(self.base_url):
             return False
         # 不在这里探测网络（is_available 不许网络调用）；由 initialize 探测
         return True
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        """会话初始化：记 session 上下文 + 后台探测 Gateway。"""
+        """会话初始化：记 session 上下文 + 应用面板配置 + 后台探测 Gateway。"""
         self._session_id = session_id
         self._hermes_home = str(kwargs.get("hermes_home") or "")
+        # T-211：应用 $HERMES_HOME/sgme.json（设置面板值，开新会话生效）
+        self._apply_runtime_config(self._hermes_home)
+        # 角色块按会话重置（新会话重取服务端当前角色）
+        self._role_block_cache = None
+        self._role_block_fetched = False
         agent_context = kwargs.get("agent_context") or "primary"
         if agent_context != "primary":
             # 非 primary（cron/subagent）不写入，防画像污染
@@ -294,43 +548,88 @@ class SGMEProvider(MemoryProvider):
     # ---------- 注入（读方向） ----------
 
     def system_prompt_block(self) -> str:
-        """静态画像摘要（Tier0），进 system prompt。
+        """静态块（Tier0），进 system prompt：T-211 角色提示词 + 用户画像摘要。
 
-        与 prefetch 的差别：这里是会话级静态信息，prefetch 是每轮动态召回。
-        调用 /v1/inject mode=daily 拿 Tier0 摘要块。
+        角色块 = 服务端「当前角色」的 system_prompt（换皮不换芯——记忆与事实
+        仍以记忆池为准）；未设置角色时与旧版一致（仅画像）。失败静默降级。
         """
         cli = self._http()
         if cli is None or not self._probe():
             return ""
+        parts: List[str] = []
+        role_block = self._role_prompt_block()
+        if role_block:
+            parts.append(role_block)
         try:
             r = cli.post(
                 f"{self.base_url}/v1/inject",
                 json={"mode": self.inject_mode, "max_tokens": self.inject_max_tokens},
                 headers={"X-API-Key": self.agent_key},
             )
-            if r.status_code != 200:
-                return ""
-            data = r.json()
-            blocks = data.get("blocks", [])
-            if not blocks:
-                return ""
-            lines = []
-            for b in blocks:
-                title = b.get("title", "")
-                items = b.get("items", [])
-                if not items:
-                    continue
-                lines.append(f"【{title}】")
-                for it in items:
-                    c = it.get("content", "")
-                    if c:
-                        lines.append(f"- {c}")
-            if not lines:
-                return ""
-            return "\n".join(["# 用户画像（SGME）", *lines])
+            if r.status_code == 200:
+                data = r.json()
+                lines: List[str] = []
+                for b in data.get("blocks", []):
+                    title = b.get("title", "")
+                    items = b.get("items", [])
+                    if not items:
+                        continue
+                    lines.append(f"【{title}】")
+                    for it in items:
+                        c = it.get("content", "")
+                        if c:
+                            lines.append(f"- {c}")
+                if lines:
+                    parts.append("\n".join(["# 用户画像（SGME）", *lines]))
         except Exception as e:
             logger.warning("sgme system_prompt_block 失败: %s", e)
-            return ""
+        return "\n\n".join(parts)
+
+    def _role_prompt_block(self) -> str:
+        """当前角色提示词块（每会话缓存一次；未设置/失败 → 空串）。"""
+        if self._role_block_fetched:
+            return self._role_block_cache or ""
+        self._role_block_fetched = True
+        block = ""
+        try:
+            data, err = self._request("GET", "/v1/admin/care/active-role")
+            role_id = str((data or {}).get("role_id") or "").strip() if isinstance(data, dict) else ""
+            if not err and role_id:
+                asm, err2 = self._request("GET", f"/v1/admin/roles/{_path_seg(role_id)}/assemble")
+                if not err2 and isinstance(asm, dict):
+                    prompt = str(asm.get("system_prompt") or "").strip()
+                    if prompt:
+                        role_name = str(asm.get("role_name") or role_id)
+                        block = (
+                            f"# 沟通角色：{role_name}（SGME 当前角色）\n"
+                            f"{prompt}\n"
+                            "（以上为沟通风格指引——换皮不换芯，记忆与事实以记忆池为准。）"
+                        )
+        except Exception as e:
+            logger.warning("sgme 角色提示词获取失败: %s", e)
+        self._role_block_cache = block
+        return block
+
+    def _apply_runtime_config(self, hermes_home: str) -> None:
+        """应用 $HERMES_HOME/sgme.json 覆盖（面板值优先；密钥不在文件内）。"""
+        cfg = _read_local_config(hermes_home)
+        if not cfg:
+            return
+        if cfg.get("base_url"):
+            self.base_url = str(cfg["base_url"]).rstrip("/")
+        if cfg.get("inject_mode"):
+            self.inject_mode = str(cfg["inject_mode"])
+        try:
+            if cfg.get("inject_max_tokens") is not None:
+                self.inject_max_tokens = int(str(cfg["inject_max_tokens"]).strip())
+        except (TypeError, ValueError):
+            pass
+        if "capture_enabled" in cfg:
+            self.capture_enabled = _bool_arg(cfg["capture_enabled"], True)
+        if "refine_on_end" in cfg:
+            self.refine_on_end = _bool_arg(cfg["refine_on_end"], True)
+        if cfg.get("agent_id"):
+            self.agent_id = str(cfg["agent_id"])
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """每轮 LLM 前召回相关记忆 + 匹配场景（/v1/search，双 scope）。
@@ -976,6 +1275,33 @@ class SGMEProvider(MemoryProvider):
             },
         },
         {
+            "name": "sgme_role_save",
+            "description": "新建/更新角色卡（让 AI 帮用户设置角色提示词；换皮不换芯）。"
+                           "role_id 省略时按 name 生成 id；更新既有卡会保留其性格/开场白等其它字段。"
+                           "设置「当前角色」用 sgme_role_active_set。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "system_prompt": {"type": "string", "description": "角色提示词正文（system prompt）"},
+                    "name": {"type": "string", "description": "角色名（如「小秘书」；role_id 省略时用于生成 id）"},
+                    "role_id": {"type": "string", "description": "角色 id（小写字母/数字/连字符；省略=按 name 生成）"},
+                    "description": {"type": "string", "description": "角色简介（可选）"},
+                },
+                "required": ["system_prompt"],
+            },
+        },
+        {
+            "name": "sgme_role_delete",
+            "description": "归档角色卡（移入 .archive/，原件永不删）。删除前先与用户确认该角色不再使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string", "description": "角色 id（sgme_role_list 返回）"},
+                },
+                "required": ["role_id"],
+            },
+        },
+        {
             "name": "sgme_skill_search",
             "description": "检索 SGME 技能库（BM25+向量融合，全量技能）。需要某项专业能力但不确定有没有时必用。"
                            "只返回技能名与触发描述（不含正文）——选定后调 sgme_skill_get 取全文再执行，"
@@ -1586,6 +1912,46 @@ class SGMEProvider(MemoryProvider):
         if err:
             return self._err(f"设置角色失败（role_id={role_id}）: {err}")
         return self._ok(data if isinstance(data, dict) else {"role_id": role_id, "status": "ok"})
+
+    def _t_role_save(self, args: Dict[str, Any]) -> str:
+        """sgme_role_save：新建/更新角色卡（AI 帮用户设置角色提示词）。"""
+        name = _arg_str(args, "name", 200)
+        prompt = _arg_str(args, "system_prompt", None)
+        if not prompt:
+            return self._err("缺少 system_prompt（角色提示词）")
+        role_id = _arg_str(args, "role_id", 64) or _slugify_role_id(name)
+        payload_data: Dict[str, Any] = {
+            "name": name or role_id,
+            "description": _arg_str(args, "description", 200) or "自定义角色（经 Hermes agent 创建）",
+            "system_prompt": prompt,
+        }
+        cur, cerr = self._request("GET", f"/v1/admin/roles/{_path_seg(role_id)}")
+        if not cerr and isinstance(cur, dict) and isinstance(cur.get("role"), dict):
+            old = cur["role"].get("data") or {}
+            if not name and old.get("name"):
+                payload_data["name"] = str(old["name"])
+            if not args.get("description") and old.get("description"):
+                payload_data["description"] = str(old["description"])
+            for key in ("personality", "scenario", "first_mes", "mes_example",
+                        "post_history_instructions", "character_book", "extensions"):
+                if key in old:
+                    payload_data[key] = old[key]
+        _data, err = self._request("POST", f"/v1/admin/roles/{_path_seg(role_id)}",
+                                   json_body={"data": payload_data})
+        if err:
+            return self._err(f"角色保存失败（role_id={role_id}）: {err}")
+        return self._ok({"role_id": role_id, "status": "saved",
+                         "hint": "设当前角色用 sgme_role_active_set；用户视角可在 SGME WebUI 角色页编辑"})
+
+    def _t_role_delete(self, args: Dict[str, Any]) -> str:
+        """sgme_role_delete：归档角色卡（原件永不删——服务端移入 .archive/）。"""
+        role_id = _arg_str(args, "role_id", 64)
+        if not role_id:
+            return self._err("缺少 role_id")
+        data, err = self._request("DELETE", f"/v1/admin/roles/{_path_seg(role_id)}")
+        if err:
+            return self._err(f"角色归档失败（role_id={role_id}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"role_id": role_id, "status": "archived"})
 
     def _t_skill_search(self, args: Dict[str, Any]) -> str:
         """sgme_skill_search：技能检索（/v1/search scope=skills，只给名与描述）。"""
