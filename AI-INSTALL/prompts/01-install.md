@@ -52,7 +52,7 @@
 
 > 你是我的 AI 助手。请为我的 SGME（个人记忆引擎）完成「发现或部署」：
 > 1. 先探测 `http://<NAS_IP>:9910/v1/health`；失败则读 `~/.sgme/install.json`；已有实例就直接连上，不要重复部署。
-> 2. 没有实例时用 Docker 部署（参考仓库 `docs/deployment-docker.md`），启动后初始化 `config/.env` 里的 `SGME_ADMIN_KEY` / `SGME_AGENT_KEY`。
+> 2. 没有实例时用 Docker 部署（参考仓库 `docs/deployment-docker.md`），启动后初始化 `config/.env` 里的 `SGME_ADMIN_KEY` / `SGME_AGENT_KEY`，并留存 admin key（任务卡 ② 用它为每个 Agent 签发专属 Key）。
 > 3. 检查 `health` 的 `model_config.missing_keys`；缺 Key 时把《免费模型Key申请指南》（`AI-INSTALL/免费模型Key申请指南.md`）发给我，由我自行申请——不要让我在对话里粘贴任何 Key。
 > 4. 完成后向我报告：端点地址、版本号、缺失项（若有）。
 > 全程不要跳步；每一步都先做后报。
@@ -65,6 +65,6 @@
 
 > Act as my AI assistant and set up my SGME (personal memory engine):
 > 1. First probe `http://<NAS_IP>:9910/v1/health`; if that fails read `~/.sgme/install.json`; if an instance already runs, just connect — do not redeploy.
-> 2. If none exists, deploy with Docker (see `docs/deployment-docker.md`) and initialize `SGME_ADMIN_KEY` / `SGME_AGENT_KEY` in `config/.env`.
+> 2. If none exists, deploy with Docker (see `docs/deployment-docker.md`) and initialize `SGME_ADMIN_KEY` / `SGME_AGENT_KEY` in `config/.env` — keep the admin key: task card ② mints each agent's dedicated key with it.
 > 3. Check `model_config.missing_keys`; if keys are missing, send me `AI-INSTALL/免费模型Key申请指南.md` — I will apply myself. Never ask me to paste any key into chat.
 > 4. Report back: endpoint, version, missing items (if any). Do not skip steps.

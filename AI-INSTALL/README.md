@@ -15,7 +15,7 @@
 | # | 文件 | 任务 | 完成判据 |
 |---|------|------|----------|
 | ① | `prompts/01-install.md` | 部署 / 发现 SGME | 健康探针 200 + 版本号 |
-| ② | `prompts/02-connect.md` | 接入与验证（通用 / Hermes / DSH 三路；含专属 Key 签发与 admin key 同步） | 4 项联通自检全绿 |
+| ② | `prompts/02-connect.md` | 接入与验证（通用 / Hermes / DSH 三路；含专属 Key 签发与 admin key 同步） | 专属 Key 已签发 + 4 项联通自检全绿 |
 | ③ | `prompts/03-init-agent-files.md` | 初始化本地身份文件（SOUL / USER / MEMORY / AGENTS 等） | 文件生成 + 一轮读写回环 |
 | ④ | `prompts/04-daily-loop.md` | 日常使用循环（检索 / 写入 / 提炼 / 技能） | 行为清单逐项勾选 |
 | ✔ | `selfcheck.md` | 接入后自检 | 6 项全绿 |
@@ -43,7 +43,7 @@
 
 > "Read `AI-INSTALL/README.md`, then follow the task cards under `prompts/` in order to deploy and connect SGME for me; self-check against `selfcheck.md` after each step and report back."
 
-**Task cards**: `01-install` (deploy/discover → health 200 + version) → `02-connect` (connect & verify — dedicated key minting + admin key sync included; generic / Hermes / DSH → 4 green checks) → `03-init-agent-files` (initialize SOUL / USER / MEMORY / AGENTS → files created + one read/write round-trip) → `04-daily-loop` (retrieve / append / refine / skills → checklist).
+**Task cards**: `01-install` (deploy/discover → health 200 + version) → `02-connect` (connect & verify — dedicated key minting + admin key sync included; generic / Hermes / DSH → dedicated key minted + 4 green checks) → `03-init-agent-files` (initialize SOUL / USER / MEMORY / AGENTS → files created + one read/write round-trip) → `04-daily-loop` (retrieve / append / refine / skills → checklist).
 
 **Files**: `agent-onboarding.md` (protocol source of truth), `免费模型Key申请指南.md` (free API keys), `prompts/` (copy-paste prompts), `selfcheck.md` (post-setup checks).
 
