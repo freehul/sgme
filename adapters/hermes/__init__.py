@@ -220,7 +220,7 @@ def _read_local_config(hermes_home: str) -> Dict[str, Any]:
     - ``$HERMES_HOME/sgme.json``——旧向导 / raw 面板写入点（兼容读取）
     - ``$HERMES_HOME/sgme/config.json``——桌面声明式面板（config_schema.py）写入点
 
-    T-214（2026-09-27）：桌面「设置 → 记忆 → 持久记忆」面板由 Hermes 框架直接写
+    T-214（2026-09-27）：桌面「设置 → 记忆与上下文 → 持久记忆」面板由 Hermes 框架直接写
     ``sgme/config.json``（插件无保存钩子），此前只读 sgme.json 导致面板值不生效。
     """
     if not hermes_home:
