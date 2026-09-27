@@ -451,7 +451,7 @@ asyncio.run(t())
 
 SGME 双角色鉴权：`Agent`（读写记忆）与 `Admin`（管理端点）。Key 三来源：环境变量（`SGME_AGENT_KEY` / `SGME_ADMIN_KEY`）、默认 dev key（仅本机开发）、register 签发。
 
-**签发**（Admin 调用，为每个新 Agent 发独立 Key）：
+**签发**（Admin 调用，为每个新 Agent 发独立 Key）——AI-INSTALL 接入流程中此为规定动作（任务卡 ②）：接入的 Agent 须为自身签发专属 Key；admin key 随接入同步至接入侧环境文件（仅环境文件，不进对话/文档）。
 
 ```python
 import requests
