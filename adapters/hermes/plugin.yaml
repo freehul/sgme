@@ -1,5 +1,5 @@
 name: sgme
-version: "1.4.3"  # 版本口径跟随 SGME 版本（1.4.0 = ST-48 维度治理 T-201~T-207 合并发版），见 README
+version: "1.5.0"  # 版本口径跟随 SGME 版本（1.4.0 = ST-48 维度治理 T-201~T-207 合并发版），见 README
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理+沟通角色（42 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"
 license: MIT
@@ -12,5 +12,5 @@ config:
   inject_max_tokens: 800
   capture_enabled: true
   refine_on_end: true
-  # T-211（2026-09-27）：以上行为项与「沟通角色」均可在桌面「设置 → 记忆扩展 → SGME」
-  # 面板配置（落 $HERMES_HOME/sgme/config.json，开新会话生效）；密钥只走环境变量。
+  # T-211（2026-09-27）：以上行为项与「沟通角色」均可在桌面「设置 → 记忆与上下文 → 持久记忆」
+  # 的 SGME 面板配置（落 $HERMES_HOME/sgme/config.json，开新会话生效）；密钥只走环境变量。
