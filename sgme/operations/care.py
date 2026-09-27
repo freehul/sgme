@@ -333,7 +333,15 @@ def set_active_role(role_id: str) -> OperationResult:
     """设置当前沟通角色（换皮不换芯：只换角色，记忆池不动）。
 
     角色必须存在（roles/ 有对应卡）；非法 id → ERR_INTERNAL。
+    空串/空白 = 取消当前角色（T-211 面板「不使用角色」语义；幂等）。
     """
+    role_id = str(role_id or "").strip()
+    if not role_id:
+        try:
+            roles_mod.clear_active_role(Path(sgme_config.DATA_DIR))
+        except Exception as e:
+            return OperationResult.fail(ERR_INTERNAL, f"取消当前角色失败: {e}")
+        return OperationResult.succeed({"role_id": None, "status": "cleared"})
     card = roles_mod.get_role(_roles_dir(), role_id)
     if card is None:
         return OperationResult.fail(ERR_NOT_FOUND, f"角色不存在: {role_id}")
