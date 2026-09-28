@@ -159,6 +159,20 @@ def _require_admin(ctx: "Context | None" = None) -> tuple[bool, str]:
     return False, "需要管理员 Key（SGME_ADMIN_KEY）才能执行写侧操作"
 
 
+def _reindex_skills_db() -> None:
+    """写后同步 skills.db（T-215）：让 skill_put 立刻可被 skill_search/list 看见。"""
+    try:
+        from sgme.operations.skills import reindex_after_write
+
+        reindex_after_write(
+            _app_state.get("cfg") or {},
+            _app_state.get("skills_conn"),
+            _app_state.get("wiki_conn"),
+        )
+    except Exception:
+        pass  # 写侧成功不因索引同步失败而报错
+
+
 class ApiKeyMiddleware:
     """MCP streamable-http 传输层鉴权中间件（PR#1，2026-08-11；T-155 改纯 ASGI）。
 
@@ -1502,6 +1516,7 @@ def build_mcp_server():
                 {"error": result.get("code"), "violations": result.get("violations", [])},
                 ensure_ascii=False,
             )
+        _reindex_skills_db()
         return json.dumps(
             {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
             ensure_ascii=False,
@@ -1535,6 +1550,7 @@ def build_mcp_server():
                 },
                 ensure_ascii=False,
             )
+        _reindex_skills_db()
         return json.dumps(
             {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
             ensure_ascii=False,
@@ -1565,6 +1581,7 @@ def build_mcp_server():
                 {"error": result.get("code"), "violations": result.get("violations", [])},
                 ensure_ascii=False,
             )
+        _reindex_skills_db()
         return json.dumps(
             {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
             ensure_ascii=False,
@@ -1604,7 +1621,7 @@ def build_mcp_server():
                 "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v2）②安装官方适配器（skill_search('adapter') → skill_materialize 落盘后按包内说明安装），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。",
                 "steps": [
                     "1. 自查：读你的身份文件，grep 标记「SGME-ONBOARDING」；",
-                    "2. 已存在且版本 >= v1 → 配置已完成，跳过；",
+                    "2. 已存在且版本 >= v2 → 配置已完成，跳过；",
                     "3. 缺失或版本旧 → 把下方 template 写入你的身份文件（写入位置/方式按你工具的文件组织与加载机制自定）；",
                     "4. 写入后读回验证内容完整，并汇报（写了哪个文件、哪个位置）；",
                     "5. 无法写入（权限/沙箱/审批限制）→ 如实报告主人并给出建议，禁止谎称已完成。",

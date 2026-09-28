@@ -1051,6 +1051,30 @@ class SkillsSyncRequest(BaseModel):
     direction: str = "both"
 
 
+@router.post("/v1/admin/skills/reindex")
+def skills_reindex(
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """把 source_dirs 现有技能增量同步进 skills.db（T-215）。
+
+    写侧（skill_put 等）已自动调用；本端点供运维兜底——
+    历史写入未进库、或 hub 同步后需强制刷新 list/search 可见性时调用。
+    成功 → 200 + {inserted, updated, deleted, unchanged, total}
+    """
+    from sgme.operations.skills import sync_index
+
+    cfg = request.app.state.cfg or {}
+    skills_conn = getattr(request.app.state, "skills_conn", None)
+    wiki_conn = getattr(request.app.state, "wiki_conn", None)
+    if skills_conn is None:
+        raise api_error("ERR_INVALID", "skills.db 不可用（技能模块未启用或连接失败）")
+    r = sync_index(cfg, skills_conn, wiki_conn, max_embed=0, embed=False)
+    if not r.ok:
+        raise api_error("ERR_INTERNAL", r.message or "reindex 失败")
+    return {"ok": True, **r.data}
+
+
 @router.post("/v1/admin/skills/sync")
 def skills_sync(
     payload: SkillsSyncRequest,

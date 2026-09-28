@@ -294,6 +294,52 @@ class TestMaterialize:
         assert res.data.get("companions") == []
 
 
+# ---------- name 直达 + 写后同步（T-215 收口） ----------
+
+
+class TestNamePinAndReindex:
+    def test_pin_exact_name(self):
+        from sgme.operations.skills import _pin_exact_name
+
+        fused = {"other": 0.2}
+        out = _pin_exact_name("adapter-workbuddy", fused, ["adapter-workbuddy", "other"])
+        assert out["adapter-workbuddy"] == 1.0
+        assert out["adapter-workbuddy"] > out["other"]
+
+    def test_pin_normalizes_spaces_underscores(self):
+        from sgme.operations.skills import _pin_exact_name
+
+        out = _pin_exact_name("Adapter_WorkBuddy", {}, ["adapter-workbuddy"])
+        assert out.get("adapter-workbuddy") == 1.0
+
+    def test_search_memory_path_exact_name(self, skills_cfg, wiki_conn):
+        """内存检索路径：精确技能名必须出现在首位。"""
+        from sgme.operations.skills import search_skills
+
+        hits = search_skills("alpha", skills_cfg, wiki_conn, limit=5)
+        assert hits and hits[0]["name"] == "alpha"
+        assert hits[0]["score"] >= 1.0
+
+    def test_reindex_after_write_none_conn_ok(self, skills_cfg, wiki_conn):
+        from sgme.operations.skills import reindex_after_write
+
+        r = reindex_after_write(skills_cfg, None, wiki_conn)
+        assert r.ok is True and r.data.get("skipped") is True
+
+    def test_reindex_after_write_upserts(self, skills_cfg, wiki_conn, tmp_path):
+        from sgme.data import db as db_mod
+        from sgme.operations.skills import reindex_after_write
+
+        conn = db_mod.connect_skills(tmp_path)
+        r = reindex_after_write(skills_cfg, conn, wiki_conn)
+        assert r.ok is True
+        names = {row["name"] for row in conn.execute("SELECT name FROM skills")}
+        assert "alpha" in names and "beta" in names
+        # 二次调用幂等
+        r2 = reindex_after_write(skills_cfg, conn, wiki_conn)
+        assert r2.ok is True and r2.data.get("inserted", 0) == 0
+
+
 # ---------- search_skills ----------
 
 

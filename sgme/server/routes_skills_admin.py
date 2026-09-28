@@ -46,6 +46,22 @@ def _registry_path(request: Request) -> str | None:
     return ((cfg.get("skills") or {}).get("tombstone_registry")) or None
 
 
+def _reindex_skills_db(request: Request) -> None:
+    """写后同步 skills.db（T-215）：否则 list/search 走库时看不见新写入的技能。"""
+    try:
+        from sgme.operations.skills import reindex_after_write
+
+        reindex_after_write(
+            request.app.state.cfg or {},
+            getattr(request.app.state, "skills_conn", None),
+            getattr(request.app.state, "wiki_conn", None),
+        )
+    except Exception as e:  # 写侧成功不应因索引同步失败而回滚
+        import logging
+
+        logging.getLogger("sgme.server.skills").warning("skills.db 写后同步失败: %s", e)
+
+
 def _asset_quota(request: Request) -> dict:
     """资产配额（cfg.skills.asset_quota）：单文件 / 单技能合计 / 文件数；非法取默认。"""
     cfg = request.app.state.cfg or {}
@@ -154,6 +170,7 @@ def put_skill(
                             {"violations": result.get("violations", [])})
         raise api_error("ERR_DUPLICATE_SKILL", "查重拒绝（同名冲突或同内容异名）",
                         {"violations": result.get("violations", [])})
+    _reindex_skills_db(request)
     return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}
 
 
@@ -198,6 +215,7 @@ def put_skill_file(
         if result.get("code") == "not_found":
             raise api_error("ERR_NOT_FOUND", f"技能不存在: {name}", details)
         raise api_error("ERR_INVALID_ARGS", "资产写入被拒", details)
+    _reindex_skills_db(request)
     return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}
 
 
@@ -241,6 +259,7 @@ def delete_skill(
             raise api_error("ERR_NOT_FOUND", f"技能不存在: {name}")
         raise api_error("ERR_INVALID_ARGS", "删除被拒",
                         {"violations": result.get("violations", [])})
+    _reindex_skills_db(request)
     return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}
 
 
@@ -278,4 +297,5 @@ def rename_skill(
             raise api_error("ERR_NAME_CONFLICT", f"新名已被占用或非法: {new_name}", details)
         raise api_error("ERR_LINT_FAILED", "新名未通过准入门禁",
                         {"violations": result.get("violations", [])})
+    _reindex_skills_db(request)
     return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}

@@ -365,6 +365,14 @@ def health(
         "latest_version": update["latest_version"],
         "update_checked_at": update["update_checked_at"],
         "update_error": update["update_error"],
+        # —— T-215 P1：接入指引可发现（只增不改既有字段，追加在末尾）——
+        "onboarding": {
+            "tool": "agent_onboarding",
+            "docs": "AI-INSTALL/agent-onboarding.md",
+            "selfcheck": "AI-INSTALL/selfcheck.md",
+            "adapters": "skill_search('adapter') → skill_get → skill_materialize",
+            "note": "连接后先调 agent_onboarding；完成标准八项见 selfcheck.md",
+        },
         # —— HTTP 历史形态：字段顺序即 v0.6 响应体顺序，勿调整 ——
         "refinement": {
             "watermark_age_sec": watermark_age_sec(last_refined),
@@ -400,6 +408,8 @@ def http_payload(data: dict[str, Any]) -> dict[str, Any]:
         "latest_version": data["latest_version"],
         "update_checked_at": data["update_checked_at"],
         "update_error": data["update_error"],
+        # T-215 P1：接入指引指针（只增不改，追加末尾）
+        "onboarding": data.get("onboarding"),
     }
 
 

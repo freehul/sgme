@@ -511,7 +511,7 @@ def test_mcp_agent_onboarding_self_config(mcp):
     assert "八项" in sc["requirement"] or "selfcheck" in sc["requirement"]
     # 步骤含幂等自查 / 读回验证 / 失败路径
     steps = "\n".join(sc["steps"])
-    for keyword in ("自查", "跳过", "读回验证", "报告主人"):
+    for keyword in ("自查", "跳过", "读回验证", "报告主人", ">= v2"):
         assert keyword in steps, f"steps 缺关键动作: {keyword}"
     # 模板含版本标记与核心纪律（含事件对接双模式，ST-30）
     tmpl = sc["template"]

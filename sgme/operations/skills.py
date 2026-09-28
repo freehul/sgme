@@ -53,6 +53,27 @@ logger = logging.getLogger("sgme.operations.skills")
 W_BM25 = 0.6
 W_VEC = 0.4
 
+
+def _norm_name(s: str) -> str:
+    """技能名/查询归一：小写，空白与下划线折成中划线（adapter-workbuddy 可被精确命中）。"""
+    return re.sub(r"[\s_]+", "-", (s or "").strip().lower())
+
+
+def _pin_exact_name(query: str, fused: dict[str, float], names) -> dict[str, float]:
+    """name 直达：查询归一后等于技能名 → 钉到满分首位（T-215 收口）。
+
+    检索层 BM25/向量对精确技能名（如 adapter-workbuddy）仍可能排不进 top，
+    但 agent 场景「按名取包」必须直达；这里只加不减、不改其它排序语义。
+    """
+    qn = _norm_name(query)
+    if not qn:
+        return fused
+    out = dict(fused)
+    for n in names:
+        if _norm_name(n) == qn:
+            out[n] = max(out.get(n, 0.0), 1.0)
+    return out
+
 # 标题行（ATX 风格 # ~ ######）
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
 
@@ -451,6 +472,8 @@ def search_skills(
         logger.info("skills 向量路异常降级（BM25 单路）: %s", e)
         vec = {}
     fused = _fuse_scores(bm25, vec)
+    # name 直达（T-215）：查询=技能名时钉满分
+    fused = _pin_exact_name(query, fused, [r.name for r in records])
     # 融合路径标记：向量路有贡献（任一命中与 BM25 命中交集非空）→ skills_rrf，
     # 否则视为纯 BM25 → skills_bm25
     routes = ["skills_rrf"] if (vec and set(fused) & set(vec)) else ["skills_bm25"]
@@ -680,6 +703,24 @@ def _embed_into_db(
     return vector_mod.upsert_skill_vectors(skills_conn, items, model=model)
 
 
+def reindex_after_write(
+    cfg: dict,
+    skills_conn: sqlite3.Connection | None,
+    wiki_conn: sqlite3.Connection | None = None,
+) -> OperationResult:
+    """写后同步 skills.db（T-215 收口）：让 skill_put 立刻可被 list/search 看见。
+
+    背景：list/search 在库有数据时走 skills.db；此前写侧只落盘 →
+    新技能「skill_get 能读、skill_search 搜不到」。写后增量 sync（sha256 判重，
+    默认不嵌向量，避免写请求被 embedding 拖死；向量交启动预热/后台补）。
+
+    skills_conn 为 None 时跳过（内存索引路径无需库同步）。
+    """
+    if skills_conn is None:
+        return OperationResult.succeed({"skipped": True, "reason": "no skills_conn"})
+    return sync_index(cfg, skills_conn, wiki_conn, max_embed=0, embed=False)
+
+
 def _db_ready(skills_conn: sqlite3.Connection | None) -> bool:
     """skills.db 是否已有数据（冷启动空窗期判据）。
 
@@ -739,6 +780,29 @@ def search_skills_db(
         logger.info("技能向量路降级（FTS 单路）: %s", e)
 
     fused = _fuse_scores(bm25, vec)
+    # name 直达（T-215）：查询=技能名 → 钉满分；FTS/向量未召回时仍按名查库补入
+    name_pool = set(bm25) | set(vec) | {h["name"] for h in fts_hits}
+    fused = _pin_exact_name(query, fused, name_pool)
+    qn = _norm_name(query)
+    if qn:
+        for cand in {query.strip(), qn, qn.replace("-", "_")}:
+            try:
+                row = skills_dao.get_skill(skills_conn, cand)
+            except Exception:
+                row = None
+            if row and row.get("name"):
+                n = row["name"]
+                fused[n] = max(fused.get(n, 0.0), 1.0)
+                name_pool.add(n)
+                if n not in {h["name"] for h in fts_hits}:
+                    fts_hits = list(fts_hits) + [{
+                        "name": n,
+                        "score": 1.0,
+                        "source": row.get("source") or "git",
+                        "description": row.get("description") or "",
+                        "category": row.get("category"),
+                    }]
+                break
     routes = ["skills_rrf"] if (vec and set(fused) & set(vec)) else ["skills_bm25"]
     ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
 
