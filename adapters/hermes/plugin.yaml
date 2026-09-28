@@ -1,5 +1,5 @@
 name: sgme
-version: "1.6.1"  # 版本口径跟随 SGME 版本（1.6.1 = T-215 技能写后同步/name 直达/health 指针），见 README
+version: "1.6.2"  # 版本口径跟随 SGME 版本（1.6.2 = T-217 skills_fts 缺行探测自愈），见 README
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理+沟通角色（42 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"
 license: MIT
