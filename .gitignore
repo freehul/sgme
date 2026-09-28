@@ -107,3 +107,7 @@ exports/skills-migration-preview/
 
 # ZCode 本会话运行时状态（plan 等），不入 git
 /.zcode/
+
+# ZCode 工具侧忽略清单（从 .gitignore 同步生成，可重建，不入 git）
+.zcodeignore
+
