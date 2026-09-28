@@ -674,3 +674,34 @@ class TestSearchSkillsDb:
         r4 = skills_ops.sync_index(cfg, conn, None, max_embed=None, embed=True)
         assert r4.data["pending_embed"] == 0
         assert r4.data["embedded"] == 0
+
+
+class TestDbPathRankingOrientation:
+    """T-217 根因回归：fts_search 返回 bm25() 原始**负分**（越小越相关），
+    search_skills_db 必须先取反再 min-max 归一。
+
+    旧实现直接把负分归一 → 最优匹配得 0 分、最差匹配得 1 分，库路径排序
+    整体反转——NAS 上 adapter-*「列表有、检索无」的实锤根因。掩蔽机制：
+    单技能命中时 min-max 退化全 1.0、精确名查询走钉顶，均不可见；
+    必须**多技能命中同一词且相关度悬殊**才暴露（NAS 451 库实况）。
+    """
+
+    def test_db_path_ranks_best_match_first(self, conn, monkeypatch):
+        import sgme.skills.vectors as vectors_mod
+
+        from sgme.operations import skills as skills_ops
+
+        skills_dao.upsert_skill(conn, _rec("pdf-tools", "# PDF 工具箱", "处理 pdf 表格"))
+        skills_dao.upsert_skill(conn, _rec("notes", "# 杂记", "pdf 相关随笔一则"))
+        conn.commit()
+
+        def boom(*a, **kw):  # 向量不可达 → 纯 BM25 单路，聚焦本回归
+            raise RuntimeError("no embed")
+
+        monkeypatch.setattr(vectors_mod, "embed_texts", boom)
+
+        hits = skills_ops.search_skills_db("pdf", conn, {}, limit=5)
+        assert len(hits) == 2
+        assert hits[0]["name"] == "pdf-tools", (
+            f"名称加权最优匹配应居首，实际: {[(h['name'], h['score']) for h in hits]}"
+        )

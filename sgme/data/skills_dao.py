@@ -219,7 +219,8 @@ def fts_search(
 ) -> list[dict[str, Any]]:
     """FTS5 BM25 检索（列加权 10:5:1，支持 category 结构化过滤）。
 
-    返回 [{name, score, description, category, ...}]（score 为 BM25 原始分，越大越相关）。
+    返回 [{name, score, description, category, ...}]。⚠️ score 为 bm25() 原始
+    **负分**，越小越相关（调用方若做 min-max 归一必须先取反，见 T-217 教训）。
     停用词过滤后无有效词 → 返回空列表（不报错）。
     """
     terms = fts_query_terms(query)

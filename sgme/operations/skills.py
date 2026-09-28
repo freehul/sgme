@@ -837,9 +837,12 @@ def search_skills_db(
     if not isinstance(query, str) or not query.strip() or limit <= 0:
         return []
 
-    # 路 1：FTS5 BM25（bm25() 返回负值，越小越相关 → 归一化为 0-1）
+    # 路 1：FTS5 BM25。⚠️ bm25() 返回**负值、越小越相关**（fts_search 按 score ASC
+    # 排序取最相关在前）——必须先取反变成「越大越相关」再 min-max，否则最优匹配
+    # 归一成 0 分、整条库路径排序反转（T-217 根因：NAS adapter-*「列表有、检索无」
+    # 的实锤成因；单技能命中/精确名钉顶场景长期掩蔽）。
     fts_hits = skills_dao.fts_search(skills_conn, query, limit=limit * 3, category=category)
-    bm25_raw = {h["name"]: h["score"] for h in fts_hits}
+    bm25_raw = {h["name"]: -h["score"] for h in fts_hits}
     bm25 = _normalize_minmax(bm25_raw)
 
     # 路 2：向量余弦（查询串单独 embed，1 条不触发分批）
