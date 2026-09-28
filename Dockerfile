@@ -1,4 +1,4 @@
-# SGME — 拾光记忆引擎 Docker 镜像
+﻿# SGME — 拾光记忆引擎 Docker 镜像
 # 多阶段构建：Stage 1 WebUI（node:20-alpine）→ Stage 2 运行时（python:3.11-slim，Debian bookworm，glibc 2.36，兼容 manylinux wheel）
 #
 # 布局约定（对齐 sgme/config.py T-23 标准安装布局）：
@@ -51,6 +51,8 @@ COPY sgme/ sgme/
 COPY roles/ roles/
 # 技能模块自有技能树（SKILL.md）：烘焙进镜像，每次重建自动带出；
 # 并初始化为 git 仓（写侧 MCP 工具 store.write_skill 等需 git 提交）
+# A2：skills/adapter-<host>/ 由 scripts/publish_adapter_skills.py 从 adapters/ 打包生成并入库，
+#     改适配器后需重跑该脚本再 commit，保证 skill_search 能搜到官方适配器。
 COPY skills/ /app/cache/skills/
 RUN cd /app/cache/skills && \
     git init -q && \

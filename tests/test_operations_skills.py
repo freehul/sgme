@@ -256,6 +256,43 @@ class TestMaterialize:
         )
         assert res.ok is False and res.error_code == ERR_NOT_FOUND
 
+    def test_copies_companions_scripts_install(self, skills_cfg, wiki_conn, tmp_path):
+        """A2：随附 scripts/、install.py、locales 一并落盘；junk 跳过。"""
+        from sgme.operations.skills import materialize
+
+        root = Path(skills_cfg["skills"]["source_dirs"][0]) / "alpha"
+        (root / "scripts").mkdir()
+        (root / "scripts" / "sgme_client.py").write_text("print(1)\n", encoding="utf-8")
+        (root / "install.py").write_text("# install\n", encoding="utf-8")
+        (root / "locales").mkdir()
+        (root / "locales" / "zh-CN.json").write_text("{}", encoding="utf-8")
+        (root / "__pycache__").mkdir()
+        (root / "__pycache__" / "x.pyc").write_bytes(b"junk")
+        (root / ".env").write_text("SECRET=1\n", encoding="utf-8")
+        (root / "tests").mkdir()
+        (root / "tests" / "test_x.py").write_text("pass\n", encoding="utf-8")
+
+        dest = tmp_path / "ws_comp"
+        res = materialize(skills_cfg, wiki_conn, name="alpha", dest_dir=str(dest))
+        assert res.ok is True
+        base = dest / "alpha"
+        assert (base / "scripts" / "sgme_client.py").is_file()
+        assert (base / "install.py").is_file()
+        assert (base / "locales" / "zh-CN.json").is_file()
+        assert not (base / "__pycache__").exists()
+        assert not (base / ".env").exists()
+        assert not (base / "tests").exists()
+        assert "scripts/" in res.data.get("companions", [])
+        assert "install.py" in res.data.get("companions", [])
+
+    def test_companions_absent_is_ok(self, skills_cfg, wiki_conn, tmp_path):
+        """纯 SKILL.md 技能（无随附文件）物化仍成功。"""
+        from sgme.operations.skills import materialize
+
+        res = materialize(skills_cfg, wiki_conn, name="beta", dest_dir=str(tmp_path / "ws_b"))
+        assert res.ok is True
+        assert res.data.get("companions") == []
+
 
 # ---------- search_skills ----------
 

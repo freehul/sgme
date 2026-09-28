@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -321,6 +322,42 @@ def not_found(name: str, extra: str = "") -> OperationResult:
     return OperationResult.fail(ERR_NOT_FOUND, msg)
 
 
+# 物化时随附的顶层相对路径（A2：适配器完整包）；其余 junk 跳过
+_COMPANION_JUNK = {
+    "__pycache__", ".env", ".git", ".gitignore", "node_modules",
+    ".pytest_cache", ".tmp-events-test", "tests", "coverage", "htmlcov",
+}
+_COMPANION_JUNK_SUFFIXES = (".pyc", ".pyo", ".log")
+
+
+def _copy_skill_companions(src_dir: Path, target_dir: Path) -> list[str]:
+    """把技能源目录随附文件拷到物化目标（跳过 junk）；返回相对路径清单。"""
+    copied: list[str] = []
+    if not src_dir or not src_dir.is_dir():
+        return copied
+    for entry in sorted(src_dir.iterdir()):
+        rel = entry.name
+        if rel == "SKILL.md":
+            continue
+        if rel in _COMPANION_JUNK or entry.name.endswith(_COMPANION_JUNK_SUFFIXES):
+            continue
+        dest = target_dir / rel
+        try:
+            if entry.is_dir():
+                shutil.copytree(
+                    entry, dest, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(
+                        *_COMPANION_JUNK, *_COMPANION_JUNK_SUFFIXES, "tests"),
+                )
+                copied.append(rel + "/")
+            elif entry.is_file():
+                shutil.copy2(entry, dest)
+                copied.append(rel)
+        except OSError as e:
+            logger.warning("skill materialize companion skip %s: %s", entry, e)
+    return copied
+
+
 def materialize(
     cfg: dict[str, Any],
     wiki_conn: sqlite3.Connection | None,
@@ -332,6 +369,9 @@ def materialize(
 
     - git 源技能直接读 origin_path 字节流（真源字节保真）；
       wiki 源技能用索引内容（wiki_pages 本身存全文，等价保真）；
+    - **A2 分发（2026-09-28）**：git 源技能目录下的随附文件一并落盘
+      （scripts/ references/ assets/ package/ locales/ install.py README.md 等），
+      使适配器包 materialize 后可直接安装；junk（__pycache__/.env/tests 等）跳过；
     - 成功记遥测日志一条（name/sha/ts），供使用统计与排障；
     - dest_dir 必填且非空（InvalidArgs）。
     """
@@ -345,10 +385,12 @@ def materialize(
         return not_found(name)
 
     data_bytes: bytes | None = None
+    src_dir: Path | None = None
     if rec.source == "git" and rec.origin_path:
         p = Path(rec.origin_path)
         if p.is_file():
             data_bytes = p.read_bytes()
+            src_dir = p.parent
     if data_bytes is None:
         # wiki 源（或缺文件兜底）：索引内容即全文（wiki_pages 存的是原文）
         data_bytes = rec.content.encode("utf-8")
@@ -359,11 +401,18 @@ def materialize(
     target = target_dir / "SKILL.md"
     target.write_bytes(data_bytes)
 
+    companion = _copy_skill_companions(src_dir, target_dir) if src_dir else []
+
     # 遥测：一条 info（使用统计的原始素材，M3 写侧消费）
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     logger.info("skill materialize: name=%s sha=%s ts=%s dest=%s", rec.name, sha256[:12], ts, target)
 
-    return OperationResult.succeed({"name": rec.name, "path": str(target), "sha256": sha256})
+    return OperationResult.succeed({
+        "name": rec.name,
+        "path": str(target),
+        "sha256": sha256,
+        "companions": companion,
+    })
 
 
 def search_skills(

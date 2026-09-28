@@ -490,6 +490,8 @@ def test_mcp_agent_onboarding(mcp):
     assert declared == actual, f"能力清单与工具列表漂移: {declared ^ actual}"
     assert "quickstart" in data
     assert "register" in data["quickstart"]
+    assert "adapters" in data["quickstart"]
+    assert "skill_search" in data["quickstart"]["adapters"]
 
 
 def test_mcp_agent_onboarding_self_config(mcp):
@@ -503,6 +505,10 @@ def test_mcp_agent_onboarding_self_config(mcp):
     sc = data.get("self_config")
     assert sc, "agent_onboarding 必须包含 self_config 段"
     assert sc["version"] == "SGME-ONBOARDING-v2"
+    # A2/C（2026-09-28）：完成标准含适配器 + 八项对齐
+    assert "适配器" in sc["requirement"]
+    assert "skill_search" in sc["requirement"] or "skill_materialize" in sc["requirement"]
+    assert "八项" in sc["requirement"] or "selfcheck" in sc["requirement"]
     # 步骤含幂等自查 / 读回验证 / 失败路径
     steps = "\n".join(sc["steps"])
     for keyword in ("自查", "跳过", "读回验证", "报告主人"):
