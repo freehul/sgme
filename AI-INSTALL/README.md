@@ -18,14 +18,15 @@
 | ② | `prompts/02-connect.md` | 接入与验证（通用 / Hermes / DSH 三路；含专属 Key 签发与 admin key 同步） | 专属 Key 已签发 + 4 项联通自检全绿 |
 | ③ | `prompts/03-init-agent-files.md` | 初始化本地身份文件（SOUL / USER / MEMORY / AGENTS 等） | 文件生成 + 一轮读写回环 |
 | ④ | `prompts/04-daily-loop.md` | 日常使用循环（检索 / 写入 / 提炼 / 技能） | 行为清单逐项勾选 |
-| ✔ | `selfcheck.md` | 接入后自检 | 6 项全绿 |
+| ✔ | `selfcheck.md` | 接入后自检 | **8 项**全绿（含自我配置 + 适配器） |
 
 ## 本目录文件
 
 - `agent-onboarding.md` —— **协议层唯一真相**（服务发现 / 连接 / 写入 / 提炼 / 技能），所有任务卡以它为准，本目录不复制其内容。
 - `免费模型Key申请指南.md` —— 免费 LLM / 向量 Key 申请（两款免费平台，零充值）。
 - `prompts/` —— 可整段复制给 AI 的提示词（每份含中文 + English 两个复制块）。
-- `selfcheck.md` —— 自检清单与常见失败处置。
+- `selfcheck.md` —— 自检清单（**八项**：发现/连通/写入/检索/提炼/技能/**自我配置**/**适配器**）与常见失败处置。
+- 官方适配器经技能库自助获取：`skill_search("adapter")` → `skill_materialize`（详见 `agent-onboarding.md` §6.1）。
 
 ## 三条原则
 

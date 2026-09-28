@@ -69,14 +69,16 @@ asyncio.run(main())
 
 连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 41 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
 
-**自助配置（2026-08-13，接入完成标准）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v1`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
+**自助配置（2026-08-13，接入完成标准之一）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v2`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
 
-1. 自查身份文件是否已有 `SGME-ONBOARDING` 标记（版本 ≥ v1 即完成，跳过）；
+1. 自查身份文件是否已有 `SGME-ONBOARDING` 标记（版本 ≥ **v2** 即完成，跳过；仍写 v1 的请升级到 v2 模板）；
 2. 缺失或版本旧 → 按模板写入自己的身份文件（写入位置/方式按工具的文件组织与加载机制自定）；
 3. 写入后**读回验证**内容完整，并向主人汇报（写了哪个文件、哪个位置）；
 4. 无法写入（权限/沙箱/审批限制）→ **如实报告主人并给出建议，禁止谎称已完成**（Trae 的 user_rules 目录有沙箱写保护实锤）。
 
 > 目的：接入从「人复制 README 提示词」变为「agent 连接后自助配置」——换 Agent 零成本：不管工具的文件机制差异，只要求结果（下个会话起 SGME 纪律生效）。
+>
+> **完整「接入完成」定义见 §6.1（八项，与 `selfcheck.md` 同口径）**——自我配置只是其中第 ⑦ 项，不是全部。
 
 **MCP 41 工具清单与用途**（与 `ONBOARDING_TOOLS` 清单程序化对账一致；PR#7 起逐步扩充，含三池/信号/角色/技能九工具）：
 
@@ -201,6 +203,44 @@ content 格式（首行必须）：
 > **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态）、MiMo Desktop（`adapters/mimo`，Skill + 原生 MCP 优先，2026-09-22 登记）、WorkBuddy（`adapters/workbuddy`，Skill + 原生 MCP 优先，从 `~/.workbuddy/mcp.json` 零配置继承，2026-09-22 登记）、ZCode（`adapters/zcode`，Skill 形态 + 自律接入 + `import_history.py` 历史会话补导入，install.py 可注册 ZCode 原生 MCP server，2026-09-26 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
 
 **判断方法**：有 SessionEnd/Stop 事件机制 = hooks 型；没有 = 自律型；两者都失效还有保底型兜底——记忆不会丢，只会晚提炼。
+
+## 6.1 官方适配器获取与安装（技能库自助，2026-09-28）
+
+> 解决「适配器只在源码仓库、运行实例拿不到」的断点（WorkBuddy 接入排查 P2）。
+> 通道 = 现成技能三级披露：`skill_search` → `skill_get` → `skill_materialize`。
+
+**四步自助：**
+
+1. **发现**：`skill_search("adapter")` 或 `skill_search("<宿主名> 适配器")`——命中 `adapter-hermes` / `adapter-dsh` / `adapter-doubao` / `adapter-mimo` / `adapter-workbuddy` / `adapter-zcode`
+2. **确认**：`skill_get("adapter-<host>")` 读纪律与安装说明
+3. **落盘**：`skill_materialize(name="adapter-<host>", dest_dir="<工作区>")`——除 `SKILL.md` 外，`scripts/` / `install.py` / `locales/` / `package/` 等随附文件一并落盘
+4. **安装**：按包内 `SKILL.md` / `references/README.md` 说明执行（通常是 `python install.py`；dsh 为 `install.py` + `dsh plugin add`）
+
+| 技能名 | 宿主 | 形态 | 安装要点 |
+|---|---|---|---|
+| `adapter-hermes` | Hermes | memory.provider Python 插件 | `install.py` → `$HERMES_HOME/plugins/sgme/` |
+| `adapter-dsh` | DeepSeek Harness | Cordis TS 原生插件 | `scripts/install.py` + `dsh plugin add` |
+| `adapter-doubao` | 豆包工作 | Skill + CLI | `install.py` 部署技能目录 |
+| `adapter-mimo` | MiMo Desktop | Skill + 原生 MCP 优先 | `install.py` → `~/.config/mimocode/skills/mimo/` |
+| `adapter-workbuddy` | WorkBuddy | Skill + mcp.json 零配置继承 | `install.py` → `~/.workbuddy/skills/sgme/` |
+| `adapter-zcode` | ZCode | Skill + 自律接入 | `install.py` + 可选 `import_history.py` |
+
+**无宿主适配器**（或 skill 库未含 adapter）：走 MCP 通用接入——写入 `self_config.template`（第 ⑦ 项）并按 §6 档位自律运行。**不因缺适配器阻塞接入**。
+
+## 6.2 「接入完成」八项标准（与 `selfcheck.md` 同口径）
+
+| # | 项 | 一句话 |
+|---|---|---|
+| ① | 发现 | `GET /v1/health` 200，版本可见 |
+| ② | 连通与身份 | 工具可调；专属 `agt_*` key |
+| ③ | 写入 | `append` / 会话入库 `status:new` |
+| ④ | 检索 | `search` 命中带溯源 |
+| ⑤ | 提炼 | `refine_trigger` async 可达 |
+| ⑥ | 技能 | `skill_search` 有结果 |
+| ⑦ | 自我配置 | 身份文件含 `SGME-ONBOARDING-v2` |
+| ⑧ | 适配器 | 已装 `adapter-<host>`，或显式走通用 MCP 且 ⑦ 完成 |
+
+> 两套「完成」定义曾互相打架（selfcheck 六项 vs self_config 模板）——自 2026-09-28 起统一为上表，`selfcheck.md` / `agent_onboarding.self_config.requirement` / 本节三处同源。
 
 ## 7. 就绪检查与主动提醒
 

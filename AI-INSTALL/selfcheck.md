@@ -1,9 +1,10 @@
 # 接入后自检清单（Self-check）
 
-> 部署 + 接入完成后，运行以下 6 项；**全绿 = 接入完成**，向用户汇报结果。
+> 部署 + 接入完成后，运行以下 **8 项**；**全绿 = 接入完成**，向用户汇报结果。
 > 端点占位：HTTP `http://<NAS_IP>:9910`；MCP `http://<NAS_IP>:9913/mcp`；密钥一律从环境变量读取。
+> 与 MCP `agent_onboarding.self_config.requirement` 同口径（2026-09-28 对齐）。
 
-## 六项检查
+## 八项检查
 
 ### ① 发现
 - **目的**：确认实例存在且版本可见
@@ -42,12 +43,25 @@
 - **判据**：返回结果（如《技能检索协议》）；命中后 `skill_get` 拉全文
 - **失败**：空结果 → 确认查询词；仍空 → 记录并继续（不阻断）
 
+### ⑦ 自我配置
+- **目的**：确认接入纪律已写入你的身份文件（换会话不失忆的根基）
+- **动作**：读身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等），确认含 `SGME-ONBOARDING-v2` 模板
+- **判据**：标记存在且版本 ≥ v2；模板内容与 `agent_onboarding().self_config.template` 一致（以模板为准）
+- **失败**：缺失 → 按 `agent_onboarding` 返回的 `self_config` 写入；无法写入 → 如实报告主人，禁止谎称完成
+
+### ⑧ 适配器
+- **目的**：确认纪律层载体已就位（官方适配器或显式通用接入）
+- **动作**：`skill_search("adapter")` 或 `skill_search("<你的宿主名> 适配器")`；命中 `adapter-<host>` 则 `skill_materialize` 落盘并按包内说明安装
+- **判据**：已安装对应官方适配器（`~/.sgme/` 或宿主技能目录可见部署副本）；**或**显式声明「走 MCP 通用接入」且 ⑦ 已完成
+- **失败**：搜不到适配器 → 记录并走通用 MCP（⑦ 仍必做）；不要因缺适配器阻塞接入
+
 ## 汇报模板（给用户）
 
 ```
 ✅ SGME 接入自检
 - 端点：http://<NAS_IP>:9910（版本 x.y.z）
-- ①发现 ✓ ②连通 ✓ ③写入 ✓ ④检索 ✓ ⑤提炼 ✓ ⑥技能 ✓
+- ①发现 ✓ ②连通 ✓ ③写入 ✓ ④检索 ✓ ⑤提炼 ✓ ⑥技能 ✓ ⑦自我配置 ✓ ⑧适配器 ✓
+- 适配器：<adapter-xxx 已安装 | 通用 MCP>
 - 缺失/待办：<无 或 列出>
 ```
 
@@ -60,9 +74,11 @@
 | 连接失败 | 地址端口、防火墙、系统代理（Python 设 `trust_env=False`） |
 | 检索不中 | 写入是否成功、检索词、向量是否配置 |
 | 提炼不动 | 模型 Key（`missing_keys`）、限速（429 交兜底） |
+| ⑦ 不过 | 身份文件未写入 / 版本仍是 v1 → 以 `self_config.template` 为准重写 |
+| ⑧ 搜不到 | `skill_search("adapter")`；仍空 → 通用 MCP + ⑦，勿阻塞 |
 
 ---
 
 ## English
 
-**Post-setup self-check — run all six; all green means you're done.** ① Discovery: `GET /v1/health` → 200 with `version` + `capabilities`. ② Auth/identity: call `agent_onboarding`; your key must be the dedicated `agt_*` minted via register (not a shared master or default key). If an admin key is configured, call one admin endpoint (e.g. `GET /v1/admin/agents`) and expect 200; otherwise note it as pending user input. Default dev keys are loopback-only (remote → 403). ③ Write: `POST /v1/append` with `session_key` + `started_at` + `# {ISO} {role}` first line → `status: new`. ④ Read: `POST /v1/search` retrieves the new entry with provenance. ⑤ Refine: `POST /v1/refine_trigger` (`async_mode=true`) returns a job id. ⑥ Skills: `skill_search("…")` returns hits; load with `skill_get`. Report a short summary (endpoint, version, six checkmarks, gaps). Common issues: 403 auth/origin, 400 params, connection (proxy — set `trust_env=False`), retrieval (write success? vector configured?), refine (missing keys / rate limit).
+**Post-setup self-check — run all eight; all green means you're done.** ① Discovery: `GET /v1/health` → 200 with `version` + `capabilities`. ② Auth/identity: call `agent_onboarding`; your key must be the dedicated `agt_*` minted via register (not a shared master or default key). If an admin key is configured, call one admin endpoint (e.g. `GET /v1/admin/agents`) and expect 200; otherwise note it as pending user input. Default dev keys are loopback-only (remote → 403). ③ Write: `POST /v1/append` with `session_key` + `started_at` + `# {ISO} {role}` first line → `status: new`. ④ Read: `POST /v1/search` retrieves the new entry with provenance. ⑤ Refine: `POST /v1/refine_trigger` (`async_mode=true`) returns a job id. ⑥ Skills: `skill_search("…")` returns hits; load with `skill_get`. ⑦ Self-config: your identity file contains the `SGME-ONBOARDING-v2` template (aligns with `agent_onboarding.self_config`). ⑧ Adapter: `skill_search("adapter")` → install `adapter-<host>` via `skill_materialize`, **or** explicitly use generic MCP with ⑦ done. Report a short summary (endpoint, version, eight checkmarks, adapter choice, gaps). Common issues: 403 auth/origin, 400 params, connection (proxy — set `trust_env=False`), retrieval (write success? vector configured?), refine (missing keys / rate limit), ⑦ missing template, ⑧ no adapter hit (fall back to generic MCP).
