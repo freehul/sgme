@@ -520,3 +520,65 @@ class TestSkillsReadDisabled:
         st = client.post("/v1/skills/alpha/materialize",
                          json={"dest_dir": "x"}, headers=AGENT_HEADERS).status_code
         assert st in (404, 405)
+
+# ---------- T-217：/v1/admin/skills/reindex 的 rebuild_fts 请求体 ----------
+
+
+class TestSkillsReindexEndpoint:
+    """reindex 运维兜底端点（T-215 引入；T-217 加 rebuild_fts 请求体 + 缺行自检）。"""
+
+    @pytest.fixture
+    def reindex_client(self, tmp_path, monkeypatch, raw_dir):
+        from sgme.data import db as db_mod
+        from sgme.data import memory_dao
+        from sgme.server.app import create_app
+
+        monkeypatch.setenv("SGME_CONFIG_PATH", str(tmp_path / "sgme_test.yaml"))
+        monkeypatch.setenv("SGME_HOME", str(tmp_path))
+        cfg = sgme_config.load_config()
+        cfg["skills"] = {
+            "enabled": True,
+            "source_dirs": [str(tmp_path / "skills_src")],
+            "budget": 40,
+        }
+        (tmp_path / "skills_src" / "alpha").mkdir(parents=True)
+        (tmp_path / "skills_src" / "alpha" / "SKILL.md").write_text(
+            "---\nname: alpha\ndescription: 测试技能 NAS 部署\n---\n# Alpha\n正文\n",
+            encoding="utf-8",
+        )
+        mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
+        memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
+        app = create_app(
+            cfg=cfg,
+            mem_conn=mem_conn,
+            session_conn=session_conn,
+            wiki_conn=wiki_conn,
+            data_dir=tmp_path / "data",
+            admin_key="test-admin-key",
+            agent_key="test-agent-key",
+            agent_store_path=tmp_path / "agent_keys.json",
+        )
+        yield TestClient(app)
+        db_mod.close(mem_conn)
+        db_mod.close(session_conn)
+        db_mod.close(wiki_conn)
+
+    def test_reindex_no_body_still_ok(self, reindex_client):
+        """不带请求体（旧调用姿势）保持 200，且响应带 T-217 新字段。"""
+        r = reindex_client.post("/v1/admin/skills/reindex", headers=ADMIN_HEADERS)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True and body["inserted"] == 1
+        assert body["fts_rebuilt"] is False
+        assert "pending_embed" in body  # embed=False 也如实上报（修复假 0）
+
+    def test_reindex_rebuild_fts_flag(self, reindex_client):
+        r = reindex_client.post(
+            "/v1/admin/skills/reindex", headers=ADMIN_HEADERS, json={"rebuild_fts": True}
+        )
+        assert r.status_code == 200
+        assert r.json()["fts_rebuilt"] is True
+
+    def test_reindex_rejects_agent_key(self, reindex_client):
+        r = reindex_client.post("/v1/admin/skills/reindex", headers=AGENT_HEADERS)
+        assert r.status_code == 403

@@ -1051,16 +1051,26 @@ class SkillsSyncRequest(BaseModel):
     direction: str = "both"
 
 
+class SkillsReindexRequest(BaseModel):
+    """reindex 请求体（可选；T-217：rebuild_fts 运维兜底强制重建 FTS 索引）。"""
+
+    rebuild_fts: bool = False
+
+
 @router.post("/v1/admin/skills/reindex")
 def skills_reindex(
     request: Request,
+    payload: SkillsReindexRequest | None = None,
     _: str = Depends(require_admin_key),
 ):
     """把 source_dirs 现有技能增量同步进 skills.db（T-215）。
 
     写侧（skill_put 等）已自动调用；本端点供运维兜底——
     历史写入未进库、或 hub 同步后需强制刷新 list/search 可见性时调用。
-    成功 → 200 + {inserted, updated, deleted, unchanged, total}
+    body 可选 ``{"rebuild_fts": true}``（T-217）：无条件全量重建 skills_fts
+    外部内容索引；不带时仅当逐行探测检出索引缺行才自动重建。
+    成功 → 200 + {inserted, updated, deleted, unchanged, total,
+    fts_drift_detected, fts_rebuilt, pending_embed}
     """
     from sgme.operations.skills import sync_index
 
@@ -1069,7 +1079,12 @@ def skills_reindex(
     wiki_conn = getattr(request.app.state, "wiki_conn", None)
     if skills_conn is None:
         raise api_error("ERR_INVALID", "skills.db 不可用（技能模块未启用或连接失败）")
-    r = sync_index(cfg, skills_conn, wiki_conn, max_embed=0, embed=False)
+    r = sync_index(
+        cfg, skills_conn, wiki_conn,
+        max_embed=0, embed=False,
+        rebuild_fts=bool(payload.rebuild_fts) if payload else False,
+        fts_check=True,
+    )
     if not r.ok:
         raise api_error("ERR_INTERNAL", r.message or "reindex 失败")
     return {"ok": True, **r.data}

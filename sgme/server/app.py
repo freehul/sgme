@@ -830,8 +830,14 @@ def create_app(
         from sgme.operations import skills as skills_ops
 
         try:
-            r = skills_ops.sync_index(cfg, skills_conn, wiki_conn, max_embed=0, embed=False)
+            # T-217：启动引导开启 FTS 缺行探测——历史写入绕过触发器造成的
+            # 「列表有、检索无」在每次启动自愈，无需人工 reindex。
+            r = skills_ops.sync_index(
+                cfg, skills_conn, wiki_conn, max_embed=0, embed=False, fts_check=True,
+            )
             data = (r.data if hasattr(r, "data") else None) or {}
+            if data.get("fts_rebuilt"):
+                print("[SGME skills] 检出 FTS 索引缺行 → 已全量重建（T-217）")
             print(
                 f"[SGME skills] 结构化同步：新增 {data.get('inserted', 0)} / "
                 f"更新 {data.get('updated', 0)} / 删除 {data.get('deleted', 0)} / "

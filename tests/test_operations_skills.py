@@ -418,3 +418,132 @@ class TestPureHelpers:
         seg = _extract_section(body, "B")
         assert seg.startswith("## B") and "y1" in seg and "y2" in seg
         assert "## C" not in seg
+
+
+# ---------- FTS 脱节自检与修复（T-217） ----------
+
+
+class TestFtsDriftSelfHeal:
+    """skills_fts（外部内容表）与 skills 主表脱节 → 「列表有、检索无」。
+
+    复现 NAS 实况形态：主表行存在且 sha 未变（diff 全 unchanged，reindex
+    永不重写），但 FTS 索引缺行。模拟手法 = 摘除 INSERT 触发器后裸插一行
+    （绕过触发器的写入是脱节的现实成因族）。
+    修复 = sync_index 逐行短语探测（name_seg 整段 MATCH 必须命中本行 rowid），
+    检出即全量重建外部内容索引（connect_skills 的 B156 迁移同款手法）。
+
+    ⚠️ 三个不能用的检测姿势（TDD 探针实测，2026-09-29）：
+    - FTS5 外部内容表的非 MATCH 查询（count(*)/SELECT rowid）直接读 content
+      表（主表），恒等于主表行数——天生假检测器；
+    - integrity-check 不带 rank 参数不核对 content；带 rank=1 需 SQLite>=3.43
+      （NAS Debian bookworm 为 3.40.1），跨部署环境不可依赖；
+    - FTS 'delete' 命令模拟脱节：墓碑在 MATCH 侧立即生效但 count 滞后，
+      且「行从未入索引」（NAS 实况）才是缺行形态。
+    """
+
+    GAMMA_MD = (
+        "---\n"
+        "name: gamma\n"
+        "description: 技能G简介——NAS 备份恢复手册\n"
+        "version: 1.0.0\n"
+        "---\n"
+        "# Gamma\n"
+        "rsync 快照恢复流水线。\n"
+    )
+
+    def _bypass_trigger_insert(self, conn: sqlite3.Connection, skills_cfg, wiki_conn) -> None:
+        """摘掉 INSERT 触发器 → 按 upsert 同款字段值裸插 gamma → 还原触发器。
+
+        字段值必须与 upsert_skill 将写入的完全一致（含分词列与 sha），否则
+        diff 判 update 重写主表、FTS 由触发器补上，测试会因错误原因通过。
+        """
+        import json
+
+        from sgme.data.db import SKILLS_FTS_TRIGGERS
+        from sgme.operations.skills import _load_records, _record_to_dict
+        from sgme.segment import segment
+
+        d = Path(skills_cfg["skills"]["source_dirs"][0])
+        (d / "gamma").mkdir(parents=True, exist_ok=True)
+        (d / "gamma" / "SKILL.md").write_text(self.GAMMA_MD, encoding="utf-8")
+        rec = next(
+            _record_to_dict(r) for r in _load_records(skills_cfg, wiki_conn)
+            if r.name == "gamma"
+        )
+        conn.execute("DROP TRIGGER skills_ai")
+        conn.execute(
+            "INSERT INTO skills (name, sha256, name_seg, description, description_seg,"
+            " category, tags, version, pattern, source, origin_path, content, content_seg,"
+            " content_len, updated_at, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                rec["name"], rec["sha256"], segment(rec["name"]),
+                rec["description"], segment(rec["description"]),
+                rec["category"], json.dumps(rec["tags"], ensure_ascii=False),
+                rec["version"], rec["pattern"], rec["source"], rec["origin_path"],
+                rec["content"], segment(rec["content"]), len(rec["content"]),
+                "2026-09-29T00:00:00Z", "2026-09-29T00:00:00Z",
+            ),
+        )
+        conn.executescript(SKILLS_FTS_TRIGGERS)  # 幂等 DDL：还原三触发器
+        conn.commit()
+
+    @staticmethod
+    def _fts_counts(conn: sqlite3.Connection) -> tuple[int, int]:
+        n_main = conn.execute("SELECT COUNT(*) AS n FROM skills").fetchone()["n"]
+        n_fts = conn.execute("SELECT COUNT(*) AS n FROM skills_fts").fetchone()["n"]
+        return n_main, n_fts
+
+    def test_sync_index_self_heals_fts_drift(self, skills_cfg, wiki_conn, tmp_path):
+        from sgme.data import db as db_mod
+        from sgme.data.skills_dao import fts_search
+        from sgme.operations.skills import sync_index
+
+        conn = db_mod.connect_skills(tmp_path)
+        r1 = sync_index(skills_cfg, conn, wiki_conn, max_embed=0, embed=False)
+        assert r1.ok is True
+        # 健全基线：FTS 能按描述词搜到 beta
+        assert any(h["name"] == "beta" for h in fts_search(conn, "视频分析", limit=10))
+
+        self._bypass_trigger_insert(conn, skills_cfg, wiki_conn)
+        # 主表 3 行；FTS 缺 gamma 行（count(*) 读 content 表恒为 3，
+        # 缺行只能从 MATCH 侧看出——这正是短语探测存在的理由）
+        assert self._fts_counts(conn) == (3, 3)
+        assert not any(h["name"] == "gamma" for h in fts_search(conn, "备份恢复", limit=10))
+
+        # sha 未变 → diff 全 unchanged；短语探测检出缺行 → 自动重建并如实上报
+        r2 = sync_index(skills_cfg, conn, wiki_conn, max_embed=0, embed=False, fts_check=True)
+        assert r2.ok is True
+        assert r2.data.get("unchanged") == 3
+        assert r2.data.get("fts_drift_detected") is True
+        assert r2.data.get("fts_rebuilt") is True
+        assert any(h["name"] == "gamma" for h in fts_search(conn, "备份恢复", limit=10))
+
+        # 三次调用：脱节已修复，不再误报
+        r3 = sync_index(skills_cfg, conn, wiki_conn, max_embed=0, embed=False, fts_check=True)
+        assert r3.data.get("fts_drift_detected") is False
+        assert r3.data.get("fts_rebuilt") is False
+
+    def test_rebuild_fts_flag_forces_rebuild_without_drift(self, skills_cfg, wiki_conn, tmp_path):
+        """rebuild_fts=True 为运维兜底：无脱节也无条件重建。"""
+        from sgme.data import db as db_mod
+        from sgme.data.skills_dao import fts_search
+        from sgme.operations.skills import sync_index
+
+        conn = db_mod.connect_skills(tmp_path)
+        sync_index(skills_cfg, conn, wiki_conn, max_embed=0, embed=False)
+        r = sync_index(skills_cfg, conn, wiki_conn, max_embed=0, embed=False, rebuild_fts=True)
+        assert r.ok is True
+        assert r.data.get("fts_drift_detected") is False
+        assert r.data.get("fts_rebuilt") is True
+        assert any(h["name"] == "alpha" for h in fts_search(conn, "部署流水线", limit=10))
+
+    def test_pending_embed_reported_without_embed(self, skills_cfg, wiki_conn, tmp_path):
+        """embed=False 时 pending_embed 也必须如实上报（修复 reindex 假 0）。"""
+        from sgme.data import db as db_mod
+        from sgme.operations.skills import sync_index
+
+        conn = db_mod.connect_skills(tmp_path)
+        r = sync_index(skills_cfg, conn, wiki_conn, max_embed=0, embed=False)
+        assert r.ok is True
+        assert r.data.get("embedded") == 0
+        assert r.data.get("pending_embed") == 2  # 向量空表 → 待补 2 条

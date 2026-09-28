@@ -649,10 +649,12 @@ class TestSearchSkillsDb:
         )
         cfg = {"skills": {"enabled": True, "source_dirs": []}}
 
-        # 第一轮：embed=False 只同步结构化（快速路径），向量空、不统计 pending
+        # 第一轮：embed=False 只同步结构化（快速路径）。T-217 起 pending_embed
+        # 与 embed 解耦、如实上报（向量空表 → 待补 2）——旧口径恒报假 0，
+        # 运维 reindex 曾因此误判「向量已齐」（排查报告 9.2 实锤）
         r1 = skills_ops.sync_index(cfg, conn, None, max_embed=2, embed=False)
         assert r1.data["inserted"] == 2
-        assert r1.data["pending_embed"] == 0
+        assert r1.data["pending_embed"] == 2
         assert skills_dao.vector_covered(conn) == set()
 
         # 第二轮：全 unchanged + embed=True —— 修复前 todo 恒空（只算 touched），

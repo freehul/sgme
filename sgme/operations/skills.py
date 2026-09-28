@@ -598,12 +598,76 @@ def _record_to_dict(rec: SkillRecord | dict) -> dict:
     }
 
 
+def _fts_drifted(skills_conn: sqlite3.Connection) -> bool:
+    """逐行短语探测 skills_fts 索引是否缺行（T-217）。
+
+    ⚠️ 两个不能用count(*)/integrity-check 的原因（探针实测，2026-09-29）：
+    - FTS5 外部内容表的非 MATCH 查询（含 count(*)/SELECT rowid）**直接读
+      content 表（skills 主表）**，恒等于主表行数——是天生的假检测器；
+    - ``VALUES('integrity-check', rank=1)`` 能对账 content，但需要 SQLite
+      >= 3.43（NAS Debian bookworm 为 3.40.1），跨部署环境不可依赖。
+
+    故用逐行短语探测：技能名唯一 → 每行 name_seg 整段作为短语从**索引侧**
+    MATCH，必须能命中本行 rowid；命中不了即该行从未进索引（列表有、检索无）。
+    451 条毫秒级/条，全量探测亚秒级。
+    """
+    for r in skills_conn.execute("SELECT rowid, name, name_seg FROM skills").fetchall():
+        seg = (r["name_seg"] or "").strip()
+        if not seg:
+            continue
+        phrase = " ".join(f'"{t}"' for t in seg.split())
+        hit = skills_conn.execute(
+            "SELECT 1 FROM skills_fts WHERE skills_fts MATCH ? AND rowid=? LIMIT 1",
+            (phrase, r["rowid"]),
+        ).fetchone()
+        if hit is None:
+            logger.warning(
+                "skills_fts 缺行：name=%r（rowid=%s 短语不可达）→ 判定索引脱节（T-217）",
+                r["name"], r["rowid"],
+            )
+            return True
+    return False
+
+
+def _fts_repair(skills_conn: sqlite3.Connection, force: bool, check: bool) -> dict:
+    """skills_fts 与主表脱节自检（T-217）。
+
+    外部内容 FTS5 表的同步完全依赖触发器——任何绕过触发器的历史写入都会造成
+    「列表有、按名取有、检索没有」，且 sha 判重的增量 sync 永远不会重写这些行
+    （2026-09-29 NAS 实况：adapter-* 六条全部脱节）。检出即全量重建外部内容
+    索引（connect_skills 的 B156 迁移同款手法，451 条毫秒级，非热路径）。
+
+    Args:
+        force: True 时无条件重建（运维兜底，跳过探测）。
+        check: True 时逐行短语探测；False 跳过（写后同步快速路径——dao 是
+            唯一写入方，触发器保证同步，无需每次写入都探测）。
+
+    Returns:
+        {"drift": 是否检出索引缺行, "rebuilt": 是否执行了重建}
+    """
+    has_fts = skills_conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skills_fts'"
+    ).fetchone()
+    if not has_fts:
+        return {"drift": False, "rebuilt": False}
+    drift = _fts_drifted(skills_conn) if (check and not force) else False
+    if not (force or drift):
+        return {"drift": False, "rebuilt": False}
+    if drift:
+        logger.warning("skills_fts 索引缺行 → 全量重建外部内容索引（T-217）")
+    skills_conn.execute("INSERT INTO skills_fts(skills_fts) VALUES('rebuild')")
+    skills_conn.commit()
+    return {"drift": drift, "rebuilt": True}
+
+
 def sync_index(
     cfg: dict,
     skills_conn: sqlite3.Connection,
     wiki_conn: sqlite3.Connection | None = None,
     max_embed: int | None = 20,
     embed: bool = True,
+    rebuild_fts: bool = False,
+    fts_check: bool = False,
 ) -> OperationResult:
     """把 source_dirs 的技能增量同步进 skills.db（T-112）。
 
@@ -612,14 +676,19 @@ def sync_index(
     - delete 的技能连向量与 uses 边一并清理
     - 向量只补缺失的，且受 ``max_embed`` 限批（首次 403 条约 13 分钟，
       不能放在请求线程里一次跑完；剩余交后台预热逐轮补齐）
+    - 可选 FTS 缺行探测（T-217）：检出「主表有、索引无」即自动全量重建，
+      不依赖触发器纪律——任何历史写入路径造成的脱节都会自愈
 
     Args:
         max_embed: 本次最多新嵌入多少条；None=不限（离线/后台场景用）。
-        embed: False 时只同步结构化数据（跳过向量，快速路径）。
+        embed: False 时只同步结构化数据（跳过向量嵌入；pending_embed 照实上报）。
+        rebuild_fts: True 时无条件全量重建 FTS 索引（运维兜底，跳过探测）。
+        fts_check: True 时逐行短语探测索引缺行（启动引导与 reindex 端点开启；
+            写后同步快速路径保持 False，dao 触发器已保证写侧同步）。
 
     Returns:
         OperationResult.data = {inserted, updated, deleted, unchanged,
-        embedded, pending_embed, total}
+        embedded, pending_embed, total, fts_drift_detected, fts_rebuilt}
     """
     from sgme.data import skills_dao
 
@@ -642,19 +711,22 @@ def sync_index(
         skills_dao.replace_uses(skills_conn, name, rec_dict["uses"])
     skills_conn.commit()
 
+    # T-217：FTS 缺行探测自愈（含 rebuild_fts 强制重建），必须在 commit 之后
+    fts_state = _fts_repair(skills_conn, force=rebuild_fts, check=fts_check)
+
+    # ⚠️ 待补向量必须按**全表**算，不能只算本次 touched——否则第二次调用时
+    # 所有技能都是 unchanged，todo 恒为空 → 后台预热第一轮就退出 →
+    # 向量永远补不上（2026-08-29 部署实测踩到）。
+    # T-217：pending_embed 与 embed 解耦——embed=False（reindex/写后同步快速路径）
+    # 也照实上报待补数，否则运维看到的恒为假 0（排查报告 9.2 实测撞上）。
+    covered = skills_dao.vector_covered(skills_conn)
+    todo = sorted({r["name"] for r in dicts} - covered)
+    pending = len(todo)
     embedded = 0
-    pending = 0
-    if embed:
-        # ⚠️ 待补向量必须按**全表**算，不能只算本次 touched——否则第二次调用时
-        # 所有技能都是 unchanged，todo 恒为空 → 后台预热第一轮就退出 →
-        # 向量永远补不上（2026-08-29 部署实测踩到）。
-        covered = skills_dao.vector_covered(skills_conn)
-        todo = sorted({r["name"] for r in dicts} - covered)
-        pending = len(todo)
+    if embed and todo:
         if max_embed is not None and max_embed > 0:
             todo = todo[:max_embed]
-        if todo:
-            embedded = _embed_into_db(cfg, skills_conn, by_name, todo)
+        embedded = _embed_into_db(cfg, skills_conn, by_name, todo)
 
     return OperationResult.succeed(
         {
@@ -665,6 +737,8 @@ def sync_index(
             "embedded": embedded,
             "pending_embed": pending,
             "total": len(records),
+            "fts_drift_detected": fts_state["drift"],
+            "fts_rebuilt": fts_state["rebuilt"],
         }
     )
 
