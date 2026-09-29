@@ -321,6 +321,27 @@ DEFAULT_BACKUP_CONFIG = {
     "raw_cold_days": 90,       # 原始层冷归档阈值（保留）
 }
 
+
+def resolve_backup_dir(cfg: dict | None) -> Path:
+    """解析 backup 目录：相对路径基于 USER_ROOT，绝对路径原样返回（T-228）。
+
+    手动备份（operations/backup）与定时备份（engine/backup_scheduler）共用本函数，
+    保证同一配置两种触发方式落点一致——相对路径不再按进程工作目录解析
+    （Docker WORKDIR=/app 时快照曾落容器层 /app/data/backups 而非 /data 卷，
+    容器重建即丢）。dir 缺失/空串/类型非法 → DEFAULT_BACKUP_CONFIG["dir"]。
+    """
+    backup_cfg = (cfg or {}).get("backup") or {}
+    if not isinstance(backup_cfg, dict):
+        backup_cfg = {}
+    dir_str = backup_cfg.get("dir")
+    if not isinstance(dir_str, str) or not dir_str.strip():
+        dir_str = DEFAULT_BACKUP_CONFIG["dir"]
+    p = Path(dir_str)
+    if not p.is_absolute():
+        p = USER_ROOT / p
+    return p
+
+
 # L1 分块默认兜底（甜点区实测：qwythos-9b-v2-i1 输入 6-8K 字符最佳，2026-08-04）
 # chunk_size：单块字符上限。回合感知（chunk_messages_by_turn）：按回合累加到 0.9× 后
 #   下一回合装不下才落块，故实块 ∈ [0.9×chunk_size, chunk_size]；单回合超上界独立成块，
@@ -987,8 +1008,11 @@ def _merge_backup_config(user_cfg: dict | None) -> dict:
     - enabled：必须 bool，否则回退默认
     - schedule：str（可为空串 = 不自动只手动）；非法类型回退默认
     - level：str 且 in (incremental/full/monthly)，否则回退默认
-    - dest_dir / remote_dir：str（remote_dir 空 = 跳过异地）
+    - dir / remote_dir：str（remote_dir 空 = 跳过异地）
     - keep_full：正整数，否则回退默认
+
+    T-228（M-1）：键名统一为 ``dir``（默认值/文档/写白名单口径）——此处
+    曾误读 ``dest_dir``，用户写的 ``backup.dir`` 被静默丢弃（回落默认）。
     """
     base = dict(DEFAULT_BACKUP_CONFIG)
     if not isinstance(user_cfg, dict):
@@ -1003,8 +1027,8 @@ def _merge_backup_config(user_cfg: dict | None) -> dict:
         "monthly",
     ):
         base["level"] = user_cfg["level"]
-    if isinstance(user_cfg.get("dest_dir"), str) and user_cfg["dest_dir"].strip():
-        base["dest_dir"] = user_cfg["dest_dir"]
+    if isinstance(user_cfg.get("dir"), str) and user_cfg["dir"].strip():
+        base["dir"] = user_cfg["dir"]
     if isinstance(user_cfg.get("remote_dir"), str):
         base["remote_dir"] = user_cfg["remote_dir"]
     if isinstance(user_cfg.get("keep_full"), int) and user_cfg["keep_full"] > 0:

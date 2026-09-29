@@ -62,15 +62,14 @@ _SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 def _resolve_backup_dir(cfg: dict[str, Any]) -> Path:
     """从 cfg 解析 backup 目录（相对路径基于用户根，T-23 跟随 SGME_HOME）。
 
+    T-228：解析共用 ``sgme_config.resolve_backup_dir``（与定时备份同口径），
+    本函数只叠加落盘前的临时区 WARNING 与 mkdir：
+
     绝对路径合法（用户可把备份放到其他盘），但落盘前若最终目录位于系统临时区，
     打 WARNING 提示可能被系统清理——防 HEAD 带临时路径时静默备份进回收区
     （memory.db / wiki.db 备份进 Windows 临时区，用户以为备份了实际随时被清掉）。
     """
-    backup_cfg = cfg.get("backup", {})
-    dir_str = backup_cfg.get("dir", "data/backups")
-    p = Path(dir_str)
-    if not p.is_absolute():
-        p = sgme_config.USER_ROOT / p
+    p = sgme_config.resolve_backup_dir(cfg)
     # 落盘前校验：最终目录若位于系统临时区，告警（不阻断，仅提示）
     _tmp_root = Path(tempfile.gettempdir())
     try:
