@@ -974,12 +974,15 @@ def create_app(
     from sgme.server.routes_prompts import router as prompts_router
     from sgme.server.routes_ideas import router as ideas_router
     from sgme.server.routes_llm import router as llm_router
+    # T-231：AI-INSTALL 在线文档（免 Key；索引 + 全文；远程 agent 无仓库亦可读）
+    from sgme.server.routes_onboarding import router as onboarding_router
     # ST-36 M3：技能写侧管理端点（读侧 routes_skills.py 由并行代理挂载，合并时解冲突）。
     # 必须先于 routes_admin 注册：同路径 PUT/DELETE 由治理版（门禁+查重）优先接管，
     # 未命中路径（GET 列表/详情等）自然回落到后续路由器（FastAPI 按序匹配）。
     from sgme.server.routes_skills_admin import router as skills_admin_router
     app.include_router(skills_admin_router)
     app.include_router(memory_router)
+    app.include_router(onboarding_router)
     app.include_router(admin_router)
     app.include_router(events_router)
     app.include_router(backup_router)

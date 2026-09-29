@@ -49,6 +49,9 @@ RUN pip install --no-cache-dir \
 COPY sgme/ sgme/
 # roles/ 属运行时用户数据（ROLES_DIR=$SGME_HOME/roles），镜像内置角色供首次启动物化
 COPY roles/ roles/
+
+# T-231：接入文档随镜像内置（/v1/onboarding/docs 在线读取；免 Key）
+COPY AI-INSTALL/ AI-INSTALL/
 # 技能模块自有技能树（SKILL.md）：烘焙进镜像，每次重建自动带出；
 # 并初始化为 git 仓（写侧 MCP 工具 store.write_skill 等需 git 提交）
 # A2：skills/adapter-<host>/ 由 scripts/publish_adapter_skills.py 从 adapters/ 打包生成并入库，

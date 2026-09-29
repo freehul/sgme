@@ -366,12 +366,15 @@ def health(
         "update_checked_at": update["update_checked_at"],
         "update_error": update["update_error"],
         # —— T-215 P1：接入指引可发现（只增不改既有字段，追加在末尾）——
+        # —— T-231（v1.7.2）：新增在线文档端点 + 公网镜像指针（远程 agent 无仓库亦可读全文）——
         "onboarding": {
             "tool": "agent_onboarding",
+            "endpoint": "/v1/onboarding/docs",
             "docs": "AI-INSTALL/agent-onboarding.md",
             "selfcheck": "AI-INSTALL/selfcheck.md",
+            "repo": "https://gitee.com/freehul/sgme/tree/main/AI-INSTALL",
             "adapters": "skill_search('adapter') → skill_get → skill_materialize",
-            "note": "连接后先调 agent_onboarding；完成标准八项见 selfcheck.md",
+            "note": "连接后先调 agent_onboarding；完成标准八项见 selfcheck.md；在线全文见 endpoint（免 Key）",
         },
         # —— HTTP 历史形态：字段顺序即 v0.6 响应体顺序，勿调整 ——
         "refinement": {
