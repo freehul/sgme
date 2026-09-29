@@ -1055,12 +1055,15 @@ def build_mcp_server():
 
     @mcp.tool()
     @tool
-    def config_update(section: str, values: dict) -> str:
+    def config_update(section: str, values: dict, ctx: Context | None = None) -> str:
         """更新 SGME 配置段（热生效 + 落盘 sgme.yaml）。SCSM 经此接口远程设置。
 
         v0.7：业务逻辑已下沉 sgme.operations.config，本工具只做协议翻译。
         走 **MCP 版** update_config_section（未知段文案不带可用段列表、
         落盘失败转 ``{"error": "配置落盘失败: ..."}``），与 v0.6 逐字段等价。
+
+        T-224：需管理员 Key（请求级校验 SGME_ADMIN_KEY，与 HTTP
+        PUT /v1/admin/config 同语义）；非管理员 Key → ERR_FORBIDDEN。
         """
         import json
 
@@ -1068,6 +1071,9 @@ def build_mcp_server():
         from sgme.operations.config import update_config_section as update_config_operation
         from sgme.operations.config import update_payload as config_update_payload
 
+        ok, err = _require_admin(ctx)
+        if not ok:
+            return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
         cfg = _app_state["cfg"]
 
         data = _op_json(update_config_operation, cfg, section=section, values=values)
@@ -1259,12 +1265,18 @@ def build_mcp_server():
         - subscriber_id 可选：同步推进该订阅者持久游标（pull/SSE 视角一并清空）
         - 幂等：二次调用 consumed=0；已消费信号不被重复标记
         - consumed_by 从鉴权 key 反查（MCP 上下文），溯源清空方
+        - T-224：需管理员 Key（请求级校验，与 HTTP POST /v1/admin/events/consume_all
+          同语义）；非管理员 Key → ERR_FORBIDDEN，前置门禁先于任何副作用。
         """
         import json
         import sqlite3
 
         from sgme.operations.events import events_consume_all as events_consume_all_operation
 
+        # T-224：门禁前置（先拒后做）——普通 agent key 不得批量清空他人信号
+        ok, err = _require_admin(ctx)
+        if not ok:
+            return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
         mem_conn: sqlite3.Connection = _app_state["mem_conn"]
         agent_id = None
         if ctx is not None:
