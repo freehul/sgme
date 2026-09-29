@@ -1618,7 +1618,7 @@ def build_mcp_server():
                 "adapters": "官方适配器（hermes/dsh/doubao/mimo/workbuddy/zcode）经技能库自助获取：skill_search('adapter') 或 skill_search('<宿主名> 适配器') → skill_get → skill_materialize(name='adapter-<host>', dest_dir=...) 落盘完整包后按包内说明安装；无宿主适配器时写入 self_config 模板走 MCP 通用接入",
             },
             "self_config": {
-                "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v2）②安装官方适配器（skill_search('adapter') → skill_materialize 落盘后按包内说明安装），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。",
+                "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：SGME 是统一能力平面，核心模块为 memory / skills / wiki；接入后只需安装宿主适配器，不需要批量安装很多 skill。①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v2）②安装官方适配器（skill_search('adapter') → skill_materialize 落盘后按包内说明安装），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。",
                 "steps": [
                     "1. 自查：读你的身份文件，grep 标记「SGME-ONBOARDING」；",
                     "2. 已存在且版本 >= v2 → 配置已完成，跳过；",
@@ -1631,6 +1631,8 @@ def build_mcp_server():
                     "# SGME 接入纪律（SGME-ONBOARDING-v2）\n"
                     "你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。"
                     "它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。\n"
+                    "**核心能力平面**：SGME 的三大核心模块是 memory / skills / wiki。历史事实、用户偏好和项目上下文走 memory；手册、设计、经验和踩坑走 wiki；框架、工具链和专业流程先 skill_search，再按需 skill_digest/skill_get。接入后只需宿主适配器，不需要批量安装很多 skill；普通技能留在 SGME 中按需读取，只有适配器或确实需要本地资产时才 skill_materialize。\n"
+                    "**能力路由**：先 memory 取上下文 → 再 skills 取执行方法 → 执行后把稳定经验沉淀到 wiki。找不到技能时如实报告 SGME 技能库暂无可用技能，禁止凭空编造。\n"
                     "**服务发现**（找不到时按序）：1) 探测 http://<sgme-host>:9910/v1/health（host 取环境变量 SGME_HTTP_HOST 或 ~/.sgme/install.json 的 http.host，默认 localhost）；"
                     "2) 失败读 ~/.sgme/install.json（地址/端口/Key 引用）；3) 仍失败 → 向主人报告「SGME 未发现」。\n"
                     "**使用纪律**（五条铁律）：\n"

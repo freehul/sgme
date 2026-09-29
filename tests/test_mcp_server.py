@@ -508,6 +508,11 @@ def test_mcp_agent_onboarding_self_config(mcp):
     # A2/C（2026-09-28）：完成标准含适配器 + 八项对齐
     assert "适配器" in sc["requirement"]
     assert "skill_search" in sc["requirement"] or "skill_materialize" in sc["requirement"]
+    assert "memory / skills / wiki" in sc["requirement"]
+    assert "只需安装宿主适配器" in sc["requirement"]
+    assert "memory" in sc["template"]
+    assert "skills" in sc["template"]
+    assert "wiki" in sc["template"]
     assert "八项" in sc["requirement"] or "selfcheck" in sc["requirement"]
     # 步骤含幂等自查 / 读回验证 / 失败路径
     steps = "\n".join(sc["steps"])

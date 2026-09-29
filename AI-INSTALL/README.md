@@ -27,6 +27,7 @@
 - `prompts/` —— 可整段复制给 AI 的提示词（每份含中文 + English 两个复制块）。
 - `selfcheck.md` —— 自检清单（**八项**：发现/连通/写入/检索/提炼/技能/**自我配置**/**适配器**）与常见失败处置。
 - 官方适配器经技能库自助获取：`skill_search("adapter")` → `skill_materialize`（详见 `agent-onboarding.md` §6.1）。
+- **能力平面**：SGME 核心是 `memory / skills / wiki`；只安装宿主适配器，普通专业 skill 按需检索，不批量复制到本地。
 
 ## 三条原则
 
@@ -45,6 +46,8 @@
 > "Read `AI-INSTALL/README.md`, then follow the task cards under `prompts/` in order to deploy and connect SGME for me; self-check against `selfcheck.md` after each step and report back."
 
 **Task cards**: `01-install` (deploy/discover → health 200 + version) → `02-connect` (connect & verify — dedicated key minting + admin key sync included; generic / Hermes / DSH → dedicated key minted + 4 green checks) → `03-init-agent-files` (initialize SOUL / USER / MEMORY / AGENTS → files created + one read/write round-trip) → `04-daily-loop` (retrieve / append / refine / skills → checklist).
+
+**Capability plane**: SGME's three core modules are `memory / skills / wiki`. Install only the host adapter; retrieve ordinary specialist skills from SGME on demand instead of copying many skills locally.
 
 **Files**: `agent-onboarding.md` (protocol source of truth), `免费模型Key申请指南.md` (free API keys), `prompts/` (copy-paste prompts), `selfcheck.md` (post-setup checks).
 

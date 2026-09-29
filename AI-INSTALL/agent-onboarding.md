@@ -12,6 +12,18 @@
 5. **提炼**：批量 ≥20 文件必须分批 + 批间 30–60s；429 不立即重试，交 `batch_scan` 兜底。
 6. **技能获取（按需检索，MUST）**：需要 SGME 未内置的专业能力时，先 `skill_search(query)` 检索、命中后 `skill_get(name)` 拉全文注入再执行——**禁止未检索就声称具备技能或硬凑步骤**。冷启动包只含《技能检索协议》一个 skill、不预载全量技能，按需检索才是正路。
 
+### SGME 能力平面（核心三模块）
+
+接入 SGME 后，Agent 不需要批量安装很多 skill。只安装当前宿主的 SGME 适配器；其余能力留在 SGME，按需调用：
+
+| 需求 | 模块 | 入口 |
+|---|---|---|
+| 历史事实、用户偏好、项目上下文、画像和会话提炼 | `memory` | `append`、`inject`、`search`、`memory_get`、`refine_*` |
+| 持久手册、设计、经验、踩坑和知识沉淀 | `wiki` | `wiki_search`、`wiki_pages`、`wiki_page`、`wiki_page_add/update` |
+| 框架、工具链、专业流程和领域技能 | `skills` | `skill_search` → `skill_digest` → `skill_get` |
+
+统一路由：**memory 取上下文 → skills 取方法 → 执行 → wiki 沉淀稳定经验**。普通 skill 不物化；只有宿主适配器或确需本地资产时才使用 `skill_materialize`。
+
 ---
 
 ## 1. 服务发现三步（找不到 SGME 怎么办）

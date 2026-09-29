@@ -1,15 +1,16 @@
 ---
 name: sgme
-description: SGME 拾光记忆引擎操作手册：服务发现、接入纪律、常用操作与排障。
+description: SGME 能力平面总手册：memory、skills、wiki 三大核心模块的接入、路由、按需调用与排障。
 tags:
   - skill
+  - memory
+  - skills
+  - wiki
 category: sgme
----
-
----
-name: sgme-operations
-description: SGME（拾光记忆引擎）操作手册——记忆查询/写入、知识库 wiki、信号、提炼、运维全流程。需要操作 SGME（查记忆、写知识库、管提炼、看健康）时加载本手册按步骤执行。
-type: skill
+version: 2.0.0
+pattern: auto
+uses:
+  - skill-registry-protocol
 ---
 
 # SGME 操作手册
@@ -17,17 +18,43 @@ type: skill
 > 拾光记忆引擎（Single-user Agent Memory Engine）——多 agent 共享的记忆/知识/经验中枢。
 > 服务：NAS <NAS_IP>（HTTP :9910 / MCP :9913）。密钥走环境变量，不落明文。
 
-## 一、功能总览
+## 一、能力平面：接入后不再堆装 skill
+
+SGME 是 Agent 的长期能力平面。接入后，宿主只需要一个适配器（或通用 MCP）；
+专业能力默认留在 SGME 技能库中，按需检索和注入，不要把几十个技能全文复制到本地。
+
+| 核心模块 | 负责什么 | 先用什么 | 典型入口 |
+|---|---|---|---|
+| **memory** | 用户/项目历史事实、偏好、会话捕获、画像注入、提炼与溯源 | `inject` / `search` | `append`、`inject`、`search(scopes=["memory"])`、`memory_get`、`refine_*` |
+| **skills** | 可复用的专业流程、工具链和领域能力；按需加载全文 | `skill_search` → `skill_digest` → `skill_get` | `skill_list`、`skill_search`、`skill_get`、`skill_materialize` |
+| **wiki** | 持久知识、手册、设计文档、经验、踩坑和自进化写回 | `wiki_search` / `wiki_pages` | `wiki_search`、`wiki_pages`、`wiki_page`、`wiki_page_add/update` |
+
+### 任务路由规则
+
+1. 用户问「以前、上次、记得、我的偏好、项目历史」：先查 **memory**，查不到就明确说记忆库未找到。
+2. 需要长期保存的手册、方案、经验、踩坑：写入 **wiki**；写前先 `wiki_search` 避免重复。
+3. 需要某个框架、工具链、专业流程：先搜 **skills**，看摘要后再取全文；不要凭空声称拥有该能力。
+4. 任务同时涉及三类信息时：先 memory 取上下文，再 skills 取执行方法，最后把稳定经验沉淀到 wiki。
+5. 找不到合适 skill 时，不安装一堆替代品，也不编造步骤；报告 SGME 技能库缺口，必要时再请主人补充或纳管。
+
+### Agent 日常闭环
+
+`health → inject/search → 执行任务 → append → refine_trigger(async) → wiki/skill 按需沉淀`
+
+`skill_materialize` 只用于宿主适配器或确实需要本地文件的工具包；普通专业 skill 保持在 SGME 中按需读取。
+
+## 二、功能总览
 
 | 域 | 能力 | 入口 |
 |---|---|---|
 | 记忆 | L1.5 标签化记忆池：写入/检索/注入画像 | HTTP /v1/* + MCP 9913 |
+| 技能库 | 专业流程与工具能力（渐进式披露，支持整包物化） | /v1/skills/* + MCP skill_* |
 | 知识库 | wiki_pages 知识页面（md 内容，FTS5 检索，category/tags 分类） | /v1/wiki/* |
 | 信号 | 关怀信号（待办到期/情绪/过劳/每日） | DSH 桥接 signal_* |
 | 提炼 | 会话→记忆 自动提炼管线（L1/L1.5/L2） | refine_* |
 | 运维 | 健康/统计/备份/看门狗自愈 | /v1/health /v1/admin/* |
 
-## 二、接入方式
+## 三、接入方式
 
 ### 1. HTTP API（:9910）
 - 鉴权头：X-API-Key: <Agent Key>（Agent Key 调非 admin 端点；Admin Key 调 /v1/admin/*）
@@ -50,7 +77,7 @@ type: skill
 ### 3. DSH 桥接（dsh-sgme 插件，会话内工具）
 memory_search（L1.5 记忆池检索）/ wiki_search（知识库检索）/ wiki_pages / wiki_page / signal_pull / signal_claim / signal_ack（关怀信号闭环）
 
-## 三、核心操作步骤
+## 四、核心操作步骤
 
 ### 1. 查记忆（"之前/以前/还记得"类问题必用）
 1. 调 memory_search（DSH）或 POST /v1/search scopes=["memory"]（HTTP）
@@ -84,18 +111,18 @@ memory_search（L1.5 记忆池检索）/ wiki_search（知识库检索）/ wiki_
 - 备份：/v1/admin/backup（每日自动 + 三库口径 memory/session/wiki）
 - 重启：SSH NAS 重启容器（看门狗自愈 + 每日备份兜底）
 
-## 四、配置与密钥
+## 五、配置与密钥
 
 | 变量 | 用途 |
 |---|---|
 | SGME_BASE_URL | 服务地址（http://<NAS_IP>:9910） |
 | SGME_AGENT_KEY | Agent Key（非 admin 端点） |
 | SGME_ADMIN_KEY | Admin Key（/v1/admin/*） |
-| DEEPSEEK_API_KEY_SGME | 提炼用 LLM 密钥（降级链） |
+| `providers.yaml` 中声明的 `api_key_env` | 提炼/向量服务密钥；以 `health.model_config.missing_keys` 为准 |
 
 规则：密钥只读环境变量，代码/配置禁止硬编码；不在对话中贴明文。
 
-## 五、踩坑记录
+## 六、踩坑记录
 
 （本章节由自进化追加，只增不改。格式：现象 → 原因 → 正确做法，带来源与时间戳）
 

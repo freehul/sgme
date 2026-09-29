@@ -3,6 +3,7 @@
 > 部署 + 接入完成后，运行以下 **8 项**；**全绿 = 接入完成**，向用户汇报结果。
 > 端点占位：HTTP `http://<NAS_IP>:9910`；MCP `http://<NAS_IP>:9913/mcp`；密钥一律从环境变量读取。
 > 与 MCP `agent_onboarding.self_config.requirement` 同口径（2026-09-28 对齐）。
+> 能力平面：SGME 的核心模块是 `memory / skills / wiki`；接入后只需宿主适配器，专业 skill 按需从 SGME 检索，不批量安装。
 
 ## 八项检查
 
