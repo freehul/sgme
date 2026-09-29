@@ -51,6 +51,16 @@ def _stub_persist(monkeypatch, collector):
     )
 
 
+def _stub_commit_refine(monkeypatch):
+    """T-223 起 refine_many 逐文件落库后调 commit_refine（真实推进游标）。
+
+    本文件用内存占位连接（无 schema），stub 掉真实推游标，聚焦 F-2/F-5 断言。
+    """
+    monkeypatch.setattr(
+        pipeline_mod.refine_mod, "commit_refine", lambda r, session_conn: True,
+    )
+
+
 # ---------- 1. refine_batch 逐文件容错 ----------
 
 
@@ -94,6 +104,7 @@ def test_refine_many_persists_per_file_before_failure(monkeypatch):
     _stub_refine_file(monkeypatch, fail_on="f2", memories_per_file=True)
     persisted: list[tuple[str, str | None]] = []
     _stub_persist(monkeypatch, persisted)
+    _stub_commit_refine(monkeypatch)
     monkeypatch.setattr(pipeline_mod, "_resolve_file_agent", lambda conn, fid: "probe-agent")
 
     pairs = pipeline_mod.refine_many(limit=10, mem_conn=_CONN, session_conn=_CONN, cfg={})
@@ -111,6 +122,7 @@ def test_refine_many_passes_agent_tag(monkeypatch):
     _stub_refine_file(monkeypatch, memories_per_file=True)
     seen: list[tuple[str, str | None]] = []
     _stub_persist(monkeypatch, seen)
+    _stub_commit_refine(monkeypatch)
     monkeypatch.setattr(pipeline_mod, "_resolve_file_agent", lambda conn, fid: "agt-probe")
 
     pipeline_mod.refine_many(limit=10, mem_conn=_CONN, session_conn=_CONN, cfg={})
@@ -121,14 +133,17 @@ def test_refine_many_passes_agent_tag(monkeypatch):
 # ---------- 3. async_refine_worker 批量分支 agent_tag（F-5） ----------
 
 
-def test_async_worker_batch_passes_agent_tag(monkeypatch):
-    """异步批量分支此前漏传 agent_tag → 现补齐（T-140 多 Agent 打标）。"""
+def test_async_worker_batch_passes_agent_tag(tmp_path, monkeypatch):
+    """异步批量分支此前漏传 agent_tag → 现补齐（T-140 多 Agent 打标）。
+
+    T-222 起 worker 线程内自建连接（data_dir 参数），本用例给隔离 tmp 目录。
+    """
     _stub_scan(monkeypatch, ["f1", "f2"])
     _stub_refine_file(monkeypatch, memories_per_file=True)
     seen: list[tuple[str, str | None]] = []
     _stub_persist(monkeypatch, seen)
     monkeypatch.setattr(pipeline_mod, "_resolve_file_agent", lambda conn, fid: "agt-probe")
 
-    pipeline_mod.async_refine_worker(None, 10, _CONN, _CONN, {})
+    pipeline_mod.async_refine_worker(None, 10, tmp_path / "data", {})
 
     assert seen == [("f1", "agt-probe"), ("f2", "agt-probe")]
