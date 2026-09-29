@@ -43,6 +43,19 @@ SGME 是 Agent 的长期能力平面。接入后，宿主只需要一个适配�
 
 `skill_materialize` 只用于宿主适配器或确实需要本地文件的工具包；普通专业 skill 保持在 SGME 中按需读取。
 
+### 能力技能索引
+
+SGME 已把常用开发能力纳入统一技能库，Agent 不需要另外批量安装：
+
+| 任务 | 技能 | 检索词 |
+|---|---|---|
+| Gateway 健康、记忆、提炼、wiki 和技能索引运维 | `sgme-operations` | `SGME operations` |
+| 编码、TDD、调试、审查、验证、CodeGraph、提交 | `coding-workflow` | `coding development` |
+| SGME 引擎、数据库、提炼管线 | `sgme-development` | `SGME engine development` |
+| 六宿主适配器开发与发布 | `sgme-adapter-development` | `SGME adapter development` |
+| 设计、Backlog、onboarding、runbook | `sgme-docs-authoring` | `SGME documentation` |
+| 技能命名、去重、合并、删除和生命周期 | `skill-governance` | `skill governance` |
+
 ## 二、功能总览
 
 | 域 | 能力 | 入口 |

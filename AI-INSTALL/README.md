@@ -28,6 +28,7 @@
 - `selfcheck.md` —— 自检清单（**八项**：发现/连通/写入/检索/提炼/技能/**自我配置**/**适配器**）与常见失败处置。
 - 官方适配器经技能库自助获取：`skill_search("adapter")` → `skill_materialize`（详见 `agent-onboarding.md` §6.1）。
 - **能力平面**：SGME 核心是 `memory / skills / wiki`；只安装宿主适配器，普通专业 skill 按需检索，不批量复制到本地。
+- **内置开发能力**：技能库已纳入 `coding-workflow`、`sgme-development`、`sgme-adapter-development`、`sgme-docs-authoring`、`sgme-operations` 和 `skill-governance`；编码、运维和技能治理先从 SGME 检索，不要求宿主另装一套同名 skill。
 
 ## 三条原则
 

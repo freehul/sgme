@@ -24,6 +24,8 @@
 
 统一路由：**memory 取上下文 → skills 取方法 → 执行 → wiki 沉淀稳定经验**。普通 skill 不物化；只有宿主适配器或确需本地资产时才使用 `skill_materialize`。
 
+SGME 技能库已提供统一开发能力入口：`coding-workflow`（TDD/调试/审查/验证/CodeGraph/提交）、`sgme-development`（引擎开发）、`sgme-adapter-development`（适配器）、`sgme-docs-authoring`（文档）和 `skill-governance`（技能治理）。需要时按 `skill_search` 检索，不要再批量安装重复技能。
+
 ---
 
 ## 1. 服务发现三步（找不到 SGME 怎么办）

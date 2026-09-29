@@ -1,5 +1,5 @@
 ---
-name: sgme-key
+name: sgme-model-keys
 description: SGME 免费模型 Key 申请指南（Agnes agnes-2.5-flash 主链 / 硅基流动备用+向量）。
 tags:
   - skill
