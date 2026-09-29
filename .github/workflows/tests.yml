@@ -68,6 +68,9 @@ jobs:
   # （corepack 读取），tsdown/typescript/rolldown 由 pnpm-lock.yaml 钉死，
   # 产物不含绝对路径——同工具链重建逐字节一致（本地已用历史提交 a46d823
   # 回放验证：重建产物 sha256 与入库 blob 完全一致）。
+  # ⚠️ 2026-09-30 首跑实证：产物含 //#region node_modules/.pnpm/<pkg>_<hash> 注释，
+  # 该虚拟店哈希随 pnpm 大版本/平台而变（本地 pnpm9 26 位 vs CI pnpm11 32 位）——
+  # 比对前归一路径避免跨平台误红；内容级差异照旧必红（见下方 Assert 步骤）。
   # ============================================================
   dsh-bundle-freshness:
     runs-on: ubuntu-24.04
@@ -96,17 +99,32 @@ jobs:
 
       - name: Assert committed lib is fresh
         run: |
-          # 用 git diff（blob 内容比对）而非 git status：autocrlf 工作副本上重建会
-          # 刷新 mtime/size，status 可能误报 M 假警报（本地以全新 clone 实测复现过）；
-          # diff 按归一内容比对，Windows 工作区与 Linux CI 上行为一致。
-          if ! git diff --quiet -- adapters/dsh/sgme-bridge/lib; then
-            echo "::error::dsh 桥接 lib/ 与 src 不同步——本地 pnpm -C adapters/dsh/sgme-bridge run build 后提交产物"
-            git --no-pager diff -- adapters/dsh/sgme-bridge/lib
-            exit 1
-          fi
+          # 比对：重建产物 vs 入库版本（HEAD），逐文件。
+          # 先归一两类环境噪声（2026-09-30 首跑实证的误红根因）：
+          #   ①//#region 注释里的 .pnpm 虚拟店目录名——<pkg>@<ver>_<peer 集>_<hash>
+          #     的哈希与截断形态随 pnpm 大版本/平台变化（v9 26 位 vs v11 32 位）；
+          #   ②保留 <pkg>@<ver> 前缀不归一——依赖集合若真变（增删包）照样必红。
+          # 内容级差异（改了实现没重建）不受归一影响，照旧拦截。
+          RE='s#(\.pnpm/[^_/]+)_[^/]*/node_modules#\1_<STOREV>/node_modules#g'
+          fail=0
+          for f in adapters/dsh/sgme-bridge/lib/*; do
+            [ -f "$f" ] || continue
+            if ! git cat-file -e "HEAD:$f" 2>/dev/null; then
+              echo "::error::dsh 产物出现未入库的新文件：$f（本地 build 后提交产物）"
+              fail=1; continue
+            fi
+            git show "HEAD:$f" | sed -E "$RE" > /tmp/committed.norm
+            sed -E "$RE" "$f" > /tmp/rebuilt.norm
+            if ! diff -q /tmp/committed.norm /tmp/rebuilt.norm >/dev/null; then
+              echo "::error::dsh 桥接 $f 与 src 不同步（已归一 pnpm 虚拟店路径后仍不一致）——本地 pnpm -C adapters/dsh/sgme-bridge run build 后提交产物"
+              diff /tmp/committed.norm /tmp/rebuilt.norm | head -60
+              fail=1
+            fi
+          done
           untracked="$(git ls-files --others --exclude-standard -- adapters/dsh/sgme-bridge/lib)"
           if [ -n "$untracked" ]; then
             echo "::error::dsh 桥接 lib/ 出现未入库的新产物文件：$untracked"
-            exit 1
+            fail=1
           fi
-          echo "OK：dsh 桥接 lib/ 与 src 同步"
+          [ "$fail" = "1" ] && exit 1
+          echo "OK：dsh 桥接 lib/ 与 src 同步（已归一 pnpm 虚拟店路径）"
