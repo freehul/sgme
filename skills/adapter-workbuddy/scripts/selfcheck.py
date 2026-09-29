@@ -26,7 +26,6 @@ import sys
 
 from sgme_client import (
     ADMIN_KEY_ENV,
-    AGENT_ID,
     BASELINE_TOOLS,
     SGME,
     SGMEError,
@@ -80,7 +79,7 @@ def main(argv=None) -> int:
         info = c.describe()
         print(f"端点数：HTTP {info['http_url']} ｜ MCP {info['mcp_url']}"
               f"（来源：{info['address_source']}）")
-        print(f"agent_id：{AGENT_ID}（服务端溯源打标用）")
+        print(f"agent_id：{info['agent_id']}（来源：{info['agent_id_source']}；服务端溯源打标用）")
         print(f"密钥：agent key {'已取到' if info['agent_key_set'] else '未取到'}"
               f"（来源：{info['agent_key_source'] or '—'}）"
               f" ｜ {ADMIN_KEY_ENV}={'已设置' if info['admin_key_set'] else '未设置'}")
@@ -104,15 +103,17 @@ def main(argv=None) -> int:
         run("④ inject（画像注入）", lambda: _count(c.inject("daily")))
         run("⑤ skill_search（技能检索）", lambda: _count(c.skill_search("sgme", limit=3)))
         run("⑥ wiki_search（知识库检索）", lambda: _count(c.wiki_search("接入", limit=3)))
-        run("⑦ events_pull（事件游标）", lambda: _count(c.events_pull("workbuddy", 5)))
+        run("⑦ events_pull（事件游标）", lambda: _count(c.events_pull(c.agent_id, 5)))
 
         def _append_heartbeat():
             if a.no_append:
                 return "skipped"
             # session_key 必须带 agent 前缀：三个 Skill 型适配器曾共用 "sgme-selfcheck"，
             # 导致心跳互相追加进同一个 L0 文件、agent 归属错乱（B194 实测发现）。
-            r = c.append(f"{AGENT_ID}-selfcheck", "接入自检心跳（selfcheck.py）",
-                         agent_id=AGENT_ID)
+            # 前缀取本机解析的 agent_id（T-233）：多设备各写各的，不再按常量前缀碰撞。
+            aid = c.agent_id
+            r = c.append(f"{aid}-selfcheck", "接入自检心跳（selfcheck.py）",
+                         agent_id=aid)
             return str(r.get("status") or r.get("file_id") or "ok")[:40]
         run("⑧ append（L0 写入心跳）", _append_heartbeat)
 
