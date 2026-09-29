@@ -53,3 +53,60 @@ jobs:
           name: junit-report
           path: tmp/junit.xml
           if-no-files-found: ignore
+
+  # ============================================================
+  # T-226 防复发（P1-9）：dsh 桥接 lib/ 是入库提交的构建产物，vitest 全 mock
+  # 永不加载 lib——「本地全绿、产物旧」在本地没有任何信号（conversation_search
+  # 曾静默缺失 5 天）。本 job 重建产物并断言与提交内容零 diff。
+  #
+  # 为什么 Python 门禁（tests/test_adapter_freshness.py）不够：
+  # 该门禁做的是工具名/模块级比对（改 src 忘了 build 的常见形态必红），
+  # 而「改了现有实现没重建」这类内容级陈旧只有「重建 + diff」能兜住——
+  # 这也是审计报告 P3 的明确建议。两条线互补，互不替代。
+  #
+  # 构建可复现性依据：pnpm 版本由 package.json 的 packageManager 字段钉死
+  # （corepack 读取），tsdown/typescript/rolldown 由 pnpm-lock.yaml 钉死，
+  # 产物不含绝对路径——同工具链重建逐字节一致（本地已用历史提交 a46d823
+  # 回放验证：重建产物 sha256 与入库 blob 完全一致）。
+  # ============================================================
+  dsh-bundle-freshness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Node 24（LTS）自带 corepack；tsdown 要求 ^22.18.0 || >=24.11.0。
+      # 注意 Node 24 起为仍分发 corepack 的最高版本（25+ 已移除，改由 npm 独立安装）。
+      - name: Setup Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Enable pnpm（版本 = packageManager 字段，corepack 自动取 11.21.0）
+        run: corepack enable
+
+      - name: Install bridge deps
+        working-directory: adapters/dsh/sgme-bridge
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild bundle
+        working-directory: adapters/dsh/sgme-bridge
+        run: pnpm run build
+
+      - name: Assert committed lib is fresh
+        run: |
+          # 用 git diff（blob 内容比对）而非 git status：autocrlf 工作副本上重建会
+          # 刷新 mtime/size，status 可能误报 M 假警报（本地以全新 clone 实测复现过）；
+          # diff 按归一内容比对，Windows 工作区与 Linux CI 上行为一致。
+          if ! git diff --quiet -- adapters/dsh/sgme-bridge/lib; then
+            echo "::error::dsh 桥接 lib/ 与 src 不同步——本地 pnpm -C adapters/dsh/sgme-bridge run build 后提交产物"
+            git --no-pager diff -- adapters/dsh/sgme-bridge/lib
+            exit 1
+          fi
+          untracked="$(git ls-files --others --exclude-standard -- adapters/dsh/sgme-bridge/lib)"
+          if [ -n "$untracked" ]; then
+            echo "::error::dsh 桥接 lib/ 出现未入库的新产物文件：$untracked"
+            exit 1
+          fi
+          echo "OK：dsh 桥接 lib/ 与 src 同步"
