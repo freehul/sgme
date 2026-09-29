@@ -1146,6 +1146,30 @@ def init_databases(
     return mem, session, wiki
 
 
+def resolve_data_dir(conn: sqlite3.Connection) -> Path | None:
+    """从既有连接推导数据库目录（T-222：后台线程自建独立连接用）。
+
+    取 ``PRAGMA database_list`` 中 main 库的文件路径 → 父目录。v0.7 三库拆分后
+    memory.db / session.db / wiki.db 同层级（同 data_dir），故任一连接的父目录
+    即 data_dir。内存库（``:memory:``）无文件路径 → 返回 None，由调用方自行回退。
+
+    背景（T-222，2026-09-30 深度审查 P0-1）：提炼后台线程不得复用宿主连接
+    （跨线程共享 sqlite 连接在显式事务下互踩：BEGIN 冲突 + rollback 连带回滚，
+    记忆静默丢失），改为线程内 ``init_databases(data_dir)`` 自建；data_dir 由
+    本函数从宿主连接直接推导——operations / pipeline 的对外签名零变化，
+    入口层（routes/mcp_server）零波及。
+    """
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except Exception:
+        return None
+    for row in rows:
+        # row = (seq, name, file)；sqlite3.Row 与普通元组均支持整数下标
+        if row[1] == "main" and row[2]:
+            return Path(row[2]).resolve().parent
+    return None
+
+
 # ---------- D1：三库连接的对外统一命名（connect_* 保留为等价别名） ----------
 
 

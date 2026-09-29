@@ -32,6 +32,16 @@ MCP  ``refine_status``                     ``refine_status``（无投影，data 
   ``async_mode=True`` → 调 ``refine_trigger_async``；``False`` → 调 ``refine_trigger``。
   （HTTP 侧没有 async_mode 参数，两个端点各对应一个操作。）
 
+连接隔离（T-222，2026-09-30 深度审查 P0-1）
+--------------------------------------------------
+后台提炼线程一律**线程内自建独立连接**（``engine.pipeline.async_refine_worker`` /
+本模块 ``_async_batch_worker`` 内 ``db.init_databases(data_dir)``，线程退出关闭），
+**不再把宿主 app.state / _app_state 连接交给线程**——跨线程共享 sqlite 连接在
+显式事务（memory_dao.insert_memory/archive_memory）下互踩会静默丢记忆
+（BEGIN 冲突 + rollback 连带回滚，探针实测复现）。
+data_dir 由宿主连接经 ``PRAGMA database_list`` 推导（``_resolve_worker_data_dir``）
+——operations 签名零变化，入口层（routes_admin / mcp_server）零波及。
+
 ⚠️ 历史契约差异（v0.8 待统一，现在**不得**合并）
 --------------------------------------------------
 HTTP 与 MCP 的 refine_trigger 响应形态**本就不同**，v0.7 抽取时不得强行统一：
@@ -69,26 +79,43 @@ HTTP 与 MCP 的 refine_trigger 响应形态**本就不同**，v0.7 抽取时不
     （T-143②：单文件失败时若模型 Key 缺失，响应额外附 ``note`` 可行动引导——
     应用 ``model_keys_notice`` 缺失时才加，齐全零噪音，成功路径不挂。）
 
-依赖：只调 ``sgme.engine.pipeline``（提炼编排唯一出口）+ 
-``sgme.data.session_dao``（存在性预检）。engine 是只读禁区，不改。
+依赖：只调 ``sgme.engine.pipeline``（提炼编排唯一出口）+ ``sgme.data`` 的
+``session_dao``（存在性预检）/ ``db``（后台线程 data_dir 推导，T-222）。
 """
 from __future__ import annotations
 
 import logging
 import sqlite3
 import threading
+from pathlib import Path
 from typing import Any
 
 from sgme.engine import pipeline as pipeline_mod
 from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult, result_from_exception
 from sgme.operations.health import watermark_age_sec
 from sgme.operations.llm import model_keys_notice
-from sgme.data import refine_dao, session_dao, stats_dao
+from sgme.data import db as db_mod, refine_dao, session_dao, stats_dao
 
 logger = logging.getLogger("sgme.operations.refine")
 
 # 异步响应的固定文案：v0.6 路由内联字符串，v0.7 收敛到此单点常量。
 ASYNC_QUEUED_NOTE: str = "后台线程执行，结果异步落库；可用 /v1/health refinement 水位观察进度"
+
+
+def _resolve_worker_data_dir(
+    session_conn: sqlite3.Connection,
+    mem_conn: sqlite3.Connection,
+) -> Path | None:
+    """后台提炼线程的 data_dir：从宿主连接推导（T-222，2026-09-30 深度审查 P0-1）。
+
+    异步提炼线程一律**线程内自建独立连接**（不再把宿主连接交给线程——跨线程
+    共享 sqlite 连接在显式事务下互踩会丢记忆）。data_dir 优先取 session.db
+    （raw_files 队列所在），回退 memory.db；两者皆内存库（仅测试场景）→ None，
+    线程内 init_databases(None) 回落 config.DATA_DIR。
+
+    operations 签名由此零变化，入口层（routes_admin / mcp_server）零波及。
+    """
+    return db_mod.resolve_data_dir(session_conn) or db_mod.resolve_data_dir(mem_conn)
 
 
 def _validate_limit(limit: int) -> None:
@@ -208,9 +235,12 @@ def refine_trigger_async(
     后台执行体 ``engine.pipeline.async_refine_worker`` 逐文件容错、异常不抛出
     （由批扫兜底），故本操作的可预期失败只有参数非法与线程启动失败两种。
 
+    连接隔离（T-222，2026-09-30 深度审查 P0-1）：宿主连接**不再**交给后台线程，
+    线程内自建独立连接（data_dir 由宿主连接推导，见 _resolve_worker_data_dir）。
+
     Args:
-        mem_conn: memory.db 连接（后台线程使用）。
-        session_conn: session.db 连接（后台线程使用）。
+        mem_conn: memory.db 连接（仅用于推导 data_dir；T-222 起不再跨线程共享）。
+        session_conn: session.db 连接（仅用于推导 data_dir）。
         cfg: 运行时配置（后台线程使用）。
         file_id: 指定单文件；None / 空串 → 批量（``file_id or "batch"`` 假值语义）。
         limit: 批量上限，必须为正整数。
@@ -224,9 +254,10 @@ def refine_trigger_async(
     """
     _validate_limit(limit)
     try:
+        data_dir = _resolve_worker_data_dir(session_conn, mem_conn)
         threading.Thread(
             target=pipeline_mod.async_refine_worker,
-            args=(file_id, limit, mem_conn, session_conn, cfg),
+            args=(file_id, limit, data_dir, cfg),
             daemon=True,
         ).start()
     except Exception as e:
@@ -300,22 +331,40 @@ def _batch_item(
 
 def _async_batch_worker(
     file_ids: list[str],
-    mem_conn: sqlite3.Connection,
-    session_conn: sqlite3.Connection,
+    data_dir: str | Path | None,
     cfg: dict[str, Any],
 ) -> None:
     """批量提炼后台执行体（显式文件列表版，线程内运行，异常不抛出）。
 
+    T-222（2026-09-30 深度审查 P0-1）：线程内自建独立连接
+    （``db.init_databases(data_dir)``，退出关闭），不复用宿主连接——跨线程共享
+    sqlite 连接在显式事务下互踩会丢记忆（探针实测复现）。
+
     与 ``engine.pipeline.async_refine_worker`` 同款「逐文件容错」：单文件失败
     只记日志、继续下一文件，由批扫兜底。engine 的 worker 只认单文件/全量扫描
-    两种范围，显式文件列表由本 worker 处理（engine 是只读禁区，不外扩）。
+    两种范围，显式文件列表由本 worker 处理（提炼编排不外扩）。
     """
-    for file_id in file_ids:
-        try:
-            result, _ = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
-            logger.info("async refine_batch file=%s status=%s", file_id, result.status)
-        except Exception as e:
-            logger.warning("async refine_batch 文件 %s 失败（继续下一文件）: %s", file_id, e)
+    from sgme.data import db as db_mod
+
+    mem_conn: sqlite3.Connection | None = None
+    session_conn: sqlite3.Connection | None = None
+    try:
+        mem_conn, session_conn, _ = db_mod.init_databases(data_dir)
+        for file_id in file_ids:
+            try:
+                result, _ = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
+                logger.info("async refine_batch file=%s status=%s", file_id, result.status)
+            except Exception as e:
+                logger.warning("async refine_batch 文件 %s 失败（继续下一文件）: %s", file_id, e)
+    except Exception as e:
+        logger.warning("async refine_batch 连接初始化失败（后台）: %s", e)
+    finally:
+        for conn in (mem_conn, session_conn):
+            if conn is not None:
+                try:
+                    db_mod.close(conn)
+                except Exception:
+                    pass
 
 
 def _validate_file_ids(
@@ -383,16 +432,17 @@ def refine_batch(
 
     if async_mode:
         try:
+            data_dir = _resolve_worker_data_dir(session_conn, mem_conn)
             if file_ids is not None:
                 threading.Thread(
                     target=_async_batch_worker,
-                    args=(file_ids, mem_conn, session_conn, cfg),
+                    args=(file_ids, data_dir, cfg),
                     daemon=True,
                 ).start()
             else:
                 threading.Thread(
                     target=pipeline_mod.async_refine_worker,
-                    args=(None, limit, mem_conn, session_conn, cfg),
+                    args=(None, limit, data_dir, cfg),
                     daemon=True,
                 ).start()
         except Exception as e:

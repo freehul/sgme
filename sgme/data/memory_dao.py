@@ -12,12 +12,28 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from sgme.segment import segment
 from sgme.data import db as db_mod
+
+# T-222（2026-09-30 深度审查 P0-1）：memories 写路径的显式事务互斥锁。
+#
+# 连接以 check_same_thread=False 跨线程共享（HTTP threadpool / MCP 线程池 /
+# 后台任务），两个线程在同一条连接上交错显式事务时：后者的 BEGIN 报
+# OperationalError("cannot start a transaction within a transaction")，
+# 且其 except 分支的 rollback() 会把前者半程写入一并回滚——前辈以为落库成功，
+# 实际零行（探针 tmp/probe_t222_shared_conn.py 实测复现）。
+#
+# 提炼后台线程已改为自建独立连接（T-222 主体修复）；本锁兜住仍共享宿主连接的
+# 同步路径（HTTP/MCP 请求线程）中 insert_memory / archive_memory 的交错——
+# 这是本模块仅有的两个 memories 写入显式事务（import_registry 为启动期单线程
+# 调用，不在此列）。粒度 = 一次显式事务（内部仅数条语句）；RLock 允许同线程
+# 嵌套调用（如 L1.5 update/merge 先 insert 后 archive 的复合动作无需拆锁）。
+_TXN_LOCK = threading.RLock()
 
 
 def _now_iso() -> str:
@@ -247,35 +263,36 @@ def insert_memory(
     c_at = created_at or _now_iso()
     u_at = updated_at or c_at
     o_at = occurred_at or c_at
-    try:
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            INSERT INTO memories
-              (memory_id, content, content_seg, memory_type, priority, time_velocity,
-               ttl_days, created_at, updated_at, agent_tag, prompt_version, occurred_at,
-               facts_json, valid_from, valid_to)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (mid, content, segment(content), memory_type, priority, time_velocity,
-             ttl_days, c_at, u_at, agent_tag, prompt_version, o_at,
-             _facts_to_json(facts), valid_from, valid_to),
-        )
-        for dim_id in dimension_ids:
+    with _TXN_LOCK:  # T-222：BEGIN…COMMIT/ROLLBACK 全程互斥（含 rollback，防连带回滚他人事务）
+        try:
+            conn.execute("BEGIN")
             conn.execute(
-                "INSERT OR IGNORE INTO memory_tags (memory_id, dimension_id) VALUES (?,?)",
-                (mid, dim_id),
+                """
+                INSERT INTO memories
+                  (memory_id, content, content_seg, memory_type, priority, time_velocity,
+                   ttl_days, created_at, updated_at, agent_tag, prompt_version, occurred_at,
+                   facts_json, valid_from, valid_to)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (mid, content, segment(content), memory_type, priority, time_velocity,
+                 ttl_days, c_at, u_at, agent_tag, prompt_version, o_at,
+                 _facts_to_json(facts), valid_from, valid_to),
             )
-        if sources:
-            for src_ref, src_type in sources:
+            for dim_id in dimension_ids:
                 conn.execute(
-                    "INSERT OR IGNORE INTO memory_sources (memory_id, source_ref, source_type) VALUES (?,?,?)",
-                    (mid, src_ref, src_type),
+                    "INSERT OR IGNORE INTO memory_tags (memory_id, dimension_id) VALUES (?,?)",
+                    (mid, dim_id),
                 )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+            if sources:
+                for src_ref, src_type in sources:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_sources (memory_id, source_ref, source_type) VALUES (?,?,?)",
+                        (mid, src_ref, src_type),
+                    )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return mid
 
 
@@ -387,42 +404,47 @@ def archive_memory(
     """归档记忆：原行复制到 memory_archive + 从 memories 删除（事务）。
 
     supersession 锚点 = memory_id（归档前后同 id）。
+
+    T-222：BEGIN…COMMIT/ROLLBACK 全程持 _TXN_LOCK（与 insert_memory 同一把锁），
+    防跨线程同连接显式事务交错——后者 BEGIN 冲突后的 rollback 会连带回滚前者的
+    半程写入（深度审查 P0-1 实测复现）。
     """
-    try:
-        conn.execute("BEGIN")
-        row = conn.execute("SELECT * FROM memories WHERE memory_id=?", (memory_id,)).fetchone()
-        if not row:
+    with _TXN_LOCK:
+        try:
+            conn.execute("BEGIN")
+            row = conn.execute("SELECT * FROM memories WHERE memory_id=?", (memory_id,)).fetchone()
+            if not row:
+                conn.rollback()
+                return False
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_archive
+                  (memory_id, content, memory_type, priority, time_velocity, ttl_days,
+                   created_at, updated_at, agent_tag, prompt_version, archived_at, superseded_by,
+                   occurred_at, facts_json, valid_from, valid_to)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (row["memory_id"], row["content"], row["memory_type"], row["priority"],
+                 row["time_velocity"], row["ttl_days"], row["created_at"], row["updated_at"],
+                 row["agent_tag"], row["prompt_version"], _now_iso(), superseded_by,
+                 row["occurred_at"] if "occurred_at" in row.keys() else None,
+                 row["facts_json"] if "facts_json" in row.keys() else None,
+                 row["valid_from"] if "valid_from" in row.keys() else None,
+                 row["valid_to"] if "valid_to" in row.keys() else None),
+            )
+            # 标签、溯源与向量一并清除（归档行保留可溯源；archive 表无 FK 到 memories）
+            conn.execute("DELETE FROM memory_tags WHERE memory_id=?", (memory_id,))
+            conn.execute("DELETE FROM memory_sources WHERE memory_id=?", (memory_id,))
+            # memory_stats 是 v0.7 后加的表，有 FK 到 memories，归档时必须先清理
+            conn.execute("DELETE FROM memory_stats WHERE memory_id=?", (memory_id,))
+            # 向量是派生数据，随记忆归档删除（memory_vectors 有 FK 到 memories，必须先删）
+            conn.execute("DELETE FROM memory_vectors WHERE memory_id=?", (memory_id,))
+            conn.execute("DELETE FROM memories WHERE memory_id=?", (memory_id,))
+            conn.commit()
+            return True
+        except Exception:
             conn.rollback()
-            return False
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO memory_archive
-              (memory_id, content, memory_type, priority, time_velocity, ttl_days,
-               created_at, updated_at, agent_tag, prompt_version, archived_at, superseded_by,
-               occurred_at, facts_json, valid_from, valid_to)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (row["memory_id"], row["content"], row["memory_type"], row["priority"],
-             row["time_velocity"], row["ttl_days"], row["created_at"], row["updated_at"],
-             row["agent_tag"], row["prompt_version"], _now_iso(), superseded_by,
-             row["occurred_at"] if "occurred_at" in row.keys() else None,
-             row["facts_json"] if "facts_json" in row.keys() else None,
-             row["valid_from"] if "valid_from" in row.keys() else None,
-             row["valid_to"] if "valid_to" in row.keys() else None),
-        )
-        # 标签、溯源与向量一并清除（归档行保留可溯源；archive 表无 FK 到 memories）
-        conn.execute("DELETE FROM memory_tags WHERE memory_id=?", (memory_id,))
-        conn.execute("DELETE FROM memory_sources WHERE memory_id=?", (memory_id,))
-        # memory_stats 是 v0.7 后加的表，有 FK 到 memories，归档时必须先清理
-        conn.execute("DELETE FROM memory_stats WHERE memory_id=?", (memory_id,))
-        # 向量是派生数据，随记忆归档删除（memory_vectors 有 FK 到 memories，必须先删）
-        conn.execute("DELETE FROM memory_vectors WHERE memory_id=?", (memory_id,))
-        conn.execute("DELETE FROM memories WHERE memory_id=?", (memory_id,))
-        conn.commit()
-        return True
-    except Exception:
-        conn.rollback()
-        raise
+            raise
 
 
 def get_archive_chain(conn: sqlite3.Connection, memory_id: str) -> list[dict]:

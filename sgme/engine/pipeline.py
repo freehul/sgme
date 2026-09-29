@@ -18,6 +18,7 @@ import logging
 import sqlite3
 import threading
 import uuid
+from pathlib import Path
 
 from sgme.engine import l15 as l15_mod
 from sgme.engine import refine as refine_mod
@@ -266,18 +267,29 @@ def refine_many(
 def async_refine_worker(
     file_id: str | None,
     limit: int,
-    mem_conn: sqlite3.Connection,
-    session_conn: sqlite3.Connection,
+    data_dir: str | Path | None,
     cfg: dict,
 ) -> None:
-    """异步提炼后台执行体（线程内运行，异常不抛出——由批扫兜底）。
+    """异步提炼后台执行体（线程内运行：自建独立连接，异常不抛出——由批扫兜底）。
+
+    连接隔离（T-222，2026-09-30 深度审查 P0-1）：线程内 ``init_databases(data_dir)``
+    自建独立连接，**不再复用宿主 app.state / _app_state 连接**——跨线程共享
+    sqlite 连接在 insert_memory/archive_memory 的显式事务下互踩（BEGIN 冲突 +
+    rollback 连带回滚，记忆静默丢失，探针实测复现）。与 batch_scan._scheduler_loop、
+    dream.run_dream_safe 同款；线程退出时关闭自建连接。
+    data_dir=None → config.DATA_DIR（内存库场景兜底）。
 
     逐文件 L1→L1.5→L2 立即落库（2026-08-06 修复）：
     原实现先 refine_batch 收集全部 L1 结果再统一落库，中途异常
     （如 Model is unloaded）导致已处理文件的记忆全部丢失。
     现在每个文件独立 try/except + 立即落库，崩溃只丢当前文件。
     """
+    from sgme.data import db as db_mod
+
+    mem_conn: sqlite3.Connection | None = None
+    session_conn: sqlite3.Connection | None = None
     try:
+        mem_conn, session_conn, _ = db_mod.init_databases(data_dir)
         if file_id:
             result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
             if result.memories:
@@ -301,6 +313,13 @@ def async_refine_worker(
             logger.info("async refine batch processed=%d", processed)
     except Exception as e:
         logger.warning("async refine 异常（后台）: %s", e)
+    finally:
+        for conn in (mem_conn, session_conn):
+            if conn is not None:
+                try:
+                    db_mod.close(conn)
+                except Exception:
+                    pass
 
 
 def append_l0(
@@ -469,6 +488,11 @@ def _maybe_refine_on_append(
 
     默认关闭（高频写入场景每轮提炼浪费）；低频场景（如会话级写入）可开启。
     提炼走后台线程（async_refine_worker 语义），立即返回不阻塞 append。
+
+    连接隔离（T-222，2026-09-30 深度审查 P0-1）：此前线程内 refine_one 直接用
+    宿主连接（与 append 请求线程、其他提炼线程同连接交错显式事务 → 丢记忆）。
+    现改为——本函数（append 调用线程内）先从宿主连接推导 data_dir，后台线程内
+    ``init_databases(data_dir)`` 自建独立连接，退出关闭。
     """
     import threading
 
@@ -476,11 +500,26 @@ def _maybe_refine_on_append(
     if not refine_cfg.get("refine_on_append", False):
         return
 
+    from sgme.data import db as db_mod
+
+    # 宿主连接推导 data_dir（内存库 → None，线程内回落 config.DATA_DIR）
+    data_dir = db_mod.resolve_data_dir(session_conn) or db_mod.resolve_data_dir(mem_conn)
+
     def _run() -> None:
+        t_mem: sqlite3.Connection | None = None
+        t_session: sqlite3.Connection | None = None
         try:
-            result, _ = refine_one(file_id, mem_conn, session_conn, cfg)
+            t_mem, t_session, _ = db_mod.init_databases(data_dir)
+            result, _ = refine_one(file_id, t_mem, t_session, cfg)
             logger.info("append 联动提炼 file=%s status=%s", file_id, result.status)
         except Exception as e:
             logger.warning("append 联动提炼异常: %s", e)
+        finally:
+            for conn in (t_mem, t_session):
+                if conn is not None:
+                    try:
+                        db_mod.close(conn)
+                    except Exception:
+                        pass
 
     threading.Thread(target=_run, daemon=True).start()
