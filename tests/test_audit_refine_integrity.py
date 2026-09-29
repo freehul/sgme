@@ -197,6 +197,28 @@ def test_t222_shared_conn_concurrent_burst_no_loss(tmp_path):
     assert mem_conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 16
 
 
+def test_t222_shared_conn_concurrent_archive_no_loss(tmp_path):
+    """自然并发：两线程同连接并发 archive_memory（同一把锁）→ 零报错、归档完整。"""
+    mem_conn, _, _ = db_mod.init_databases(tmp_path / "data")
+    ids = [_insert(mem_conn, f"m-{i}") for i in range(16)]
+    errors: list = []
+
+    def worker(chunk):
+        for mid in chunk:
+            try:
+                memory_dao.archive_memory(mem_conn, mid, superseded_by="probe")
+            except Exception as e:  # noqa: BLE001
+                errors.append(repr(e))
+
+    t1 = threading.Thread(target=worker, args=(ids[:8],))
+    t2 = threading.Thread(target=worker, args=(ids[8:],))
+    t1.start(); t2.start(); t1.join(); t2.join()
+
+    assert errors == [], f"并发归档仍互踩: {errors[:3]}"
+    assert mem_conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+    assert mem_conn.execute("SELECT COUNT(*) FROM memory_archive").fetchone()[0] == 16
+
+
 def test_t222_resolve_data_dir_from_conn(tmp_path):
     """resolve_data_dir：文件库 → 父目录；:memory: → None。"""
     mem_conn, _, _ = db_mod.init_databases(tmp_path / "data")
