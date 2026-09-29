@@ -10,8 +10,8 @@
 | 路径 | 适用 | 方式 |
 |---|---|---|
 | **通用直连** | 任何能发 HTTP/MCP 的 Agent | HTTP `http://<NAS_IP>:9910`；MCP `http://<NAS_IP>:9913/mcp`；请求头 `X-API-Key`（用 `SGME_AGENT_KEY` 或签发的 `agt_*`） |
-| **Hermes** | Hermes Agent | 运行 `adapters/hermes/` 的安装脚本，按适配器 README 配置端点与 Key 环境变量 |
-| **DSH** | DeepSeek Harness | 安装 npm 包 `dsh-sgme`，按 `adapters/dsh/sgme-bridge/README.md` 配置 |
+| **Hermes** | Hermes Agent | 适配器经技能库获取（`skill_search("adapter-hermes")` → `skill_materialize`）后跑包内 `install.py`；源码副本另有 `adapters/hermes/` |
+| **DSH** | DeepSeek Harness | 适配器经技能库获取（`skill_search("adapter-dsh")` → `skill_materialize`），按包内 README 执行 `install.py`，再 `dsh plugin add dsh-sgme` |
 
 > 提示：权限分家——日常记忆读写用 Agent Key（`SGME_AGENT_KEY` / 专属 `agt_*`）；管理端点（含 register 签发）用 admin key（`SGME_ADMIN_KEY`），admin key 不当日常身份用（反查为合成身份 `default`）。默认开发 Key 仅限本机回环，远程调用一律 403（必须自定义 Key）。
 
@@ -56,10 +56,10 @@ print(r.json())   # 已存在则返回 409 ERR_CONFLICT（见「失败处置」�
 
 ### 4. 联通自检（4 项，缺一不可）
 
-1. **发现**：调用 `agent_onboarding`（MCP）或 `GET /v1/health` —— 拿到版本与能力清单。
+1. **发现**：调用 `agent_onboarding`（MCP）或 `GET /v1/health` —— 拿到版本与状态字段（完整能力清单以 `agent_onboarding` 为准）。
 2. **写入**：`POST /v1/append`，body 必带 `session_key` + `started_at`(ISO) + `content`（首行格式 `# {ISO} {role}`）；返回 `status: new` 即成功。
 3. **检索**：`POST /v1/search` 用刚写入的关键词检索——能命中并带溯源。
-4. **提炼**：`POST /v1/refine_trigger`（`async_mode=true`）触发一次——拿到任务号即算通过（本项可选，但推荐）。
+4. **提炼**：MCP `refine_trigger(async_mode=true)`（或 HTTP admin `POST /v1/admin/refine/trigger_async`）触发一次——拿到任务号即算通过（本项可选，但推荐）。
 
 > 网络提示：Python 用 `requests.Session()` 并 `trust_env=False`（防代理劫持本机/内网请求）；git-bash 的 curl 可能破坏中文 UTF-8，测试优先用 Python。
 
@@ -90,12 +90,12 @@ print(r.json())   # 已存在则返回 409 ERR_CONFLICT（见「失败处置」�
 > 1. 端点：HTTP `http://<NAS_IP>:9910`、MCP `http://<NAS_IP>:9913/mcp`；密钥一律从环境变量读取（不要向我索要明文）。
 > 2. 先申请你的专属身份：用 admin key（环境变量 `SGME_ADMIN_KEY`；读不到 SGME 服务端 `config/.env` 就向我说明最小手动步骤，不要阻塞）调 `POST /v1/admin/agents/register`，签发自己的 `agent_id`（按宿主名命名，如 `hermes`）与 `agt_*` Key（明文仅此一次），写入接入侧环境变量 `SGME_AGENT_KEY`，并把 admin key 一并同步进接入侧环境文件。
 > 3. 如果你是 Hermes 或 DSH，请使用仓库 `adapters/` 下对应适配器的安装方式；否则走通用直连。
-> 4. 完成 4 项自检：①拿到版本能力 ②写入一轮测试并返回 `status: new` ③检索回读命中 ④触发一次提炼（异步）。
+> 4. 完成 4 项自检：①拿到版本与状态字段 ②写入一轮测试并返回 `status: new` ③检索回读命中 ④触发一次提炼（异步）。
 > 5. 向我汇报：接入路径、端点、专属 Key 的 agent_id、4 项结果。写入与检索的具体契约见 `AI-INSTALL/agent-onboarding.md`。
 
 ## English
 
-**Task card ② — Connect & verify.** Pick a path: generic (HTTP `http://<NAS_IP>:9910` / MCP `:9913/mcp` with `X-API-Key`), Hermes (`adapters/hermes/`), or DSH (`dsh-sgme` npm package). Mandatory first: mint your own dedicated key — obtain an admin key (client-side env `SGME_ADMIN_KEY`, else read the server's `config/.env` on the same host / via SSH; if neither is possible, ask the user for the minimal manual step and continue without blocking), then call `POST /v1/admin/agents/register` with an `agent_id` named after your host (lowercase letters/digits/hyphens, e.g. `hermes` / `dsh` / `claude-code`). The returned `agt_*` plaintext is shown once — write it to the client env `SGME_AGENT_KEY`, verify with an authenticated endpoint (`POST /v1/search` → 200; `GET /v1/health` needs no key and proves nothing about it), and sync the admin key into the client env file too (`SGME_ADMIN_KEY`). Configure via env vars only — secrets live in env files, never in code, docs, or chat. Run 4 checks: discovery (version/capabilities), write (append → `status: new`), read (search hits the new content), refine (async trigger, optional but recommended). Daily calls use an Agent key; admin endpoints (e.g. register) use the admin key; default dev keys are loopback-only (remote → 403). Use Python `requests` with `trust_env=False`; avoid git-bash curl for UTF-8 payloads.
+**Task card ② — Connect & verify.** Pick a path: generic (HTTP `http://<NAS_IP>:9910` / MCP `:9913/mcp` with `X-API-Key`), Hermes or DSH (fetch the adapter from the SGME skill library: `skill_search("adapter")` → `skill_materialize` → run its `install.py`; repo copies live under `adapters/`). Mandatory first: mint your own dedicated key — obtain an admin key (client-side env `SGME_ADMIN_KEY`, else read the server's `config/.env` on the same host / via SSH; if neither is possible, ask the user for the minimal manual step and continue without blocking), then call `POST /v1/admin/agents/register` with an `agent_id` named after your host (lowercase letters/digits/hyphens, e.g. `hermes` / `dsh` / `claude-code`). The returned `agt_*` plaintext is shown once — write it to the client env `SGME_AGENT_KEY`, verify with an authenticated endpoint (`POST /v1/search` → 200; `GET /v1/health` needs no key and proves nothing about it), and sync the admin key into the client env file too (`SGME_ADMIN_KEY`). Configure via env vars only — secrets live in env files, never in code, docs, or chat. Run 4 checks: discovery (version + status fields), write (append → `status: new`), read (search hits the new content), refine (async trigger, optional but recommended). Daily calls use an Agent key; admin endpoints (e.g. register) use the admin key; default dev keys are loopback-only (remote → 403). Use Python `requests` with `trust_env=False`; avoid git-bash curl for UTF-8 payloads.
 
 **Copy block (English):**
 
@@ -103,5 +103,5 @@ print(r.json())   # 已存在则返回 409 ERR_CONFLICT（见「失败处置」�
 > 1. Endpoints: HTTP `http://<NAS_IP>:9910`, MCP `http://<NAS_IP>:9913/mcp`; read keys from env vars only (never ask me for secrets).
 > 2. First mint your own dedicated identity: with an admin key (env `SGME_ADMIN_KEY`; if you can't read the server's `config/.env`, tell me the minimal manual step and continue without blocking) call `POST /v1/admin/agents/register` to claim your own `agent_id` (named after your host, e.g. `hermes`) and `agt_*` key (plaintext shown once); write it to the client env `SGME_AGENT_KEY`, and sync the admin key into the client env file as well.
 > 3. If you are Hermes or DSH, use the matching adapter under `adapters/` in the repo; otherwise connect directly.
-> 4. Run 4 checks: (a) fetch version/capabilities, (b) write a test entry and get `status: new`, (c) retrieve it via search, (d) trigger one async refinement.
+> 4. Run 4 checks: (a) fetch version + status fields, (b) write a test entry and get `status: new`, (c) retrieve it via search, (d) trigger one async refinement.
 > 5. Report: path used, endpoint, your dedicated agent_id, and the 4 results. Contracts are in `AI-INSTALL/agent-onboarding.md`.

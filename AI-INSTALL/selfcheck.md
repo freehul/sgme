@@ -10,7 +10,7 @@
 ### ① 发现
 - **目的**：确认实例存在且版本可见
 - **动作**：`GET /v1/health`（或 MCP `health`）
-- **判据**：HTTP 200，含 `version` 与 `capabilities`
+- **判据**：HTTP 200，含 `version` 与状态字段（`llm` / `refinement` / `vector` / `onboarding`；能力清单在 `agent_onboarding`，指引全文在 `GET /v1/onboarding/docs`）
 - **失败**：回任务卡 ① 的发现三步
 
 ### ② 连通与身份
@@ -34,7 +34,7 @@
 
 ### ⑤ 提炼
 - **目的**：确认夜间/收尾提炼任务可达
-- **动作**：`POST /v1/refine_trigger`，`async_mode=true`
+- **动作**：MCP `refine_trigger`（`async_mode=true`，默认即异步），或 HTTP admin `POST /v1/admin/refine/trigger_async`
 - **判据**：拿到任务号；稍后可查状态
 - **失败**：429 → 稍后重试或交服务端兜底；模型 Key 缺失 → 回任务卡 ①
 
@@ -82,4 +82,4 @@
 
 ## English
 
-**Post-setup self-check — run all eight; all green means you're done.** ① Discovery: `GET /v1/health` → 200 with `version` + `capabilities`. ② Auth/identity: call `agent_onboarding`; your key must be the dedicated `agt_*` minted via register (not a shared master or default key). If an admin key is configured, call one admin endpoint (e.g. `GET /v1/admin/agents`) and expect 200; otherwise note it as pending user input. Default dev keys are loopback-only (remote → 403). ③ Write: `POST /v1/append` with `session_key` + `started_at` + `# {ISO} {role}` first line → `status: new`. ④ Read: `POST /v1/search` retrieves the new entry with provenance. ⑤ Refine: `POST /v1/refine_trigger` (`async_mode=true`) returns a job id. ⑥ Skills: `skill_search("…")` returns hits; load with `skill_get`. ⑦ Self-config: your identity file contains the `SGME-ONBOARDING-v2` template (aligns with `agent_onboarding.self_config`). ⑧ Adapter: `skill_search("adapter")` → install `adapter-<host>` via `skill_materialize`, **or** explicitly use generic MCP with ⑦ done. Report a short summary (endpoint, version, eight checkmarks, adapter choice, gaps). Common issues: 403 auth/origin, 400 params, connection (proxy — set `trust_env=False`), retrieval (write success? vector configured?), refine (missing keys / rate limit), ⑦ missing template, ⑧ no adapter hit (fall back to generic MCP).
+**Post-setup self-check — run all eight; all green means you're done.** ① Discovery: `GET /v1/health` → 200 with `version` + status fields (`llm`/`refinement`/`vector`/`onboarding`; full capabilities come from `agent_onboarding`; online guide: `GET /v1/onboarding/docs`). ② Auth/identity: call `agent_onboarding`; your key must be the dedicated `agt_*` minted via register (not a shared master or default key). If an admin key is configured, call one admin endpoint (e.g. `GET /v1/admin/agents`) and expect 200; otherwise note it as pending user input. Default dev keys are loopback-only (remote → 403). ③ Write: `POST /v1/append` with `session_key` + `started_at` + `# {ISO} {role}` first line → `status: new`. ④ Read: `POST /v1/search` retrieves the new entry with provenance. ⑤ Refine: MCP `refine_trigger` (`async_mode=true`) or admin `POST /v1/admin/refine/trigger_async` returns a job id. ⑥ Skills: `skill_search("…")` returns hits; load with `skill_get`. ⑦ Self-config: your identity file contains the `SGME-ONBOARDING-v2` template (aligns with `agent_onboarding.self_config`). ⑧ Adapter: `skill_search("adapter")` → install `adapter-<host>` via `skill_materialize`, **or** explicitly use generic MCP with ⑦ done. Report a short summary (endpoint, version, eight checkmarks, adapter choice, gaps). Common issues: 403 auth/origin, 400 params, connection (proxy — set `trust_env=False`), retrieval (write success? vector configured?), refine (missing keys / rate limit), ⑦ missing template, ⑧ no adapter hit (fall back to generic MCP).

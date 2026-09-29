@@ -10,6 +10,8 @@
 
 > 「读 `AI-INSTALL/README.md`，然后按 `prompts/` 里任务卡的顺序，帮我部署并接入 SGME；每步完成后按 `selfcheck.md` 自检并向我汇报。」
 
+> 实例已在运行时更省事：无需仓库文件——SGME v1.7.2+ 把本目录内置进服务端，`GET {base}/v1/onboarding/docs` 拿索引、`GET {base}/v1/onboarding/docs/<文件名>` 拿全文（免 Key）。
+
 ## 任务卡清单
 
 | # | 文件 | 任务 | 完成判据 |
@@ -23,6 +25,7 @@
 ## 本目录文件
 
 - `agent-onboarding.md` —— **协议层唯一真相**（服务发现 / 连接 / 写入 / 提炼 / 技能），所有任务卡以它为准，本目录不复制其内容。
+- **在线读取（v1.7.2+ 服务端内置，免 Key）**：`GET {base}/v1/onboarding/docs` 拿索引；`GET {base}/v1/onboarding/docs/<文件名>` 拿全文（含本目录全部文件）。
 - `免费模型Key申请指南.md` —— 免费 LLM / 向量 Key 申请（两款免费平台，零充值）。
 - `prompts/` —— 可整段复制给 AI 的提示词（每份含中文 + English 两个复制块）。
 - `selfcheck.md` —— 自检清单（**八项**：发现/连通/写入/检索/提炼/技能/**自我配置**/**适配器**）与常见失败处置。
@@ -46,10 +49,12 @@
 
 > "Read `AI-INSTALL/README.md`, then follow the task cards under `prompts/` in order to deploy and connect SGME for me; self-check against `selfcheck.md` after each step and report back."
 
+> Faster when an instance already runs — no repo files needed: SGME v1.7.2+ ships this directory inside the server. `GET {base}/v1/onboarding/docs` (index) / `GET {base}/v1/onboarding/docs/<file>` (full text), no key required.
+
 **Task cards**: `01-install` (deploy/discover → health 200 + version) → `02-connect` (connect & verify — dedicated key minting + admin key sync included; generic / Hermes / DSH → dedicated key minted + 4 green checks) → `03-init-agent-files` (initialize SOUL / USER / MEMORY / AGENTS → files created + one read/write round-trip) → `04-daily-loop` (retrieve / append / refine / skills → checklist).
 
 **Capability plane**: SGME's three core modules are `memory / skills / wiki`. Install only the host adapter; retrieve ordinary specialist skills from SGME on demand instead of copying many skills locally.
 
-**Files**: `agent-onboarding.md` (protocol source of truth), `免费模型Key申请指南.md` (free API keys), `prompts/` (copy-paste prompts), `selfcheck.md` (post-setup checks).
+**Files**: `agent-onboarding.md` (protocol source of truth), `免费模型Key申请指南.md` (free API keys), `prompts/` (copy-paste prompts), `selfcheck.md` (post-setup checks). **Online (v1.7.2+, no key)**: `GET /v1/onboarding/docs` (index) / `GET /v1/onboarding/docs/<file>` (full text).
 
 **Principles**: AI-first instructions with acceptance criteria per step; single source of truth (this directory references, never duplicates, the protocol doc); secrets only via environment variables — each agent mints its own dedicated key at connect time (never a shared or default key).

@@ -33,7 +33,7 @@
 
 ## 验收（全部满足才算完成）
 
-- [ ] `GET /v1/health` 返回 200，含 `version` 与 `capabilities`
+- [ ] `GET /v1/health` 返回 200，含 `version` 与状态字段（`llm`/`refinement`/`vector`/`onboarding`）
 - [ ] `model_config.missing_keys` 为空（或已明确告知用户缺哪把、如何补）
 - [ ] 已向用户报告：**端点地址 + 版本号 + 缺失项（若有）**
 
@@ -59,7 +59,7 @@
 
 ## English
 
-**Task card ① — Deploy / discover SGME.** Discover first, deploy only if nothing is found: probe `http://<NAS_IP>:9910/v1/health` → fall back to `~/.sgme/install.json` → otherwise report "not found" and deploy (Docker per `docs/deployment-docker.md`, or Python 3.12). After deploy: create `SGME_ADMIN_KEY` / `SGME_AGENT_KEY` in `config/.env` — keep the admin key: task card ② uses it to mint each agent's dedicated key and sync it to the client environment. If `model_config.missing_keys` is non-empty, point the user to `免费模型Key申请指南.md` (free keys) — never ask the user to paste secrets into chat. Acceptance: health 200 with `version` + `capabilities`, missing keys reported, endpoint + version reported to the user.
+**Task card ① — Deploy / discover SGME.** Discover first, deploy only if nothing is found: probe `http://<NAS_IP>:9910/v1/health` → fall back to `~/.sgme/install.json` → otherwise report "not found" and deploy (Docker per `docs/deployment-docker.md`, or Python 3.12). After deploy: create `SGME_ADMIN_KEY` / `SGME_AGENT_KEY` in `config/.env` — keep the admin key: task card ② uses it to mint each agent's dedicated key and sync it to the client environment. If `model_config.missing_keys` is non-empty, point the user to `免费模型Key申请指南.md` (free keys) — never ask the user to paste secrets into chat. Acceptance: health 200 with `version` + status fields (`llm`/`refinement`/`vector`/`onboarding`), missing keys reported, endpoint + version reported to the user.
 
 **Copy block (English):**
 

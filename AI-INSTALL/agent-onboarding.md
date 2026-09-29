@@ -7,7 +7,7 @@
 
 1. **发现**：探测 `http://<NAS_IP>:9910/v1/health`（SGME 现部署于 NAS）；失败读 `~/.sgme/install.json`；仍失败就向用户报告「SGME 未发现」。
 2. **连接**：MCP 端点 `http://<NAS_IP>:9913/mcp`（HTTP API 为 `:9910`），带 `X-API-Key`。
-3. **接入**：先调 `agent_onboarding` 工具（连接即发现，版本/能力/上手一条龙）。
+3. **接入**：先调 `agent_onboarding` 工具（连接即发现，版本/能力/上手一条龙）。本指引全部文档可在线读取：`GET {base}/v1/onboarding/docs`（索引）/ `GET {base}/v1/onboarding/docs/<文件名>`（全文，免 Key，v1.7.2+ 服务端内置）。
 4. **写入**：每轮对话结束 `append` 当前轮次；会话结束 `refine_trigger(async_mode=true)`。
 5. **提炼**：批量 ≥20 文件必须分批 + 批间 30–60s；429 不立即重试，交 `batch_scan` 兜底。
 6. **技能获取（按需检索，MUST）**：需要 SGME 未内置的专业能力时，先 `skill_search(query)` 检索、命中后 `skill_get(name)` 拉全文注入再执行——**禁止未检索就声称具备技能或硬凑步骤**。冷启动包只含《技能检索协议》一个 skill、不预载全量技能，按需检索才是正路。
@@ -190,7 +190,7 @@ content 格式（首行必须）：
 |---|---|
 | 批量上限 | **≥20 文件必须分批**，每批 ≤20 |
 | 批间间隔 | **30–60 秒**（节流器会再平滑，但别赌） |
-| 429 处理 | **失败不立即重试**——文件留在 status=new，交 `batch_scan` 兜底（默认 10 分钟一轮自动扫） |
+| 429 处理 | **失败不立即重试**——文件留在 status=new，交 `batch_scan` 兜底（服务端定时自动扫；间隔 `refine.batch_scan.interval_min`，2026-08-20 起默认 60 分钟） |
 | 触发方式 | **永远异步**：`refine_trigger(async_mode=true)` / `refine_batch(async_mode=true)`，排队即返，不阻塞你的会话 |
 | 进度查询 | `refine_status()` 轮询：待提炼/已完成/失败计数 + 水位 + 最近失败 |
 | 预期管理 | 大批量提炼是**分钟级**任务，不是秒级。触发后去干别的，隔一会儿再查 |
@@ -271,7 +271,7 @@ content 格式（首行必须）：
 
 > LLM 未配置——请配置你所用提供商的 key（见 `config/providers.yaml`）。
 
-环境清单同理：教用户**配置方法与查找路径**（`providers.yaml` 的 `api_key_env` 字段、`ZHIPU_API_KEY` / `SILICONFLOW_API_KEY` 等；免费 Key 申请见本目录《免费模型Key申请指南.md》）。你可以诊断「缺什么」（health 的 `model_config.missing_keys` 即诊断结果），免费托底场景可直接建议智谱/硅基流动（免费），付费场景品牌由用户自己选。
+环境清单同理：教用户**配置方法与查找路径**（`providers.yaml` 的 `api_key_env` 字段、`AGNESAI_API_KEY` / `SILICONFLOW_API_KEY` 等；免费 Key 申请见本目录《免费模型Key申请指南.md》）。你可以诊断「缺什么」（health 的 `model_config.missing_keys` 即诊断结果），免费托底场景可直接建议 Agnes / 硅基流动（免费），付费场景品牌由用户自己选。
 
 ## 7.5 向量引擎接入流程（本地优先，云端降级）
 
