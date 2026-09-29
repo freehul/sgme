@@ -22,7 +22,7 @@
 | 持久手册、设计、经验、踩坑和知识沉淀 | `wiki` | `wiki_search`、`wiki_pages`、`wiki_page`、`wiki_page_add/update` |
 | 框架、工具链、专业流程和领域技能 | `skills` | `skill_search` → `skill_digest` → `skill_get` |
 
-统一路由：**memory 取上下文 → skills 取方法 → 执行 → wiki 沉淀稳定经验**。普通 skill 不物化；只有宿主适配器或确需本地资产时才使用 `skill_materialize`。
+统一路由：**memory 取上下文 → skills 取方法 → 执行 → wiki 沉淀稳定经验**。普通 skill 不物化；只有宿主适配器或确需本地资产时才使用 `skill_materialize`（落盘在 SGME 服务端：同机可直接物化，跨机用 `skill_get` 取正文自行写盘）。
 
 SGME 技能库已提供统一开发能力入口：`coding-workflow`（TDD/调试/审查/验证/CodeGraph/提交）、`sgme-development`（引擎开发）、`sgme-adapter-development`（适配器）、`sgme-docs-authoring`（文档）和 `skill-governance`（技能治理）。需要时按 `skill_search` 检索，不要再批量安装重复技能。
 
@@ -129,7 +129,7 @@ asyncio.run(main())
 | `role_list` | 列出可用角色（换皮不换芯） | 对话开始 `role_list()` |
 | `role_assemble` | 组装角色人设并按其说话 | `role_assemble(role_id)` |
 | `role_active_get` / `role_active_set` | 查看/切换当前生效角色 | `role_active_get()` |
-| `skill_*` | 技能管理九工具：skill_list/skill_coldstart/skill_search/skill_digest/skill_get/skill_materialize/skill_put/skill_delete/skill_rename（B114 补齐 list/coldstart/写侧） | `skill_search(query)` / `skill_get(name)` / `skill_materialize(name, dest_dir)` |
+| `skill_*` | 技能管理九工具：skill_list/skill_coldstart/skill_search/skill_digest/skill_get/skill_materialize/skill_put/skill_delete/skill_rename（B114 补齐 list/coldstart/写侧） | `skill_search(query)` / `skill_get(name)` / `skill_materialize(name, dest_dir)`（落盘在服务端；跨机改用 skill_get） |
 
 **自进化（W4，2026-08-16；B114 后双通道）**：会话经验回写按「归属口诀」选通道——世界知识/通用经验走 `wiki_evolve_trigger`（LLM 提炼后追加到 wiki 手册页，多 agent 共享）；**跟技能本体走的坑直接 `skill_put` 更新该技能的 SKILL.md**（技能真源在 skills 模块 git 仓，已不寄居 wiki）。
 
@@ -221,13 +221,13 @@ content 格式（首行必须）：
 ## 6.1 官方适配器获取与安装（技能库自助，2026-09-28）
 
 > 解决「适配器只在源码仓库、运行实例拿不到」的断点（WorkBuddy 接入排查 P2）。
-> 通道 = 现成技能三级披露：`skill_search` → `skill_get` → `skill_materialize`。
+> 通道 = 现成技能三级披露：`skill_search` → `skill_get`（跨机：取正文自行写盘）→ `skill_materialize`（仅同机：落盘在服务端文件系统）。
 
 **四步自助：**
 
 1. **发现**：`skill_search("adapter")` 或 `skill_search("<宿主名> 适配器")`——命中 `adapter-hermes` / `adapter-dsh` / `adapter-doubao` / `adapter-mimo` / `adapter-workbuddy` / `adapter-zcode`
 2. **确认**：`skill_get("adapter-<host>")` 读纪律与安装说明
-3. **落盘**：`skill_materialize(name="adapter-<host>", dest_dir="<工作区>")`——除 `SKILL.md` 外，`scripts/` / `install.py` / `locales/` / `package/` 等随附文件一并落盘
+3. **落盘（仅同机）**：`skill_materialize(name="adapter-<host>", dest_dir="<工作区>")`——除 `SKILL.md` 外，`scripts/` / `install.py` / `locales/` / `package/` 等随附文件一并落盘。**物化落盘在 SGME 服务端文件系统**：你与 SGME 同机时照此执行；**跨机时你本地拿不到产物**（dest_dir 与返回 path 都是服务端视角），改用 `skill_get("adapter-<host>")` 取正文自行写盘——完整包随附文件（`scripts/` / `install.py` 等）暂无远程通道，需要时如实报告主人
 4. **安装**：按包内 `SKILL.md` / `references/README.md` 说明执行（通常是 `python install.py`；dsh 为 `install.py` + `dsh plugin add`）
 
 | 技能名 | 宿主 | 形态 | 安装要点 |

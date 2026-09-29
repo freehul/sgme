@@ -373,7 +373,7 @@ def health(
             "docs": "AI-INSTALL/agent-onboarding.md",
             "selfcheck": "AI-INSTALL/selfcheck.md",
             "repo": "https://gitee.com/freehul/sgme/tree/main/AI-INSTALL",
-            "adapters": "skill_search('adapter') → skill_get → skill_materialize",
+            "adapters": "skill_search('adapter') → skill_get（跨机取正文自行写盘）→ skill_materialize（仅同机，落盘在服务端）",
             "note": "连接后先调 agent_onboarding；完成标准八项见 selfcheck.md；在线全文见 endpoint（免 Key）",
         },
         # —— HTTP 历史形态：字段顺序即 v0.6 响应体顺序，勿调整 ——

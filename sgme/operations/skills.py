@@ -36,6 +36,7 @@ search_skills 融合：BM25 分数 + 向量余弦相似度简单加权和（0.6/
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -379,6 +380,28 @@ def _copy_skill_companions(src_dir: Path, target_dir: Path) -> list[str]:
     return copied
 
 
+# ---------- T-232：跨机物化语义（服务端落盘侧判别） ----------
+
+# Windows 盘符形态：单字母 + 冒号 + 斜杠（X:/ 或 X:\）或裸盘符（X:），大小写不敏感
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:([\\/]|$)")
+
+
+def _server_os() -> str:
+    """服务端 OS 判别（封装 ``os.name``，单测可 monkeypatch 模拟 Linux 服务端）。"""
+    return os.name
+
+
+def _looks_like_windows_drive_path(s: str | None) -> bool:
+    """dest_dir 是否形如 Windows 盘符路径：``X:/``、``X:\\`` 或裸 ``X:``（大小写不敏感）。
+
+    跨机场景：Windows 侧 agent 把本机盘符路径传给 Linux 服务端，服务端按相对路径
+    在容器内重建 ``C:/…`` 目录树——调用方拿不到产物却收到成功（T-232 假成功根因）。
+    """
+    if not isinstance(s, str):
+        return False
+    return bool(_WINDOWS_DRIVE_RE.match(s.strip()))
+
+
 def materialize(
     cfg: dict[str, Any],
     wiki_conn: sqlite3.Connection | None,
@@ -393,6 +416,11 @@ def materialize(
     - **A2 分发（2026-09-28）**：git 源技能目录下的随附文件一并落盘
       （scripts/ references/ assets/ package/ locales/ install.py README.md 等），
       使适配器包 materialize 后可直接安装；junk（__pycache__/.env/tests 等）跳过；
+    - **跨机语义（T-232）**：落盘发生在**服务端文件系统**——dest_dir 与返回 path
+      均为服务端视角，产物不会出现在调用方机器上（成功响应记 ``landing_side="server"``）；
+      非 Windows 服务端收到 Windows 盘符 dest_dir → InvalidArgs（400 / MCP error），
+      不再按相对路径在服务端造出 ``C:/…`` 目录树造成假成功——跨机调用请改用 skill_get
+      取正文，在本地自行写盘；
     - 成功记遥测日志一条（name/sha/ts），供使用统计与排障；
     - dest_dir 必填且非空（InvalidArgs）。
     """
@@ -400,6 +428,13 @@ def materialize(
 
     if not isinstance(dest_dir, str) or not dest_dir.strip():
         raise InvalidArgs("dest_dir 不能为空（物化目标目录必填）")
+    if _server_os() != "nt" and _looks_like_windows_drive_path(dest_dir):
+        raise InvalidArgs(
+            "dest_dir 是 Windows 盘符路径（如 C:/…），但 SGME 服务端为 Linux/类 Unix 系统，"
+            "无法解释该路径。"
+            "物化落盘发生在服务端文件系统，产物不会出现在调用方机器上；"
+            "跨机调用请改用 skill_get 取技能正文，在本地自行写盘。"
+        )
     records = _load_records(cfg, wiki_conn)
     rec = _find_record(records, name)
     if rec is None:
@@ -433,6 +468,8 @@ def materialize(
         "path": str(target),
         "sha256": sha256,
         "companions": companion,
+        # T-232：落盘侧标注——产物在服务端文件系统（跨机调用方本机拿不到）
+        "landing_side": "server",
     })
 
 

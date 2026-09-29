@@ -168,6 +168,22 @@ def test_mcp_skill_materialize_roundtrip(mcp, mcp_skills_env, tmp_path):
     import hashlib
 
     assert d["sha256"] == hashlib.sha256(src).hexdigest()
+    # T-232：成功响应标注落盘侧（产物在服务端文件系统）
+    assert d["landing_side"] == "server"
+
+
+def test_mcp_skill_materialize_crossmachine_errors(mcp, mcp_skills_env, monkeypatch):
+    """T-232：非 Windows 服务端收到盘符 dest → error JSON（不再假成功）；工具描述标注落盘侧。"""
+    monkeypatch.setattr("sgme.operations.skills._server_os", lambda: "posix")
+    text, _ = _call(mcp, "skill_materialize", {
+        "name": "alpha", "dest_dir": "C:/t232-probe",
+    })
+    d = json.loads(text)
+    assert "error" in d and "服务端" in d["error"], d
+    # 描述防漂移：必须写明落盘在服务端、跨机改用 skill_get
+    tools = asyncio.run(mcp.list_tools())
+    desc = next((t.description or "") for t in tools if t.name == "skill_materialize")
+    assert "服务端" in desc and "skill_get" in desc
 
 
 def test_mcp_skill_disabled_module_errors(mcp, monkeypatch):

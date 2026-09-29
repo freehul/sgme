@@ -457,6 +457,8 @@ class TestSkillsReadEndpoints:
         assert out.read_bytes() == src_bytes
         expect_sha = hashlib.sha256(src_bytes).hexdigest()
         assert data["sha256"] == expect_sha
+        # T-232：成功响应标注落盘侧（产物在服务端文件系统）
+        assert data["landing_side"] == "server"
         # 幂等：重复物化同路径覆盖，sha 不变
         resp2 = read_client.post("/v1/skills/alpha/materialize",
                                  json={"dest_dir": str(dest)}, headers=AGENT_HEADERS)
@@ -466,6 +468,16 @@ class TestSkillsReadEndpoints:
         resp = read_client.post("/v1/skills/alpha/materialize",
                                 json={}, headers=AGENT_HEADERS)
         assert resp.status_code in (400, 422)
+
+    def test_materialize_crossmachine_drive_path_400(self, read_client, monkeypatch):
+        """T-232：非 Windows 服务端收到盘符 dest → 400 ERR_INVALID_ARGS（不再假成功）。"""
+        monkeypatch.setattr("sgme.operations.skills._server_os", lambda: "posix")
+        resp = read_client.post("/v1/skills/alpha/materialize",
+                                json={"dest_dir": "C:/t232-probe"}, headers=AGENT_HEADERS)
+        assert resp.status_code == 400, resp.text
+        err = resp.json()["error"]
+        assert err["code"] == "ERR_INVALID_ARGS"
+        assert "服务端" in err["message"] and "skill_get" in err["message"]
 
     def test_search_via_unified_endpoint(self, read_client):
         """统一搜索 scopes=["skills"] 经 HTTP 端到端可用。"""
