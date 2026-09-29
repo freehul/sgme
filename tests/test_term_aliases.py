@@ -276,7 +276,11 @@ def test_http_search_old_term_hits_new_name_memory(client, mock_vector):
     mem_conn = client.app.state.mem_conn
     _insert_memory(mem_conn, "Gateway 升级完成 重启服务", mid="mem-http-1")
 
-    resp = client.post("/v1/search", headers=AGENT_HEADERS, json={"query": "daemon"})
+    resp = client.post(
+        "/v1/search",
+        headers=AGENT_HEADERS,
+        json={"query": "daemon", "scopes": ["memory"]},
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["meta"]["routes"] == ["bm25"]

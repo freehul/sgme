@@ -648,7 +648,9 @@ def build_mcp_server():
             cfg,
             query=query,
             limit=min(limit, 20),
-            scopes=scopes,
+            # MCP 的历史默认只查 memory；HTTP 才默认加入 skills。
+            # 显式传 scopes 时仍允许 Agent 选择 wiki/skills/sessions。
+            scopes=scopes if scopes is not None else ["memory"],
             dimensions=dimensions,
             match=match,
             include_sources=include_sources,

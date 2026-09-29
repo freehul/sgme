@@ -33,3 +33,10 @@ uses:
 3. 修改前搜索引用和 `uses` 依赖；删除前确认没有索引、测试、文档或运行配置引用。
 4. 普通技能由 SGME 按需 `skill_search → skill_digest → skill_get` 提供；只有适配器或确需本地资产才 `skill_materialize`。
 5. 若宿主提供 `skill-creator`，用其 `quick_validate.py` 做通用 frontmatter 校验；SGME 仓库再运行目录契约测试和 `scripts/validate_skill_catalog.py`，适配器改动另跑发布脚本和平级对账。
+
+## 真源边界
+
+- 运行时只扫描 `skills.source_dirs` 指向的 git 技能工作区；本仓库的 canonical 入口是 `skills/`，Docker 镜像入口是 `/app/cache/skills/`。
+- `exports/skills-migration-preview*` 是从历史 wiki 导出的临时审阅物，不是技能真源、热集或冷启动包；不得把它加入 `source_dirs`。
+- wiki 中 `status != active` 的历史 skill 页只保留作溯源，不重新发布；误挂 `skill` 标签的知识页留在 wiki 并进入人工清单。
+- 清理派生预览可以归档或删除，但原始 wiki 数据库、git 技能仓和用户配置不得直接删除。

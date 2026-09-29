@@ -315,6 +315,8 @@ def test_search_scopes_none_defaults_to_memory(conns, cfg, mock_vector):
     """scopes=None → 缺省 ["memory","skills"]（v0.6 SearchRequest pydantic 缺省语义扩展）。"""
     # Arrange
     mem_conn, session_conn, _ = conns
+    # 本用例只验证 operations 的默认 scopes；技能层隔离由专门用例覆盖。
+    cfg["skills"] = {**cfg.get("skills", {}), "source_dirs": []}
     _insert_memory(mem_conn, "Python FastAPI 底座设计")
 
     # Act
@@ -858,6 +860,7 @@ def test_search_skills_scope_no_cfg_empty_layer(conns, cfg, mock_vector):
     """/v1/search 无 skills 配置段（未配置 source_dirs）→ 该层空结果不报错。"""
     # Arrange
     mem_conn, session_conn, wiki_conn = conns
+    cfg["skills"] = {**cfg.get("skills", {}), "source_dirs": []}
 
     # Act
     res = search(mem_conn, session_conn, cfg, query="NAS", scopes=["skills"], wiki_conn=wiki_conn)

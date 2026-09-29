@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 from sgme.skills.indexer import parse_skill_md
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,5 +60,14 @@ def test_coding_workflow_covers_the_development_loop():
 
 def test_skill_governance_explains_dedupe_and_safe_lifecycle():
     text = (SKILLS_ROOT / "skill-governance" / "SKILL.md").read_text(encoding="utf-8")
-    for marker in ("命名", "重复", "删除", "quick_validate", "materialize"):
+    for marker in ("命名", "重复", "删除", "quick_validate", "materialize", "真源边界", "migration-preview"):
         assert marker in text
+
+
+def test_default_skill_sources_cover_source_checkout_and_container_seed():
+    """本地源码运行与 Docker 运行都必须能发现 canonical skills。"""
+    for config_path in (ROOT / "config" / "sgme.yaml", ROOT / "sgme" / "resources" / "config" / "sgme.yaml"):
+        document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        source_dirs = document["skills"]["source_dirs"]
+        assert "./skills/" in source_dirs
+        assert "/app/cache/skills/" in source_dirs

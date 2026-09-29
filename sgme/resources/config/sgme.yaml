@@ -69,6 +69,9 @@ wiki:
 skills:
   enabled: true
   source_dirs:
+    # 源码运行：仓库内 canonical skills；不存在时由 Docker 路径兜底
+    - ./skills/
+    # Docker 运行：镜像把同一份 skills/ 烘焙到此目录
     - /app/cache/skills/
   budget: 40
   # ST-45 资产配额：正文之外随技能分发的 references/ scripts/ assets/ 三类文件。

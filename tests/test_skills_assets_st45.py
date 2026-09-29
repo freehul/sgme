@@ -36,7 +36,14 @@ SKILL_MD = ("---\nname: demo-skill\ndescription: 测试技能\ncategory: testing
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def _commit_count(repo: Path) -> int:
