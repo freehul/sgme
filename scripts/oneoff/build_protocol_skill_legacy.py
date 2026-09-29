@@ -1,4 +1,14 @@
 # -*- coding: utf-8 -*-
+"""⚠️ 已废弃（2026-09-30，T-234 处置）：协议技能一次性生成器（历史遗留）。
+
+背景：本脚本于 protocol 技能早期用于把《技能检索协议》种入
+sgme/skills/protocol/SKILL.md。此后该技能已转手工维护（历经多次迭代，
+如 d97ab3f 能力平面、962e6a3 跨机物化语义），脚本内嵌内容与现行版本
+早已脱节——**运行会把 SKILL.md 覆盖回旧版、丢失后续全部迭代**。
+
+处置：移入 scripts/oneoff/ 留档 + 写入守卫（目标已存在即拒绝，防误跑）。
+需要再生成类文件时，不要运行本脚本，直接编辑 sgme/skills/protocol/SKILL.md。
+"""
 import os
 
 content = """---
@@ -33,8 +43,16 @@ category: sgme
 | `skill_list` / `skill_coldstart` | 列目录 / 冷启动包（本文件即冷启动包唯一项） |
 """
 
-fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sgme", "skills", "protocol", "SKILL.md")
+# 本文件位于 scripts/oneoff/，仓库根在三级之上
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+fp = os.path.join(_repo_root, "sgme", "skills", "protocol", "SKILL.md")
 os.makedirs(os.path.dirname(fp), exist_ok=True)
+
+# ⚠️ 防误跑守卫（T-234）：现行文件为手工维护版本，拒绝覆盖
+if os.path.exists(fp):
+    print(f"[ABORT] 目标已存在，拒绝覆盖（本脚本为历史遗留，见头部说明）：{fp}")
+    raise SystemExit(1)
+
 with open(fp, "w", encoding="utf-8") as f:
     f.write(content)
 
