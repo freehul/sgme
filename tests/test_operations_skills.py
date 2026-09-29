@@ -293,6 +293,52 @@ class TestMaterialize:
         assert res.ok is True
         assert res.data.get("companions") == []
 
+    # ---------- T-232：跨机语义（盘符路径检测 + 落盘侧标注） ----------
+
+    def test_windows_drive_path_forms(self):
+        """形态判定：命中 X:/、X:\\、X:（大小写不敏感、容忍空白）；/x、x 等不命中。"""
+        from sgme.operations.skills import _looks_like_windows_drive_path
+
+        for hit in ("C:/x", "c:\\x", "C:", " D:/workspace ", "z:\\"):
+            assert _looks_like_windows_drive_path(hit) is True, hit
+        for miss in ("/x", "x", "C/x", "C:foo", "", "  ", None, "relative/ws"):
+            assert _looks_like_windows_drive_path(miss) is False, miss
+
+    def test_posix_server_rejects_drive_path_without_creating_dir(
+        self, skills_cfg, wiki_conn, tmp_path, monkeypatch
+    ):
+        """T-232：非 Windows 服务端收到盘符 dest → InvalidArgs；不再造出 'C:' 目录树（假成功根因）。"""
+        from sgme.operations import skills as skills_mod
+        from sgme.operations.errors import InvalidArgs
+
+        monkeypatch.setattr(skills_mod, "_server_os", lambda: "posix")
+        monkeypatch.chdir(tmp_path)  # 旧缺陷会在 cwd 下按相对路径造出 "C:/…" 目录树
+        before = sorted(p.name for p in tmp_path.iterdir())
+        with pytest.raises(InvalidArgs) as ei:
+            skills_mod.materialize(skills_cfg, wiki_conn, name="alpha", dest_dir="C:/t232-probe")
+        msg = str(ei.value)
+        assert "服务端" in msg and "skill_get" in msg
+        # 未发生任何落盘副作用（异常发生在读取/写盘之前；类 Unix 上旧缺陷会在此造出 "C:" 目录）
+        assert sorted(p.name for p in tmp_path.iterdir()) == before
+
+    def test_posix_server_allows_relative_dest(self, skills_cfg, wiki_conn, tmp_path, monkeypatch):
+        """T-232 反向用例：检测只拦 Windows 盘符形态，posix 相对路径物化照常成功。"""
+        from sgme.operations import skills as skills_mod
+
+        monkeypatch.setattr(skills_mod, "_server_os", lambda: "posix")
+        monkeypatch.chdir(tmp_path)
+        res = skills_mod.materialize(skills_cfg, wiki_conn, name="alpha", dest_dir="ws_rel")
+        assert res.ok is True
+        assert Path(res.data["path"]).is_file()
+
+    def test_success_marks_landing_side_server(self, skills_cfg, wiki_conn, tmp_path):
+        """T-232：成功响应标注落盘侧（landing_side=server，产物在服务端文件系统）。"""
+        from sgme.operations.skills import materialize
+
+        res = materialize(skills_cfg, wiki_conn, name="alpha", dest_dir=str(tmp_path / "ws_side"))
+        assert res.ok is True
+        assert res.data["landing_side"] == "server"
+
 
 # ---------- name 直达 + 写后同步（T-215 收口） ----------
 

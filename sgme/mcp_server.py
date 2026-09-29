@@ -449,7 +449,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "skill_search", "description": "技能检索（ST-36 M2 四级披露）：BM25+向量融合，先搜后取——先 skill_digest 审核再 skill_get 全文"},
     {"name": "skill_digest", "description": "技能摘要 L1：frontmatter 字段+正文骨架+uses 依赖清单——审核媒介层"},
     {"name": "skill_get", "description": "技能全文 L2：显式注入上下文；section 参数只取该标题节省 token"},
-    {"name": "skill_materialize", "description": "技能物化 L3：字节保真落盘 dest_dir/<name>/SKILL.md（脚本执行用），返回 path+sha256"},
+    {"name": "skill_materialize", "description": "技能物化 L3：字节保真落盘 dest_dir/<name>/SKILL.md（脚本执行用），返回 path+sha256；落盘在服务端文件系统（dest_dir 与返回 path 均为服务端视角，含 landing_side=server）；跨机调用请改用 skill_get 取正文自行写盘"},
     {"name": "skill_list", "description": "技能 L0 索引列表（ST-36）：name/description/category/tags，支持分页浏览全量"},
     {"name": "skill_coldstart", "description": "技能冷启动包（ST-36 M5）：仅注入《技能检索协议》1 个 skill，教 agent 用 skill_search 按需检索、skill_get 拉全文注入（全量技能不预载）；另含 SGME 操作手册页"},
     {"name": "skill_put", "description": "写入/覆盖技能（ST-36 M3 写侧）：content 为 SKILL.md 全文（自动解析 frontmatter）；需管理员 Key"},
@@ -1445,6 +1445,9 @@ def build_mcp_server():
         """技能物化 L3（ST-36 M2）：字节保真落盘 dest_dir/<name>/SKILL.md，返回 path+sha256。
 
         脚本执行用——不走 LLM 转写；dest_dir 为你的工作区目录（必填）。
+        ⚠️ 落盘发生在 SGME 服务端文件系统：dest_dir 与返回的 path 都是服务端视角，
+        跨机调用（agent 在本地、SGME 在远端）本地拿不到产物——请改用 skill_get
+        取正文自行写盘；非 Windows 服务端收到盘符路径会明确报错（不再假成功）。
         """
         import json
         import sqlite3
@@ -1632,10 +1635,10 @@ def build_mcp_server():
                 "refine": "refine_trigger(async_mode=true) 或 refine_batch() 触发提炼；refine_status() 查进度与水位",
                 "recall": "search(query) 混合检索带溯源；inject(mode='daily') 注入当日画像",
                 "manage": "memory_reject 纠错；stats/health 看引擎状态；config_get/config_update 读写配置",
-                "adapters": "官方适配器（hermes/dsh/doubao/mimo/workbuddy/zcode）经技能库自助获取：skill_search('adapter') 或 skill_search('<宿主名> 适配器') → skill_get → skill_materialize(name='adapter-<host>', dest_dir=...) 落盘完整包后按包内说明安装；无宿主适配器时写入 self_config 模板走 MCP 通用接入",
+                "adapters": "官方适配器（hermes/dsh/doubao/mimo/workbuddy/zcode）经技能库自助获取：skill_search('adapter') 或 skill_search('<宿主名> 适配器') → skill_get → 同机 skill_materialize(name='adapter-<host>', dest_dir=...) 落盘完整包后按包内说明安装（落盘在服务端文件系统，dest_dir/path 均为服务端视角）；跨机（agent 在本地、SGME 在远端）改用 skill_get 取正文自行写盘，完整包随附文件暂无远程通道、需要时如实报告主人；无宿主适配器时写入 self_config 模板走 MCP 通用接入",
             },
             "self_config": {
-                "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：SGME 是统一能力平面，核心模块为 memory / skills / wiki；接入后只需安装宿主适配器，不需要批量安装很多 skill。①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v2）②安装官方适配器（skill_search('adapter') → skill_materialize 落盘后按包内说明安装），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。在线版完整指引（免 Key）：GET /v1/onboarding/docs。",
+                "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：SGME 是统一能力平面，核心模块为 memory / skills / wiki；接入后只需安装宿主适配器，不需要批量安装很多 skill。①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v2）②安装官方适配器（skill_search('adapter') → 同机 skill_materialize 落盘 / 跨机 skill_get 取正文自行写盘，按包内说明安装），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。在线版完整指引（免 Key）：GET /v1/onboarding/docs。",
                 "steps": [
                     "1. 自查：读你的身份文件，grep 标记「SGME-ONBOARDING」；",
                     "2. 已存在且版本 >= v2 → 配置已完成，跳过；",
@@ -1648,7 +1651,7 @@ def build_mcp_server():
                     "# SGME 接入纪律（SGME-ONBOARDING-v2）\n"
                     "你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。"
                     "它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。\n"
-                    "**核心能力平面**：SGME 的三大核心模块是 memory / skills / wiki。历史事实、用户偏好和项目上下文走 memory；手册、设计、经验和踩坑走 wiki；框架、工具链和专业流程先 skill_search，再按需 skill_digest/skill_get。接入后只需宿主适配器，不需要批量安装很多 skill；普通技能留在 SGME 中按需读取，只有适配器或确实需要本地资产时才 skill_materialize。\n"
+                    "**核心能力平面**：SGME 的三大核心模块是 memory / skills / wiki。历史事实、用户偏好和项目上下文走 memory；手册、设计、经验和踩坑走 wiki；框架、工具链和专业流程先 skill_search，再按需 skill_digest/skill_get。接入后只需宿主适配器，不需要批量安装很多 skill；普通技能留在 SGME 中按需读取，只有适配器或确实需要本地资产时才 skill_materialize（落盘在服务端；跨机改用 skill_get 取正文自行写盘）。\n"
                     "**能力路由**：先 memory 取上下文 → 再 skills 取执行方法 → 执行后把稳定经验沉淀到 wiki。找不到技能时如实报告 SGME 技能库暂无可用技能，禁止凭空编造。\n"
                     "**服务发现**（找不到时按序）：1) 探测 http://<sgme-host>:9910/v1/health（host 取环境变量 SGME_HTTP_HOST 或 ~/.sgme/install.json 的 http.host，默认 localhost）；"
                     "2) 失败读 ~/.sgme/install.json（地址/端口/Key 引用）；3) 仍失败 → 向主人报告「SGME 未发现」。\n"

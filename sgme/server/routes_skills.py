@@ -32,7 +32,8 @@ router = APIRouter()
 
 
 class MaterializeRequest(BaseModel):
-    """L3 物化请求体：目标目录（agent 工作区）。"""
+    """L3 物化请求体：目标目录（**服务端视角**路径——物化落盘在服务端文件系统；
+    跨机调用（agent 在本地、SGME 在远端）请改用 skill_get 取正文自行写盘）。"""
 
     dest_dir: str
 
@@ -200,6 +201,9 @@ def materialize_skill(
 
     字节保真铁律：不走 LLM 转写；成功记遥测日志一条（name/sha/ts）。
     dest_dir 缺失 → pydantic 422（框架层把关，镜像 idea_add 必填语义）。
+    T-232：落盘发生在**服务端文件系统**（dest_dir/返回 path 均为服务端视角，响应带
+    landing_side="server"）；非 Windows 服务端收到盘符 dest_dir → 400 明确报错，
+    跨机调用请改用 skill_get 取正文自行写盘。
     """
     from sgme.operations.skill_usage import dest_kind
     from sgme.operations.skills import materialize as materialize_operation
