@@ -93,6 +93,31 @@ def _run_git(cwd: Path, args: list[str], check: bool = False) -> subprocess.Comp
     return proc
 
 
+def _resolve_write_dir(source_dirs: list[str] | None) -> Path:
+    """写侧落盘目录解析：取首个「存在且为 git 仓」的 source_dir。
+
+    读侧（index_all/collect_from_dir）对不存在的目录天然跳过；写侧历史上
+    盲取 ``source_dirs[0]``，配置同时含源码运行目录（./skills/，非 git 仓）
+    与 Docker 烘焙仓（/app/cache/skills/，git 仓）时，首项不合格会先 mkdir
+    野目录再 StoreError（T-220）。本函数为写侧统一解析点：全项不合格时抛
+    StoreError 并列出各目录判定原因，不产生任何落盘副作用。
+    """
+    reasons: list[str] = []
+    for d in source_dirs or []:
+        p = Path(d)
+        if not p.is_dir():
+            reasons.append(f"{d}（目录不存在）")
+            continue
+        if not (p / ".git").exists():
+            reasons.append(f"{d}（非 git 仓库）")
+            continue
+        return p
+    raise StoreError(
+        "source_dirs 中无可写入的 git 仓库（写侧需要含 .git 的技能工作区）: "
+        + "; ".join(reasons)
+    )
+
+
 def _ensure_repo_identity(source_dir: Path) -> None:
     """仓库级提交身份兜底（缺失时补默认，不影响全局配置）。"""
     if not (source_dir / ".git").exists():
@@ -265,7 +290,8 @@ def write_skill(
         name: 技能名（kebab-case）。
         meta: frontmatter dict。
         body: 正文（不含围栏）。
-        source_dirs: 目标 git 工作区列表（写入第一个目录；其余参与查重）。
+        source_dirs: 候选 git 工作区列表（落盘取首个「存在且为 git 仓」者；
+            全项不合格抛 StoreError。其余目录仍参与查重）。
         query_vec / existing_vectors: 可选向量，透传 dedupe 第三层（宁缺勿误报）。
         skip_limits: 放宽大小类限制（PR-7「先整体入库」裁决）——超 8K 原子上限
             从拒绝降为警告放行；必填/pattern 枚举等语义违规仍拒绝。仅迁移批量
@@ -277,8 +303,11 @@ def write_skill(
     """
     warnings: list[str] = []
     with write_critical():
+        # 0) 落盘目录解析：首个「存在且为 git 仓」的 source_dir（T-220——
+        #    不再盲取 source_dirs[0]；全项不合格时抛 StoreError，无落盘副作用）
+        target = _resolve_write_dir(source_dirs)
         # 1) 准入门禁（违规即拒绝，不落盘）；skip_limits 时大小超限降为警告
-        target_dir = Path(source_dirs[0]) / name
+        target_dir = target / name
         violations = lint_skill(meta, body, name, set(), skill_dir=target_dir)
         if skip_limits and violations:
             kept, relaxed = [], []
@@ -342,7 +371,6 @@ def write_skill(
                 f"（分层重叠合法，已放行，建议人工裁决是否合并）")
 
         # 4) 落盘 <source_dir>/<name>/SKILL.md + commit（临界区内）
-        target = Path(source_dirs[0])
         skill_dir = target / validate_name(name)
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / SKILL_FILE).write_text(render_skill_md(meta, body), encoding="utf-8")
