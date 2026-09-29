@@ -229,13 +229,22 @@ def refine_one(
     session_conn: sqlite3.Connection,
     cfg: dict,
 ) -> tuple[refine_mod.RefineResult, dict]:
-    """单文件提炼：refine_file → L1.5 落库。返回 (result, l15_stats)。"""
+    """单文件提炼：refine_file → L1.5 落库 → 游标推进（commit_refine）。
+
+    T-223（2026-09-30 深度审查 P0-2）：游标/内容哈希推进从 refine_file 拆出为
+    **落库成功后**的显式 ``commit_refine``。原实现先推游标后落库，落库崩溃
+    （并发错误/磁盘满）后文件已 refined、批扫不再拾起 → 记忆永久丢失。
+    现 persist 抛异常时本函数不达 commit 行，文件保持 status=new 可重扫重试。
+    """
     result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
     l15_stats = (
         persist_memories(result, mem_conn, cfg,
                          agent_tag=_resolve_file_agent(session_conn, file_id))
         if result.memories else dict(_ZERO_STATS)
     )
+    # 落库成功（persist_memories 正常返回）之后才推进游标 + 内容哈希；
+    # 无增量结果（memories 空）同样走这里收敛为 refined（T-223 设计选择）。
+    refine_mod.commit_refine(result, session_conn)
     return result, l15_stats
 
 
@@ -245,13 +254,16 @@ def refine_many(
     session_conn: sqlite3.Connection,
     cfg: dict,
 ) -> list[tuple[refine_mod.RefineResult, dict]]:
-    """批量提炼（同步）：逐文件「提炼 → 立即落库」（F-2 修复，2026-09-24）。
+    """批量提炼（同步）：逐文件「提炼 → 立即落库 → 推游标」（F-2/T-223）。
 
     原实现「refine_batch 集齐全部 L1 → 统一落库」：中途异常时前序文件已被标记
     refined 但记忆未落库（永久丢失）——异步路径 2026-08-06 已修，同步路径残留
     同款缺陷（深度审查 F-2 实测复现）。现逐文件立即落库，单文件失败只影响该文件
     （refine_batch 收成 status=error 项，批次继续），与 async_refine_worker /
     显式列表同步路径三者行为对齐。
+
+    T-223：每个文件落库成功后单独 commit_refine（游标推进不再隐含在 refine_file
+    内）；某文件落库抛异常时该文件游标不推进（保持 new，下批重扫不丢）。
     """
     pairs: list[tuple[refine_mod.RefineResult, dict]] = []
     for r in refine_mod.refine_batch(mem_conn, session_conn, cfg, limit=limit):
@@ -260,6 +272,7 @@ def refine_many(
                              agent_tag=_resolve_file_agent(session_conn, r.file_id))
             if r.memories else dict(_ZERO_STATS)
         )
+        refine_mod.commit_refine(r, session_conn)  # T-223：逐文件落库后推游标
         pairs.append((r, l15_stats))
     return pairs
 
@@ -283,6 +296,7 @@ def async_refine_worker(
     原实现先 refine_batch 收集全部 L1 结果再统一落库，中途异常
     （如 Model is unloaded）导致已处理文件的记忆全部丢失。
     现在每个文件独立 try/except + 立即落库，崩溃只丢当前文件。
+    T-223：落库成功后逐文件 commit_refine（游标推进显式后置）。
     """
     from sgme.data import db as db_mod
 
@@ -295,6 +309,7 @@ def async_refine_worker(
             if result.memories:
                 persist_memories(result, mem_conn, cfg,
                                  agent_tag=_resolve_file_agent(session_conn, file_id))
+            refine_mod.commit_refine(result, session_conn)  # T-223
             logger.info("async refine file=%s status=%s", file_id, result.status)
         else:
             new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
@@ -307,6 +322,7 @@ def async_refine_worker(
                         # 此前漏传，T-140 多 Agent 隔离打标在异步默认路径静默缺失。
                         persist_memories(r, mem_conn, cfg,
                                          agent_tag=_resolve_file_agent(session_conn, rf["file_id"]))
+                    refine_mod.commit_refine(r, session_conn)  # T-223
                     processed += 1
                 except Exception as e:
                     logger.warning("async refine 文件 %s 失败（继续下一文件）: %s", rf.get("file_id"), e)
