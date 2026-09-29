@@ -169,3 +169,69 @@ def test_scheduler_loop_stop_event_exits(backup_env):
     stop.set()
     t.join(timeout=5)
     assert not t.is_alive()
+
+
+# ---------- T-228/M-1：相对路径口径（USER_ROOT，与进程 CWD 无关） ----------
+
+def _isolate_user_root(tmp_path, monkeypatch):
+    """把 USER_ROOT/RAW_DIR 指到 tmp（相对路径解析隔离夹具，T-228）。"""
+    import sgme.config as sgme_config
+
+    user_root = tmp_path / "user_root"
+    user_root.mkdir()
+    raw = tmp_path / "raw_isolated"
+    raw.mkdir()
+    monkeypatch.setattr(sgme_config, "USER_ROOT", user_root)
+    monkeypatch.setattr(sgme_config, "RAW_DIR", raw)
+    return user_root
+
+
+def test_run_backup_relative_dir_resolves_against_user_root(backup_env, tmp_path, monkeypatch):
+    """相对 dir 基于 USER_ROOT 解析、与进程 CWD 无关（T-228/M-1）。
+
+    旧实现把相对 dir 直接交给 create_snapshot 按进程工作目录解析——Docker
+    WORKDIR=/app 时快照落容器层 /app/data/backups 而非 /data 卷，容器重建即丢。
+    """
+    cfg, mem_conn, session_conn, wiki_conn = backup_env
+    user_root = _isolate_user_root(tmp_path, monkeypatch)
+    cwd_elsewhere = tmp_path / "cwd_elsewhere"
+    cwd_elsewhere.mkdir()
+    monkeypatch.chdir(cwd_elsewhere)  # CWD 指到别处：旧实现会落这里
+
+    cfg["backup"]["dir"] = "backups_rel"  # 相对路径
+    result = bsch._run_backup(cfg, mem_conn, session_conn, wiki_conn)
+
+    snap_dir = Path(result["path"])
+    assert snap_dir == user_root / "backups_rel" / result["snapshot_id"]
+    assert (snap_dir / "memory.db").exists()
+    assert not (cwd_elsewhere / "backups_rel").exists(), "相对路径不应按进程 CWD 解析"
+
+
+def test_run_backup_absolute_dir_unaffected_by_user_root(backup_env, tmp_path, monkeypatch):
+    """绝对 dir 原样使用（不被接到 USER_ROOT 下）——T-228 回归护栏。"""
+    cfg, mem_conn, session_conn, wiki_conn = backup_env
+    user_root = _isolate_user_root(tmp_path, monkeypatch)
+    abs_dir = tmp_path / "abs_backups"
+    cfg["backup"]["dir"] = str(abs_dir)
+
+    result = bsch._run_backup(cfg, mem_conn, session_conn, wiki_conn)
+
+    snap_dir = Path(result["path"])
+    assert snap_dir.parent == abs_dir
+    assert (snap_dir / "memory.db").exists()
+    assert not (user_root / "abs_backups").exists()
+
+
+def test_scheduled_and_manual_same_relative_dir(backup_env, tmp_path, monkeypatch):
+    """同一相对 dir：定时快照落点 == 手动 _resolve_backup_dir（同口径，T-228）。"""
+    from sgme.operations.backup import _resolve_backup_dir
+
+    cfg, mem_conn, session_conn, wiki_conn = backup_env
+    user_root = _isolate_user_root(tmp_path, monkeypatch)
+    cfg["backup"]["dir"] = "shared/backups"
+
+    result = bsch._run_backup(cfg, mem_conn, session_conn, wiki_conn)
+    manual_dir = _resolve_backup_dir(cfg)
+
+    assert Path(result["path"]).parent == manual_dir
+    assert manual_dir == user_root / "shared" / "backups"

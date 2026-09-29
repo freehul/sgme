@@ -288,3 +288,34 @@ def test_refine_llm_override_invalid_falls_back_to_empty(tmp_path):
     )
     cfg = config.load_config(sgme_path=str(yaml_path))
     assert cfg["refine"]["llm_override"] == {}
+
+
+# ---------- backup.dir 加载（T-228/M-1：合并函数曾误读 dest_dir，用户值被静默丢弃） ----------
+
+def test_load_sgme_config_backup_dir_override_kept(tmp_path):
+    """sgme.yaml 写 backup.dir 必须被保留（不得回落默认 data/backups）。
+
+    M-1 实测：_merge_backup_config 只认 dest_dir 键，而默认值/文档/写白名单
+    全用 dir——用户配置被静默丢弃，同段其余键照常合并。
+    """
+    yaml_path = tmp_path / "sgme.yaml"
+    yaml_path.write_text(
+        "backup:\n  dir: D:/custom/backups\n  schedule: '05:30'\n",
+        encoding="utf-8",
+    )
+    cfg = config.load_config(sgme_path=str(yaml_path))
+    assert cfg["backup"]["dir"] == "D:/custom/backups"
+    assert cfg["backup"]["schedule"] == "05:30"  # 同段其余键照常合并
+    assert "dest_dir" not in cfg["backup"]  # 历史误读键不得回潜
+
+
+def test_load_sgme_config_backup_dir_fallback_when_missing_or_blank(tmp_path):
+    """backup 段缺 dir / dir 为空串 → 回落默认 data/backups。"""
+    for i, content in enumerate((
+        "backup:\n  keep_full: 3\n",
+        "backup:\n  dir: ''\n",
+    )):
+        yaml_path = tmp_path / f"sgme_fallback_{i}.yaml"
+        yaml_path.write_text(content, encoding="utf-8")
+        cfg = config.load_config(sgme_path=str(yaml_path))
+        assert cfg["backup"]["dir"] == "data/backups"

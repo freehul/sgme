@@ -22,12 +22,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sgme import config as sgme_config
 from sgme.backup import manager as backup_manager
 
 logger = logging.getLogger(__name__)
 
-# 默认备份目录（config/sgme.yaml backup.dir 覆盖；remote_dir 可空）
-DEFAULT_BACKUP_DIR = "data/backups"
+# 默认调度参数（备份目录缺省走 config.resolve_backup_dir，随 DEFAULT_BACKUP_CONFIG；
+# remote_dir 可空 = 跳过异地）
 DEFAULT_SCHEDULE = "04:00"  # 避开 Dream 03:00
 DEFAULT_KEEP_FULL = 7
 
@@ -60,20 +61,22 @@ def _run_backup(cfg: dict[str, Any], mem_conn, session_conn, wiki_conn) -> dict:
     """
     backup_cfg = cfg.get("backup", {}) or {}
     level = backup_cfg.get("level", "incremental")
-    dir_str = backup_cfg.get("dir", DEFAULT_BACKUP_DIR)
     keep_full = int(backup_cfg.get("keep_full", DEFAULT_KEEP_FULL))
     remote_dir = backup_cfg.get("remote_dir") or None
+    # T-228：相对路径基于 USER_ROOT 解析（与手动备份 operations/backup 同口径），
+    # 不再按进程 CWD——Docker WORKDIR=/app 时快照曾落容器层而非 /data 卷。
+    backup_dir = sgme_config.resolve_backup_dir(cfg)
 
     # 1) 一致快照（SQLite backup API 免停机；传三库连接避免临时裸连接）
     snap = backup_manager.create_snapshot(
         cfg.get("paths", {}).get("data_dir", "data"),
-        dir_str,
+        backup_dir,
         level=level,
         conn_pair=(mem_conn, session_conn, wiki_conn),
         id_prefix="daily_",
     )
     # 2) 轮转（full 保留 keep_full 份；incremental/pre_restore 不轮转）
-    rotated = backup_manager.rotate_snapshots(dir_str, keep_full=keep_full)
+    rotated = backup_manager.rotate_snapshots(backup_dir, keep_full=keep_full)
     # 3) 异地推送（remote_dir 为空 = 跳过；失败仅记录不阻塞）
     remote = backup_manager.push_remote(snap["path"], remote_dir)
     return {
@@ -101,7 +104,6 @@ def _scheduler_loop(
     与 batch_scan/dream 同款（Windows 多线程共享 sqlite 连接存在
     access violation 竞态）。线程退出时关闭自建连接。
     """
-    from sgme import config as sgme_config
     from sgme.data import db as db_mod
 
     d = Path(data_dir) if data_dir else sgme_config.DATA_DIR

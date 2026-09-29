@@ -454,3 +454,25 @@ def test_operations_and_http_agree_on_shared_fields(client, conns, cfg):
     # 端点列表与直调列表一致（同一备份目录）
     list_body = client.get("/v1/admin/backup/list", headers=ADMIN_HEADERS).json()
     assert list_body["total"] == len(op_backup_list(cfg).data["snapshots"]) == 3
+
+
+# ---------- 7. backup.dir 解析口径（T-228：相对路径基于 USER_ROOT） ----------
+
+def test_resolve_backup_dir_relative_based_on_user_root(tmp_path, monkeypatch):
+    """相对 dir 基于 USER_ROOT 解析（既有夹具全用绝对路径，补相对语义）。
+
+    T-228 要求手动/定时同口径：解析共用 sgme_config.resolve_backup_dir，
+    T-23 语义（相对路径跟随 SGME_HOME / 项目根）保持。
+    """
+    import sgme.config as sgme_config
+
+    from sgme.operations.backup import _resolve_backup_dir
+
+    root = tmp_path / "user_root"
+    root.mkdir()
+    monkeypatch.setattr(sgme_config, "USER_ROOT", root)
+
+    p = _resolve_backup_dir({"backup": {"dir": "rel/backups"}})
+
+    assert p == root / "rel" / "backups"
+    assert p.is_dir()  # 落盘前 mkdir 行为保留
