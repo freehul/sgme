@@ -963,6 +963,10 @@ def _search_like_fallback(
     - 触发守卫不变：仅在 FTS5 返回空时触发（recall_routes 第 112-113 行）
     - `LIMIT min(limit, 20)`，score 占位 0.0（不参与 RRF 的 bm25 排序权重）
     - 全单字/空词时退化为整串 LIKE（旧行为，至少不空手而归）
+    - T-225：OR 组显式括号（SQLite 优先级 AND > OR，缺括号时前 N-1 条臂
+      绕过 status/维度过滤）；dimensions + match="all" 与 FTS 路径同语义
+      （GROUP BY ... HAVING COUNT(DISTINCT dimension_id)=N）；返回前
+      `_drop_rejected` 双保险复核 status。
     """
     terms = [
         t for t in segment_terms(query)
@@ -975,7 +979,12 @@ def _search_like_fallback(
     if not terms:
         return []
 
-    like_clauses = " OR ".join(["content LIKE ?"] * len(terms))
+    # ⚠️ LIKE 子句必须整体加括号（T-225/T-170 同类缺陷）：SQLite 运算符优先级
+    # AND > OR，`A OR B OR C AND status != 'rejected'` 被解析为
+    # `A OR B OR (C AND status != 'rejected')`——前 N-1 条 OR 臂完全绕过
+    # status（及维度）过滤，rejected 记忆经兜底被重新捞回
+    # （触发链：FTS 路过滤 rejected 后空召回 → 兜底守卫「过滤后为空」触发）。
+    like_clauses = "(" + " OR ".join(["content LIKE ?"] * len(terms)) + ")"
     sql = (
         "SELECT memory_id, content, priority, updated_at, occurred_at, facts_json, 0.0 AS score "
         f"FROM memories WHERE {like_clauses} AND status != 'rejected'"
@@ -983,12 +992,49 @@ def _search_like_fallback(
     params: list[Any] = [f"%{t}%" for t in terms]
     if dimensions:
         placeholders = ",".join("?" * len(dimensions))
-        sql += f" AND memory_id IN (SELECT memory_id FROM memory_tags WHERE dimension_id IN ({placeholders}))"
-        params.extend(dimensions)
+        if match == "all":
+            # T-225：与 FTS 路径（_search_with_dims 的 GROUP BY ... HAVING
+            # COUNT(DISTINCT dimension_id)=N）同语义——必须含全部请求维度
+            sql += (
+                " AND memory_id IN (SELECT memory_id FROM memory_tags "
+                f"WHERE dimension_id IN ({placeholders}) "
+                "GROUP BY memory_id HAVING COUNT(DISTINCT dimension_id)=?)"
+            )
+            params.extend(dimensions)
+            params.append(len(dimensions))
+        else:
+            # match=any（缺省）：至少命中一个维度（原行为不变）
+            sql += f" AND memory_id IN (SELECT memory_id FROM memory_tags WHERE dimension_id IN ({placeholders}))"
+            params.extend(dimensions)
     sql += " LIMIT ?"
     params.append(min(limit, 20))
     cur = mem_conn.execute(sql, params)
-    return _rows_to_dicts(cur)
+    # 防御加固（双保险，T-170/T-225 同类修复精神）：SQL 拼接脆性——返回前逐行
+    # 复核 status 再剔除 rejected，防同类拼接回归。
+    return _drop_rejected(mem_conn, _rows_to_dicts(cur))
+
+
+def _drop_rejected(mem_conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
+    """返回前剔除 status='rejected' 的行（同连接批量复核，防 SQL 拼接优先级回归）。
+
+    LIMIT ≤ 20，额外一次主键 IN 查询，代价可忽略。LIKE 兜底是最后一道召回
+    手段，故任何复核异常退化为不过滤、不阻断检索。
+    """
+    ids = [r["memory_id"] for r in rows if r.get("memory_id")]
+    if not ids:
+        return rows
+    try:
+        placeholders = ",".join("?" * len(ids))
+        cur = mem_conn.execute(
+            f"SELECT memory_id FROM memories WHERE status = 'rejected' "
+            f"AND memory_id IN ({placeholders})",
+            ids,
+        )
+        rejected = {r["memory_id"] for r in _rows_to_dicts(cur)}
+    except sqlite3.Error as e:  # pragma: no cover - 防御分支
+        logger.warning("LIKE 兜底 rejected 复核失败，跳过过滤: %s", e)
+        return rows
+    return [r for r in rows if r["memory_id"] not in rejected]
 
 
 def _get_memory_tags(mem_conn: sqlite3.Connection, memory_id: str) -> list[str]:
