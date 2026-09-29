@@ -26,6 +26,14 @@ def _run_git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True)
 
 
+def _git_head(cwd: Path) -> str:
+    """取 HEAD 短哈希（T-221 守卫用例断言「无新提交」用）。"""
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(cwd), check=True,
+        capture_output=True, text=True, encoding="utf-8",
+    ).stdout.strip()
+
+
 def _make_repo(tmp_path: Path) -> Path:
     """真实 git 仓库（init + 提交身份 + 首个空提交），返回 source_dir。"""
     src = tmp_path / "skills_src"
@@ -222,6 +230,14 @@ class TestRenameSkill:
         r = rename_skill("a-one", "b-two", source_dirs=[str(repo)])
         assert r["ok"] is False
 
+    def test_rename_updates_name_field_in_new_copy(self, repo):
+        """T-221：新副本 frontmatter 的 name 字段同步为新名（名实一致）。"""
+        assert _write(repo, "old-name", meta={**VALID_META, "name": "old-name"})["ok"]
+        from sgme.skills.store import rename_skill
+        r = rename_skill("old-name", "new-name", source_dirs=[str(repo)])
+        assert r["ok"] is True
+        assert "name: new-name" in _read_skill(repo, "new-name")
+
 
 # ---------- 写入目录解析（source_dirs 多目录兜底） ----------
 
@@ -285,6 +301,73 @@ class TestWriteDirResolution:
                         [str(repo)])
         assert r["ok"] is True, r
         assert _read_skill(repo, "first-wins")
+
+
+# ---------- 写侧独立仓守卫（T-221） ----------
+
+
+class TestWriteSideRepoGuard:
+    """删除/改名/资产写入须落在独立 git 技能仓（T-221）。
+
+    背景：技能目录嵌在外层 git 仓库里时（本机源码运行 ./skills/ 形态），
+    历史上动盘后才走 git——删除/改名的提交会落进外层仓、无关改动被
+    ``git add -A`` 扫入；资产写入先落盘后报错留残。此处锁定「动盘前拦截、
+    零副作用」。
+    """
+
+    def _nested_workspace(self, tmp_path: Path) -> Path:
+        """外层 git 仓里的技能目录（自身无 .git）——模拟本机源码运行 ./skills/ 形态。"""
+        outer = _make_repo(tmp_path)
+        skills = outer / "skills"
+        demo = skills / "demo-skill"
+        demo.mkdir(parents=True)
+        (demo / "SKILL.md").write_text(
+            "---\ndescription: 嵌套形态测试技能\ncategory: testing\n---\n\n# 正文\n",
+            encoding="utf-8",
+        )
+        _run_git(outer, "add", "-f", "skills/demo-skill/SKILL.md")
+        _run_git(outer, "commit", "-m", "chore: 收编嵌套技能目录")
+        return skills
+
+    def test_remove_rejects_nested_dir_without_side_effects(self, tmp_path):
+        from sgme.skills.store import StoreError, remove_skill
+
+        skills = self._nested_workspace(tmp_path)
+        outer = skills.parent
+        before = _read_skill(skills, "demo-skill")
+        head_before = _git_head(outer)
+        with pytest.raises(StoreError):
+            remove_skill("demo-skill", source_dirs=[str(skills)])
+        # 零副作用：技能文件未动、外层仓无新提交（修复前：deprecated 入文件 +
+        # 提交落进外层仓，还可能把无关改动一起扫入）
+        assert _read_skill(skills, "demo-skill") == before
+        assert _git_head(outer) == head_before
+
+    def test_rename_rejects_nested_dir_without_side_effects(self, tmp_path):
+        from sgme.skills.store import StoreError, rename_skill
+
+        skills = self._nested_workspace(tmp_path)
+        outer = skills.parent
+        before = _read_skill(skills, "demo-skill")
+        head_before = _git_head(outer)
+        registry = tmp_path / "tombstones.json"
+        with pytest.raises(StoreError):
+            rename_skill("demo-skill", "demo-renamed", [str(skills)],
+                         registry_path=registry)
+        # 零副作用：无新副本、无墓碑、无登记、外层仓无新提交
+        assert not (skills / "demo-renamed").exists()
+        assert _read_skill(skills, "demo-skill") == before
+        assert not registry.exists()
+        assert _git_head(outer) == head_before
+
+    def test_asset_write_rejects_nested_dir_without_stray_file(self, tmp_path):
+        from sgme.skills.store import StoreError, write_skill_file
+
+        skills = self._nested_workspace(tmp_path)
+        with pytest.raises(StoreError):
+            write_skill_file("demo-skill", "references/note.md", "hi", [str(skills)])
+        # 修复前：先落盘后报错 → references/note.md 残留；修复后：动盘前拦截
+        assert not (skills / "demo-skill" / "references").exists()
 
 
 # ---------- 原子写 ----------

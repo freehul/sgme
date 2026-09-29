@@ -983,6 +983,54 @@ def test_mcp_skill_put_admin_key_writes(tmp_path, monkeypatch, raw_dir):
         gen.close()
 
 
+# ---------- T-221：写侧环境失败的统一错误码（独立技能仓守卫） ----------
+
+_T221_SKILL_MD = (
+    "---\n"
+    "name: t221-skill\n"
+    "description: T-221 写侧守卫集成测试用技能\n"
+    "category: test\n"
+    "---\n"
+    "\n"
+    "# T221\n"
+    "\n"
+    "测试正文。\n"
+)
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("skill_put", {"name": "t221-new", "content": _T221_SKILL_MD}),
+    ("skill_delete", {"name": "t221-skill"}),
+    ("skill_rename", {"name": "t221-skill", "new_name": "t221-renamed"}),
+])
+def test_mcp_write_side_env_failure_has_code(tmp_path, monkeypatch, raw_dir, tool, args):
+    """T-221：写侧环境失败（技能树非独立 git 仓）→ 错误体带 code=ERR_INTERNAL。
+
+    修复前：StoreError 分支只回 error 文本（无 code，与相邻分支形态不一致）。
+    同时锁「零落盘」：守卫在动盘前拦截，技能文件不被删改。
+    """
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        skills_dir = tmp_path / "skills_tree_t221"
+        (skills_dir / "t221-skill").mkdir(parents=True)
+        (skills_dir / "t221-skill" / "SKILL.md").write_text(_T221_SKILL_MD, encoding="utf-8")
+        app.state.cfg["skills"] = {
+            "enabled": True, "source_dirs": [str(skills_dir)], "budget": 40,
+            "tombstone_registry": str(tmp_path / "tombstones.json"),
+        }
+        body = _mcp_call_tool(client, None, tool, args, api_key="test-admin-key")
+        assert body is not None and "result" in body, body
+        res = body["result"]
+        text = "".join(c.get("text", "") for c in res.get("content", []))
+        data = json.loads(text)
+        assert "error" in data, data
+        assert data.get("code") == "ERR_INTERNAL", data
+        assert (skills_dir / "t221-skill" / "SKILL.md").exists()
+    finally:
+        gen.close()
+
+
 # ---------- T-155：MCP 同步工具移出事件循环（anyio.to_thread 包装） ----------
 
 # 抽样工具：覆盖「无参同步」(health/stats)、「带 ctx 注入」(signal_claim/skill_put)、「重 I/O」(skill_search)
