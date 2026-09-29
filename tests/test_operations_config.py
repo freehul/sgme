@@ -551,7 +551,20 @@ def test_mcp_config_get_unknown_section_is_lenient(mcp):
     assert "error" not in body
 
 
-def test_mcp_config_update_contract_unchanged(mcp, cfg):
+@pytest.fixture
+def admin_gate_passed(monkeypatch):
+    """T-224：MCP config_update 已加 admin 门禁（请求级 X-API-Key 反查）。
+
+    直调（FastMCP 直调 request_context=None）无法携带 Key → 门禁按设计拒绝；
+    本组用例聚焦**响应形态契约**（非鉴权），stub 门禁放行。门禁真实链路
+    （agent key 拒 / admin key 放行）由 test_mcp_server.py 的 HTTP 端到端用例覆盖。
+    """
+    import sgme.mcp_server as mcp_server_mod
+
+    monkeypatch.setattr(mcp_server_mod, "_require_admin", lambda ctx=None: (True, ""))
+
+
+def test_mcp_config_update_contract_unchanged(mcp, cfg, admin_gate_passed):
     """MCP config_update 成功体键集合与顺序仍与 v0.6 一致。"""
     # Act
     body = json.loads(_call_mcp(mcp, "config_update",
@@ -565,7 +578,7 @@ def test_mcp_config_update_contract_unchanged(mcp, cfg):
     assert cfg["l1"]["chunk_size"] == 1234  # 热生效（就地改同一 cfg 对象）
 
 
-def test_mcp_config_update_unknown_section_contract_unchanged(mcp):
+def test_mcp_config_update_unknown_section_contract_unchanged(mcp, admin_gate_passed):
     """MCP config_update 未知段 → {"error": "未知配置段: nosuch"}（不带可用段列表）。"""
     # Act
     body = json.loads(_call_mcp(mcp, "config_update", {"section": "nosuch", "values": {}}))
@@ -574,7 +587,7 @@ def test_mcp_config_update_unknown_section_contract_unchanged(mcp):
     assert body == {"error": "未知配置段: nosuch"}
 
 
-def test_mcp_config_update_persist_failure_contract_unchanged(mcp, persist_fails):
+def test_mcp_config_update_persist_failure_contract_unchanged(mcp, persist_fails, admin_gate_passed):
     """MCP config_update 落盘失败 → {"error": "配置落盘失败: ..."}（不上抛，v0.6 行为）。"""
     # Act
     body = json.loads(_call_mcp(mcp, "config_update",

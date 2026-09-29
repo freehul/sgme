@@ -366,27 +366,37 @@ def _app_state_mem_conn():
     return _app_state["mem_conn"]
 
 
-def test_mcp_config_get_update(mcp, tmp_path):
-    """config_get / config_update（隔离落盘）。"""
-    r = _call(mcp, "config_get", {"section": "refine"})
-    data = json.loads(r[0])
-    assert data["section"] == "refine"
-    assert "refine_on_append" in data["config"]
+def test_mcp_config_get_update(tmp_path, monkeypatch, raw_dir):
+    """config_get / config_update（隔离落盘）。
 
-    r2 = _call(mcp, "config_update", {
-        "section": "refine", "values": {"refine_on_append": True},
-    })
-    data2 = json.loads(r2[0])
-    assert data2["status"] == "ok"
-    assert data2["config"]["refine_on_append"] is True
-    # 落盘隔离文件
-    import yaml
-    persisted = yaml.safe_load((tmp_path / "sgme_test.yaml").read_text(encoding="utf-8"))
-    assert persisted["refine"]["refine_on_append"] is True
-    # 还原
-    _call(mcp, "config_update", {
-        "section": "refine", "values": {"refine_on_append": False},
-    })
+    T-224：config_update 已加 admin 门禁（无 HTTP 上下文的直调不再放行）——
+    本用例改经 HTTP 管理员 Key 调，保留原「热生效 + 落盘」断言全量。
+    """
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        data = json.loads(_mcp_tool_text(_mcp_call_tool(
+            client, None, "config_get", {"section": "refine"}, api_key="test-admin-key")))
+        assert data["section"] == "refine"
+        assert "refine_on_append" in data["config"]
+
+        data2 = json.loads(_mcp_tool_text(_mcp_call_tool(
+            client, None, "config_update",
+            {"section": "refine", "values": {"refine_on_append": True}},
+            api_key="test-admin-key")))
+        assert data2["status"] == "ok"
+        assert data2["config"]["refine_on_append"] is True
+        # 落盘隔离文件
+        import yaml
+
+        persisted = yaml.safe_load((tmp_path / "sgme_test.yaml").read_text(encoding="utf-8"))
+        assert persisted["refine"]["refine_on_append"] is True
+        # 还原
+        _mcp_call_tool(client, None, "config_update",
+                       {"section": "refine", "values": {"refine_on_append": False}},
+                       api_key="test-admin-key")
+    finally:
+        gen.close()
 
 
 def test_mcp_health(mcp):
@@ -478,37 +488,47 @@ def test_mcp_refine_batch_and_status(mcp):
     assert "total" in data4
 
 
-def test_mcp_signal_clear(mcp):
-    """signal_clear：批量清空未消费信号（幂等 + type 过滤，T-87）。"""
-    from sgme.mcp_server import _app_state
+def test_mcp_signal_clear_admin_key(tmp_path, monkeypatch, raw_dir):
+    """signal_clear：批量清空未消费信号（幂等 + type 过滤，T-87）。
+
+    T-224 后为管理操作（需管理员 Key，见文件尾部门禁用例）——原直调形态
+    已不再放行，本用例改经 HTTP 管理员 Key 调，覆盖同批语义。
+    """
     from sgme.signal import engine as signal_engine
 
-    mem_conn = _app_state["mem_conn"]
-    signal_engine.publish("care_daily", "care", {"date": "2026-08-21"}, mem_conn)
-    signal_engine.publish("anomaly_warn", "health", {"m": "x"}, mem_conn)
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        mem_conn = app.state.mem_conn
+        signal_engine.publish("care_daily", "care", {"date": "2026-08-21"}, mem_conn)
+        signal_engine.publish("anomaly_warn", "health", {"m": "x"}, mem_conn)
 
-    # 全部清空
-    text, _ = _call(mcp, "signal_clear", {})
-    data = json.loads(text)
-    assert "error" not in data, data
-    assert data["consumed"] == 2
-    assert data["type"] is None
+        # 全部清空
+        data = json.loads(_mcp_tool_text(_mcp_call_tool(
+            client, None, "signal_clear", {}, api_key="test-admin-key")))
+        assert "error" not in data, data
+        assert data["consumed"] == 2
+        assert data["type"] is None
 
-    # 幂等：二次调用 consumed=0
-    text2, _ = _call(mcp, "signal_clear", {})
-    assert json.loads(text2)["consumed"] == 0
+        # 幂等：二次调用 consumed=0
+        data2 = json.loads(_mcp_tool_text(_mcp_call_tool(
+            client, None, "signal_clear", {}, api_key="test-admin-key")))
+        assert data2["consumed"] == 0
 
-    # type 过滤：只清空 care_daily，anomaly_warn 保留
-    signal_engine.publish("care_daily", "care", {"date": "2026-08-22"}, mem_conn)
-    signal_engine.publish("anomaly_warn", "health", {"m": "y"}, mem_conn)
-    text3, _ = _call(mcp, "signal_clear", {"signal_type": "care_daily"})
-    data3 = json.loads(text3)
-    assert data3["consumed"] == 1
-    assert data3["type"] == "care_daily"
-    n = mem_conn.execute(
-        "SELECT COUNT(*) FROM signal_events WHERE type='anomaly_warn' AND consumed_at IS NULL"
-    ).fetchone()[0]
-    assert n == 1
+        # type 过滤：只清空 care_daily，anomaly_warn 保留
+        signal_engine.publish("care_daily", "care", {"date": "2026-08-22"}, mem_conn)
+        signal_engine.publish("anomaly_warn", "health", {"m": "y"}, mem_conn)
+        data3 = json.loads(_mcp_tool_text(_mcp_call_tool(
+            client, None, "signal_clear", {"signal_type": "care_daily"},
+            api_key="test-admin-key")))
+        assert data3["consumed"] == 1
+        assert data3["type"] == "care_daily"
+        n = mem_conn.execute(
+            "SELECT COUNT(*) FROM signal_events WHERE type='anomaly_warn' AND consumed_at IS NULL"
+        ).fetchone()[0]
+        assert n == 1
+    finally:
+        gen.close()
 
 
 def test_mcp_agent_onboarding(mcp):
@@ -1085,3 +1105,114 @@ def test_mcp_signal_claim_ctx_injection_survives_wrap(tmp_path, monkeypatch, raw
         assert data.get("agent_id") == "ctxagent", f"ctx 注入丢失（key 反查失败）: {data}"
     finally:
         gen.close()
+
+
+# ---------- T-224：MCP 管理操作 admin 门禁（config_update / signal_clear） ----------
+#
+# 0930 深度审查 P0-3：config_update / signal_clear 两个管理操作缺 _require_admin，
+# 普通 agent key 可持久改写 sgme.yaml、批量清空他人信号；而 HTTP 对端
+# （PUT /v1/admin/config、POST /v1/admin/events/consume_all）均要求 admin key。
+# 本组用例经 HTTP 真实鉴权链路（ApiKeyMiddleware + key_store）覆盖两侧行为。
+
+def _mcp_tool_text(body) -> str:
+    """从 tools/call 响应体提取文本内容（MCP 工具以 JSON 字符串返回）。"""
+    assert body is not None and "result" in body, body
+    res = body["result"]
+    return "".join(c.get("text", "") for c in res.get("content", []))
+
+
+def test_mcp_config_update_agent_key_forbidden(tmp_path, monkeypatch, raw_dir):
+    """T-224：普通 agent key 调 config_update → ERR_FORBIDDEN，且配置零改写/零落盘。"""
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        cfg_path = tmp_path / "sgme_test.yaml"
+        before_cfg = json.dumps(app.state.cfg.get("l1"), ensure_ascii=False, sort_keys=True)
+        before_disk = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else None
+
+        text = _mcp_tool_text(_mcp_call_tool(client, None, "config_update", {
+            "section": "l1", "values": {"chunk_size": 4321},
+        }, api_key="test-agent-key"))
+
+        assert "ERR_FORBIDDEN" in text, text
+        assert '"ok": true' not in text.lower(), text
+        # 零副作用：内存 cfg 未被改写、sgme.yaml 未被落盘
+        assert json.dumps(app.state.cfg.get("l1"), ensure_ascii=False, sort_keys=True) == before_cfg
+        after_disk = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else None
+        assert after_disk == before_disk, "agent key 越权调用触发了配置落盘"
+    finally:
+        gen.close()
+
+
+def test_mcp_config_update_admin_key_applies(tmp_path, monkeypatch, raw_dir):
+    """T-224：管理员 Key 调 config_update → 门禁放行 + 更新热生效（不误伤既有链路）。"""
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        text = _mcp_tool_text(_mcp_call_tool(client, None, "config_update", {
+            "section": "l1", "values": {"chunk_size": 4321},
+        }, api_key="test-admin-key"))
+
+        data = json.loads(text)
+        assert "error" not in data, data
+        assert data["status"] == "ok"
+        assert data["section"] == "l1"
+        assert data["config"]["chunk_size"] == 4321
+        assert app.state.cfg["l1"]["chunk_size"] == 4321  # 热生效（就地改同一 cfg 对象）
+    finally:
+        gen.close()
+
+
+def test_mcp_signal_clear_agent_key_forbidden(tmp_path, monkeypatch, raw_dir):
+    """T-224：普通 agent key 调 signal_clear → ERR_FORBIDDEN，未消费信号零清空。"""
+    from sgme.signal import engine as signal_engine
+
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        mem_conn = app.state.mem_conn
+        signal_engine.publish("care_daily", "care", {"date": "t224"}, mem_conn)
+
+        text = _mcp_tool_text(_mcp_call_tool(
+            client, None, "signal_clear", {}, api_key="test-agent-key"))
+
+        assert "ERR_FORBIDDEN" in text, text
+        n = mem_conn.execute(
+            "SELECT COUNT(*) FROM signal_events WHERE consumed_at IS NULL"
+        ).fetchone()[0]
+        assert n == 1, "agent key 越权调用消费了信号"
+    finally:
+        gen.close()
+
+
+def test_mcp_signal_clear_admin_key_consumes(tmp_path, monkeypatch, raw_dir):
+    """T-224：管理员 Key 调 signal_clear → 门禁放行 + 信号清零（consumed_by 反查保留）。"""
+    from sgme.signal import engine as signal_engine
+
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        mem_conn = app.state.mem_conn
+        signal_engine.publish("care_daily", "care", {"date": "t224-a"}, mem_conn)
+        signal_engine.publish("anomaly_warn", "health", {"m": "t224-b"}, mem_conn)
+
+        data = json.loads(_mcp_tool_text(_mcp_call_tool(
+            client, None, "signal_clear", {}, api_key="test-admin-key")))
+
+        assert "error" not in data, data
+        assert data["consumed"] == 2
+        # consumed_by 反查逻辑不变：admin key → default（与 HTTP 端点同语义）
+        rows = mem_conn.execute(
+            "SELECT DISTINCT consumed_by FROM signal_events WHERE consumed_at IS NOT NULL"
+        ).fetchall()
+        assert [r[0] for r in rows] == ["default"]
+    finally:
+        gen.close()
+
+
+def test_mcp_admin_tools_direct_call_rejected(mcp):
+    """T-224：无 HTTP 上下文直调（无法反查 Key）→ 安全默认拒绝（与 skill_put 同规则）。"""
+    for name, args in (("config_update", {"section": "l1", "values": {"chunk_size": 4096}}),
+                       ("signal_clear", {})):
+        text, _ = _call(mcp, name, args)
+        assert "ERR_FORBIDDEN" in text, f"{name} 直调未被拒: {text}"
