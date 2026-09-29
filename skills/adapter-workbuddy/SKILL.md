@@ -12,7 +12,7 @@ tags: [skill, adapter, sgme]
 > 本技能是 SGME 官方适配器（源码 `adapters/workbuddy/`；本目录为部署副本，由 `install.py` 同步，可随时重建）。
 > **能力面 = CLI 命令面**：下方矩阵 41 个基准能力一个不少。
 > **优先用本会话已挂载的 MCP 工具**（同名能力）；无 MCP 或要脚本化时再走 CLI。
-> 本机 agent_id = `workbuddy`（服务端已注册）——不要借用其它 agent 的 key。
+> 本机 agent_id **默认 `workbuddy`**（服务端已注册）——可被本机覆盖：环境变量 `SGME_WORKBUDDY_AGENT_ID` → 身份文件 `~/.sgme/workbuddy-agent.json` 的 `agent_id` → 默认。**多设备接入时必须覆盖为服务端为本机签发的注册 id**（占位符示例 `<注册id>-<设备名>`）；用 `env-info` 查看生效值与来源。不要借用其它 agent 的 key。
 
 ## 服务发现（找不到 SGME 时按序）
 
@@ -31,7 +31,7 @@ tags: [skill, adapter, sgme]
 |---|---|
 | HTTP / MCP | 见上「服务发现」 |
 | 请求头 | `X-API-Key` |
-| agent_id | `workbuddy`（服务端已注册，溯源打标用） |
+| agent_id | 默认 `workbuddy`（服务端已注册，溯源打标用）；本机可覆盖——环境变量 `SGME_WORKBUDDY_AGENT_ID` 或身份文件 `agent_id`，多设备接入用服务端为本机签发的注册 id（占位符示例 `<注册id>-<设备名>`）；`env-info` 查看生效值与来源 |
 | agent 能力面 | 密钥按序解析：`SGME_WORKBUDDY_KEY` → `~/.sgme/workbuddy-agent.json` → `~/.workbuddy/mcp.json` 的 `sgme` server → `SGME_AGENT_KEY`（兜底） |
 | 写侧/管理 | `SGME_ADMIN_KEY`（`skill_put`/`skill_delete`/`skill_rename` 服务端强制） |
 | 自检 | `python scripts/selfcheck.py` |
@@ -143,3 +143,4 @@ python scripts/care_watch.py pull
 - 测 API 用 Python（git-bash curl 破坏中文 UTF-8）。
 - 本技能更新后需**新开 WorkBuddy 对话**才重新加载；若同名技能重复出现，在技能列表停用旧的一份，避免双触发。
 - 密钥疑似用错（记忆被打上别的 agent_tag）→ 先 `env-info` 看「agent key 来源」，确认不是 `SGME_AGENT_KEY` 兜底路径。
+- 记忆的 **agent_tag 不对** → 先看 **agent_id 来源**（`env-info`）：多设备接入时本机必须覆盖 `SGME_WORKBUDDY_AGENT_ID` 或身份文件 `agent_id`，否则会按默认值错标。

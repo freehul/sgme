@@ -5,6 +5,7 @@
     python adapters/workbuddy/install.py
     python adapters/workbuddy/install.py --skills-root <WORKBUDDY_SKILLS_DIR>
     python adapters/workbuddy/install.py --base-url http://<SGME_HOST>:9910
+    python adapters/workbuddy/install.py --agent-id <本机注册id>
     python adapters/workbuddy/install.py --no-selfcheck
 
 行为：
@@ -17,6 +18,8 @@
 
 地址解析顺序：`--base-url` → 环境变量 → 既有部署配置 → 身份文件 →
 WorkBuddy MCP 配置（~/.workbuddy/mcp.json 的 sgme server）→ 回环默认。
+agent_id 解析顺序（T-233）：`--agent-id` → 环境变量 `SGME_WORKBUDDY_AGENT_ID` →
+既有身份文件值 → 默认 `workbuddy`（多设备接入必须覆盖为本机注册 id）。
 密钥一律不落盘：由 `SGME_WORKBUDDY_KEY` / `SGME_AGENT_KEY` 环境变量或既有的
 `~/.workbuddy/mcp.json` 提供。
 """
@@ -38,7 +41,6 @@ SKILL_NAME = "sgme"
 sys.path.insert(0, str(SCRIPT_DIR))
 from sgme_client import (  # noqa: E402
     ADMIN_KEY_ENV,
-    AGENT_ID,
     DEFAULT_HTTP_URL,
     DEPLOY_CONFIG_NAME,
     KEY_ENV,
@@ -49,6 +51,7 @@ from sgme_client import (  # noqa: E402
     load_deploy_config,
     load_workbuddy_identity,
     load_workbuddy_mcp_json,
+    resolve_agent_id,
 )
 
 
@@ -119,23 +122,31 @@ def write_deploy_config(dest: Path, http: str, mcp: str) -> Path:
     return path
 
 
-def seed_identity(http: str, mcp: str) -> tuple[Path, str]:
+def seed_identity(http: str, mcp: str, agent_id: str | None = None) -> tuple[Path, str, str, str]:
     """写本机身份文件 ~/.sgme/workbuddy-agent.json（地址 + agent_id，不含密钥）。
+
+    agent_id 解析优先级（T-233）：显式参数（`--agent-id`）→ 环境变量
+    `SGME_WORKBUDDY_AGENT_ID` → 既有身份文件值 → 默认 `workbuddy`。
+    ——不再无条件回写默认常量：既有身份文件里的本机注册 id（多设备场景）
+    会被保留，不被打回默认。其余自定义字段一律保留。
 
     **密钥铁律**：本函数刻意不写 `api_key`——WorkBuddy 场景下密钥由
     `~/.workbuddy/mcp.json` 的 sgme server 自动继承，无需再落一份盘
-    （AGENTS.md 约束 10：密钥不落盘）。已有身份文件的自定义字段一律保留。
+    （AGENTS.md 约束 10：密钥不落盘）。
+
+    返回 `(身份文件路径, 说明, 生效 agent_id, agent_id 来源)`。
     """
     f = identity_path()
     existing = load_workbuddy_identity()
+    aid, aid_src = resolve_agent_id(agent_id)
     data = dict(existing)
-    data.update({"agent_id": AGENT_ID, "http": http, "mcp": mcp})
+    data.update({"agent_id": aid, "http": http, "mcp": mcp})
     data.pop("api_key", None)          # 密钥不落盘
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     had_key = bool(str(existing.get("api_key") or "").strip())
     note = "（已移除既有 api_key：密钥不落盘）" if had_key else "（不含密钥）"
-    return f, note
+    return f, note, aid, aid_src
 
 
 def install(skills_root: Path) -> Path:
@@ -169,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="WorkBuddy 技能根目录（默认 ~/.workbuddy/skills）")
     ap.add_argument("--base-url", default=None, help="SGME HTTP 地址")
     ap.add_argument("--mcp-url", default=None, help="SGME MCP 地址")
+    ap.add_argument("--agent-id", default=None,
+                    help="本机 agent_id（服务端为本机签发的注册 id；覆盖环境变量/身份文件/默认）")
     ap.add_argument("--no-selfcheck", action="store_true", help="跳过自检")
     ap.add_argument("--no-seed-identity", action="store_true",
                     help="不写本机身份文件 ~/.sgme/workbuddy-agent.json")
@@ -184,10 +197,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"部署配置: {cfg}")
 
     if args.no_seed_identity:
+        aid, aid_src = resolve_agent_id(args.agent_id)
         print("身份文件: 已跳过（--no-seed-identity）")
+        print(f"agent_id: {aid}（来源: {aid_src}；本次未写入身份文件）")
     else:
-        ident, note = seed_identity(http, mcp)
+        ident, note, aid, aid_src = seed_identity(http, mcp, args.agent_id)
         print(f"身份文件: {ident} {note}")
+        print(f"agent_id: {aid}（来源: {aid_src}）")
 
     print(f"密钥: {WORKBUDDY_KEY_ENV} → 身份文件 → ~/.workbuddy/mcp.json → {KEY_ENV}（均不落盘）")
 

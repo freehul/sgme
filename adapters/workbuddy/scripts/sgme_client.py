@@ -25,6 +25,14 @@ WorkBuddy官方适配器（adapters/workbuddy）的运行时客户端。两层�
   SGME_ADMIN_KEY —— 写侧·管理能力（skill_put / skill_delete / skill_rename 服务端强制管理员 Key）
   兜底：~/.sgme/workbuddy-agent.json（WorkBuddy 身份文件：api_key / http / mcp 字段）
 
+agent_id（溯源打标，构造时求值；多设备接入必须本机覆盖）：
+  ① 调用参数（SGME(agent_id=…) / CLI --agent / install --agent-id）
+  ② 环境变量 SGME_WORKBUDDY_AGENT_ID（对齐 Hermes 适配器 SGME_HERMES_AGENT_ID 范式）
+  ③ 身份文件 ~/.sgme/workbuddy-agent.json 的 agent_id 字段
+  ④ 默认 workbuddy（服务端已注册）
+  多设备（笔记本等第二个实例）用服务端为本机签发的注册 id（形如 <注册id>-<设备名>）；
+  不覆盖会把记忆错标成默认值（T-233）。解析函数：resolve_agent_id()。
+
 用法（能力面 = CLI 命令面；全部基准能力都有对应子命令）：
   python sgme_client.py health
   python sgme_client.py append --session 2026-01-01-workbuddy --text "……" [--role user|assistant]
@@ -66,7 +74,14 @@ ADMIN_KEY_ENV = "SGME_ADMIN_KEY"
 # 其它 agent 占用——实测 .env 的 SGME_AGENT_KEY 绑定 agent_id=dsh，若直接优先使用
 # 会把 WorkBuddy 的 L0 打上 dsh 的 agent_tag，污染多 Agent 溯源与隔离（T-140）。
 WORKBUDDY_KEY_ENV = "SGME_WORKBUDDY_KEY"
+# agent_id 默认值（服务端已注册的注册 id）。**可被本机配置覆盖**（T-233）：
+# 解析链见 resolve_agent_id()——调用参数 → 环境变量 SGME_WORKBUDDY_AGENT_ID →
+# 身份文件 ~/.sgme/workbuddy-agent.json 的 agent_id → 本默认值。
+# 多设备接入（笔记本等第二个实例）必须本机覆盖：服务端按设备签发注册 id
+# （形如 <注册id>-<设备名>），用默认值会把该机记忆错标成 workbuddy。
 AGENT_ID = "workbuddy"
+# WorkBuddy agent_id 本机覆盖变量（对齐 Hermes 适配器 SGME_HERMES_AGENT_ID 范式）
+WORKBUDDY_AGENT_ID_ENV = "SGME_WORKBUDDY_AGENT_ID"
 
 # WorkBuddy 本机接入产物（相对 $HOME）
 WORKBUDDY_IDENTITY_PATH = ".sgme/workbuddy-agent.json"
@@ -180,6 +195,32 @@ def load_workbuddy_mcp_json(path: str | Path | None = None) -> dict:
     return out
 
 
+def resolve_agent_id(explicit: str | None = None) -> tuple[str, str]:
+    """解析本机 agent_id（append 溯源打标用），返回 `(值, 来源说明)`。
+
+    顺序（对齐 Hermes 适配器 `SGME_HERMES_AGENT_ID` 范式，T-233）：
+
+      ① 显式参数 —— `SGME(agent_id=…)` / CLI `--agent` / `install.py --agent-id`
+      ② 环境变量 `SGME_WORKBUDDY_AGENT_ID`
+      ③ 身份文件 `~/.sgme/workbuddy-agent.json` 的 `agent_id` 字段
+      ④ 默认 `workbuddy`（服务端已注册）
+
+    多设备接入（笔记本等第二个实例）：服务端为本机签发的注册 id 形如
+    `<注册id>-<设备名>`，本机必须显式覆盖——否则 append 的 agent_id 沿用默认值，
+    记忆错标（T-233）。空白/空值逐级回退，绝不返回空串。
+    """
+    v = (explicit or "").strip()
+    if v:
+        return v, "调用参数"
+    v = _env_str(WORKBUDDY_AGENT_ID_ENV)
+    if v:
+        return v, f"环境变量 {WORKBUDDY_AGENT_ID_ENV}"
+    v = str(load_workbuddy_identity().get("agent_id") or "").strip()
+    if v:
+        return v, f"身份文件 ~/{WORKBUDDY_IDENTITY_PATH}"
+    return AGENT_ID, "默认值（服务端已注册）"
+
+
 def resolve_agent_key() -> tuple[str, str]:
     """解析 agent 能力面密钥，返回 `(key, 来源说明)`；全无则返回 `("", "")`。
 
@@ -207,7 +248,8 @@ def resolve_agent_key() -> tuple[str, str]:
         return v, f"WorkBuddy MCP 配置 ~/{WORKBUDDY_MCP_JSON_PATH}"
     v = _env_str(KEY_ENV)
     if v:
-        return v, f"环境变量 {KEY_ENV}（兜底：请确认它属于 agent_id={AGENT_ID}）"
+        aid = resolve_agent_id()[0]
+        return v, f"环境变量 {KEY_ENV}（兜底：请确认它属于 agent_id={aid}）"
     return "", ""
 
 
@@ -326,11 +368,13 @@ class SGME:
     """SGME HTTP/MCP 客户端（WorkBuddy适配器运行时）。"""
 
     def __init__(self, base_url: str | None = None, key: str | None = None,
-                 mcp_url: str | None = None):
+                 mcp_url: str | None = None, agent_id: str | None = None):
         http, mcp, src = resolve_addresses(base_url, mcp_url)
         self.base_url = http
         self.mcp_url = mcp
         self.source = src
+        # 溯源 agent_id（T-233）：构造参数 → 环境变量 → 身份文件 → 默认
+        self.agent_id, self.agent_id_source = resolve_agent_id(agent_id)
         if key:
             self.key, self.key_source = key, "调用参数"
         else:
@@ -350,7 +394,8 @@ class SGME:
             "http_url": self.base_url,
             "mcp_url": self.mcp_url,
             "address_source": self.source,
-            "agent_id": AGENT_ID,
+            "agent_id": self.agent_id,
+            "agent_id_source": self.agent_id_source,
             "agent_key_source": self.key_source,
             "agent_key_set": bool(self.key),
             "agent_key_env": WORKBUDDY_KEY_ENV,
@@ -440,12 +485,12 @@ class SGME:
         return self._http("GET", "/v1/health")
 
     def append(self, session_key: str, text: str, role: str = "user",
-               agent_id: str = AGENT_ID, started_at: str | None = None) -> dict:
+               agent_id: str | None = None, started_at: str | None = None) -> dict:
         ts = started_at or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         content = f"# {ts} {role}\n{text}"
         return self._http("POST", "/v1/append", {
             "session_key": session_key, "started_at": ts,
-            "content": content, "agent_id": agent_id,
+            "content": content, "agent_id": agent_id or self.agent_id,
         })
 
     def inject(self, mode: str = "daily", max_tokens: int | None = None):
@@ -473,9 +518,13 @@ class SGME:
         return self._http("POST", f"/v1/memory/{urllib.parse.quote(memory_id)}/unreject")
 
     # ---------- HTTP 层：事件 ----------
-    def events_pull(self, subscriber_id: str = AGENT_ID, limit: int | None = None):
-        """拉取未消费事件（服务端无类型过滤，类型筛选由调用方在客户端完成）。"""
-        params = {"subscriber_id": subscriber_id}
+    def events_pull(self, subscriber_id: str | None = None, limit: int | None = None):
+        """拉取未消费事件（服务端无类型过滤，类型筛选由调用方在客户端完成）。
+
+        subscriber_id 缺省取本机解析的 agent_id（T-233）——多设备各拉各的游标，
+        不互相推进对方未消费队列。
+        """
+        params = {"subscriber_id": subscriber_id or self.agent_id}
         if limit:
             params["limit"] = limit
         q = urllib.parse.urlencode(params)
@@ -758,11 +807,12 @@ def _print_matrix(_c, _a):
 def _print_env_info(_c, _a):
     http, mcp, src = resolve_addresses()
     key, key_src = resolve_agent_key()
+    aid, aid_src = resolve_agent_id()
     print("SGME × WorkBuddy 客户端生效配置（不打印密钥值）")
     print(f"  HTTP 端点  : {http}")
     print(f"  MCP  端点  : {mcp}")
     print(f"  地址来源   : {src}")
-    print(f"  agent_id   : {AGENT_ID}")
+    print(f"  agent_id   : {aid}（来源: {aid_src}）")
     print(f"  agent key  : {'已取到' if key else '未取到'}（来源: {key_src or '—'}）")
     for env_name, desc in ((WORKBUDDY_KEY_ENV, "agent 能力面（专用，推荐）"),
                            (KEY_ENV, "agent 能力面（通用兜底）"),
@@ -814,7 +864,8 @@ CMD_SPECS: list[dict] = [
             {"dest": "file", "flag": "file", "help": "从文件读本轮文本（与 --text 二选一）"},
             {"dest": "role", "flag": "role", "default": "user",
              "choices": ["user", "assistant"], "help": "角色（默认 user）"},
-            {"dest": "agent", "flag": "agent", "default": AGENT_ID, "help": "agent_id"},
+            {"dest": "agent", "flag": "agent", "default": None,
+             "help": "agent_id（缺省用本机解析值：参数→SGME_WORKBUDDY_AGENT_ID→身份文件→默认）"},
         ],
         "run": lambda c, a: c.append(a.session, _read_text_arg(a.text, a.file, "append"),
                                      a.role, a.agent),
@@ -862,7 +913,8 @@ CMD_SPECS: list[dict] = [
     {
         "cli": "events-pull", "help": "拉取未消费事件/信号（--types 客户端前缀过滤）",
         "options": [
-            {"dest": "subscriber", "flag": "subscriber", "default": AGENT_ID, "help": "订阅者 ID"},
+            {"dest": "subscriber", "flag": "subscriber", "default": None,
+             "help": "订阅者 ID（缺省用本机解析的 agent_id）"},
             {"dest": "types", "flag": "types", "help": "类型前缀过滤，如 care_；不传看全部"},
             {"dest": "limit", "flag": "limit", "type": int, "help": "条数"},
         ],

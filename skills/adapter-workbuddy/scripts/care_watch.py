@@ -51,7 +51,8 @@ def main(argv=None):
 
     sp = sub.add_parser("pull", help="拉一次未消费信号（默认客户端过滤只看 care_*）")
     sp.add_argument("--types", default="care_", help="类型前缀过滤（客户端筛）；传空串看全部")
-    sp.add_argument("--subscriber", default="workbuddy")
+    sp.add_argument("--subscriber", default=None,
+                    help="订阅者 ID（缺省用本机解析的 agent_id，T-233）")
 
     sp = sub.add_parser("watch", help="常驻轮询")
     sp.add_argument("--interval", type=int, default=300, help="轮询间隔秒数")
@@ -65,19 +66,22 @@ def main(argv=None):
 
     sp = sub.add_parser("clear", help="批量清空未消费信号（幂等；管理操作，自动用管理员 Key）")
     sp.add_argument("--type", dest="signal_type", default=None, help="类型精确过滤（如 care_daily）")
-    sp.add_argument("--subscriber", default="workbuddy", help="同步推进该订阅者游标")
+    sp.add_argument("--subscriber", default=None,
+                    help="同步推进该订阅者游标（缺省用本机解析的 agent_id，T-233）")
 
     a = p.parse_args(argv)
 
     try:
         c = SGME()
+        # 订阅者取本机解析的 agent_id（B194「按 agent 前缀防碰撞」语义的延续，T-233）：
+        # 多设备各拉各的持久游标，不互相推进对方未消费队列。
         if a.cmd == "pull":
-            print(fmt_pull(c.events_pull(a.subscriber), a.types or None))
+            print(fmt_pull(c.events_pull(a.subscriber or c.agent_id), a.types or None))
         elif a.cmd == "watch":
             print(f"care_watch 常驻轮询开始（每 {a.interval}s）… Ctrl+C 退出")
             while True:
                 try:
-                    resp = c.events_pull("workbuddy")
+                    resp = c.events_pull(c.agent_id)
                     text = fmt_pull(resp, "care_")
                     if "暂无" not in text:
                         print(f"[{time.strftime('%H:%M:%S')}]", text)
@@ -89,7 +93,7 @@ def main(argv=None):
         elif a.cmd == "ack":
             print(c.signal_ack(a.event_id, a.status))
         elif a.cmd == "clear":
-            print(c.signal_clear(a.signal_type, a.subscriber))
+            print(c.signal_clear(a.signal_type, a.subscriber or c.agent_id))
     except SGMEError as e:
         print(f"❌ {e}", file=sys.stderr)
         sys.exit(2)
