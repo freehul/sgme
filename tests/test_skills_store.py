@@ -72,7 +72,7 @@ class TestWriteSkill:
         assert _read_skill(repo, "alpha-skill")  # 文件已落盘
         log = subprocess.run(
             ["git", "log", "--oneline", "-2"], cwd=str(repo),
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
         )
         assert "alpha-skill" in log.stdout  # 有 commit
 
