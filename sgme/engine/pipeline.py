@@ -18,6 +18,7 @@ import logging
 import sqlite3
 import threading
 import uuid
+from pathlib import Path
 
 from sgme.engine import l15 as l15_mod
 from sgme.engine import refine as refine_mod
@@ -228,13 +229,22 @@ def refine_one(
     session_conn: sqlite3.Connection,
     cfg: dict,
 ) -> tuple[refine_mod.RefineResult, dict]:
-    """单文件提炼：refine_file → L1.5 落库。返回 (result, l15_stats)。"""
+    """单文件提炼：refine_file → L1.5 落库 → 游标推进（commit_refine）。
+
+    T-223（2026-09-30 深度审查 P0-2）：游标/内容哈希推进从 refine_file 拆出为
+    **落库成功后**的显式 ``commit_refine``。原实现先推游标后落库，落库崩溃
+    （并发错误/磁盘满）后文件已 refined、批扫不再拾起 → 记忆永久丢失。
+    现 persist 抛异常时本函数不达 commit 行，文件保持 status=new 可重扫重试。
+    """
     result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
     l15_stats = (
         persist_memories(result, mem_conn, cfg,
                          agent_tag=_resolve_file_agent(session_conn, file_id))
         if result.memories else dict(_ZERO_STATS)
     )
+    # 落库成功（persist_memories 正常返回）之后才推进游标 + 内容哈希；
+    # 无增量结果（memories 空）同样走这里收敛为 refined（T-223 设计选择）。
+    refine_mod.commit_refine(result, session_conn)
     return result, l15_stats
 
 
@@ -244,13 +254,16 @@ def refine_many(
     session_conn: sqlite3.Connection,
     cfg: dict,
 ) -> list[tuple[refine_mod.RefineResult, dict]]:
-    """批量提炼（同步）：逐文件「提炼 → 立即落库」（F-2 修复，2026-09-24）。
+    """批量提炼（同步）：逐文件「提炼 → 立即落库 → 推游标」（F-2/T-223）。
 
     原实现「refine_batch 集齐全部 L1 → 统一落库」：中途异常时前序文件已被标记
     refined 但记忆未落库（永久丢失）——异步路径 2026-08-06 已修，同步路径残留
     同款缺陷（深度审查 F-2 实测复现）。现逐文件立即落库，单文件失败只影响该文件
     （refine_batch 收成 status=error 项，批次继续），与 async_refine_worker /
     显式列表同步路径三者行为对齐。
+
+    T-223：每个文件落库成功后单独 commit_refine（游标推进不再隐含在 refine_file
+    内）；某文件落库抛异常时该文件游标不推进（保持 new，下批重扫不丢）。
     """
     pairs: list[tuple[refine_mod.RefineResult, dict]] = []
     for r in refine_mod.refine_batch(mem_conn, session_conn, cfg, limit=limit):
@@ -259,6 +272,7 @@ def refine_many(
                              agent_tag=_resolve_file_agent(session_conn, r.file_id))
             if r.memories else dict(_ZERO_STATS)
         )
+        refine_mod.commit_refine(r, session_conn)  # T-223：逐文件落库后推游标
         pairs.append((r, l15_stats))
     return pairs
 
@@ -266,23 +280,36 @@ def refine_many(
 def async_refine_worker(
     file_id: str | None,
     limit: int,
-    mem_conn: sqlite3.Connection,
-    session_conn: sqlite3.Connection,
+    data_dir: str | Path | None,
     cfg: dict,
 ) -> None:
-    """异步提炼后台执行体（线程内运行，异常不抛出——由批扫兜底）。
+    """异步提炼后台执行体（线程内运行：自建独立连接，异常不抛出——由批扫兜底）。
+
+    连接隔离（T-222，2026-09-30 深度审查 P0-1）：线程内 ``init_databases(data_dir)``
+    自建独立连接，**不再复用宿主 app.state / _app_state 连接**——跨线程共享
+    sqlite 连接在 insert_memory/archive_memory 的显式事务下互踩（BEGIN 冲突 +
+    rollback 连带回滚，记忆静默丢失，探针实测复现）。与 batch_scan._scheduler_loop、
+    dream.run_dream_safe 同款；线程退出时关闭自建连接。
+    data_dir=None → config.DATA_DIR（内存库场景兜底）。
 
     逐文件 L1→L1.5→L2 立即落库（2026-08-06 修复）：
     原实现先 refine_batch 收集全部 L1 结果再统一落库，中途异常
     （如 Model is unloaded）导致已处理文件的记忆全部丢失。
     现在每个文件独立 try/except + 立即落库，崩溃只丢当前文件。
+    T-223：落库成功后逐文件 commit_refine（游标推进显式后置）。
     """
+    from sgme.data import db as db_mod
+
+    mem_conn: sqlite3.Connection | None = None
+    session_conn: sqlite3.Connection | None = None
     try:
+        mem_conn, session_conn, _ = db_mod.init_databases(data_dir)
         if file_id:
             result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
             if result.memories:
                 persist_memories(result, mem_conn, cfg,
                                  agent_tag=_resolve_file_agent(session_conn, file_id))
+            refine_mod.commit_refine(result, session_conn)  # T-223
             logger.info("async refine file=%s status=%s", file_id, result.status)
         else:
             new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
@@ -295,12 +322,20 @@ def async_refine_worker(
                         # 此前漏传，T-140 多 Agent 隔离打标在异步默认路径静默缺失。
                         persist_memories(r, mem_conn, cfg,
                                          agent_tag=_resolve_file_agent(session_conn, rf["file_id"]))
+                    refine_mod.commit_refine(r, session_conn)  # T-223
                     processed += 1
                 except Exception as e:
                     logger.warning("async refine 文件 %s 失败（继续下一文件）: %s", rf.get("file_id"), e)
             logger.info("async refine batch processed=%d", processed)
     except Exception as e:
         logger.warning("async refine 异常（后台）: %s", e)
+    finally:
+        for conn in (mem_conn, session_conn):
+            if conn is not None:
+                try:
+                    db_mod.close(conn)
+                except Exception:
+                    pass
 
 
 def append_l0(
@@ -469,6 +504,11 @@ def _maybe_refine_on_append(
 
     默认关闭（高频写入场景每轮提炼浪费）；低频场景（如会话级写入）可开启。
     提炼走后台线程（async_refine_worker 语义），立即返回不阻塞 append。
+
+    连接隔离（T-222，2026-09-30 深度审查 P0-1）：此前线程内 refine_one 直接用
+    宿主连接（与 append 请求线程、其他提炼线程同连接交错显式事务 → 丢记忆）。
+    现改为——本函数（append 调用线程内）先从宿主连接推导 data_dir，后台线程内
+    ``init_databases(data_dir)`` 自建独立连接，退出关闭。
     """
     import threading
 
@@ -476,11 +516,26 @@ def _maybe_refine_on_append(
     if not refine_cfg.get("refine_on_append", False):
         return
 
+    from sgme.data import db as db_mod
+
+    # 宿主连接推导 data_dir（内存库 → None，线程内回落 config.DATA_DIR）
+    data_dir = db_mod.resolve_data_dir(session_conn) or db_mod.resolve_data_dir(mem_conn)
+
     def _run() -> None:
+        t_mem: sqlite3.Connection | None = None
+        t_session: sqlite3.Connection | None = None
         try:
-            result, _ = refine_one(file_id, mem_conn, session_conn, cfg)
+            t_mem, t_session, _ = db_mod.init_databases(data_dir)
+            result, _ = refine_one(file_id, t_mem, t_session, cfg)
             logger.info("append 联动提炼 file=%s status=%s", file_id, result.status)
         except Exception as e:
             logger.warning("append 联动提炼异常: %s", e)
+        finally:
+            for conn in (t_mem, t_session):
+                if conn is not None:
+                    try:
+                        db_mod.close(conn)
+                    except Exception:
+                        pass
 
     threading.Thread(target=_run, daemon=True).start()

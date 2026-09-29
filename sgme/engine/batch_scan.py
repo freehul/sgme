@@ -130,7 +130,8 @@ def _run_batch_scan_locked(
     for rf in new_files:
         file_id = rf["file_id"]
         try:
-            # refine_one = refine_file（L1 抽取 + 游标推进/状态流转）→ persist_memories（L1.5 落库 + L2）
+            # refine_one = refine_file（L1 抽取）→ persist_memories（L1.5 落库 + L2）
+            # → commit_refine（游标推进，T-223：落库成功后才推进）
             result, l15_stats = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
         except Exception as e:
             logger.warning("Batch 兜底提炼文件 %s 异常（继续下一文件）: %s", file_id, e)

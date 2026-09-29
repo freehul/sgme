@@ -492,8 +492,9 @@ def test_refine_file_success(raw_dir, mem_conn, session_conn, cfg):
     # dimensions 已归一化为 id（projects 维度已移除，2026-08-18 三池重构，改用 goals）
     assert "tech_stack" in result.memories[0]["dimension_ids"]
     assert "goals" in result.memories[1]["dimension_ids"]
-    # last_refined_seq 推进
+    # last_refined_seq 推进（T-223：refine_file 只产结果；落库成功后 commit_refine 推游标）
     assert result.new_last_refined_seq == 2
+    assert refine.commit_refine(result, session_conn) is True
     rf = session_dao.get_raw_file(session_conn, fid)
     assert rf["last_refined_seq"] == 2
     assert rf["status"] == "refined"
@@ -569,6 +570,7 @@ def test_refine_file_incremental(raw_dir, mem_conn, session_conn, cfg):
     cli1 = _mock_llm_client(body1)
     r1 = refine.refine_file(fid, mem_conn, session_conn, cfg, client=cli1)
     assert r1.new_last_refined_seq == 2
+    refine.commit_refine(r1, session_conn)  # T-223：落库成功后的显式游标推进
 
     # 追加新消息
     store.append_messages(fid, [
@@ -583,13 +585,14 @@ def test_refine_file_incremental(raw_dir, mem_conn, session_conn, cfg):
     cli2 = _mock_llm_client(body2)
     r2 = refine.refine_file(fid, mem_conn, session_conn, cfg, client=cli2)
     assert r2.new_last_refined_seq == 3
+    refine.commit_refine(r2, session_conn)  # T-223
     rf = session_dao.get_raw_file(session_conn, fid)
     assert rf["last_refined_seq"] == 3
     assert rf["status"] == "refined"
 
 
 def test_refine_file_no_incremental(raw_dir, mem_conn, session_conn, cfg):
-    """无增量段（last_refined_seq 已达最大）→ 直接标记 refined，不调 LLM。"""
+    """无增量段（last_refined_seq 已达最大）→ 不调 LLM；commit_refine 收敛 refined。"""
     fid = _setup_raw_file(raw_dir, session_conn)
     # 手动设置 last_refined_seq = 2（已全部提炼）
     session_dao.update_refine_cursor(session_conn, fid, 2)
@@ -602,6 +605,8 @@ def test_refine_file_no_incremental(raw_dir, mem_conn, session_conn, cfg):
     result = refine.refine_file(fid, mem_conn, session_conn, cfg, client=cli)
     assert result.memories == []
     assert result.new_last_refined_seq == 2
+    # T-223：无增量也经落库成功后的 commit_refine 收敛为 refined
+    assert refine.commit_refine(result, session_conn) is True
     rf = session_dao.get_raw_file(session_conn, fid)
     assert rf["status"] == "refined"
 

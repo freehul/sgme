@@ -33,6 +33,9 @@ class RefineResult:
     anomaly_warn: bool = False
     error: str | None = None
     prompt_versions: dict = field(default_factory=dict)  # #33：{stage: {version, variant, ...}} 透传
+    # T-223：本次提炼时 raw 文件的 SHA-256（含未变场景），供落库成功后的
+    # commit_refine 同步到 raw_files.content_hash；哈希计算失败为 None。
+    content_hash: str | None = None
 
 
 def _format_conversation(messages: list, file_id: str) -> str:
@@ -68,7 +71,16 @@ def refine_file(
     3. L1 提取（render + LLM + parse）
     4. 维度归一化（每条记忆的 dimensions → dimension_ids）
     5. 返回结果（不直接写 memories 表，由调用方决定落库时机）
-    6. 更新 raw_files.last_refined_seq/refined_at/status
+
+    游标语义（T-223，2026-09-30 深度审查 P0-2）：
+    本函数**不再推进游标/内容哈希**——原实现在此先 ``update_refine_cursor(
+    status="refined")`` 并写内容哈希，而 L1.5 落库在其后由调用方执行；落库崩溃
+    （并发错误/磁盘满）后文件已 refined、批扫不再拾起、重试走「无增量」分支
+    → 该文件记忆永久丢失（探针实测复现）。现改为两阶段：调用方落库成功后显式调
+    ``commit_refine(result, session_conn)`` 推进游标 + 哈希；失败时文件保持
+    status=new 可重扫重试。
+    error 路径（raw_files 无记录/L0 解析失败/L1 失败）语义不变：直接
+    ``mark_status("error")``（error 是终态型业务结果，不是「可丢弃的中间态」）。
     """
     result = RefineResult(file_id=file_id)
 
@@ -116,11 +128,12 @@ def refine_file(
     last_seq = 0 if full_refine else (rf.get("last_refined_seq") or 0)
     incremental = store.extract_incremental(parsed, last_seq)
     if not incremental:
-        # 无增量，直接标记 refined（哈希不变时更新存储哈希）
+        # 无增量：不调 L1、不写库；游标/哈希推进交由调用方落库成功后的
+        # commit_refine（T-223）——「无增量」同样收敛为 refined（设计选择：
+        # 文件已全部提炼过，重复重扫无意义；且本分支无落库动作，不存在
+        # 「先标记后落库」的丢失窗口）。
         result.new_last_refined_seq = last_seq
-        session_dao.update_refine_cursor(session_conn, file_id, last_seq, status="refined")
-        if current_hash:
-            session_dao.update_content_hash(session_conn, file_id, current_hash)
+        result.content_hash = current_hash
         return result
 
     # 剪枝（先剪枝后分块）：tool 输出/系统注入/超长消息压缩，
@@ -236,12 +249,11 @@ def refine_file(
         except Exception as e:
             logger.warning("deepseek 使用告警发布失败（不阻塞）: %s", e)
 
-    # 更新提炼游标（增量段最后一行 seq）+ 同步内容哈希
+    # 提炼完成：不在本函数推进游标/哈希（T-223 两阶段——见 docstring 游标语义）。
+    # 调用方必须在 L1.5 落库成功后执行 commit_refine(result, session_conn)。
     new_last_seq = max(m.seq for m in incremental) if incremental else last_seq
     result.new_last_refined_seq = new_last_seq
-    session_dao.update_refine_cursor(session_conn, file_id, new_last_seq, status="refined")
-    if current_hash:
-        session_dao.update_content_hash(session_conn, file_id, current_hash)
+    result.content_hash = current_hash
     logger.info(
         "提炼完成 file=%s 增量=%d 条 记忆=%d 条 drops=%d warn=%s prompt=%s",
         file_id, len(incremental), len(normalized_memories),
@@ -250,6 +262,37 @@ def refine_file(
     )
 
     return result
+
+
+def commit_refine(
+    result: RefineResult,
+    session_conn: sqlite3.Connection,
+) -> bool:
+    """落库成功后的显式收尾：推进提炼游标 + 同步内容哈希（T-223）。
+
+    两阶段提炼的关键第二步：调用方在 L1.5 落库成功（``persist_memories`` 正常
+    返回、未抛异常）**之后**调用本函数。落库崩溃/异常时本函数不被调用 → 文件
+    保持 status=new → 批扫/重试可重新提取并落库（修复「先推游标后落库、
+    崩溃即永久丢记忆」的 P0-2）。
+
+    仅对 ``status="refined"`` 的结果生效（error 等非成功态返回 False 不推进——
+    error 路径的状态流转在 refine_file 内已完成）。「无增量」结果同样走本函数
+    （new_last_refined_seq=原游标值），语义上收敛为 refined。
+
+    Returns:
+        True 表示已推进游标；False 表示未推进（非 refined 结果）。
+    """
+    if result.status != "refined":
+        return False
+    # refined 结果必带 new_last_refined_seq（refine_file 两条路径均赋值）；
+    # 防御性回退 None → 0（宁可下次全量重提炼，也不把 None 写进游标列）。
+    seq = result.new_last_refined_seq if result.new_last_refined_seq is not None else 0
+    session_dao.update_refine_cursor(
+        session_conn, result.file_id, seq, status="refined",
+    )
+    if result.content_hash:
+        session_dao.update_content_hash(session_conn, result.file_id, result.content_hash)
+    return True
 
 
 def finalize_refinement(
@@ -353,8 +396,10 @@ def refine_batch(
     但记忆未落库（永久丢失；08-06 修复只覆盖了异步路径）。现改为**生成器**：
     逐文件 yield，单文件异常收成 status=error 的结果项并继续，批次不再中断。
 
-    异常文件不主动改状态：异常发生在游标推进（update_refine_cursor）之前，
-    文件仍为 status=new → 下批扫描自动重试（不丢）。
+    T-223（2026-09-30 深度审查 P0-2）：游标推进已从 refine_file 拆出为
+    **落库成功后的 commit_refine**。本生成器只产结果、不碰 raw_files 状态；
+    调用方必须「逐文件落库 → commit_refine」——落库失败的文件游标不推进，
+    保持 status=new → 下批扫描自动重试（不丢）。
 
     Yields:
         RefineResult：每个 status=new 文件一个（正常=refined；异常=error）。

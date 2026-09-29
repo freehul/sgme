@@ -150,7 +150,10 @@ def test_refine_modified_triggers_full(conns, monkeypatch):
     cfg = sgme_config.load_config()
     result = refine_mod.refine_file(fid, mem_conn, session_conn, cfg)
     assert called["n"] == 1, "哈希变化 → 应触发全量重提炼"
-    # 提炼后哈希已更新为新文件哈希
+    assert result.new_last_refined_seq == 2  # 两条消息都提炼了
+    # T-223：游标/哈希推进在「落库成功后」的 commit_refine 里（本用例直调
+    # refine_file，显式补第二步；落库编排路径见 pipeline.refine_one）
+    assert refine_mod.commit_refine(result, session_conn) is True
+    # 提炼后（commit 完成）哈希已更新为新文件哈希
     rf = session_dao.get_raw_file(session_conn, fid)
     assert rf["content_hash"] == _file_hash(_abs_raw(fid))
-    assert result.new_last_refined_seq == 2  # 两条消息都提炼了

@@ -234,8 +234,12 @@ def test_refine_trigger_batch_success(conns, cfg, monkeypatch):
 # ---------- 3. 异步触发成功（queued 语义） ----------
 
 def test_refine_trigger_async_queued_and_thread_args(conns, cfg, monkeypatch):
-    """异步：立即返回 queued 排队语义；后台线程按 (file_id, limit, 连接, cfg) 参数、
-    daemon=True 启动且 target 是 async_refine_worker（不真起线程，确定性断言）。"""
+    """异步：立即返回 queued 排队语义；后台线程按 (file_id, limit, data_dir, cfg) 参数、
+    daemon=True 启动且 target 是 async_refine_worker（不真起线程，确定性断言）。
+
+    T-222（2026-09-30 深度审查 P0-1）：宿主连接**不再**进线程参数（跨线程共享
+    sqlite 连接会丢记忆），改为线程内自建连接 + data_dir（由宿主连接推导）。
+    """
     # Arrange：替换 threading.Thread 为记录器（不实际启动）
     mem_conn, session_conn, _ = conns
     captured = {}
@@ -264,15 +268,18 @@ def test_refine_trigger_async_queued_and_thread_args(conns, cfg, monkeypatch):
         "status": "queued",
         "note": ASYNC_QUEUED_NOTE,
     }
-    # 后台线程参数：target 是 worker、位置参数与连接身份一致、daemon=True、已 start
+    # 后台线程参数（T-222）：target 是 worker、位置参数 = (file_id, limit, data_dir, cfg)，
+    # 宿主连接不在其中；daemon=True、已 start
     assert captured["started"] is True
     assert captured["daemon"] is True
     assert captured["target"] is pipeline_mod.async_refine_worker
-    f_id, limit, m_conn, s_conn, c_cfg = captured["args"]
+    f_id, limit, data_dir, c_cfg = captured["args"]
     assert f_id == "f-async"
     assert limit == 3
-    assert m_conn is mem_conn
-    assert s_conn is session_conn
+    assert data_dir == db_mod.resolve_data_dir(session_conn)  # 宿主连接推导的 data_dir
+    assert data_dir is not None
+    assert mem_conn not in captured["args"]
+    assert session_conn not in captured["args"]
     assert c_cfg is cfg
 
 
