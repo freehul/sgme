@@ -1512,7 +1512,8 @@ def build_mcp_server():
         try:
             result = skills_store.write_skill(name, meta, parsed["body"], source_dirs)
         except skills_store.StoreError as e:
-            return json.dumps({"error": f"技能写入失败: {e.message}"}, ensure_ascii=False)
+            return json.dumps({"error": f"技能写入失败: {e.message}", "code": "ERR_INTERNAL"},
+                              ensure_ascii=False)
         if not result.get("ok"):
             return json.dumps(
                 {"error": result.get("code"), "violations": result.get("violations", [])},
@@ -1542,7 +1543,8 @@ def build_mcp_server():
         try:
             result = skills_store.remove_skill(name, hard=hard, force=force, source_dirs=source_dirs)
         except skills_store.StoreError as e:
-            return json.dumps({"error": f"技能删除失败: {e.message}"}, ensure_ascii=False)
+            return json.dumps({"error": f"技能删除失败: {e.message}", "code": "ERR_INTERNAL"},
+                              ensure_ascii=False)
         if not result.get("ok"):
             return json.dumps(
                 {
@@ -1577,7 +1579,8 @@ def build_mcp_server():
         try:
             result = skills_store.rename_skill(name, new_name, source_dirs, registry_path=registry_path)
         except skills_store.StoreError as e:
-            return json.dumps({"error": f"技能改名失败: {e.message}"}, ensure_ascii=False)
+            return json.dumps({"error": f"技能改名失败: {e.message}", "code": "ERR_INTERNAL"},
+                              ensure_ascii=False)
         if not result.get("ok"):
             return json.dumps(
                 {"error": result.get("code"), "violations": result.get("violations", [])},

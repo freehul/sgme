@@ -71,8 +71,8 @@ skills:
   source_dirs:
     # 读侧（索引/检索）两目录都扫、不存在的自动跳过：
     # ./skills/ = 源码运行读仓库内 canonical skills；/app/cache/skills/ = Docker 镜像烘焙的同一份（git 仓）
-    # 写侧（skill_put/delete/rename）取首个「存在且为 git 仓」的目录（T-220）：
-    # 容器内 ./skills/ 非 git 仓 → 落 /app/cache/skills/；本机源码运行两目录都非 git 仓 → 写侧报错（写技能需另配 git 工作区）
+    # 写侧（skill_put/delete/rename/资产）只落「独立 git 技能仓」（T-220/T-221）：
+    # 容器内 → /app/cache/skills/；本机源码运行（./skills/ 嵌在仓库内、非独立仓）→ 报错且不落盘（写技能需另配 git 工作区）
     - ./skills/
     - /app/cache/skills/
   budget: 40

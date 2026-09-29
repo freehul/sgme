@@ -118,6 +118,22 @@ def _resolve_write_dir(source_dirs: list[str] | None) -> Path:
     )
 
 
+def _require_skill_workspace(source_dir: Path) -> None:
+    """写侧前置守卫（T-221）：目标须是独立 git 技能仓，否则 StoreError、零副作用。
+
+    独立 = 该目录自身含 .git（而非嵌在外层仓库里）。嵌套目录下 git add -A
+    会把外层仓库整体暂存：删除/改名的提交会落进外层仓、无关改动被扫入；
+    资产写入还会先落盘后报错留残（本机源码运行 ./skills/ 形态实测）。通过后
+    顺带兜底提交身份（与 write_skill 原行为一致）。
+    """
+    if not (source_dir / ".git").exists():
+        raise StoreError(
+            "写侧需要独立的 git 技能仓（目录自身含 .git）: "
+            f"{source_dir}（当前目录嵌在外层 git 仓库中或不是仓库）"
+        )
+    _ensure_repo_identity(source_dir)
+
+
 def _ensure_repo_identity(source_dir: Path) -> None:
     """仓库级提交身份兜底（缺失时补默认，不影响全局配置）。"""
     if not (source_dir / ".git").exists():
@@ -130,7 +146,8 @@ def _ensure_repo_identity(source_dir: Path) -> None:
 
 def _commit_all(source_dir: Path, message: str) -> bool:
     """git add -A + commit；无暂存变更时跳过。返回是否产生了提交。"""
-    _run_git(source_dir, ["add", "-A"], check=True)
+    # `-- .` 限定到技能仓自身子树（T-221）：防「目录嵌在外层仓」时把外层改动卷入提交
+    _run_git(source_dir, ["add", "-A", "--", "."], check=True)
     staged = _run_git(source_dir, ["diff", "--cached", "--quiet"]).returncode != 0
     if not staged:
         return False
@@ -520,10 +537,11 @@ def write_skill_file(name: str, relpath: str, content: str, source_dirs: list[st
                 [f"资产文件数超限：{new_count} > {max_files}"
                  "（配置项 skills.asset_quota.max_files）"])
 
+    # 动盘前校验（T-221）：独立仓守卫 + 提交身份兜底——失败零残留
+    _require_skill_workspace(target)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
 
-    _ensure_repo_identity(target)
     ensure_workspace_gitignore(target)
     committed = _commit_all(target, f"asset {safe_name}/{rel}")
     return {"ok": True, "path": str(dest), "bytes": nbytes, "committed": committed}
@@ -575,6 +593,7 @@ def remove_skill(name: str, hard: bool = False, force: bool = False,
         if src is None:
             return _reject("not_found", [f"技能不存在: {name}"])
 
+        _require_skill_workspace(src)  # T-221：动盘前守卫（独立 git 技能仓）
         if hard:
             # 硬删：物理删目录 + commit（git 历史永存兜底）
             shutil.rmtree(src / name, ignore_errors=True)
@@ -633,6 +652,9 @@ def rename_skill(old: str, new: str, source_dirs: list[str],
 
         src = _resolve_source_dir(old, source_dirs)
         assert src is not None  # 记录存在 ⇒ 目录必在
+        _require_skill_workspace(src)  # T-221：动盘前守卫（独立 git 技能仓）
+        if "name" in meta:
+            meta["name"] = new  # T-221：新副本 frontmatter 名实一致（读侧按目录名取名）
 
         # ① 写新名副本（完整内容）；② 旧位置留墓碑（只含 superseded_by 最小 frontmatter）
         new_dir = src / new
