@@ -105,7 +105,7 @@ passthrough: {}
 # ---------- 基线之外的自有工具（登记，不算漂移）----------
 extra:
   hermes: [conversation_search, role_save, role_delete]  # conversation_search=查 sessions 原始层；role_save/role_delete=角色卡写侧（T-211）
-  dsh: []
+  dsh: [conversation_search]  # 查 sessions 原始层（T-207 ③ 实现；T-226 重建产物后对 dsh 运行时生效）
   doubao: [events_pull, events_after, wiki_raw, mcp_raw, describe]
   mimo: [events_pull, events_after, wiki_raw, mcp_raw, describe]
   workbuddy: [events_pull, events_after, wiki_raw, mcp_raw, describe]
