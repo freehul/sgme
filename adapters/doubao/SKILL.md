@@ -106,7 +106,7 @@ SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、
 | 33 | skill_search | HTTP | `sgme_client.py skill-search "<q>"` |
 | 34 | skill_digest | HTTP | `sgme_client.py skill-digest <name>` |
 | 35 | skill_get | HTTP | `sgme_client.py skill-get <name> [--section <s>]` |
-| 36 | skill_materialize | HTTP | `sgme_client.py skill-materialize <name> <dest_dir>`（返回 path + sha256） |
+| 36 | skill_materialize | HTTP | `sgme_client.py skill-materialize <name> <dest_dir>`（返回 path + sha256；落盘在服务端，跨机改用 skill-get） |
 | 37 | skill_list | HTTP | `sgme_client.py skill-list [--offset 0] [--limit N]` |
 | 38 | skill_coldstart | HTTP | `sgme_client.py skill-coldstart` |
 | 39 | skill_put | MCP | `sgme_client.py skill-put <name> --file <SKILL.md>`（需管理员 Key） |

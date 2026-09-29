@@ -14,7 +14,7 @@ description: DeepSeek Harness（dsh）的 SGME（拾光记忆）官方适配器�
 ## 获取与安装（自助）
 
 1. `skill_search("adapter dsh")` → `skill_get` 确认版本与纪律
-2. `skill_materialize(name="adapter-dsh", dest_dir="<工作区>")` 落盘完整包
+2. `skill_materialize(name="adapter-dsh", dest_dir="<工作区>")` 落盘完整包（**仅同机**——落盘发生在 SGME 服务端文件系统；跨机拿不到产物，改走下方「无 skill 通道」的仓库路径，或 `skill_get` 取正文自行写盘）
 3. 运行 `python scripts/install.py --dir <项目根>`（注册 agent、写 `.env`、打印加载命令）
 4. `dsh plugin add "link:<包路径>/package/sgme-bridge"`（或仓库路径）
 5. 在含 `.env` 的目录启动 dsh

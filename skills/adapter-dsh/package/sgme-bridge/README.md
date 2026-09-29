@@ -152,7 +152,7 @@ syncOnTurnEnd: true
 - `wiki_evolve_trigger(session_key, min_rounds)` — 手动补触发自进化（每轮已自动触发）。
 
 **技能物化与写侧（4，v0.5.0 对齐 ST-36 M3）**
-- `skill_materialize(name, dest_dir)` — L3 字节保真落盘 `<dest_dir>/<name>/SKILL.md`，返回路径 + sha256（要按真文件路径执行脚本时用）；
+- `skill_materialize(name, dest_dir)` — L3 字节保真落盘 `<dest_dir>/<name>/SKILL.md`，返回路径 + sha256（要按真文件路径执行脚本时用）；**落盘在 SGME 服务端文件系统**——跨机（agent 在本地、SGME 在远端）时产物不在本机，改用 `skill_get` 取正文；
 - `skill_put(name, content, skip_limits)` — 写入/覆盖技能（过 lint 门禁 + 三层查重后落盘并提交技能源仓）；
 - `skill_delete(name, hard, force)` — 删除技能（默认软删；有入向引用需 force）；
 - `skill_rename(name, new_name)` — 墓碑制改名。

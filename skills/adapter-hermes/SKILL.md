@@ -16,7 +16,7 @@ tags: [skill, adapter, sgme]
 ## 获取与安装（自助）
 
 1. `skill_search("adapter hermes")` → `skill_get` 确认版本与纪律
-2. `skill_materialize(name="adapter-hermes", dest_dir="<工作区>")` 落盘完整包
+2. `skill_materialize(name="adapter-hermes", dest_dir="<工作区>")` 落盘完整包（**仅同机**——落盘发生在 SGME 服务端文件系统；跨机拿不到产物，改走下方「无 skill 通道」的仓库路径，或 `skill_get` 取正文自行写盘）
 3. 运行 `python install.py`（或 `python install.py --home <HERMES_HOME>`）部署到 `$HERMES_HOME/plugins/sgme/`
 4. `hermes plugins enable sgme` 后按下方纪律运行
 
