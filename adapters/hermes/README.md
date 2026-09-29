@@ -222,7 +222,7 @@ Admin tools state their requirement in their description.
 {
   "schema_version": 1,
   "adapter": "hermes",
-  "adapter_version": "1.5.0",
+  "adapter_version": "1.7.1",
   "base_url": "http://127.0.0.1:9910",
   "http": { "host": "127.0.0.1", "port": 9910 },
   "mcp": { "port": 9913 },
@@ -238,7 +238,7 @@ Admin tools state their requirement in their description.
 - `hermes plugins list` → the sgme row says `enabled`
 - `config.yaml` → `memory.provider: sgme`
 - Ask about a past session → `sgme_memory_search` fires; ask “do we have a skill for X” → `sgme_skill_search` → `sgme_skill_get`
-- Adapter self-test (offline, zero network): `python -m pytest adapters/hermes/tests -q` — 35 tests
+- Adapter self-test (offline, zero network): `python -m pytest adapters/hermes/tests -q` — 42 tests
 
 ## Troubleshooting
 
@@ -263,7 +263,7 @@ Your memories stay on the SGME server, untouched.
 
 ## Version & compatibility
 
-- The plugin version tracks the SGME engine version (currently `1.5.0`) — keep bridge and engine on the same minor line.
+- The plugin version tracks the SGME engine version (currently `1.7.1`) — keep bridge and engine on the same minor line.
 - Capability baseline = SGME's MCP tool surface (41 tools); this adapter implements 39 of them, declares 2 exemptions, and adds 3 of its own → **42 tools**. Drift is checked by `python scripts/adapter_parity.py`.
 
 ## Links

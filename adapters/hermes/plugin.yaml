@@ -1,5 +1,5 @@
 name: sgme
-version: "1.7.0"  # 版本口径跟随 SGME 版本（1.7.0 = T-218/T-219 能力平面发版 + T-220/T-221 写侧守卫收口），见 README
+version: "1.7.1"  # 版本口径跟随 SGME 版本（1.7.1 = ST-50 深度审查修复 T-222~T-228），见 README
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理+沟通角色（42 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"
 license: MIT
