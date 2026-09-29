@@ -223,6 +223,70 @@ class TestRenameSkill:
         assert r["ok"] is False
 
 
+# ---------- 写入目录解析（source_dirs 多目录兜底） ----------
+
+
+class TestWriteDirResolution:
+    """write_skill 落盘目标解析：首项不合格时回退首个合格 git 仓（T-220）。
+
+    背景：sgme.yaml 的 source_dirs 同时含源码运行目录（./skills/，非 git 仓）
+    与 Docker 烘焙仓（/app/cache/skills/，git 仓）；写侧历史上盲取首项，
+    首项非 git 仓时 mkdir 野目录后 StoreError。此处锁定回退语义（T-220）。
+    """
+
+    def test_first_dir_missing_falls_back_to_git_repo(self, tmp_path):
+        from sgme.skills.store import write_skill
+
+        repo = _make_repo(tmp_path)
+        ghost = tmp_path / "nonexistent_dir"
+        r = write_skill(
+            "fallback-target", dict(VALID_META), "# 回退\n内容",
+            [str(ghost), str(repo)],
+        )
+        assert r["ok"] is True, r
+        assert _read_skill(repo, "fallback-target")  # 落到 git 仓
+        assert not (ghost / "fallback-target").exists()  # 幽灵路径不落盘
+
+    def test_first_dir_not_git_falls_back(self, tmp_path):
+        from sgme.skills.store import write_skill
+
+        repo = _make_repo(tmp_path)
+        plain = tmp_path / "plain_dir"
+        plain.mkdir()  # 存在但非 git 仓
+        r = write_skill(
+            "plain-first", dict(VALID_META), "# 甲\n内容甲",
+            [str(plain), str(repo)],
+        )
+        assert r["ok"] is True, r
+        assert _read_skill(repo, "plain-first")
+        assert not (plain / "plain-first").exists()  # 非仓库不落野目录
+
+    def test_no_valid_repo_raises_without_stray_dir(self, tmp_path):
+        from sgme.skills.store import StoreError, write_skill
+
+        plain_a = tmp_path / "a"
+        plain_b = tmp_path / "b"
+        plain_a.mkdir()
+        plain_b.mkdir()
+        with pytest.raises(StoreError):
+            write_skill(
+                "stray-check", dict(VALID_META), "# 乙\n内容乙",
+                [str(plain_a), str(plain_b)],
+            )
+        # 失败不留野目录（历史上 mkdir 先于 git 校验，报错后残留）
+        assert not (plain_a / "stray-check").exists()
+        assert not (plain_b / "stray-check").exists()
+
+    def test_first_valid_repo_still_wins(self, repo):
+        from sgme.skills.store import write_skill
+
+        # 首项本身是 git 仓 → 行为与旧版一致（向后兼容锚）
+        r = write_skill("first-wins", dict(VALID_META), "# 丙\n内容丙",
+                        [str(repo)])
+        assert r["ok"] is True, r
+        assert _read_skill(repo, "first-wins")
+
+
 # ---------- 原子写 ----------
 
 

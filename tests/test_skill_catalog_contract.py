@@ -65,9 +65,14 @@ def test_skill_governance_explains_dedupe_and_safe_lifecycle():
 
 
 def test_default_skill_sources_cover_source_checkout_and_container_seed():
-    """本地源码运行与 Docker 运行都必须能发现 canonical skills。"""
-    for config_path in (ROOT / "config" / "sgme.yaml", ROOT / "sgme" / "resources" / "config" / "sgme.yaml"):
-        document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        source_dirs = document["skills"]["source_dirs"]
-        assert "./skills/" in source_dirs
-        assert "/app/cache/skills/" in source_dirs
+    """本地源码运行与 Docker 运行都必须能发现 canonical skills。
+
+    只断言包内基线 ``sgme/resources/config/sgme.yaml``——它是唯一随包分发、
+    入 git 的真相源；项目根 ``config/sgme.yaml`` 是 gitignore 的可写覆盖层
+    （每台机器各一份），干净检出不存在，读它必挂 CI（T-220）。
+    """
+    config_path = ROOT / "sgme" / "resources" / "config" / "sgme.yaml"
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    source_dirs = document["skills"]["source_dirs"]
+    assert "./skills/" in source_dirs
+    assert "/app/cache/skills/" in source_dirs

@@ -333,6 +333,39 @@ def test_mcp_search(mcp):
     assert "results" in data
 
 
+def test_mcp_search_default_scopes_memory_only(mcp):
+    """MCP search 不传 scopes → 只查 memory 层（历史契约，T-220 锁定）。
+
+    sgme-development 三.31：MCP search 工具历史上 memory-only，技能不靠
+    scopes 带出（技能走 skill_search 专用工具）。回归背景：mcp_server 曾把
+    scopes=None 直接透传 operations 层，落到 HTTP 缺省 ["memory","skills"]，
+    与模块文档「None → ["memory"]」背离。显式传 scopes 仍允许 wiki/skills。
+    （T-220 锁定）
+    """
+    mem_conn = _app_state_mem_conn()
+    memory_dao.insert_memory(
+        mem_conn, "Gateway 升级完成 重启服务", "fact", 50, "static", None, ["goals"],
+        agent_tag="mcp-default-scope-test",
+    )
+
+    # ① 不传 scopes：只回 memory 层
+    r = _call(mcp, "search", {"query": "升级", "limit": 5})
+    data = json.loads(r[0])
+    assert data["results"], "memory 层应有命中"
+    assert all(res.get("source") == "memory" for res in data["results"]), data["results"]
+
+    # ② 显式 scopes=["skills"]：允许技能层（隔离确认 skills 不混入默认）
+    r2 = _call(mcp, "search", {"query": "升级", "limit": 5, "scopes": ["skills"]})
+    data2 = json.loads(r2[0])
+    assert all(res.get("source") == "skills" for res in data2["results"])
+
+
+def _app_state_mem_conn():
+    """取绑定态 mem_conn（MCP 测试直查插桩用）。"""
+    from sgme.mcp_server import _app_state
+    return _app_state["mem_conn"]
+
+
 def test_mcp_config_get_update(mcp, tmp_path):
     """config_get / config_update（隔离落盘）。"""
     r = _call(mcp, "config_get", {"section": "refine"})
