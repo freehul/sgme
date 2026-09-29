@@ -8,6 +8,8 @@
   含「通用兜底必须让位」的回归防线
 - WorkBuddy mcp.json 自动发现（地址 + 密钥零配置继承）的解析与容错
 - HTTP 层请求构造（append 首行格式 / 查询参数 / 头部 / 错误包装）
+- agent_id 解析链（T-233）：显式 → 环境变量 → 身份文件 → 默认；空值回退；
+  构造解析 / append 请求体取值 / install.py 身份播种既有值保留
 - 41 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
 - 新增/修正方法与 CLI 命令的参数转译（含管理员 Key 范围）
 - 测试样例全部使用假值：私网语义用 10.0.0.x，密钥用低熵占位
@@ -44,6 +46,22 @@ from sgme_client import (  # noqa: E402
     derive_mcp_url,
     resolve_addresses,
 )
+
+
+def _load_workbuddy_install():
+    """按文件路径加载适配器部署脚本 install.py（位于适配器根目录，不在 scripts/ 下，
+    用专属 module 名加载，避免与任何同名 module 冲突）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "workbuddy_install", Path(__file__).resolve().parents[1] / "install.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("无法加载 adapters/workbuddy/install.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+wb_install = _load_workbuddy_install()
 
 # 测试用占位密钥（非真实）。⚠️ 用字符串拼接而不是长字面量：形如 `agt_<16+位>` 的
 # 字面量会被 .githooks/lib_scan.sh 的密钥扫描判为疑似真实 key（低熵豁免对无 `-` 分隔的
@@ -87,10 +105,10 @@ class FakeResp:
         return False
 
 
-def make_client(**ctor):
+def make_client(env=None, **ctor):
     """构造客户端：屏蔽真实 SGME 环境变量、本机身份文件与 WorkBuddy MCP 配置，
-    只注入占位密钥。"""
-    with env_ctx(SGME_AGENT_KEY=KEY), \
+    只注入占位密钥（env 可附加环境变量，如 SGME_WORKBUDDY_AGENT_ID）。"""
+    with env_ctx(SGME_AGENT_KEY=KEY, **(env or {})), \
             mock.patch.object(sc, "load_workbuddy_identity", return_value={}), \
             mock.patch.object(sc, "load_workbuddy_mcp_json", return_value={}):
         return SGME(**ctor)
@@ -98,7 +116,8 @@ def make_client(**ctor):
 
 # SGME 相关环境变量（测试需隔离的对象）
 SGME_ENV_VARS = ("SGME_HTTP_URL", "SGME_BASE_URL", "SGME_MCP_URL",
-                 "SGME_WORKBUDDY_KEY", "SGME_AGENT_KEY", "SGME_ADMIN_KEY")
+                 "SGME_WORKBUDDY_KEY", "SGME_AGENT_KEY", "SGME_ADMIN_KEY",
+                 "SGME_WORKBUDDY_AGENT_ID")
 
 
 @contextlib.contextmanager
@@ -266,10 +285,76 @@ class TestDeployConfigParsing(unittest.TestCase):
         self.assertNotIn("SGME_AGENT_KEY", cfg)
 
 
+class TestAgentIdResolution(unittest.TestCase):
+    """agent_id 解析链（T-233）：显式 → 环境变量 → 身份文件 → 默认；空值逐级回退。"""
+
+    @staticmethod
+    def _resolve(explicit=None, env_kv=None, ident=None):
+        with env_ctx(**(env_kv or {})), \
+                mock.patch.object(sc, "load_workbuddy_identity", return_value=ident or {}):
+            return sc.resolve_agent_id(explicit)
+
+    def test_explicit_wins_over_all(self):
+        aid, src = self._resolve("agent-explicit",
+                                 {"SGME_WORKBUDDY_AGENT_ID": "agent-env"},
+                                 {"agent_id": "agent-ident"})
+        self.assertEqual(aid, "agent-explicit")
+        self.assertEqual(src, "调用参数")
+
+    def test_env_wins_over_identity(self):
+        aid, src = self._resolve(env_kv={"SGME_WORKBUDDY_AGENT_ID": "agent-env"},
+                                 ident={"agent_id": "agent-ident"})
+        self.assertEqual(aid, "agent-env")
+        self.assertIn(sc.WORKBUDDY_AGENT_ID_ENV, src)
+
+    def test_identity_wins_over_default(self):
+        aid, src = self._resolve(ident={"agent_id": "agent-ident"})
+        self.assertEqual(aid, "agent-ident")
+        self.assertIn("workbuddy-agent.json", src)
+
+    def test_default_when_nothing_configured(self):
+        aid, src = self._resolve()
+        self.assertEqual(aid, sc.AGENT_ID)
+        self.assertEqual(aid, "workbuddy")
+        self.assertIn("默认", src)
+
+    def test_empty_values_fall_through_to_default(self):
+        """空值/空白值逐级回退，绝不返回空串（错标风险的兜底防线）。"""
+        aid, src = self._resolve(explicit="   ",
+                                 env_kv={"SGME_WORKBUDDY_AGENT_ID": "  "},
+                                 ident={"agent_id": " "})
+        self.assertEqual(aid, "workbuddy")
+        self.assertIn("默认", src)
+
+
 class TestInit(NoDeployConfig):
     def test_key_from_env(self):
         c = make_client()
         self.assertEqual(c.key, KEY)
+
+    def test_agent_id_explicit_param_wins(self):
+        c = make_client(agent_id="agent-explicit")
+        self.assertEqual(c.agent_id, "agent-explicit")
+        self.assertEqual(c.agent_id_source, "调用参数")
+
+    def test_agent_id_from_env(self):
+        c = make_client(env={"SGME_WORKBUDDY_AGENT_ID": "agent-env"})
+        self.assertEqual(c.agent_id, "agent-env")
+        self.assertIn(sc.WORKBUDDY_AGENT_ID_ENV, c.agent_id_source)
+
+    def test_agent_id_from_identity_file(self):
+        with env_ctx(SGME_AGENT_KEY=KEY), \
+                mock.patch.object(sc, "load_workbuddy_identity",
+                                  return_value={"agent_id": "agent-ident"}), \
+                mock.patch.object(sc, "load_workbuddy_mcp_json", return_value={}):
+            c = SGME()
+        self.assertEqual(c.agent_id, "agent-ident")
+        self.assertIn("workbuddy-agent.json", c.agent_id_source)
+
+    def test_agent_id_defaults_to_workbuddy(self):
+        c = make_client()
+        self.assertEqual(c.agent_id, "workbuddy")
+        self.assertIn("默认", c.agent_id_source)
 
     def test_missing_key_raises(self):
         with env_ctx():
@@ -307,6 +392,21 @@ class TestAppend(NoDeployConfig):
             req = mo.call_args.args[0]
             body = json.loads(req.data.decode("utf-8"))
             self.assertTrue(body["content"].split("\n")[0].endswith(" assistant"))
+
+    def test_body_carries_resolved_agent_id(self):
+        """append 请求体带本机解析的 agent_id（T-233 核心：多设备不按默认值错标）。"""
+        c = make_client(env={"SGME_WORKBUDDY_AGENT_ID": "agent-env"})
+        with mock.patch.object(c._opener, "open", return_value=FakeResp({"file_id": "f3"})) as mo:
+            c.append("s3", "内容")
+            body = json.loads(mo.call_args.args[0].data.decode("utf-8"))
+            self.assertEqual(body["agent_id"], "agent-env")
+
+    def test_explicit_agent_id_overrides_resolved(self):
+        c = make_client(env={"SGME_WORKBUDDY_AGENT_ID": "agent-env"})
+        with mock.patch.object(c._opener, "open", return_value=FakeResp({"file_id": "f4"})) as mo:
+            c.append("s4", "内容", agent_id="agent-call")
+            body = json.loads(mo.call_args.args[0].data.decode("utf-8"))
+            self.assertEqual(body["agent_id"], "agent-call")
 
 
 class TestHttpCalls(NoDeployConfig):
@@ -372,6 +472,13 @@ class TestHttpCalls(NoDeployConfig):
         self.assertIn("subscriber_id=workbuddy", req.full_url)
         self.assertIn("limit=10", req.full_url)
         self.assertNotIn("types=", req.full_url)
+
+    def test_events_pull_default_subscriber_uses_resolved_agent_id(self):
+        """缺省订阅者 = 本机解析的 agent_id（T-233）：多设备各拉各的游标，不互相推进。"""
+        c = make_client(env={"SGME_WORKBUDDY_AGENT_ID": "agent-env"})
+        with mock.patch.object(c._opener, "open", return_value=FakeResp({"events": []})) as mo:
+            c.events_pull()
+            self.assertIn("subscriber_id=agent-env", mo.call_args.args[0].full_url)
 
     def test_http_error_raises_sgme_error(self):
         c = make_client()
@@ -616,6 +723,13 @@ class TestCLI(NoDeployConfig):
         self.assertIn("HTTP 端点", out)
         self.assertNotIn(KEY, out)
 
+    def test_offline_env_info_shows_agent_id_value_and_source(self):
+        with env_ctx(SGME_AGENT_KEY=KEY, SGME_WORKBUDDY_AGENT_ID="agent-env"):
+            code, out = self._run(["env-info"])
+        self.assertEqual(code, 0)
+        self.assertIn("agent-env", out)
+        self.assertIn(sc.WORKBUDDY_AGENT_ID_ENV, out)
+
     def test_missing_key_returns_2(self):
         with env_ctx():
             code, out = self._run(["health"])
@@ -645,7 +759,15 @@ class TestCLI(NoDeployConfig):
             f.write_text("本轮内容", encoding="utf-8")
             code, _out = self._run(["append", "--session", "s-1", "--file", str(f)], m)
         self.assertEqual(code, 0)
-        m.return_value.append.assert_called_once_with("s-1", "本轮内容", "user", "workbuddy")
+        # --agent 缺省为 None：由客户端按本机解析链取值（T-233），CLI 不再硬传常量
+        m.return_value.append.assert_called_once_with("s-1", "本轮内容", "user", None)
+
+    def test_append_agent_flag_passed_through(self):
+        m = mock.MagicMock()
+        code, _out = self._run(
+            ["append", "--session", "s-2", "--text", "内容", "--agent", "agent-cli"], m)
+        self.assertEqual(code, 0)
+        m.return_value.append.assert_called_once_with("s-2", "内容", "user", "agent-cli")
 
     def test_append_requires_text_or_file(self):
         m = mock.MagicMock()
@@ -832,7 +954,56 @@ class TestKeyPrecedence(unittest.TestCase):
             c = SGME()
         self.assertEqual(c.key_source, f"环境变量 {sc.WORKBUDDY_KEY_ENV}")
         self.assertEqual(c.describe()["agent_id"], "workbuddy")
+        self.assertIn("默认", c.describe()["agent_id_source"])
         self.assertTrue(c.describe()["agent_key_set"])
+
+
+class TestInstallSeedIdentity(unittest.TestCase):
+    """install.py 身份文件播种（T-233）：agent_id 解析链 + 既有值不被无条件打回默认。"""
+
+    def _seed(self, existing, env_kv=None, explicit=None):
+        """在临时身份文件上跑 seed_identity；返回 (落盘数据 dict, 生效 agent_id, 来源)。
+
+        同时屏蔽 install（既有值读取）与 sgme_client（解析链身份文件读取）两处，
+        模拟「身份文件内容 = existing」。"""
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "workbuddy-agent.json"
+            with env_ctx(**(env_kv or {})), \
+                    mock.patch.object(wb_install, "identity_path", return_value=f), \
+                    mock.patch.object(wb_install, "load_workbuddy_identity", return_value=existing), \
+                    mock.patch.object(sc, "load_workbuddy_identity", return_value=existing):
+                _path, _note, aid, src = wb_install.seed_identity(FAKE_HTTP, FAKE_MCP, explicit)
+            return json.loads(f.read_text(encoding="utf-8")), aid, src
+
+    def test_existing_identity_agent_id_preserved(self):
+        """核心回归防线：既有身份文件里的本机注册 id 不被无条件回写默认值。"""
+        data, aid, src = self._seed({"agent_id": "agent-keep", "custom": "保留我"})
+        self.assertEqual(aid, "agent-keep")
+        self.assertEqual(data["agent_id"], "agent-keep")
+        self.assertEqual(data["custom"], "保留我")
+        self.assertEqual(data["http"], FAKE_HTTP)
+        self.assertEqual(data["mcp"], FAKE_MCP)
+        self.assertNotIn("api_key", data)
+        self.assertIn("workbuddy-agent.json", src)
+
+    def test_env_overrides_existing_identity_value(self):
+        data, aid, src = self._seed({"agent_id": "agent-keep"},
+                                    env_kv={"SGME_WORKBUDDY_AGENT_ID": "agent-env"})
+        self.assertEqual(aid, "agent-env")
+        self.assertEqual(data["agent_id"], "agent-env")
+        self.assertIn(sc.WORKBUDDY_AGENT_ID_ENV, src)
+
+    def test_explicit_overrides_env_and_existing(self):
+        data, aid, _src = self._seed({"agent_id": "agent-keep"},
+                                     env_kv={"SGME_WORKBUDDY_AGENT_ID": "agent-env"},
+                                     explicit="agent-explicit")
+        self.assertEqual(aid, "agent-explicit")
+        self.assertEqual(data["agent_id"], "agent-explicit")
+
+    def test_default_when_no_existing_value(self):
+        data, aid, _src = self._seed({})
+        self.assertEqual(aid, "workbuddy")
+        self.assertEqual(data["agent_id"], "workbuddy")
 
 
 class TestDeriveHttpFromMcp(unittest.TestCase):

@@ -19,6 +19,7 @@ WorkBuddy 原生能力已含 MCP（`~/.workbuddy/mcp.json` 挂 `sgme`）。适�
 1. **从 `~/.workbuddy/mcp.json` 零配置继承**——地址与密钥都不必再填一遍（WorkBuddy 已配好 MCP 的自然结果），不新增一把 key
 2. **密钥解析顺序避开 `SGME_AGENT_KEY`**——本机该变量实测绑定 `agent_id=dsh`，若照搬其它适配器的「环境变量优先」会把 WorkBuddy 的 L0 打上 dsh 的 `agent_tag`，污染多 Agent 溯源与隔离（T-140）。故降为最后兜底
 3. **install.py 写本机身份文件但不写密钥**（`~/.sgme/workbuddy-agent.json` 只含 `agent_id`/`http`/`mcp`），恪守「密钥不落盘」
+4. **agent_id 本机可配**（T-233，对齐 Hermes 适配器范式）——默认 `workbuddy`；多设备接入用环境变量 `SGME_WORKBUDDY_AGENT_ID` 或身份文件 `agent_id` 覆盖为服务端为本机签发的注册 id，避免第二台设备把记忆错标成默认值
 
 ## 能力面（与 MCP 基准 41 个工具一一对应）
 
@@ -46,7 +47,7 @@ python scripts/sgme_client.py env-info       # 生效端点与密钥来源（不
 |---|---|---|
 | 画像 + 相关记忆注入 | SKILL.md 纪律：对话开始 `inject` + `search` | `POST /v1/inject` + `POST /v1/search` |
 | 记忆/检索/问答工具 | `sgme_client.py`（HTTP 层 19 个基准命令，零依赖） | `/v1/append` `/v1/search` `/v1/answer` `/v1/memory/*` `/v1/skills/*` `/v1/wiki/*` |
-| 会话入库 | SKILL.md 纪律：每轮结束 `append`（`session_key` 延续，agent_id=workbuddy） | `POST /v1/append` |
+| 会话入库 | SKILL.md 纪律：每轮结束 `append`（`session_key` 延续；agent_id 默认 `workbuddy`，本机可覆盖——见下「agent_id 解析顺序」） | `POST /v1/append` |
 | 会话结束提炼 | MCP 层 `refine-trigger`（永远 async）；服务端 batch_scan 兜底 | MCP `refine_trigger` |
 | 主动关怀 | 短连接 `signal-pull`（对话开始）；`care_watch.py pull`（**默认不启用定时轮询**） | `GET /v1/events/pull` + MCP `signal_claim/ack/clear` |
 | 角色扮演 | MCP `role-list` → `role-assemble`（换皮不换芯） | MCP `role_*` |
@@ -89,6 +90,17 @@ adapters/workbuddy/
 
 管理类能力另用 `SGME_ADMIN_KEY`。诊断：`python scripts/sgme_client.py env-info`。
 
+**agent_id 解析顺序**（append 溯源打标；多设备接入必须本机覆盖——否则记忆按默认值错标，T-233）：
+
+1. 显式参数（`SGME(agent_id=…)`）/ `install.py --agent-id`
+2. 环境变量 `SGME_WORKBUDDY_AGENT_ID`
+3. `~/.sgme/workbuddy-agent.json` 的 `agent_id`
+4. 默认 `workbuddy`（服务端已注册）
+
+第二台设备（笔记本等）用服务端为本机签发的注册 id（占位符示例 `<注册id>-<设备名>`）覆盖；
+重新跑 `install.py` 时若未传 `--agent-id` 且本机未配置，**既有身份文件值会被保留**，不会打回默认。
+诊断：`env-info` 第 4 行「agent_id」看生效值与来源。
+
 ## 前置条件
 
 1. SGME Gateway 运行中（HTTP `<SGME_HOST>:9910`，MCP `:9913`）
@@ -101,9 +113,10 @@ adapters/workbuddy/
 # 默认：部署到 ~/.workbuddy/skills/sgme/，继承 mcp.json 的地址，写 client.env 与身份文件，跑自检
 python adapters/workbuddy/install.py
 
-# 显式指定地址 / 技能根 / 跳过自检 / 不写身份文件
+# 显式指定地址 / 技能根 / agent_id / 跳过自检 / 不写身份文件
 python adapters/workbuddy/install.py --base-url http://<SGME_HOST>:9910
 python adapters/workbuddy/install.py --skills-root <WORKBUDDY_SKILLS_DIR>
+python adapters/workbuddy/install.py --agent-id <本机注册id>   # 多设备接入必填（默认 workbuddy）
 python adapters/workbuddy/install.py --no-selfcheck
 python adapters/workbuddy/install.py --no-seed-identity
 ```
@@ -135,7 +148,7 @@ python adapters/workbuddy/install.py --no-seed-identity
 - **MCP 命令报「需要 mcp 库」**：MCP 层命令必须用装了 `mcp` 的 SGME 项目 venv 执行；HTTP 层任意 python3 可跑。
 - **写侧能力 403**：`skill-put` / `skill-delete` / `skill-rename` 服务端强制管理员 Key → 设 `SGME_ADMIN_KEY`。
 - **HTTP refine 403**：`/v1/admin/refine/*` 是 admin 端点 → 用 MCP 层 `refine-trigger`。
-- **记忆 agent_tag 打错**：`env-info` 看「agent key 来源」，若显示走了 `SGME_AGENT_KEY` 兜底，说明既没配 `SGME_WORKBUDDY_KEY` 也没读到 `mcp.json`。
+- **记忆 agent_tag 打错**：`env-info` 看「agent key 来源」，若显示走了 `SGME_AGENT_KEY` 兜底，说明既没配 `SGME_WORKBUDDY_KEY` 也没读到 `mcp.json`；再核对「agent_id 来源」——多设备接入时本机应覆盖为服务端签发的注册 id，否则默认值会错标。
 - **代理劫持内网**：客户端已显式忽略代理环境变量；若仍超时，检查系统代理（Clash 等）。
 - **技能不生效**：新增/更新技能后需**新开 WorkBuddy 对话**才被加载。
 - **selfcheck 写心跳**：会 append 一条 `workbuddy-selfcheck` 会话（幂等），`--no-append` 可跳过；`--static-only` 可离线只跑矩阵。
