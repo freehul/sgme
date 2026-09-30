@@ -117,7 +117,7 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 33 | skill_search | HTTP | `skill-search` |
 | 34 | skill_digest | HTTP | `skill-digest` |
 | 35 | skill_get | HTTP | `skill-get` |
-| 36 | skill_materialize | HTTP | `skill-materialize` |
+| 36 | skill_materialize | HTTP | `skill-materialize`（返回 path + sha256；落盘在服务端，跨机改用 skill-get） |
 | 37 | skill_list | HTTP | `skill-list` |
 | 38 | skill_coldstart | HTTP | `skill-coldstart` |
 | 39 | skill_put | MCP | `skill-put` |
