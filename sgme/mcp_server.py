@@ -1635,7 +1635,7 @@ def build_mcp_server():
                 "refine": "refine_trigger(async_mode=true) 或 refine_batch() 触发提炼；refine_status() 查进度与水位",
                 "recall": "search(query) 混合检索带溯源；inject(mode='daily') 注入当日画像",
                 "manage": "memory_reject 纠错；stats/health 看引擎状态；config_get/config_update 读写配置",
-                "adapters": "官方适配器（hermes/dsh/doubao/mimo/workbuddy/zcode）经技能库自助获取：skill_search('adapter') 或 skill_search('<宿主名> 适配器') → skill_get → 同机 skill_materialize(name='adapter-<host>', dest_dir=...) 落盘完整包后按包内说明安装（落盘在服务端文件系统，dest_dir/path 均为服务端视角）；跨机（agent 在本地、SGME 在远端）改用 skill_get 取正文自行写盘，完整包随附文件暂无远程通道、需要时如实报告主人；无宿主适配器时写入 self_config 模板走 MCP 通用接入",
+                "adapters": "官方适配器（hermes/dsh/doubao/mimo/workbuddy/zcode/codex）经技能库自助获取：skill_search('adapter') 或 skill_search('<宿主名> 适配器') → skill_get → 同机 skill_materialize(name='adapter-<host>', dest_dir=...) 落盘完整包后按包内说明安装（落盘在服务端文件系统，dest_dir/path 均为服务端视角）；跨机（agent 在本地、SGME 在远端）改用 skill_get 取正文自行写盘，完整包随附文件暂无远程通道、需要时如实报告主人；codex 为动态 MCP stdio 代理；无宿主适配器时写入 self_config 模板走 MCP 通用接入",
             },
             "self_config": {
                 "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：SGME 是统一能力平面，核心模块为 memory / skills / wiki；接入后只需安装宿主适配器，不需要批量安装很多 skill。①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v2）②安装官方适配器（skill_search('adapter') → 同机 skill_materialize 落盘 / 跨机 skill_get 取正文自行写盘，按包内说明安装），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。在线版完整指引（免 Key）：GET /v1/onboarding/docs。",

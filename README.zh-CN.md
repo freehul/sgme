@@ -212,6 +212,7 @@ dsh plugin --profile web add github:freehul/sgme
 | Doubao Work（豆包工作） | SKILL.md（豆包工作技能机制；官方适配器 `adapters/doubao`，install.py 部署） |
 | MiMo Desktop（小米 MiMo） | SKILL.md（MiMoCode 技能 `mimo`；官方适配器 `adapters/mimo`，install.py 部署；亦可挂原生 MCP `sgme`） |
 | ZCode | SKILL.md（ZCode 技能 `sgme-zcode`；官方适配器 `adapters/zcode`，install.py 部署；亦可经 `~/.zcode/cli/config.json` 挂原生 MCP `sgme`） |
+| Codex | MCP server `sgme`（官方适配器 `adapters/codex`，stdio 代理动态透传 41 工具；`install.py --register` 同时写入 UTF-8 环境设置） |
 | 通用 / 其它（走 MCP 通用接入） | AGENTS.md（项目级自动加载） |
 
 ## 服务化部署（Windows 服务）

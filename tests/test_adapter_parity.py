@@ -11,8 +11,8 @@ A. 门禁机制测试（夹具驱动，永远可跑）
    - 解析规则失效（读到 0 个符号）= 失败，防止门禁静默失效
    - --strict 下待补齐也算失败（发布门禁）
 
-B. 仓库现状测试（真实三适配器）
-   断言当前仓库三适配器对基准工具面无未声明漂移，并单独盯住历史断点
+B. 仓库现状测试（真实七适配器）
+   断言当前仓库七适配器对基准工具面无未声明漂移，并单独盯住历史断点
    （Hermes 的技能层读侧工具），防复发。
 """
 from __future__ import annotations
@@ -58,6 +58,14 @@ DOUBAO_TXT = "\n".join([
     "        pass",
 ])
 
+DYNAMIC_TXT = "\n".join([
+    "class Proxy:",
+    "    def list_tools(self):",
+    "        return self.remote.list_tools()",
+    "    def call_tool(self, name, arguments):",
+    "        return self.remote.call_tool(name, arguments)",
+])
+
 
 def _fixture_map(tmp_path, *, exemptions=None, passthrough=None, pending=None, extra=None):
     """在临时目录造基准 + 三个假适配器，返回对应的 cfg 字典。"""
@@ -87,6 +95,51 @@ def _fixture_map(tmp_path, *, exemptions=None, passthrough=None, pending=None, e
         "extra": extra or {},
         "pending": pending or {},
     }
+
+
+def _add_dynamic_adapter(cfg, tmp_path, *, reason="动态透传远端 MCP 工具面", patterns=None):
+    path = tmp_path / "codex.py"
+    path.write_text(DYNAMIC_TXT, encoding="utf-8")
+    cfg["adapters"]["codex"] = {
+        "file": str(path),
+        "dynamic_forwarder": {
+            "reason": reason,
+            "require_patterns": patterns
+            or [r"remote\.list_tools\(\)", r"remote\.call_tool\("],
+        },
+    }
+    return cfg
+
+
+def test_dynamic_forwarder_covers_all_baseline_tools(tmp_path):
+    cfg = _add_dynamic_adapter(_fixture_map(tmp_path), tmp_path)
+
+    res = ap.check(cfg)
+
+    assert res["stats"]["codex"]["forwarded"] == len(res["baseline_tools"])
+    assert all(
+        res["matrix"][tool]["codex"]["state"] == ap.FORWARDED
+        for tool in res["baseline_tools"]
+    )
+    assert not any("codex" in error for error in res["errors"])
+
+
+def test_dynamic_forwarder_requires_reason(tmp_path):
+    cfg = _add_dynamic_adapter(_fixture_map(tmp_path), tmp_path, reason="")
+
+    res = ap.check(cfg)
+
+    assert any("动态转发器 codex 缺少 reason" in error for error in res["errors"])
+
+
+def test_dynamic_forwarder_requires_guard_patterns(tmp_path):
+    cfg = _add_dynamic_adapter(
+        _fixture_map(tmp_path), tmp_path, patterns=[r"remote\.not_there\("]
+    )
+
+    res = ap.check(cfg)
+
+    assert any("动态转发器 codex 缺少透传锚点" in error for error in res["errors"])
 
 
 def test_undeclared_gap_is_drift(tmp_path):
@@ -186,7 +239,7 @@ def test_strict_mode_blocks_pending(tmp_path):
     assert ap.main(["--strict"], cfg=cfg) == 1  # 严格：拦下
 
 
-# ---------------- B. 仓库现状（真实三适配器） ----------------
+# ---------------- B. 仓库现状（真实七适配器） ----------------
 
 @pytest.fixture(scope="module")
 def repo_result():
@@ -194,19 +247,36 @@ def repo_result():
 
 
 def test_repo_adapters_parse_nonempty(repo_result):
-    """三个适配器都要能解析出能力面（防解析规则随重构失效）。"""
+    """七个适配器都要能解析出能力面（防解析规则随重构失效）。"""
     for ad, st in repo_result["stats"].items():
-        assert st["covered"] + st["exempt"] + st["passthrough"] + st["pending"] > 0, f"{ad} 解析为空"
+        assert (
+            st["covered"]
+            + st["forwarded"]
+            + st["exempt"]
+            + st["passthrough"]
+            + st["pending"]
+            > 0
+        ), f"{ad} 解析为空"
 
 
 def test_repo_no_undeclared_drift(repo_result):
-    """当前仓库三适配器对基准工具面无未声明漂移。"""
+    """当前仓库七适配器对基准工具面无未声明漂移。"""
     assert repo_result["errors"] == [], "存在未声明漂移：\n" + "\n".join(repo_result["errors"])
 
 
 def test_repo_no_pending_debt(repo_result):
     """待补齐必须清零（全补齐是本任务的验收标准，不许长期挂账）。"""
     assert repo_result["pending_count"] == 0, "仍有待补齐项，见 adapter_parity_map.yaml 的 pending"
+
+
+def test_repo_codex_dynamic_forwarder_covers_all_tools(repo_result):
+    """Codex 是动态 MCP 代理，必须以源码锚点证明完整透传而非静态工具清单。"""
+    assert "codex" in repo_result["adapters"]
+    assert repo_result["stats"]["codex"]["forwarded"] == repo_result["baseline_count"]
+    assert all(
+        repo_result["matrix"][tool]["codex"]["state"] == ap.FORWARDED
+        for tool in repo_result["baseline_tools"]
+    )
 
 
 def test_hermes_covers_skills_read_side(repo_result):
@@ -216,9 +286,10 @@ def test_hermes_covers_skills_read_side(repo_result):
         assert st == ap.COVERED, f"hermes 缺失 {tool}（{st}）"
 
 
-def test_all_three_adapters_stay_level(repo_result):
-    """三个适配器平级：除显式豁免/直通外，覆盖率必须一致。"""
+def test_all_official_adapters_stay_level(repo_result):
+    """官方适配器平级：除显式豁免/直通外，有效覆盖率必须一致。"""
     ads = repo_result["adapters"]
     eff = {ad: repo_result["stats"][ad]["covered"] + repo_result["stats"][ad]["exempt"]
-           + repo_result["stats"][ad]["passthrough"] for ad in ads}
-    assert len(set(eff.values())) == 1, f"三适配器能力面不一致：{eff}"
+           + repo_result["stats"][ad]["passthrough"] + repo_result["stats"][ad]["forwarded"]
+           for ad in ads}
+    assert len(set(eff.values())) == 1, f"适配器能力面不一致：{eff}"

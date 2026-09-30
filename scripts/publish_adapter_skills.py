@@ -35,8 +35,8 @@ ROOT = Path(__file__).resolve().parent.parent
 ADAPTERS = ROOT / "adapters"
 SKILLS = ROOT / "skills"
 
-# 六官方适配器（与 AGENTS.md 平级条款一致）
-HOSTS = ("hermes", "dsh", "doubao", "mimo", "workbuddy", "zcode")
+# 七官方适配器（与 AGENTS.md 平级条款一致）
+HOSTS = ("hermes", "dsh", "doubao", "mimo", "workbuddy", "zcode", "codex")
 
 # 打包时保留的顶层条目（目录或文件名）；其余进 junk 过滤
 KEEP_TOP = {
@@ -52,6 +52,9 @@ KEEP_TOP = {
     "config_schema.py",
     "__init__.py",
     "README.md",
+    "codex_sgme",
+    "pyproject.toml",
+    "uv.lock",
 }
 
 # 真源里「插件本体 / 桥接源码」目录 → 分发包 package/
