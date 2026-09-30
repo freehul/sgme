@@ -3,8 +3,9 @@
 
 为什么需要本脚本
 ----------------
-SGME 有三个平级的官方适配器（hermes / dsh / doubao），它们各自维护自己的一份
-「能力面」，而 SGME 的能力全集定义在 MCP 工具面（sgme/mcp_server.py）。历史上
+SGME 的官方适配器（hermes / dsh / doubao / mimo / workbuddy / zcode / codex）
+各自维护或动态转发一份「能力面」，而 SGME 的能力全集定义在 MCP 工具面
+（sgme/mcp_server.py）。历史上
 发生过：SGME 一路加能力，DSH 适配器跟着加，Hermes 适配器停在 2026-08-30 没动，
 近 20 天无人发现——因为**没有任何地方能看出漂移**。本脚本把漂移变成机器可见。
 
@@ -16,8 +17,9 @@ SGME 有三个平级的官方适配器（hermes / dsh / doubao），它们各自
 2. exemptions 里有理由 → 永久豁免（放行，打印理由）
 3. passthrough 里有通道与理由 → 通配代偿（放行，打印通道）
 4. 适配器里存在同名（剥前缀后）符号 → 已覆盖
-5. pending 里已登记（带任务号）→ 待补齐（警告；--strict 下失败）
-6. 以上都不是 → **漂移**（失败）
+5. 动态转发器声明且源码守卫锚点齐全 → 动态覆盖完整工具面
+6. pending 里已登记（带任务号）→ 待补齐（警告；--strict 下失败）
+7. 以上都不是 → **漂移**（失败）
 
 另外做反向卫生检查（防声明腐烂）：
 - pending/exemptions 声明了但实际已覆盖 → 提示清理（警告）
@@ -44,12 +46,14 @@ MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "adapter_par
 
 # 格子状态
 COVERED = "covered"
+FORWARDED = "forwarded"
 EXEMPT = "exempt"
 PASSTHROUGH = "passthrough"
 PENDING = "pending"
 DRIFT = "drift"
 
-_MARK = {COVERED: "✓", EXEMPT: "豁免", PASSTHROUGH: "直通", PENDING: "待补", DRIFT: "✗漂移"}
+_MARK = {COVERED: "✓", FORWARDED: "动态", EXEMPT: "豁免", PASSTHROUGH: "直通",
+         PENDING: "待补", DRIFT: "✗漂移"}
 
 
 def _read(path: str) -> str | None:
@@ -65,7 +69,10 @@ def parse_symbols(adapter_cfg: dict) -> set[str]:
     """按适配器解析规则抽取能力符号，并剥掉前缀。
 
     默认丢弃 `_` 开头的名字（私有方法/内部函数），无论解析规则是否列了 exclude。
+    动态转发器不维护静态工具清单，返回空集，由 check() 单独做源码守卫校验。
     """
+    if adapter_cfg.get("dynamic_forwarder"):
+        return set()
     src = _read(adapter_cfg["file"])
     if src is None:
         return set()
@@ -104,7 +111,10 @@ def check(cfg: dict | None = None) -> dict:
     cfg = cfg or load_map()
     baseline = set(re.findall(cfg["baseline"]["pattern"], _read(cfg["baseline"]["file"]) or "", re.M))
     adapters = list(cfg["adapters"].keys())
-    symbols = {a: parse_symbols(c) for a, c in cfg["adapters"].items()}
+    dynamic = {a: c["dynamic_forwarder"] for a, c in cfg["adapters"].items()
+               if c.get("dynamic_forwarder")}
+    symbols = {a: (set() if a in dynamic else parse_symbols(c))
+               for a, c in cfg["adapters"].items()}
     aliases = cfg.get("aliases") or {}
     exemptions = cfg.get("exemptions") or {}
     passthrough = cfg.get("passthrough") or {}
@@ -130,7 +140,7 @@ def check(cfg: dict | None = None) -> dict:
         matrix[tool] = {}
         for ad in adapters:
             state, detail = _judge(tool, ad, symbols[ad], aliases, exemptions, passthrough, pending,
-                                  {a: (c.get("strip_prefix") or "") for a, c in cfg["adapters"].items()})
+                                  prefixes, dynamic)
             matrix[tool][ad] = {"state": state, "detail": detail}
             if state == DRIFT:
                 errors.append(f"漂移：基准工具 {tool} 在适配器 {ad} 上未声明（既无实现、也无豁免/直通/待补）")
@@ -187,8 +197,27 @@ def check(cfg: dict | None = None) -> dict:
     if set(cfg["baseline"].keys()) and not baseline:
         errors.append(f"读不到基准工具面：{cfg['baseline']['file']}")
     for ad, cfg_ad in cfg["adapters"].items():
-        if not symbols[ad]:
+        if not symbols[ad] and ad not in dynamic:
             errors.append(f"读不到适配器能力面：{cfg_ad['file']}（文件缺失或解析规则失效）")
+    for ad, spec in dynamic.items():
+        cfg_ad = cfg["adapters"][ad]
+        src = _read(cfg_ad["file"])
+        if src is None:
+            errors.append(f"动态转发器 {ad} 读不到源码：{cfg_ad['file']}")
+            continue
+        if not isinstance(spec, dict):
+            errors.append(f"动态转发器 {ad} 声明必须是对象（reason + require_patterns）")
+            continue
+        if not spec.get("reason"):
+            errors.append(f"动态转发器 {ad} 缺少 reason（必须说明为何可覆盖完整工具面）")
+        patterns = spec.get("require_patterns") or []
+        if not patterns:
+            errors.append(f"动态转发器 {ad} 缺少 require_patterns（禁止无守卫空解析放行）")
+        for pattern in patterns:
+            if not re.search(pattern, src, re.MULTILINE):
+                errors.append(
+                    f"动态转发器 {ad} 缺少透传锚点 `{pattern}`（源码未证明完整转发）"
+                )
     for tool, per in aliases.items():
         if tool not in baseline:
             errors.append(f"声明错误：aliases 里的 {tool} 不在基准工具面")
@@ -216,6 +245,7 @@ def check(cfg: dict | None = None) -> dict:
         st = [matrix[t][ad]["state"] for t in baseline]
         stats[ad] = {
             "covered": st.count(COVERED),
+            "forwarded": st.count(FORWARDED),
             "exempt": st.count(EXEMPT),
             "passthrough": st.count(PASSTHROUGH),
             "pending": st.count(PENDING),
@@ -236,8 +266,11 @@ def check(cfg: dict | None = None) -> dict:
     }
 
 
-def _judge(tool, ad, syms, aliases, exemptions, passthrough, pending, prefixes):
+def _judge(tool, ad, syms, aliases, exemptions, passthrough, pending, prefixes, dynamic):
     """判定单个格子的状态。"""
+    dynamic_spec = dynamic.get(ad)
+    if dynamic_spec:
+        return FORWARDED, f"动态透传：{dynamic_spec.get('reason', '')}"
     alias = (aliases.get(tool) or {}).get(ad)
     if alias:
         # 别名要按该适配器的前缀口径剥掉后再比对（符号是否存在已在 check() 阶段验过）
@@ -269,7 +302,8 @@ def render(res: dict, strict: bool) -> str:
     for ad in ads:
         s = res["stats"][ad]
         lines.append(
-            f"  {ad:8s} 覆盖 {s['covered']:2d}  豁免 {s['exempt']:2d}  直通 {s['passthrough']:2d}"
+            f"  {ad:8s} 覆盖 {s['covered']:2d}  动态 {s['forwarded']:2d}"
+            f"  豁免 {s['exempt']:2d}  直通 {s['passthrough']:2d}"
             f"  待补 {s['pending']:2d}  漂移 {s['drift']:2d}  自有 {s['extra']:2d}"
         )
     lines.append("-" * 78)
@@ -299,7 +333,9 @@ def render(res: dict, strict: bool) -> str:
         for e in res["errors"]:
             lines.append(f"  · {e}")
     else:
-        lines.append(f"✅ 无漂移（所有基准工具在 {len(ads)} 个适配器上均有实现或显式声明）")
+        lines.append(
+            f"✅ 无漂移（所有基准工具在 {len(ads)} 个适配器上均有实现、动态透传或显式声明）"
+        )
     if strict and res["pending_count"]:
         lines.append(f"❌ 严格模式：仍有 {res['pending_count']} 项待补齐，发布门禁不通过")
     lines.append("=" * 78)

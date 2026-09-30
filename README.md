@@ -218,6 +218,7 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 | Doubao Work (豆包工作) | SKILL.md (Doubao Work skill mechanism; official adapter `adapters/doubao`, deployed via install.py) |
 | MiMo Desktop | SKILL.md (MiMoCode skill `mimo`; official adapter `adapters/mimo`, deployed via install.py; native MCP `sgme` also supported) |
 | ZCode | SKILL.md (ZCode skill `sgme-zcode`; official adapter `adapters/zcode`, deployed via install.py; native MCP `sgme` via `~/.zcode/cli/config.json` also supported) |
+| Codex | MCP server `sgme` (official adapter `adapters/codex`, stdio proxy with dynamic 41-tool passthrough; `install.py --register` also records UTF-8 settings) |
 | Generic / others (via MCP) | AGENTS.md (auto-loaded per project) |
 
 ## Deployment (Windows Service)

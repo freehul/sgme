@@ -1,6 +1,6 @@
 ---
 name: sgme-adapter-development
-description: SGME 六个官方 Agent 适配器的开发、发布和对账：Hermes、DSH、豆包、MiMo、WorkBuddy、ZCode。修改 adapters/*、导入历史或适配器分发包时使用。
+description: SGME 七个官方 Agent 适配器的开发、发布和对账：Hermes、DSH、豆包、MiMo、WorkBuddy、ZCode、Codex。修改 adapters/*、导入历史或适配器分发包时使用。
 category: sgme-development
 tags: [skill, sgme, adapter, bridge, mcp, hooks, incremental, dedup]
 version: 1.0.0
@@ -16,7 +16,7 @@ uses:
 
 - 真源：`adapters/<host>/`，按宿主实现捕获、注入、工具和安装逻辑。
 - 分发：`skills/adapter-<host>/`，由 `scripts/publish_adapter_skills.py` 生成；禁止直接编辑分发副本。
-- 六个平级宿主：`hermes`、`dsh`、`doubao`、`mimo`、`workbuddy`、`zcode`。
+- 七个平级宿主：`hermes`、`dsh`、`doubao`、`mimo`、`workbuddy`、`zcode`、`codex`。
 
 ## 共同契约
 
@@ -24,7 +24,7 @@ uses:
 - L0 写入必须幂等；重复会话、工具回执和历史导入不能制造重复消息。
 - 只读宿主原始数据，只写 SGME L0；不删除原件。
 - HTTP 客户端访问本机/内网服务使用 `trust_env=False`；密钥只从环境变量或部署配置读取。
-- 新增 MCP 工具必须同步评估六个适配器，不能只修改一个宿主。
+- 新增 MCP 工具必须同步评估七个适配器，不能只修改一个宿主；`codex` 是动态 MCP 透传，以 `dynamic_forwarder.require_patterns` 守卫 `remote.list_tools()` / `remote.call_tool(` 两个锚点。
 
 ## 开发与验收
 
