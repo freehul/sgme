@@ -97,6 +97,23 @@ characters outside that code page. The proxy explicitly reconfigures stdin and
 stdout to UTF-8 at startup, and `install.py --register` also records
 `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8` for defence in depth.
 
+## Deployment refresh
+
+This directory is the canonical source. A standalone deployment copy may live
+outside the repository for host registration; refresh only its controlled
+source files and keep its `.git`, virtual environment, and runtime state in
+place. After syncing:
+
+1. Confirm `codex_sgme.__version__` in the deployment environment.
+2. Run the stdio proxy through `initialize`, `tools/list`, and `tools/call`
+   with `health`.
+3. Expect all current SGME MCP tools, including `skill_materialize`, without
+   `UnicodeEncodeError` and a successful health response.
+
+Before editing the host MCP configuration, back up `config.toml`. The UTF-8
+environment entries are additive; rollback is restoring that backup and the
+previous deployment-copy commit.
+
 ## Safety boundary
 
 The adapter never embeds or prints credentials. Append/refine behavior is covered
