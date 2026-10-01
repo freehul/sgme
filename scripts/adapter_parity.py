@@ -362,4 +362,9 @@ def main(argv=None, cfg: dict | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # GBK 等窄编码控制台下 render() 的 ✓/✗ 会触发 UnicodeEncodeError（T-239）：
+    # 仅对不可编码字符做替换兜底，不改变输出编码与内容语义。
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="replace")
     raise SystemExit(main())

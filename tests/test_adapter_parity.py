@@ -18,6 +18,7 @@ B. 仓库现状测试（真实七适配器）
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 import pytest
@@ -293,3 +294,22 @@ def test_all_official_adapters_stay_level(repo_result):
            + repo_result["stats"][ad]["passthrough"] + repo_result["stats"][ad]["forwarded"]
            for ad in ads}
     assert len(set(eff.values())) == 1, f"适配器能力面不一致：{eff}"
+
+
+# ---------------- C. CLI 环境兼容（T-239：GBK 控制台加固） ----------------
+
+def test_cli_strict_survives_gbk_stdout():
+    """GBK 控制台/管道（Windows 默认代码页）下 --strict 输出不因 ✓ 崩溃（T-239）。
+
+    复现路径：PYTHONIOENCODING=gbk 时 render() 输出的 ✓ 无法编码，
+    修前抛 UnicodeEncodeError；修复后在 CLI 入口做 errors=replace 兜底。
+    """
+    script = os.path.join(BASE, "scripts", "adapter_parity.py")
+    env = {**os.environ, "PYTHONIOENCODING": "gbk"}
+    proc = subprocess.run(
+        [sys.executable, script, "--strict"],
+        capture_output=True, env=env, cwd=BASE,
+    )
+    assert proc.returncode == 0, (
+        f"rc={proc.returncode}\nstderr=" + proc.stderr.decode("utf-8", "replace")
+    )
