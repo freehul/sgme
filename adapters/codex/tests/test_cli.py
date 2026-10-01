@@ -93,7 +93,7 @@ def test_manifest_has_no_credential_or_machine_specific_path(tmp_path):
     assert "SGME_AGENT_KEY" not in serialized
     assert "C:\\Users" not in serialized
     assert manifest["adapter"] == "codex-sgme"
-    assert manifest["version"] == __version__ == "0.1.1"
+    assert manifest["version"] == __version__ == "0.1.2"
 
 
 def test_register_command_does_not_include_a_secret(tmp_path):
