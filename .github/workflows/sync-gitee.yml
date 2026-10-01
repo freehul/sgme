@@ -22,9 +22,6 @@ jobs:
           set -e
           # token 直接嵌 URL 由 GitHub 自动打码；GITEE_USER 用 freehul
           git remote add gitee "https://freehul:${GITEE_TOKEN}@gitee.com/freehul/sgme.git"
-          # tag 触发时 checkout 为 detached HEAD（无本地 main）→ 先显式建/复位 main 分支再推
-          # （B161：v1.2.0 tag 同步曾因 `src refspec main does not match any` 失败）
-          git checkout -B main "$GITHUB_SHA" 2>/dev/null || git checkout -B main
 
           # 重试包裹（B204）：Gitee 从 GitHub runner 出发偶发连接重置——2026-09-24 合并 PR 时
           # `main -> main` 已推成功、`--tags` 卡 2 分钟后 exit 128（Recv failure: Connection reset
@@ -46,5 +43,16 @@ jobs:
             return 1
           }
 
-          push_with_retry "main 推送" git push gitee main --force
+          # main 推送仅限主分支事件（B235/T-244）：tag 事件下 $GITHUB_SHA = tag 指向的提交，
+          # 旧逻辑用 checkout -B main "$GITHUB_SHA" 强推——v1.7.6 tag 同步把 main 从
+          # 合并提交 286bbe7 回退到版本号提交 2d5e36e（501bb83/286bbe7 两提交丢失）。
+          # tag 事件只同步 tags；main 的每次变更都有自身分支事件的同步，无需 tag 场景补推。
+          # （原 B161「tag 触发无本地 main → 显式建 main」路径随之移除，避免旧坑复发）
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            git checkout -B main "$GITHUB_SHA"
+            push_with_retry "main 推送" git push gitee main --force
+          else
+            echo "[sync] 非 main 分支事件（ref=${GITHUB_REF}）：仅同步 tags，不推 main"
+          fi
+
           push_with_retry "tag 推送" git push gitee --tags --force
