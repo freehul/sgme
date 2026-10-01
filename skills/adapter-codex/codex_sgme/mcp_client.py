@@ -27,7 +27,9 @@ class McpClient:
         self.session_id: str | None = None
         self._next_id = 1
 
-    def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+    def _post(
+        self, body: dict[str, Any], *, _retry_stale_session: bool = True
+    ) -> dict[str, Any]:
         if not self.api_key:
             raise ValueError("SGME_AGENT_KEY is required for MCP calls")
         headers = {
@@ -38,6 +40,16 @@ class McpClient:
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
         response = self.session.post(self.url, headers=headers, json=body)
+        if (
+            response.status_code == 404
+            and self.session_id
+            and _retry_stale_session
+            and "Session not found" in (getattr(response, "text", "") or "")
+        ):
+            # 服务端重启/会话过期：带旧会话的请求未被执行，安全丢弃后重初始化重试一次（T-240）
+            self.session_id = None
+            self.initialize()
+            return self._post(body, _retry_stale_session=False)
         if response.status_code >= 400:
             detail = getattr(response, "text", "request failed") or "request failed"
             raise McpError(f"SGME MCP HTTP {response.status_code}: {detail[:500]}")

@@ -1,6 +1,6 @@
 """Thin Codex integration layer for the SGME memory engine."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 from .adapter import SgmeAdapter
 from .config import Settings
