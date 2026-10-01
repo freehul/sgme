@@ -13,7 +13,7 @@
 
 本脚本把「派生产物是否新鲜」变成机器可见，两条独立防线：
 
-1. 分发副本新鲜度（七个 ``skills/adapter-<host>/``）
+1. 分发副本新鲜度（八个 ``skills/adapter-<host>/``）
    复用 ``scripts/publish_adapter_skills.py`` 的生成逻辑，把真源重新打包到临时目录，
    与已提交的分发副本逐文件比对（文件集合 + 内容哈希，CRLF→LF 归一）。任何差异——
    缺文件 / 多文件 / 内容不同——都是漂移。等价于「现在重跑一遍 publish 会不会产生 diff」。
@@ -97,7 +97,7 @@ def _tree_hashes(root: Path, is_junk) -> dict[str, str]:
 
 
 def check_skill_copies(repo_root: Path = ROOT, hosts=None) -> list[str]:
-    """防线 1：七个分发副本 vs 真源重新打包的逐文件比对。返回漂移清单。"""
+    """防线 1：八个分发副本 vs 真源重新打包的逐文件比对。返回漂移清单。"""
     pub = _load_publish_module(repo_root)
     findings: list[str] = []
     tmp = Path(tempfile.mkdtemp(prefix="sgme-freshness-"))
@@ -204,7 +204,7 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(res, ensure_ascii=False, indent=2))
     elif res["ok"]:
-        print("✅ 适配器分发新鲜：七副本与真源一致；dsh lib 与 src 同步")
+        print("✅ 适配器分发新鲜：八副本与真源一致；dsh lib 与 src 同步")
     else:
         print(f"❌ 适配器分发漂移 {len(res['findings'])} 项：")
         for f in res["findings"]:

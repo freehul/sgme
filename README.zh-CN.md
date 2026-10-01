@@ -207,7 +207,7 @@ dsh plugin --profile web add github:freehul/sgme
 |---|---|
 | Hermes | SOUL.md（身份 + 行为准则） |
 | WorkBuddy | SOUL.md（身份 + 行为准则）；SKILL.md（技能 `sgme`——官方适配器 `adapters/workbuddy`，install.py 部署；原生 MCP `sgme` 亦可挂） |
-| Claude Code | CLAUDE.md |
+| Claude Code | CLAUDE.md（身份 + 行为准则）；MCP server `sgme` + 原生 hooks（官方适配器 `adapters/claude-code`，stdio 代理动态透传 41 工具 + SessionStart/Stop/SessionEnd 生命周期 hooks；install.py 一并注册） |
 | DeepSeek Harness (DSH) | AGENTS.md（项目级自动加载） |
 | Doubao Work（豆包工作） | SKILL.md（豆包工作技能机制；官方适配器 `adapters/doubao`，install.py 部署） |
 | MiMo Desktop（小米 MiMo） | SKILL.md（MiMoCode 技能 `mimo`；官方适配器 `adapters/mimo`，install.py 部署；亦可挂原生 MCP `sgme`） |

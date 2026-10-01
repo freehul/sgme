@@ -11,8 +11,8 @@ A. 门禁机制测试（夹具驱动，永远可跑）
    - 解析规则失效（读到 0 个符号）= 失败，防止门禁静默失效
    - --strict 下待补齐也算失败（发布门禁）
 
-B. 仓库现状测试（真实七适配器）
-   断言当前仓库七适配器对基准工具面无未声明漂移，并单独盯住历史断点
+B. 仓库现状测试（真实八适配器）
+   断言当前仓库八适配器对基准工具面无未声明漂移，并单独盯住历史断点
    （Hermes 的技能层读侧工具），防复发。
 """
 from __future__ import annotations
@@ -240,7 +240,7 @@ def test_strict_mode_blocks_pending(tmp_path):
     assert ap.main(["--strict"], cfg=cfg) == 1  # 严格：拦下
 
 
-# ---------------- B. 仓库现状（真实七适配器） ----------------
+# ---------------- B. 仓库现状（真实八适配器） ----------------
 
 @pytest.fixture(scope="module")
 def repo_result():
@@ -248,7 +248,7 @@ def repo_result():
 
 
 def test_repo_adapters_parse_nonempty(repo_result):
-    """七个适配器都要能解析出能力面（防解析规则随重构失效）。"""
+    """八个适配器都要能解析出能力面（防解析规则随重构失效）。"""
     for ad, st in repo_result["stats"].items():
         assert (
             st["covered"]
@@ -261,7 +261,7 @@ def test_repo_adapters_parse_nonempty(repo_result):
 
 
 def test_repo_no_undeclared_drift(repo_result):
-    """当前仓库七适配器对基准工具面无未声明漂移。"""
+    """当前仓库八适配器对基准工具面无未声明漂移。"""
     assert repo_result["errors"] == [], "存在未声明漂移：\n" + "\n".join(repo_result["errors"])
 
 
@@ -276,6 +276,16 @@ def test_repo_codex_dynamic_forwarder_covers_all_tools(repo_result):
     assert repo_result["stats"]["codex"]["forwarded"] == repo_result["baseline_count"]
     assert all(
         repo_result["matrix"][tool]["codex"]["state"] == ap.FORWARDED
+        for tool in repo_result["baseline_tools"]
+    )
+
+
+def test_repo_claude_code_dynamic_forwarder_covers_all_tools(repo_result):
+    """Claude Code 同为动态 MCP 代理，必须以源码锚点证明完整透传而非静态工具清单。"""
+    assert "claude-code" in repo_result["adapters"]
+    assert repo_result["stats"]["claude-code"]["forwarded"] == repo_result["baseline_count"]
+    assert all(
+        repo_result["matrix"][tool]["claude-code"]["state"] == ap.FORWARDED
         for tool in repo_result["baseline_tools"]
     )
 

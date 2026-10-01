@@ -210,11 +210,11 @@ content 格式（首行必须）：
 
 | 档位 | 机制 | 适用 | 你要做的事 |
 |---|---|---|---|
-| **hooks 型** | 检测会话结束事件（SessionEnd/Stop），自动触发提炼 | Hermes / Claude Code（有 hook 可自研适配器） | 配自动提炼 hook，无需每会话手动收尾 |
+| **hooks 型** | 检测会话结束事件（SessionEnd/Stop），自动触发提炼 | Hermes / Claude Code（官方适配器已内置 hooks 自动化） | 配自动提炼 hook，无需每会话手动收尾 |
 | **自律型** | 无 hooks → 会话收尾主动调提炼 | Trae / ZCode | 指引要求：结束前 `refine_trigger(async_mode=true)`，别指望别人 |
 | **保底型** | 服务端兜底，不依赖 agent 自觉 | 任何 agent（最后防线） | 服务端 `batch_scan` 常驻定时器扫 status=new；`refine_on_append=true` 时 append 后自动单文件提炼 |
 
-> **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态）、MiMo Desktop（`adapters/mimo`，Skill + 原生 MCP 优先，2026-09-22 登记）、WorkBuddy（`adapters/workbuddy`，Skill + 原生 MCP 优先，从 `~/.workbuddy/mcp.json` 零配置继承，2026-09-22 登记）、ZCode（`adapters/zcode`，Skill 形态 + 自律接入 + `import_history.py` 历史会话补导入，install.py 可注册 ZCode 原生 MCP server，2026-09-26 登记）、Codex（`adapters/codex`，stdio MCP 代理动态透传 41 工具 + 会话生命周期 CLI，install.py 可注册 Codex MCP server，2026-09-30 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
+> **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态）、MiMo Desktop（`adapters/mimo`，Skill + 原生 MCP 优先，2026-09-22 登记）、WorkBuddy（`adapters/workbuddy`，Skill + 原生 MCP 优先，从 `~/.workbuddy/mcp.json` 零配置继承，2026-09-22 登记）、ZCode（`adapters/zcode`，Skill 形态 + 自律接入 + `import_history.py` 历史会话补导入，install.py 可注册 ZCode 原生 MCP server，2026-09-26 登记）、Codex（`adapters/codex`，stdio MCP 代理动态透传 41 工具 + 会话生命周期 CLI，install.py 可注册 Codex MCP server，2026-09-30 登记）、Claude Code（`adapters/claude-code`，stdio MCP 代理动态透传 41 工具 + 原生 hooks 会话生命周期：SessionStart 注入 / Stop 落盘 / SessionEnd 提炼，install.py 注册 Claude Code MCP server 与 hooks，2026-10-01 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
 
 **判断方法**：有 SessionEnd/Stop 事件机制 = hooks 型；没有 = 自律型；两者都失效还有保底型兜底——记忆不会丢，只会晚提炼。
 
@@ -225,7 +225,7 @@ content 格式（首行必须）：
 
 **四步自助：**
 
-1. **发现**：`skill_search("adapter")` 或 `skill_search("<宿主名> 适配器")`——命中 `adapter-hermes` / `adapter-dsh` / `adapter-doubao` / `adapter-mimo` / `adapter-workbuddy` / `adapter-zcode` / `adapter-codex`
+1. **发现**：`skill_search("adapter")` 或 `skill_search("<宿主名> 适配器")`——命中 `adapter-hermes` / `adapter-dsh` / `adapter-doubao` / `adapter-mimo` / `adapter-workbuddy` / `adapter-zcode` / `adapter-codex` / `adapter-claude-code`
 2. **确认**：`skill_get("adapter-<host>")` 读纪律与安装说明
 3. **落盘（仅同机）**：`skill_materialize(name="adapter-<host>", dest_dir="<工作区>")`——除 `SKILL.md` 外，`scripts/` / `install.py` / `locales/` / `package/` 等随附文件一并落盘。**物化落盘在 SGME 服务端文件系统**：你与 SGME 同机时照此执行；**跨机时你本地拿不到产物**（dest_dir 与返回 path 都是服务端视角），改用 `skill_get("adapter-<host>")` 取正文自行写盘——完整包随附文件（`scripts/` / `install.py` 等）暂无远程通道，需要时如实报告主人
 4. **安装**：按包内 `SKILL.md` / `references/README.md` 说明执行（通常是 `python install.py`；dsh 为 `install.py` + `dsh plugin add`）
@@ -239,6 +239,7 @@ content 格式（首行必须）：
 | `adapter-workbuddy` | WorkBuddy | Skill + mcp.json 零配置继承 | `install.py` → `~/.workbuddy/skills/sgme/` |
 | `adapter-zcode` | ZCode | Skill + 自律接入 | `install.py` + 可选 `import_history.py` |
 | `adapter-codex` | Codex | stdio MCP 动态透传 + 生命周期 CLI | `install.py --register` |
+| `adapter-claude-code` | Claude Code | stdio MCP 动态透传 + 原生 hooks | `install.py`（注册 `~/.claude.json` MCP server 与 `~/.claude/settings.json` hooks） |
 
 **无宿主适配器**（或 skill 库未含 adapter）：走 MCP 通用接入——写入 `self_config.template`（第 ⑦ 项）并按 §6 档位自律运行。**不因缺适配器阻塞接入**。
 

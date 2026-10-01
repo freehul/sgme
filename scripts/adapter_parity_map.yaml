@@ -1,7 +1,7 @@
 # SGME 官方适配器能力面对账表
 #
 # 定位：SGME 每新增一个 agent 可消费能力（= 一个 MCP 工具）就新增一个基准项；
-#       七个官方适配器（hermes / dsh / doubao / mimo / workbuddy / zcode / codex）**平级**，必须在同一批工作内评估对齐。
+#       八个官方适配器（hermes / dsh / doubao / mimo / workbuddy / zcode / codex / claude-code）**平级**，必须在同一批工作内评估对齐。
 #       背景见《SGME-接入契约》§2 与 Backlog ST-42。
 #
 # 用法：
@@ -24,7 +24,7 @@ baseline:
   pattern: '\{"name":\s*"([a-z_]+)"'
   note: MCP 工具面即 SGME agent 能力全集
 
-# ---------- 五个平级适配器：解析规则 ----------
+# ---------- 八个平级适配器：解析规则 ----------
 adapters:
   hermes:
     file: adapters/hermes/__init__.py
@@ -82,6 +82,14 @@ adapters:
         - 'remote\.list_tools\(\)'
         - 'remote\.call_tool\('
     note: Codex MCP stdio 代理（远端 tools/list 与 tools/call 动态透传）
+  claude-code:
+    file: adapters/claude-code/claude_sgme/mcp_proxy.py
+    dynamic_forwarder:
+      reason: "Claude Code stdio 代理动态转发远端 SGME MCP 工具面，不维护静态工具清单"
+      require_patterns:
+        - 'remote\.list_tools\(\)'
+        - 'remote\.call_tool\('
+    note: Claude Code MCP stdio 代理（远端 tools/list 与 tools/call 动态透传）+ SessionStart/Stop/SessionEnd 原生 hooks
 
 # ---------- 名称不同但语义等价的映射 ----------
 aliases:

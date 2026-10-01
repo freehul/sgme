@@ -35,8 +35,8 @@ ROOT = Path(__file__).resolve().parent.parent
 ADAPTERS = ROOT / "adapters"
 SKILLS = ROOT / "skills"
 
-# 七官方适配器（与 AGENTS.md 平级条款一致）
-HOSTS = ("hermes", "dsh", "doubao", "mimo", "workbuddy", "zcode", "codex")
+# 八官方适配器（与 AGENTS.md 平级条款一致）
+HOSTS = ("hermes", "dsh", "doubao", "mimo", "workbuddy", "zcode", "codex", "claude-code")
 
 # 打包时保留的顶层条目（目录或文件名）；其余进 junk 过滤
 KEEP_TOP = {
@@ -53,6 +53,7 @@ KEEP_TOP = {
     "__init__.py",
     "README.md",
     "codex_sgme",
+    "claude_sgme",
     "pyproject.toml",
     "uv.lock",
 }

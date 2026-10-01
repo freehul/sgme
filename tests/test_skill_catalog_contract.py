@@ -21,6 +21,7 @@ REQUIRED = {
     "sgme-model-keys",
 }
 ADAPTERS = {
+    "adapter-claude-code",
     "adapter-codex",
     "adapter-doubao",
     "adapter-dsh",

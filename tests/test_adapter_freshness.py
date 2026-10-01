@@ -11,7 +11,7 @@ A. 门禁机制测试（夹具驱动，永远可跑）——证明「陈旧派�
    - name 提取规则失效（读到 0 个）→ 失败而不是静默通过
 
 B. 仓库现状测试（真实仓库）——两条防线当前必须全绿：
-   七副本与真源重新打包结果逐文件一致；dsh lib 与 src 完全同步。
+   八副本与真源重新打包结果逐文件一致；dsh lib 与 src 完全同步。
 """
 from __future__ import annotations
 
@@ -211,7 +211,7 @@ def test_bundle_missing_lib_detected(tmp_path):
 # ---------------- B. 仓库现状（真实仓库） ----------------
 
 def test_repo_skill_copies_fresh():
-    """七个 skills/adapter-* 必须与「真源重新打包」结果逐文件一致（T-227 防复发）。"""
+    """八个 skills/adapter-* 必须与「真源重新打包」结果逐文件一致（T-227 防复发）。"""
     findings = cf.check_skill_copies(BASE)
     assert findings == [], "分发副本漂移：\n" + "\n".join(findings)
 
