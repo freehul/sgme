@@ -1,5 +1,5 @@
 name: sgme
-version: "1.7.3"  # 版本口径跟随 SGME 版本（1.7.3 = WorkBuddy 验收修复：materialize 跨机语义 T-232 + agent_id 可配 T-233），见 README
+version: "1.7.4"  # 版本口径跟随 SGME 版本（1.7.4 = Codex 适配器平级收编 T-236~238 + parity GBK 加固 T-239），见 README
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理+沟通角色（42 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"
 license: MIT
