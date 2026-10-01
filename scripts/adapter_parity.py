@@ -3,7 +3,7 @@
 
 为什么需要本脚本
 ----------------
-SGME 的官方适配器（hermes / dsh / doubao / mimo / workbuddy / zcode / codex）
+SGME 的官方适配器（hermes / dsh / doubao / mimo / workbuddy / zcode / codex / claude-code）
 各自维护或动态转发一份「能力面」，而 SGME 的能力全集定义在 MCP 工具面
 （sgme/mcp_server.py）。历史上
 发生过：SGME 一路加能力，DSH 适配器跟着加，Hermes 适配器停在 2026-08-30 没动，

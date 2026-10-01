@@ -21,7 +21,7 @@ def pub():
     return mod
 
 
-def test_hosts_match_official_seven(pub):
+def test_hosts_match_official_eight(pub):
     assert set(pub.HOSTS) == {
         "hermes",
         "dsh",
@@ -30,6 +30,7 @@ def test_hosts_match_official_seven(pub):
         "workbuddy",
         "zcode",
         "codex",
+        "claude-code",
     }
 
 
@@ -107,6 +108,6 @@ def test_check_only_writes_nothing(pub, tmp_path, monkeypatch):
 
 
 def test_real_repo_adapters_have_skill_md():
-    """仓库真源七适配器均含 SKILL.md（打包前置）。"""
+    """仓库真源八适配器均含 SKILL.md（打包前置）。"""
     for host in ("hermes", "dsh", "doubao", "mimo", "workbuddy", "zcode", "codex"):
         assert (ROOT / "adapters" / host / "SKILL.md").is_file(), host
