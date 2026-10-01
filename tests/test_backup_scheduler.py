@@ -235,3 +235,81 @@ def test_scheduled_and_manual_same_relative_dir(backup_env, tmp_path, monkeypatc
 
     assert Path(result["path"]).parent == manual_dir
     assert manual_dir == user_root / "shared" / "backups"
+
+
+# ---------- 服务启动接线（lifespan，T-209） ----------
+# 修复前：backup_scheduler 唯一拉起点在 POST /v1/admin/backup（routes_backup.py），
+# 容器重启后若无人调备份接口，调度线程永不创建 → 每日 04:00 备份静默失效
+# （与 B117 修 Dream 前同款隐患，观察项 G-7 同源）。修复：接入 app.py lifespan
+# 生产模式——启动即拉起、关停即停止，全程无需触碰任何备份 API。
+
+_ADMIN_KEY = "test-admin-key"
+_AGENT_KEY = "test-agent-key"
+
+
+@pytest.fixture
+def app_env(tmp_path, monkeypatch):
+    """T-209 接线测试：完整配置（load_config 基底）+ 全落点隔离到 tmp。"""
+    from sgme import config as sgme_config
+    from sgme.data import db as db_mod
+    from sgme.data import memory_dao
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    monkeypatch.setattr(sgme_config, "RAW_DIR", raw)
+
+    cfg = sgme_config.load_config()
+    cfg["paths"]["data_dir"] = str(tmp_path / "data")
+    cfg["backup"]["dir"] = str(tmp_path / "backups")
+
+    mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
+    memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
+    yield cfg, mem_conn, session_conn, wiki_conn
+    for c in (mem_conn, session_conn, wiki_conn):
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def _make_app(cfg, conns, tmp_path, *, enabled: bool):
+    """构造生产模式（start_background_tasks=True）的 app（T-209）。"""
+    from sgme.server.app import create_app
+
+    mem_conn, session_conn, wiki_conn = conns
+    cfg["backup"]["enabled"] = enabled
+    return create_app(
+        cfg=cfg,
+        mem_conn=mem_conn,
+        session_conn=session_conn,
+        wiki_conn=wiki_conn,
+        data_dir=tmp_path / "data",
+        admin_key=_ADMIN_KEY,
+        agent_key=_AGENT_KEY,
+        agent_store_path=tmp_path / "agent_keys.json",
+        start_background_tasks=True,
+    )
+
+
+def test_lifespan_starts_backup_scheduler_without_api_call(app_env, tmp_path):
+    """T-209 核心验收：生产模式启动即拉起备份定时器（无需触碰任何备份 API）；关停后停止。"""
+    from fastapi.testclient import TestClient
+
+    assert bsch._scheduler_thread is None, "前置：不应有残留备份调度线程"
+    cfg, mem_conn, session_conn, wiki_conn = app_env
+    app = _make_app(cfg, (mem_conn, session_conn, wiki_conn), tmp_path, enabled=True)
+    with TestClient(app):
+        assert bsch._scheduler_thread is not None
+        assert bsch._scheduler_thread.is_alive()
+    # lifespan 关停 → stop_scheduler 生效（join 后置 None 或线程已退出）
+    assert bsch._scheduler_thread is None or not bsch._scheduler_thread.is_alive()
+
+
+def test_lifespan_skips_backup_scheduler_when_disabled(app_env, tmp_path):
+    """backup.enabled=false → 服务启动不拉起备份定时器（门控对齐 batch_scan）。"""
+    from fastapi.testclient import TestClient
+
+    cfg, mem_conn, session_conn, wiki_conn = app_env
+    app = _make_app(cfg, (mem_conn, session_conn, wiki_conn), tmp_path, enabled=False)
+    with TestClient(app):
+        assert bsch._scheduler_thread is None

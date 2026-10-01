@@ -679,6 +679,27 @@ def _start_batch_scan_scheduler(app) -> None:
     )
 
 
+def _start_backup_scheduler(app) -> None:
+    """启动每日自动备份定时器（T-209；backup.enabled=true 时）。
+
+    线程模式（engine/backup_scheduler.py，与 Dream/batch_scan 同构）而非 asyncio：
+    daemon 线程 + 幂等 ensure_scheduler，开关经 /v1/admin/config 可配。
+    enabled=false 不启动（运行中改 false 则到点跳过执行）。
+    此前唯一拉起点在 POST /v1/admin/backup——容器重启后若无人调备份接口，
+    调度线程永不创建、每日 04:00 备份静默失效（B117 修 Dream / 观察项 G-7 同源）。
+    """
+    from sgme.engine import backup_scheduler as backup_sched_mod
+
+    backup_cfg = app.state.cfg.get("backup", {}) or {}
+    if not backup_cfg.get("enabled", True):
+        logger.info("每日自动备份未启用（backup.enabled=false）")
+        return
+    backup_sched_mod.ensure_scheduler(
+        app.state.cfg,
+        data_dir=getattr(app.state, "data_dir", None),
+    )
+
+
 # ---------- 应用工厂 ----------
 
 def _start_raw_fts_background_rebuild(app) -> None:
@@ -901,6 +922,14 @@ def create_app(
                 dream.ensure_scheduler(cfg, data_dir=d)
             except Exception as e:
                 print(f"[SGME dream] 夜间整理定时器启动失败（不影响启动）: {e}")
+            # T-209（2026-10-01）：每日自动备份定时器接入 lifespan。此前唯一拉起点
+            # 在 POST /v1/admin/backup（routes_backup.py），容器重启后无人调备份接口
+            # 则调度线程永不创建、每日 04:00 备份静默失效（B117 修 Dream / 观察项
+            # G-7 同源）。现与生产其余 scheduler 同款接入启动；失败不阻断启动。
+            try:
+                _start_backup_scheduler(app)
+            except Exception as e:
+                print(f"[SGME backup] 每日自动备份定时器启动失败（不影响启动）: {e}")
             # T-112：skills.db 首次同步 + 向量后台预热（daemon 线程，失败不阻断启动）。
             # 结构化同步快（403 条约 1-3 秒）；向量首次全量约 13 分钟（Ollama bge-m3
             # 每批 10 条约 19 秒），故只补一小批后交由循环预热逐步补齐——期间
@@ -922,6 +951,12 @@ def create_app(
         try:
             from sgme.engine import persona_monthly
             persona_monthly.stop_scheduler(timeout=2.0)
+        except Exception:
+            pass
+        # 每日自动备份定时器线程（daemon）：置位 stop 并 join（幂等，未启动无副作用）
+        try:
+            from sgme.engine import backup_scheduler as backup_sched_mod
+            backup_sched_mod.stop_scheduler(timeout=2.0)
         except Exception:
             pass
         if own_conns:
