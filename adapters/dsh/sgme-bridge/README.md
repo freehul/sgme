@@ -21,15 +21,13 @@
 
 ## 前置条件
 
-> ⚠️ **兼容性（DSH RC 支持矩阵，2026-08-20 三端实证）**：
+> ⚠️ **兼容性（DSH RC 支持矩阵，2026-10-04 实测）**：
 >
 > | DSH 版本 | 验证状态 |
 > |---|---|
-> | `0.1.0-rc.6` | ✅ typecheck + 136 测试通过（开发基线） |
-> | `0.1.0-rc.7` | ✅ 同上（rc.7 环境实测） |
-> | `0.1.0-rc.8` | ✅ 同上（rc.8 环境实测，当前本机运行版） |
+> | `0.2.0-rc.2` | ✅ typecheck + 228 测试通过（开发基线，当前本机运行版） |
 >
-> peer 声明 `^0.1.0-rc.6` 覆盖 rc.6 → <0.2.0 全部版本；DSH 处于 RC 快速迭代期，**新 RC 发布后先跑一遍 rc-N 兼容验证再升级本插件**（方法见发布流程文档「RC 兼容验证」一节），验证通过前不承诺新 RC 兼容。
+> peer 声明 `^0.2.0-rc.2` 覆盖 rc.2 → <0.3.0 全部版本；DSH 处于 RC 快速迭代期，**新 RC 发布后先跑一遍 rc-N 兼容验证再升级本插件**（方法见发布流程文档「RC 兼容验证」一节），验证通过前不承诺新 RC 兼容。0.1.0-rc.6 ~ rc.8 的旧版支持见 dsh-sgme 0.5.x。
 
 > ⚠️ **本插件依赖 SGME 本体（Python 服务 :9910），没有它插件是空壳**——先装本体，再装插件。两种路径任选：
 
@@ -82,7 +80,7 @@ dsh plugin --profile <你的profile> add dsh-sgme
 |---|---|---|
 | `/sgme status` 显示不可达 | SGME 本体未启动或地址不对 | 按「前置条件」装好本体，确认 `curl /v1/health` 返回 200；本地部署设 `SGME_BASE_URL=http://127.0.0.1:9910` |
 | 401 / key 无效 | agent key 未注册或过期 | 运行 `adapters/dsh/install.py` 重新注册 |
-| 插件加载报版本不兼容 | dsh 版本与插件锁定版本不符 | 本插件面向 dsh `0.1.0-rc.6`，升级 dsh 前先确认兼容 |
+| 插件加载报版本不兼容 | dsh 版本与插件锁定版本不符 | 本插件面向 dsh `0.2.0-rc.2`，升级 dsh 前先确认兼容 |
 | 注入/检索超时或异常走外网 | 代理劫持 localhost | 插件 fetch 显式禁用代理；检查系统代理是否拦截 127.0.0.1 |
 | 日志去哪看 | — | 插件日志在 dsh stderr；SGME 日志在 `logs/`（本机）或 `docker logs sgme`（容器） |
 
@@ -104,10 +102,11 @@ syncOnTurnEnd: true
 
 ## 用法
 
-接入后，DSH 自动拥有 39 个工具（v0.5.0 起与 SGME 1.2.2 能力对齐）：
+接入后，DSH 自动拥有 40 个工具（v0.6.0 起与 SGME 1.7.6 能力面对齐，适配器平级对账零漂移）：
 
-**检索与知识库（6）**
+**检索与知识库（7）**
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
+- `conversation_search(query, limit)` — 检索 L0 原始会话正文（FTS 原文层），与 memory_search 互补（v0.6.0 起）；
 - `wiki_search(query, limit)` — 查提炼后的场景知识（FTS5 BM25 + 中文分词）；
 - `wiki_pages(category, limit)` — 按 category 列知识库手册目录（如 skill/sgme），渐进式披露 L2 索引层（W5）；
 - `wiki_page(page_id)` — 按 page_id 拉取知识库手册全文（技能手册/踩坑记录），索引 skill 引导的加载通道（W5）；

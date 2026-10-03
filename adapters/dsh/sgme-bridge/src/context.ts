@@ -15,6 +15,18 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SgmeClient, InjectResponse, SearchResult } from './sgme-client.js'
 import type { SgmeEvent, SgmeEventSubscriber } from './events.js'
 
+/**
+ * 0.2.0 起 dsh-llm 的 MessageSourceMap 为 merge-extensible sum type
+ * （每个生产者声明自己的 kind，不再有共享的 catch-all "plugin" 值；声明手法
+ * 对齐官方 dsh-tools/dsh-user-approval 等内部包的 module augmentation）。
+ * 本插件在此声明自己的消息来源 kind：dsh-sgme。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'dsh-sgme': { kind: 'dsh-sgme' }
+  }
+}
+
 /** 注入模式（对应 templates/{mode}.yaml）。 */
 export type InjectMode = 'daily' | 'full' | 'coding' | 'work'
 
@@ -59,8 +71,7 @@ export interface ContextInjectionCtx {
   logger: { info: (msg: string) => void; warn: (msg: string) => void }
 }
 
-/** 注入消息源标记（对齐 agent-instructions 的 source.kind=plugin 约定）。 */
-const PLUGIN_NAME = 'dsh-sgme'
+
 
 /** 拼接事件提醒文本（摘要化，2026-08-20 修复）。
  *
@@ -162,7 +173,7 @@ export function registerContextInjection(
       const evText = buildEventNoticeText(unnotified)
       const evMsg = createUserMessage({
         content: [{ type: 'text', text: evText }],
-        source: { kind: 'plugin', plugin: PLUGIN_NAME },
+        source: { kind: 'dsh-sgme' },
       })
       if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
         ctx.logger.info(`[SGME 事件提醒] 注入 ${unnotified.length} 条事件提醒（step ${payload.step}）`)
@@ -263,7 +274,7 @@ export function registerContextInjection(
 
     const desired = createUserMessage({
       content: [{ type: 'text', text: injectText }],
-      source: { kind: 'plugin', plugin: PLUGIN_NAME },
+      source: { kind: 'dsh-sgme' },
     })
 
     // 已存在相同注入则跳过
@@ -362,7 +373,7 @@ export function buildInjectionText(
 /** 提取会话首条用户消息文本（T-88 对话内容驱动 query）。
  *
  * 兼容 dsh 消息结构：content 为字符串或 [{type:'text',text}] 数组；
- * 跳过插件注入消息（source.kind==='plugin'，避免把 SGME 画像当首句）；
+ * 跳过插件注入消息（source.kind==='dsh-sgme'，避免把 SGME 画像当首句）；
  * role 存在时仅接受 user。
  */
 function extractFirstUserText(messages: unknown[]): string | undefined {
@@ -370,7 +381,7 @@ function extractFirstUserText(messages: unknown[]): string | undefined {
     if (!m || typeof m !== 'object') continue
     const msg = m as Record<string, unknown>
     const source = msg.source as Record<string, unknown> | undefined
-    if (source?.kind === 'plugin') continue
+    if (source?.kind === 'dsh-sgme') continue
     const role = msg.role
     if (role !== undefined && role !== 'user') continue
     const text = extractMessageText(msg.content)

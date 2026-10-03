@@ -91,10 +91,9 @@ describe('registerContextInjection (v2 pre-step middleware)', () => {
     const messages = (result as { messages: any[] }).messages
     // 注入后比基线多 1 条（画像消息）
     expect(messages.length).toBe(2)
-    // 画像消息是 user 角色、plugin source（claimed 为空 => 插在最前）
+    // 画像消息是 user 角色、dsh-sgme source（claimed 为空 => 插在最前）
     const injected = messages[0]
-    expect(injected.source.kind).toBe('plugin')
-    expect(injected.source.plugin).toBe('dsh-sgme')
+    expect(injected.source.kind).toBe('dsh-sgme')
     expect(injected.content[0].text).toContain('SGME 用户画像')
   })
 
@@ -162,7 +161,7 @@ describe('registerContextInjection (v2 pre-step middleware)', () => {
 
     expect(result.messages.length).toBe(3)
     // 注入消息在首位（前缀优化：稳定画像靠前）
-    expect(result.messages[0].source.kind).toBe('plugin')
+    expect(result.messages[0].source.kind).toBe('dsh-sgme')
     expect(result.messages[1].id).toBe('a')
     expect(result.messages[2].id).toBe('b')
   })
@@ -187,7 +186,7 @@ describe('registerContextInjection (v2 pre-step middleware)', () => {
     const client = makeClient()
     registerContextInjection(ctx, client, { injectMode: 'daily', injectMaxTokens: 800, searchLimit: 5 })
     const handler = listeners.get('agent/pre-step')!
-    // 基线里已有一条 plugin/dsh-sgme 消息（内容与 buildInjectionText 输出一致）
+    // 基线里已有一条 dsh-sgme source 消息（内容与 buildInjectionText 输出一致）
     const baselineMsg = {
       id: 'sgme-1',
       role: 'user',
@@ -195,7 +194,7 @@ describe('registerContextInjection (v2 pre-step middleware)', () => {
         type: 'text',
         text: '--- SGME 用户画像 ---\n[identity]\n- 用户名：张三\n（以上为 SGME 注入的画像与记忆，可直接引用，不必重复询问用户）',
       }],
-      source: { kind: 'plugin', plugin: 'dsh-sgme' },
+      source: { kind: 'dsh-sgme' },
     }
     const next = vi.fn(async () => makeDecision([baselineMsg]))
     const result = await handler(makePayload(1), next) as { messages: any[] }
@@ -227,7 +226,7 @@ describe('registerContextInjection (v2 pre-step middleware)', () => {
     const r2 = await handler(makePayload(1), next) as { messages: any[] }
     expect(client.inject).toHaveBeenCalledTimes(2)
     expect(r2.messages.length).toBe(2)
-    expect(r2.messages[0].source.kind).toBe('plugin')
+    expect(r2.messages[0].source.kind).toBe('dsh-sgme')
   })
 
   it('画像为空时跳过且不置位（可后续重试）', async () => {
@@ -286,7 +285,7 @@ describe('事件提醒注入（2026-08-20 修复）', () => {
     const result = await handler(makePayload(1), next) as { messages: any[] }
 
     // 注入一条摘要提醒（类型+数量，无全文 JSON）
-    const injected = result.messages.find((m) => m.source?.plugin === 'dsh-sgme')
+    const injected = result.messages.find((m) => m.source?.kind === 'dsh-sgme')
     expect(injected).toBeTruthy()
     const text = injected.content[0].text
     expect(text).toContain('关怀信号 1 条')
@@ -359,7 +358,7 @@ describe('registerContextInjection (T-88 对话内容驱动)', () => {
     }))
     // 注入文本含场景块
     const messages = (result as { messages: any[] }).messages
-    const injected = messages.find((m) => m.source?.plugin === 'dsh-sgme')
+    const injected = messages.find((m) => m.source?.kind === 'dsh-sgme')
     expect(injected).toBeTruthy()
     expect(injected.content[0].text).toContain('SGME 相关场景')
     expect(injected.content[0].text).toContain('场景1')
