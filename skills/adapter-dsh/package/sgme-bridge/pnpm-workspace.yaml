@@ -2,7 +2,7 @@ packages:
   - "."
 allowBuilds:
   esbuild: true
-  inotify: set this to true or false
+  inotify: false
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cordis@4.0.4'
   - '@deepseek-ai/cosmokit@1.8.2'
@@ -25,7 +25,3 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-user-approval@0.2.0-rc.2'
   - '@deepseek-ai/dsh-util-values@0.2.0-rc.2'
   - '@deepseek-ai/schemastery@3.18.1'
-onlyBuiltDependencies:
-  - esbuild
-ignoredBuiltDependencies:
-  - inotify
