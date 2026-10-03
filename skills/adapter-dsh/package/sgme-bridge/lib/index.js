@@ -683,7 +683,7 @@ function toL0(messages) {
 	return blocks.join("\n\n") + "\n";
 }
 //#endregion
-//#region node_modules/.pnpm/@deepseek-ai+dsh-typert-pro_0ed6bf01f07b8aa74e2681abf2790db7/node_modules/@deepseek-ai/dsh-typert-protocol/lib/index.js
+//#region node_modules/.pnpm/@deepseek-ai+dsh-typert-protocol@0.2.0-rc.2_@deepseek-ai+cordis@4.0.4/node_modules/@deepseek-ai/dsh-typert-protocol/lib/index.js
 /** The one Remote failure class shared by owners, the Gateway, and consumers. */
 /**
 * One Remote call failure: a real Error carrying its stable code and typed
@@ -843,7 +843,7 @@ function validateName(subject, value) {
 	if (!isTypertRemoteSegment(value)) throw new TypeError(`typert-protocol: ${subject} must contain only RPC endpoint segment characters`);
 }
 //#endregion
-//#region node_modules/.pnpm/@deepseek-ai+dsh-util-value_a1b445b943dd6f2898d88d6b9ffb1320/node_modules/@deepseek-ai/dsh-util-values/lib/index.js
+//#region node_modules/.pnpm/@deepseek-ai+dsh-util-values@0.2.0-rc.2_@deepseek-ai+cordis@4.0.4/node_modules/@deepseek-ai/dsh-util-values/lib/index.js
 /** Duplicate-install-safe JSON and immutable-value helpers. @module @deepseek-ai/dsh-util-values */
 /**
 * Mark an unreachable closed-union branch.
@@ -898,7 +898,7 @@ function deepFreeze(value) {
 	return value;
 }
 //#endregion
-//#region node_modules/.pnpm/@deepseek-ai+dsh-util-crypt_566393aaceb27aff7afe31ca52cb276c/node_modules/@deepseek-ai/dsh-util-crypto/lib/index.js
+//#region node_modules/.pnpm/@deepseek-ai+dsh-util-crypto@0.2.0-rc.2_@deepseek-ai+cordis@4.0.4/node_modules/@deepseek-ai/dsh-util-crypto/lib/index.js
 /**
 * Random v4 UUID, minted from `crypto.getRandomValues`.
 * @returns the UUID string.
@@ -1821,7 +1821,7 @@ defineMethod("transform", [
 	"preserve"
 ], ({ inner }, isInner) => inner.toString(isInner));
 //#endregion
-//#region node_modules/.pnpm/@deepseek-ai+dsh-timeout@0._b8424359025b5f3ee36fc59cc7db98be/node_modules/@deepseek-ai/dsh-timeout/lib/index.js
+//#region node_modules/.pnpm/@deepseek-ai+dsh-timeout@0.2.0-rc.2_@deepseek-ai+cordis@4.0.4/node_modules/@deepseek-ai/dsh-timeout/lib/index.js
 /** Largest delay Node schedules without clamping it to one millisecond. */
 const MAX_TIMER_DELAY_MS = 2147483647;
 //#endregion

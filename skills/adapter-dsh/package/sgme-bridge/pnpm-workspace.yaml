@@ -3,6 +3,9 @@ packages:
 allowBuilds:
   esbuild: true
   inotify: false
+# 拉平平台差异：Windows 默认 60 会把长包名截断出 .pnpm 目录名，与 Linux(120)
+# 构建产物不一致，触发 CI dsh-bundle-freshness 误红（T-248）。
+virtualStoreDirMaxLength: 120
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cordis@4.0.4'
   - '@deepseek-ai/cosmokit@1.8.2'
