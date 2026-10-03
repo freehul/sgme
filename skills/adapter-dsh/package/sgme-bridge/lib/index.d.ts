@@ -1,6 +1,19 @@
 import Schema from "schemastery";
 import { ToolDefinition } from "@deepseek-ai/dsh-tools";
 //#region src/context.d.ts
+/**
+ * 0.2.0 起 dsh-llm 的 MessageSourceMap 为 merge-extensible sum type
+ * （每个生产者声明自己的 kind，不再有共享的 catch-all "plugin" 值；声明手法
+ * 对齐官方 dsh-tools/dsh-user-approval 等内部包的 module augmentation）。
+ * 本插件在此声明自己的消息来源 kind：dsh-sgme。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'dsh-sgme': {
+      kind: 'dsh-sgme';
+    };
+  }
+}
 /** 注入模式（对应 templates/{mode}.yaml）。 */
 type InjectMode = 'daily' | 'full' | 'coding' | 'work';
 //#endregion
