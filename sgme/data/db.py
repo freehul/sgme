@@ -115,7 +115,10 @@ CREATE TABLE IF NOT EXISTS refine_runs (
   total_tokens INTEGER,
   action_counts TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'running',
-  error TEXT);
+  error TEXT,
+  candidate_count INTEGER,       -- L1.5 F2（2026-10-09）：批内候选数（仅批路径承载）
+  candidate_ids_hash TEXT,       -- L1.5 F2：候选 id 集 sha256[:16]（同候选集反查，仅批路径）
+  short_circuit_reason TEXT);    -- L1.5 F2：短路记录原因（仅非批路径独立记录承载）
 CREATE INDEX IF NOT EXISTS idx_refine_runs_stage ON refine_runs(stage, version, started_at);
 CREATE INDEX IF NOT EXISTS idx_refine_runs_file ON refine_runs(file_id, started_at);
 
@@ -169,6 +172,30 @@ CREATE TABLE IF NOT EXISTS memory_stats (
   last_recalled_at TEXT,
   recall_count INTEGER DEFAULT 0,
   last_injected_at TEXT);
+
+-- ============ L1.5 F1：近似查重隔离表（T-167 词法扩展，2026-10-09） ============
+-- 命中近似重复（向量 cos ≥ threshold）的新记忆不落 memories、内容暂存本表；
+-- 人工复核后丢弃（mark_discarded）或旁路补录（near_dup_dao.restore）。
+-- 去重键 UNIQUE(matched_memory_id, content_hash)：同事实跨批反复触发只占一行
+-- （写入侧 ON CONFLICT 只更新分数，见 near_dup_dao.upsert_hit）。
+-- created_at 秒精度（与 refine_dao._now_iso 项目惯例对齐）。
+CREATE TABLE IF NOT EXISTS near_dup_quarantine (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,            -- sha256(content)[:16]（去重键一半）
+  matched_memory_id TEXT NOT NULL,       -- 命中的既有记忆
+  score REAL NOT NULL,
+  source_ref TEXT,
+  dimension_ids TEXT,                    -- json.dumps(ensure_ascii=False)，读取容错返回 []
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK(status IN ('pending','discarded','restored')),
+  restored_memory_id TEXT,               -- 旁路补录后的新记忆 id（追溯）
+  restore_reason TEXT,                   -- 补录理由
+  UNIQUE(matched_memory_id, content_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_quarantine_matched ON near_dup_quarantine(matched_memory_id);
+CREATE INDEX IF NOT EXISTS idx_quarantine_status ON near_dup_quarantine(status);
 """
 
 # session.db 建表 DDL（v0.7 新建，B1）：引擎调度状态库
@@ -473,6 +500,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_mem_status(conn)
     _migrate_mem_occurred_at(conn)
     _migrate_refine_runs_tokens(conn)
+    _migrate_refine_runs_candidate_cols(conn)
     _migrate_mem_idea_columns(conn)
     _migrate_dim_boundaries(conn)
     _migrate_demands_table(conn)
@@ -863,6 +891,24 @@ def _migrate_refine_runs_tokens(conn: sqlite3.Connection) -> None:
     for col in ("prompt_tokens", "completion_tokens", "total_tokens"):
         if col not in cols:
             conn.execute(f"ALTER TABLE refine_runs ADD COLUMN {col} INTEGER")
+    conn.commit()
+
+
+def _migrate_refine_runs_candidate_cols(conn: sqlite3.Connection) -> None:
+    """老库迁移：refine_runs 补候选池留痕三列（L1.5 F2，2026-10-09）。幂等。
+
+    三列语义（v4 §二.4）：``candidate_count`` / ``candidate_ids_hash`` 仅批路径承载；
+    ``short_circuit_reason`` 仅非批路径独立短路记录承载——语义区分不依赖脆弱组合约定。
+    新库走 MEMORY_DDL 建全列，本函数只为老库补列（照 _migrate_refine_runs_tokens 先例：
+    PRAGMA 检查 + 条件 ALTER + commit）。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(refine_runs)").fetchall()]
+    if "candidate_count" not in cols:
+        conn.execute("ALTER TABLE refine_runs ADD COLUMN candidate_count INTEGER")
+    if "candidate_ids_hash" not in cols:
+        conn.execute("ALTER TABLE refine_runs ADD COLUMN candidate_ids_hash TEXT")
+    if "short_circuit_reason" not in cols:
+        conn.execute("ALTER TABLE refine_runs ADD COLUMN short_circuit_reason TEXT")
     conn.commit()
 
 

@@ -302,3 +302,53 @@ def test_archive_copies_prompt_version(mem_conn):
     arch = memory_dao.find_by_superseded_by(mem_conn, new_id)
     assert len(arch) == 1
     assert arch[0]["prompt_version"] == "l1_extraction:v001"
+
+
+# ---------- L1.5 P1 F2（T1.7）：finish 候选留痕三列 ----------
+
+def _finish_and_fetch(mem_conn, **finish_kw):
+    run_id = RefineRunRecorder.start(
+        mem_conn, "f1", "l1_conflict", "v001", None, "lm-studio", "f1",
+    )
+    RefineRunRecorder.finish(
+        mem_conn, run_id, memories_count=0, action_counts={}, status="ok", **finish_kw,
+    )
+    return mem_conn.execute("SELECT * FROM refine_runs WHERE run_id=?", (run_id,)).fetchone()
+
+
+def test_finish_candidate_columns_three_states(mem_conn):
+    """finish 三列三态：缺省 → NULL；candidate_count 显式 0 与 NULL 区分；有值原样落库。"""
+    # 1) 缺省（既有调用形态）：三列均为 NULL
+    row1 = _finish_and_fetch(mem_conn)
+    assert row1["candidate_count"] is None
+    assert row1["candidate_ids_hash"] is None
+    assert row1["short_circuit_reason"] is None
+
+    # 2) candidate_count=0 显式传 → 0（与 NULL 区分）
+    row2 = _finish_and_fetch(mem_conn, candidate_count=0)
+    assert row2["candidate_count"] == 0
+
+    # 3) 批路径形态：candidate_count / candidate_ids_hash 有值，short_circuit_reason 不传 → NULL
+    row3 = _finish_and_fetch(
+        mem_conn, candidate_count=7, candidate_ids_hash="0123456789abcdef",
+    )
+    assert row3["candidate_count"] == 7
+    assert row3["candidate_ids_hash"] == "0123456789abcdef"
+    assert row3["short_circuit_reason"] is None
+
+    # 4) 短路形态：short_circuit_reason 有值（未来 F3 记录形态），候选两列 None
+    row4 = _finish_and_fetch(mem_conn, short_circuit_reason="rule_low_sim")
+    assert row4["short_circuit_reason"] == "rule_low_sim"
+    assert row4["candidate_count"] is None
+    assert row4["candidate_ids_hash"] is None
+
+
+def test_candidate_ids_hash_stable():
+    """F2 候选哈希稳定性：同集两次同值、与顺序无关（排序拼接）、异集异值、定长 16。"""
+    from sgme.engine import l15 as l15_mod
+
+    h1 = l15_mod._candidate_ids_hash(["a", "b"])
+    assert h1 == l15_mod._candidate_ids_hash(["a", "b"])   # 同集两次同值
+    assert h1 == l15_mod._candidate_ids_hash(["b", "a"])   # 顺序无关
+    assert h1 != l15_mod._candidate_ids_hash(["a", "c"])   # 异集异值
+    assert len(h1) == 16

@@ -377,6 +377,14 @@ DEFAULT_L15_CONFIG = {
         "enabled": True,
         "min_weight": 0.6,
     },
+    # F1 近似查重（L1.5 P1）：落库前向量近似判定——命中进隔离表人工复核（不静默丢弃）。
+    # 出厂即保守开启；threshold/gray_zone 为首发保守示值（bigram 标定参照，向量口径
+    # 首标定以 P1 观察期为准）；缺省键回退此组保守值（配置丢失不静默降档）。
+    "near_dup": {
+        "enabled": True,
+        "threshold": 0.92,
+        "gray_zone": 0.85,
+    },
 }
 
 # 提炼调度默认兜底（2026-08-04 新增：文件到达联动 + Batch 兜底扫描）
@@ -897,10 +905,12 @@ def _merge_l1_config(user_cfg: dict | None) -> dict:
 
 
 def _merge_l15_config(user_cfg: dict | None) -> dict:
-    """合并 l15 段默认值与用户配置（候选池向量预筛 T-25；语义边 T-135）。"""
+    """合并 l15 段默认值与用户配置（候选池向量预筛 T-25；语义边 T-135；近似查重 F1）。"""
     base = {
         "prescreen": dict(DEFAULT_L15_CONFIG["prescreen"]),
         "semantic_edges": dict(DEFAULT_L15_CONFIG["semantic_edges"]),
+        # dict() 浅拷贝防可变默认共享（near_dup 内层暂为标量，与 prescreen 同款）
+        "near_dup": dict(DEFAULT_L15_CONFIG["near_dup"]),
     }
     if not isinstance(user_cfg, dict):
         return base
@@ -914,6 +924,11 @@ def _merge_l15_config(user_cfg: dict | None) -> dict:
         for k in ("enabled", "min_weight"):
             if k in se:
                 base["semantic_edges"][k] = se[k]
+    nd = user_cfg.get("near_dup")
+    if isinstance(nd, dict):
+        for k in ("enabled", "threshold", "gray_zone"):
+            if k in nd:
+                base["near_dup"][k] = nd[k]
     return base
 
 

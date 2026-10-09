@@ -16,9 +16,11 @@ TTL 字段按维度默认回填（ttl_days=None 时取维度默认）。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
+import random
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
@@ -30,6 +32,7 @@ from sgme.llm import chain as llm_chain
 from sgme.llm import provider as llm_provider
 from sgme.prompts import BucketCtx, PromptStore
 from sgme.data import memory_dao
+from sgme.data import near_dup_dao
 from sgme.data.search import vector as vector_mod
 
 logger = logging.getLogger("sgme.engine.l15")
@@ -87,7 +90,18 @@ class L15Result:
     error: str | None = None
     prompt_meta: dict | None = None                         # #33：本次 L1.5 提示词版本元信息
     prescreen_skipped: int = 0                              # T-132：本批因 embed 不可达走 skip_conflict 降级的新记忆数（可观测标记）
+    near_dup_quarantined: int = 0                           # L1.5 F1（T1.6）：本批因近似重复被拦截（写隔离表）的新记忆数
+    near_dup_gray: int = 0                                  # L1.5 F1（T1.6）：本批灰区命中数（放行落库 + 聚合计数）
     semantic_edges_written: int = 0                         # T-135：本次落库写入的语义边数（source='l1_conflict'）
+
+
+@dataclass
+class NearDupResult:
+    """F1 近似查重判定结果（落库前全池向量检索 top-1，limit=1）。"""
+    matched_id: str | None   # 命中的既有 memory_id（无命中/放行为 None）
+    score: float             # 向量相似度（0-1，越高越相似）
+    hit: bool                # True=score≥threshold：调用方写隔离表、不落 memories
+    gray: bool = False       # True=灰区 [gray_zone, threshold)：放行落库 + 计数/抽样观测
 
 
 # ---------- prompt 渲染 ----------
@@ -547,6 +561,52 @@ def _backfill_ttl(ttl_days: int | None, dimension_ids: list[str], dimensions: li
     return backfill_ttl(ttl_days, dimension_ids, dimensions, memory_type=memory_type)
 
 
+# ---------- F1 近似查重：配置读取与校验（L1.5 P1，T-167 词法扩展） ----------
+
+#: near_dup 出厂保守值（配置缺失/非法时回退此组；不静默降档）。
+#: threshold=0.92 为首发保守示值——bigram 标定参照，向量口径首标定以 P1 观察期为准；
+#: gray_zone=0.85 为灰区下界（灰区只聚合计数 + 明细抽样，供阈值校准回算）。
+DEFAULT_NEAR_DUP: dict = {
+    "enabled": True,
+    "threshold": 0.92,
+    "gray_zone": 0.85,
+}
+
+
+def _near_dup_cfg(cfg: dict | None) -> dict:
+    """读取并校验 l15.near_dup 配置，返回含 enabled/threshold/gray_zone 的字典。
+
+    缺省键回退出厂保守值（配置丢失不静默降档）；单键类型非法（字符串/布尔等）
+    回退该键出厂值；跨键校验 ``0 <= gray_zone < threshold <= 1``（近似命中阈值
+    必须高于灰区下界，否则分层失效）——非法值 WARNING + 整组回退出厂值。
+    任何读取异常同样回退出厂值（配置问题绝不放行非法值、不阻塞落库主链）。
+    """
+    base = dict(DEFAULT_NEAR_DUP)
+    try:
+        l15_cfg = cfg.get("l15") if isinstance(cfg, dict) else None
+        nd = l15_cfg.get("near_dup") if isinstance(l15_cfg, dict) else None
+        if isinstance(nd, dict):
+            if isinstance(nd.get("enabled"), bool):
+                base["enabled"] = nd["enabled"]
+            for k in ("threshold", "gray_zone"):
+                v = nd.get(k)
+                # bool 是 int 子类，显式排除；仅接受 int/float 数值
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    base[k] = float(v)
+        gz, th = base["gray_zone"], base["threshold"]
+        if not 0.0 <= gz < th <= 1.0:
+            logger.warning(
+                "near_dup 配置非法（gray_zone=%s, threshold=%s；需满足 "
+                "0<=gray_zone<threshold<=1）→ 回退出厂保守值",
+                gz, th,
+            )
+            return dict(DEFAULT_NEAR_DUP)
+        return base
+    except Exception as e:
+        logger.warning("near_dup 配置读取异常 → 回退出厂保守值: %s", e)
+        return dict(DEFAULT_NEAR_DUP)
+
+
 # ---------- 四动作落库 ----------
 
 def _exact_dup_check(mem_conn: sqlite3.Connection, content: str | None) -> str | None:
@@ -564,6 +624,183 @@ def _exact_dup_check(mem_conn: sqlite3.Connection, content: str | None) -> str |
         (content,),
     ).fetchone()
     return row[0] if row else None
+
+
+def _near_dup_check(
+    mem_conn: sqlite3.Connection,
+    content: str | None,
+    cfg: dict,
+    *,
+    precomputed_sim: float | None = None,
+) -> NearDupResult:
+    """F1 近似查重（L1.5 P1，T-167 词法扩展）：落库前全池向量近似检索（limit=1）。
+
+    动机：_exact_dup_check 只拦完全相同 content，换措辞重复漏过率 4.5%
+    （副本库 400 条抽样 18 条）。判定运行于向量（bge-m3）口径，threshold=0.92
+    为首发保守示值（宁少拦不误杀），向量口径首标定以 P1 观察期为准。
+
+    四分支（fail-open，绝不阻塞落库主链）：
+    1. embed 不可达（None/异常）→ 放行 + WARNING ``near_dup embed failed``；
+    2. vector_search 异常 → 放行 + WARNING ``near_dup vector_search failed``；
+    3. 检索空 → 放行（正常）；
+    4. 有结果：score≥threshold → hit=True（调用方写隔离表）；gray_zone≤score<threshold
+       → gray=True（放行落库，计数 + 10% 明细抽样日志）；score<gray_zone → 放行。
+
+    precomputed_sim（F3 复用位，P1 仅预留不接线）：传入值 < gray_zone 时直接放行
+    免二次查询；≥ gray_zone 时正常检索（F1 需要 matched_id 与精确分数）。
+    """
+    nd = _near_dup_cfg(cfg)
+    if nd["enabled"] is False:
+        return NearDupResult(None, 0.0, False)
+
+    # F3 复用位：低相似直接放行（免二次 embed+检索）；高相似继续正常检索
+    if precomputed_sim is not None and precomputed_sim < nd["gray_zone"]:
+        return NearDupResult(None, 0.0, False)
+
+    try:
+        vec = vector_mod.embed(content or "", cfg)
+    except Exception as e:  # embed 内部已有降级链，此处兜底异常形态
+        logger.warning("near_dup embed failed: %s", e)
+        return NearDupResult(None, 0.0, False)
+    if vec is None:
+        logger.warning("near_dup embed failed")
+        return NearDupResult(None, 0.0, False)
+
+    try:
+        rows = vector_mod.vector_search(mem_conn, vec, limit=1)
+    except Exception as e:
+        logger.warning("near_dup vector_search failed: %s", e)
+        return NearDupResult(None, 0.0, False)
+    if not rows:
+        return NearDupResult(None, 0.0, False)
+
+    top = rows[0]
+    mid = top.get("memory_id")
+    score = float(top.get("score", 0.0) or 0.0)
+    if score >= nd["threshold"]:
+        return NearDupResult(mid, score, hit=True)
+    if score >= nd["gray_zone"]:
+        # 灰区：调用方聚合计数；明细 10% 抽样日志（防日志淹没，用于阈值校准回算）
+        if random.random() < 0.1:
+            logger.info(
+                "near_dup 灰区命中（抽样）: score=%s matched_id=%s content=%s",
+                round(score, 4), mid, (content or "")[:80],
+            )
+        return NearDupResult(mid, score, hit=False, gray=True)
+    return NearDupResult(None, 0.0, False)
+
+
+def _quarantine_if_near_dup(
+    mem_conn: sqlite3.Connection,
+    new_mem: dict,
+    cfg: dict,
+    result: L15Result,
+    source_ref: str | None = None,
+) -> bool:
+    """F1 落库前守卫（L1.5 P1，T1.6）：近似重复命中 → 写隔离表 + 调用方 skip。
+
+    返回 True = 调用方 skip 本记忆（不落 memories）；False = 照常落库。
+    - 灰区（gray_zone ≤ score < threshold）：只聚合计数（result.near_dup_gray），放行；
+    - 命中（score ≥ threshold）：计数（result.near_dup_quarantined）+ 内容写隔离表
+      （near_dup_dao.upsert_hit，UNIQUE 去重）；写入异常仅 WARNING（含 content 全文，
+      留档待手工恢复），skip 照旧；
+    - 判定整体 fail-open：判定异常 → WARNING + 放行 False，绝不阻塞落库主链。
+    """
+    content = new_mem.get("content") or ""
+    try:
+        nd = _near_dup_check(mem_conn, content, cfg)
+    except Exception as e:  # 判定异常 → 放行（fail-open，绝不阻塞主链）
+        logger.warning("L1.5 近似查重判定异常，放行（fail-open）: %s | content=%s", e, content)
+        return False
+    if nd.gray:
+        result.near_dup_gray += 1
+        return False
+    if not nd.hit:
+        return False
+    if nd.matched_id is None:  # 防御：hit 不变式（命中必带 matched_id）破坏 → 放行，与 fail-open 一致
+        logger.warning("near_dup 命中缺 matched_id（不变式破坏），放行: score=%s | content=%s", nd.score, content)
+        return False
+    result.near_dup_quarantined += 1
+    try:
+        near_dup_dao.upsert_hit(
+            mem_conn, content, nd.matched_id, nd.score,
+            source_ref=source_ref,
+            dimension_ids=new_mem.get("dimension_ids", new_mem.get("dimensions")),
+        )
+    except Exception as e:
+        logger.warning(
+            "L1.5 隔离表写入失败（skip 照旧，内容留档待手工恢复）: %s | content=%s",
+            e, content,
+        )
+    return True
+
+
+def _record_near_dup_run(
+    mem_conn: sqlite3.Connection,
+    bucket_key: str,
+    result: L15Result,
+    bucket_ctx,
+) -> None:
+    """F1 独立计数记录（L1.5 P1，T1.6）：近似查重拦截/灰区数写一条 refine_run。
+
+    与 LLM 批裁决的 action_counts 分开记录（同型记录范式照 ``_record_prescreen_skip_run``），
+    避免同名混淆、事后可检索；near_dup_quarantined + near_dup_gray > 0 才写
+    （无信号不产噪音记录）。
+    """
+    n, m = result.near_dup_quarantined, result.near_dup_gray
+    if n + m <= 0:
+        return
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    pv = PromptStore().get("l1_conflict", bucket_ctx)
+    run_id = RefineRunRecorder.start(
+        mem_conn, file_id=bucket_key, stage="l1_conflict",
+        version=pv.version, variant=pv.variant,
+        provider="near_dup", bucket_key=bucket_key,
+    )
+    RefineRunRecorder.finish(
+        mem_conn, run_id, memories_count=n + m,
+        action_counts={"near_dup_quarantined": n, "near_dup_gray": m},
+        status="ok", error=None,
+    )
+
+
+# ---------- F2：候选留痕与 empty_pool 记录（L1.5 P1，T1.7） ----------
+
+def _candidate_ids_hash(candidate_ids: list[str]) -> str:
+    """F2 候选集留痕（L1.5 P1，T1.7）：批内候选 memory_id 排序拼接后 sha256[:16]。
+
+    排序保证同一候选集（与批内顺序无关）哈希稳定；写入 refine_runs.candidate_ids_hash，
+    供「同候选集相同但裁决不同」异常批次排查 + 事后从归档反查同候选集批次（v4 §二.5）。
+    """
+    joined = "\x1f".join(sorted(candidate_ids))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_empty_pool_run(
+    mem_conn: sqlite3.Connection,
+    bucket_key: str,
+    stored_n: int,
+    bucket_ctx,
+) -> None:
+    """F2 独立记录（L1.5 P1，T1.7）：全空短路分支执行即写一条 refine_run。
+
+    该路径不调批级 finish（无 LLM 批），承载「查了确实无候选」的零候选事实 +
+    本路径实际 store 条数（stored_n ≥ 0；同型记录范式照 ``_record_prescreen_skip_run``）。
+    与 prescreen/near_dup 同型记录可共存（写入顺序无关）。
+    """
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    pv = PromptStore().get("l1_conflict", bucket_ctx)
+    run_id = RefineRunRecorder.start(
+        mem_conn, file_id=bucket_key, stage="l1_conflict",
+        version=pv.version, variant=pv.variant,
+        provider="empty_pool", bucket_key=bucket_key,
+    )
+    RefineRunRecorder.finish(
+        mem_conn, run_id, memories_count=stored_n,
+        action_counts={"empty_pool_store": stored_n}, status="ok", error=None,
+    )
 
 
 def _store_memory(
@@ -886,6 +1123,7 @@ def resolve_conflicts(
         # T-132：若因预筛降级清空候选，独立记一条 refine_run 标记（否则完全不可见）
         if prescreen_skipped > 0:
             _record_prescreen_skip_run(mem_conn, bucket_key, prescreen_skipped, bucket_ctx)
+        stored_n = 0  # T1.7：本路径实际 store 条数（empty_pool 独立记录承载）
         for i, new_mem in enumerate(new_memories):
             if i in idem_skip:
                 result.skipped.append(i)
@@ -893,9 +1131,17 @@ def resolve_conflicts(
             if _exact_dup_check(mem_conn, new_mem.get("content")):  # T-167 全池查重短路
                 result.skipped.append(i)
                 continue
+            if _quarantine_if_near_dup(mem_conn, new_mem, cfg, result, source_ref):  # L1.5 F1（T1.6）
+                result.skipped.append(i)
+                continue
             new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
             new_mem["memory_id"] = new_id
             result.stored.append(new_id)
+            stored_n += 1
+        # T1.7：全空短路独立记录（无条件写——本分支执行即写，n≥0，承载零候选事实）
+        _record_empty_pool_run(mem_conn, bucket_key, stored_n, bucket_ctx)
+        # T1.6：F1 独立计数记录（拦截/灰区有信号才写；与上条可共存，写入顺序无关）
+        _record_near_dup_run(mem_conn, bucket_key, result, bucket_ctx)
         return result
 
     # 2. 分批（铁律 #7：按上下文预算分批，同一新记忆只进一批）
@@ -985,6 +1231,9 @@ def resolve_conflicts(
             mem_conn, run_id, memories_count=len(batch.new_memories),
             action_counts=action_counts, status=run_status, error=run_error,
             usage=usage,
+            # F2（T1.7）：批路径候选留痕（short_circuit_reason 仅短路记录承载，此处不传）
+            candidate_count=len(batch.candidates),
+            candidate_ids_hash=_candidate_ids_hash([c["memory_id"] for c in batch.candidates]),
         )
         logger.info("L1.5 批完成: version=%s variant=%s provider=%s actions=%s",
                     pv.version, pv.variant, provider_name, action_counts)
@@ -1014,6 +1263,9 @@ def resolve_conflicts(
             if _exact_dup_check(mem_conn, new_mem.get("content")):  # T-167 全池查重短路
                 result.skipped.append(i)
                 continue
+            if _quarantine_if_near_dup(mem_conn, new_mem, cfg, result, source_ref):  # L1.5 F1（T1.6）
+                result.skipped.append(i)
+                continue
             new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
             new_mem["memory_id"] = new_id  # 写回，供 L2 场景关联
             result.stored.append(new_id)
@@ -1033,6 +1285,9 @@ def resolve_conflicts(
                 if _exact_dup_check(mem_conn, new_mem.get("content")):
                     result.skipped.append(i)
                     continue
+                if _quarantine_if_near_dup(mem_conn, new_mem, cfg, result, source_ref):  # L1.5 F1（T1.6）
+                    result.skipped.append(i)
+                    continue
                 new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
@@ -1050,12 +1305,19 @@ def resolve_conflicts(
                 if _exact_dup_check(mem_conn, new_mem.get("content")):
                     result.skipped.append(i)
                     continue
+                if _quarantine_if_near_dup(mem_conn, new_mem, cfg, result, source_ref):  # L1.5 F1（T1.6）
+                    result.skipped.append(i)
+                    continue
                 new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
 
         # T-135：语义边（新记忆落库拿到 memory_id 后写入；skip/无裁决时 new_id 为空 → 0）
         result.semantic_edges_written += _write_semantic_edges(mem_conn, new_mem, decision, cfg)
+
+    # T1.6：F1 独立计数记录（拦截/灰区有信号才写；出口与全空短路分支互斥，
+    # 覆盖 batches 为空的落库段路径）
+    _record_near_dup_run(mem_conn, bucket_key, result, bucket_ctx)
 
     logger.info(
         "L1.5 完成: store=%d skip=%d update=%d merge=%d archived=%d warn=%s",
