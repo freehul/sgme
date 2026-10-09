@@ -1,19 +1,24 @@
-"""L1.5 F1 近似查重（near_dup）测试：配置段（T1.4）+ 判定四分支（T1.5）。
+"""L1.5 F1 近似查重（near_dup）测试：配置段（T1.4）+ 判定四分支（T1.5）+ 接线集成（T1.6）。
 
 L1.5 P1（T-167 词法扩展）：_exact_dup_check 只拦完全相同 content，换措辞重复
 漏过率 4.5%（副本库 400 条抽样 18 条）。F1 在落库前做全池向量近似检索（limit=1）：
 score≥threshold 命中 → 内容进隔离表人工复核（不静默 skip）；灰区 [gray_zone, threshold)
 只聚合计数 + 明细抽样（阈值校准回算用）。全部用例零网络：embed / vector_search 一律 mock。
+T1.6 集成档：resolve_conflicts 4 处落库点（全空短路 / 批 store / update 退化 / merge 退化）
++ near_dup 独立计数记录 + 第五档（隔离表写入异常不阻塞）。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
+import httpx
 import pytest
 
 from sgme import config
-from sgme.data import db as db_mod, memory_dao
+from sgme.data import db as db_mod, memory_dao, near_dup_dao
+from sgme.data.refine_dao import RefineRunRecorder
 from sgme.data.search import vector as vector_mod
 from sgme.engine import l15
 
@@ -263,3 +268,203 @@ def test_near_dup_gray_sample_log(mem_conn, monkeypatch, caplog):
     msg = hits[0]
     assert "0.87" in msg and "mem-gray-2" in msg
     assert content[:80] in msg  # content 截断到前 80 字
+
+
+# ---------- 2. resolve_conflicts 接线（T1.6：4 处落库点 + 独立计数记录） ----------
+
+#: 集成用例配置：关 prescreen（候选走维度召回，零 embed 依赖）+ 出厂 near_dup 三键
+_INTEG_L15_CFG = {
+    "prescreen": None,
+    "near_dup": {"enabled": True, "threshold": 0.92, "gray_zone": 0.85},
+}
+
+
+def _apply_integ_cfg(cfg) -> dict:
+    """隔离集成用例配置（深拷贝一层，避免跨用例共享可变默认）。"""
+    cfg["l15"] = {k: (dict(v) if isinstance(v, dict) else v) for k, v in _INTEG_L15_CFG.items()}
+    return cfg
+
+
+def _new_mem(content: str) -> dict:
+    return {
+        "content": content,
+        "dimension_ids": ["goals"],
+        "memory_type": "persona",
+        "priority": 50,
+        "time_velocity": "static",
+        "source_message_ids": [],
+        "supersedes": [],
+    }
+
+
+def _seed_existing(mem_conn, content: str = "既有维度记忆内容") -> str:
+    """插入一条与新记忆同维度（goals）的旧记忆 → 候选池非空（走批裁决路径）。"""
+    return memory_dao.insert_memory(
+        mem_conn, content=content, memory_type="persona", priority=60,
+        time_velocity="static", ttl_days=None, dimension_ids=["goals"],
+    )
+
+
+def _mock_vs_hit(memory_id: str, score: float):
+    """vector_search mock：返回单条命中（limit=1 语义）。"""
+    return lambda *a, **kw: [
+        {"memory_id": memory_id, "content": "旧记忆", "priority": 60,
+         "updated_at": "2026-01-01T00:00:00Z", "score": score},
+    ]
+
+
+def _decisions_client(decisions: list[dict]) -> httpx.Client:
+    """mock LLM：返回给定裁决 JSON（照 test_l15_idempotent 的 MockTransport 形状）。"""
+    body = json.dumps(decisions)
+
+    def handler(req):
+        return httpx.Response(200, json={"choices": [{"message": {"content": body}}]})
+
+    return httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
+
+
+def _count_content(conn, content: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM memories WHERE TRIM(content)=?", (content,)
+    ).fetchone()["c"]
+
+
+def _runs(mem_conn) -> list[dict]:
+    return RefineRunRecorder.list_by_stage(mem_conn, "l1_conflict")
+
+
+def _near_dup_rows(mem_conn) -> list[dict]:
+    return [r for r in _runs(mem_conn) if r["provider"] == "near_dup"]
+
+
+def test_integration_empty_pool_hit_quarantines(mem_conn, cfg, monkeypatch):
+    """站点①（全空短路分支）：近似命中 → 不落 memories、写隔离表、独立计数记录对账。"""
+    _apply_integ_cfg(cfg)
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-0001", 0.95))
+
+    content = "近似重复的新内容 A"
+    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg, source_ref="F:1")
+
+    assert res.stored == [] and res.skipped == [0]
+    assert res.near_dup_quarantined == 1 and res.near_dup_gray == 0
+    assert _count_content(mem_conn, content) == 0
+    # 隔离表有行（内容 / matched_id / score / source_ref / dimension_ids 全字段）
+    items = near_dup_dao.list_items(mem_conn)
+    assert len(items) == 1
+    it = items[0]
+    assert it["content"] == content
+    assert it["matched_memory_id"] == "mem-old-0001"
+    assert it["score"] == 0.95
+    assert it["source_ref"] == "F:1"
+    assert it["dimension_ids"] == ["goals"]
+    assert it["status"] == "pending"
+    # refine_runs：near_dup 独立记录（action_counts 对账）
+    nd_rows = _near_dup_rows(mem_conn)
+    assert len(nd_rows) == 1
+    assert json.loads(nd_rows[0]["action_counts"]) == {"near_dup_quarantined": 1, "near_dup_gray": 0}
+    assert nd_rows[0]["memories_count"] == 1
+    assert nd_rows[0]["status"] == "ok"
+
+
+def test_integration_batch_store_path_quarantines(mem_conn, cfg, monkeypatch):
+    """站点②（批裁决 store 分支）：命中照拦；批裁决正常记录 + near_dup 独立记录并存。"""
+    _apply_integ_cfg(cfg)
+    old_id = _seed_existing(mem_conn)
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit(old_id, 0.95))
+    client = _decisions_client([
+        {"new_memory_index": 0, "candidate_ids": [old_id], "action": "store"},
+    ])
+
+    content = "批路径命中内容 B"
+    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
+
+    assert res.stored == [] and res.skipped == [0]
+    assert res.near_dup_quarantined == 1
+    assert _count_content(mem_conn, content) == 0
+    assert len(near_dup_dao.list_items(mem_conn)) == 1
+    nd_rows = _near_dup_rows(mem_conn)
+    assert len(nd_rows) == 1
+    assert json.loads(nd_rows[0]["action_counts"]) == {"near_dup_quarantined": 1, "near_dup_gray": 0}
+
+
+def test_integration_update_fallback_quarantines(mem_conn, cfg, monkeypatch):
+    """站点③（update 退化 store，candidate_ids=[]）：命中照拦，无 update 发生。"""
+    _apply_integ_cfg(cfg)
+    _seed_existing(mem_conn)
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-0002", 0.93))
+    client = _decisions_client([
+        {"new_memory_index": 0, "candidate_ids": [], "action": "update", "reason": "退化"},
+    ])
+
+    content = "update 退化命中内容 C"
+    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
+
+    assert res.updated == [] and res.stored == [] and res.skipped == [0]
+    assert res.near_dup_quarantined == 1
+    assert _count_content(mem_conn, content) == 0
+    assert len(near_dup_dao.list_items(mem_conn)) == 1
+    assert len(_near_dup_rows(mem_conn)) == 1
+
+
+def test_integration_merge_fallback_quarantines(mem_conn, cfg, monkeypatch):
+    """站点④（merge 退化 store，无 merged_content）：命中照拦，无 merge 发生。"""
+    _apply_integ_cfg(cfg)
+    _seed_existing(mem_conn)
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-0003", 0.94))
+    client = _decisions_client([
+        {"new_memory_index": 0, "candidate_ids": [], "action": "merge", "reason": "退化"},
+    ])
+
+    content = "merge 退化命中内容 D"
+    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
+
+    assert res.merged == [] and res.stored == [] and res.skipped == [0]
+    assert res.near_dup_quarantined == 1
+    assert _count_content(mem_conn, content) == 0
+    assert len(near_dup_dao.list_items(mem_conn)) == 1
+    assert len(_near_dup_rows(mem_conn)) == 1
+
+
+def test_integration_gray_zone_passes_with_count(mem_conn, cfg, monkeypatch):
+    """灰区：[0.85, 0.92) → 记忆照常 store + near_dup_gray 计数；隔离表无行；记录对账。"""
+    _apply_integ_cfg(cfg)
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-0004", 0.88))
+
+    content = "灰区放行内容 E"
+    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
+
+    assert len(res.stored) == 1 and res.skipped == []
+    assert res.near_dup_gray == 1 and res.near_dup_quarantined == 0
+    assert _count_content(mem_conn, content) == 1
+    assert near_dup_dao.list_items(mem_conn) == []
+    nd_rows = _near_dup_rows(mem_conn)
+    assert len(nd_rows) == 1
+    assert json.loads(nd_rows[0]["action_counts"]) == {"near_dup_quarantined": 0, "near_dup_gray": 1}
+    assert nd_rows[0]["memories_count"] == 1
+
+
+def test_integration_quarantine_write_failure_not_blocking(mem_conn, cfg, monkeypatch, caplog):
+    """第五档：隔离表写入异常 → 主流程不崩、skip 照旧、WARNING 含 content 全文。"""
+    _apply_integ_cfg(cfg)
+    caplog.set_level(logging.WARNING, logger="sgme.engine.l15")
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-0005", 0.95))
+
+    def boom(*a, **kw):
+        raise RuntimeError("隔离表不可写")
+
+    monkeypatch.setattr(near_dup_dao, "upsert_hit", boom)
+
+    content = "隔离表写入失败仍需 skip 的内容 F"
+    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
+
+    assert res.stored == [] and res.skipped == [0]
+    assert res.near_dup_quarantined == 1
+    assert near_dup_dao.list_items(mem_conn) == []
+    warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("隔离表写入失败" in m and content in m for m in warns), warns
