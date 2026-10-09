@@ -184,3 +184,80 @@ def test_up_aborts_on_backup_failure(legacy_env, monkeypatch):
     assert _count(w, "scenes") == 2
     # 空文件未清理（迁移未完成）
     assert (data_dir / "sgme.db").exists()
+
+
+# ---------- L1.5 T1.2：隔离表 DDL + refine_runs 候选留痕三列（2026-10-09） ----------
+
+# 老库 refine_runs 结构（无 candidate_count / candidate_ids_hash / short_circuit_reason 三列）
+LEGACY_REFINE_RUNS_DDL = """
+CREATE TABLE refine_runs (
+    run_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, stage TEXT NOT NULL,
+    version TEXT NOT NULL, variant TEXT, provider TEXT NOT NULL,
+    bucket_key TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
+    memories_count INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER, completion_tokens INTEGER, total_tokens INTEGER,
+    action_counts TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'running',
+    error TEXT);
+CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);
+INSERT INTO schema_versions VALUES (3, 'memory_v3', '2026-09-01T00:00:00Z');
+"""
+
+
+def test_legacy_refine_runs_migration_adds_candidate_cols(tmp_path):
+    """老库（refine_runs 缺三列）→ connect_memory 自动 ALTER 补列（幂等）。"""
+    conn = sqlite3.connect(str(tmp_path / "memory.db"))
+    conn.executescript(LEGACY_REFINE_RUNS_DDL)
+    conn.execute(
+        "INSERT INTO refine_runs (run_id, file_id, stage, version, provider, bucket_key, started_at)"
+        " VALUES ('r1','f1','l1_conflict','v001','lm-studio','f1','2026-09-01T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    upgraded = db_mod.connect_memory(tmp_path)
+    try:
+        cols = [r[1] for r in upgraded.execute("PRAGMA table_info(refine_runs)").fetchall()]
+        assert "candidate_count" in cols
+        assert "candidate_ids_hash" in cols
+        assert "short_circuit_reason" in cols
+        # 老数据行保留，新列为 NULL
+        row = upgraded.execute("SELECT * FROM refine_runs WHERE run_id='r1'").fetchone()
+        assert row["provider"] == "lm-studio"
+        assert row["candidate_count"] is None
+        assert row["candidate_ids_hash"] is None
+        assert row["short_circuit_reason"] is None
+        # 重复迁移（幂等）不报错
+        db_mod._migrate_refine_runs_candidate_cols(upgraded)
+        db_mod._migrate_refine_runs_candidate_cols(upgraded)
+    finally:
+        upgraded.close()
+
+    # 二次连接（老库现已被补列）不报错、列仍在
+    again = db_mod.connect_memory(tmp_path)
+    try:
+        cols2 = [r[1] for r in again.execute("PRAGMA table_info(refine_runs)").fetchall()]
+        assert {"candidate_count", "candidate_ids_hash", "short_circuit_reason"} <= set(cols2)
+    finally:
+        again.close()
+
+
+def test_memory_ddl_contains_l15_objects():
+    """DDL 完整性：隔离表/双索引/refine_runs 三列均在 MEMORY_DDL 原文（新库随启动全量生效）。"""
+    m = db_mod.MEMORY_DDL
+    assert all(c in m for c in (
+        "candidate_count", "candidate_ids_hash", "short_circuit_reason",
+        "near_dup_quarantine", "idx_quarantine_matched", "idx_quarantine_status",
+    ))
+
+
+def test_connect_memory_creates_quarantine_table(tmp_path):
+    """新库连接后隔离表与双索引实际存在（CREATE TABLE IF NOT EXISTS，无需迁移函数）。"""
+    conn = db_mod.connect_memory(tmp_path)
+    try:
+        assert "near_dup_quarantine" in set(db_mod.list_tables(conn))
+        idx = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()}
+        assert {"idx_quarantine_matched", "idx_quarantine_status"} <= idx
+    finally:
+        conn.close()
