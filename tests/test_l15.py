@@ -713,7 +713,7 @@ def test_resolve_conflicts_records_refine_run_and_prompt_version(mem_conn, cfg):
 
 
 def test_resolve_conflicts_short_circuit_writes_prompt_version(mem_conn, cfg):
-    """#33：候选池空短路 store 也透传 prompt_version（无 refine_run，未调 LLM）。"""
+    """#33：候选池空短路 store 也透传 prompt_version（未调 LLM；T1.7 起记 empty_pool 独立记录）。"""
     from sgme.data.refine_dao import RefineRunRecorder
     new_memories = [{
         "content": "全新事实", "dimension_ids": ["identity"],
@@ -723,7 +723,11 @@ def test_resolve_conflicts_short_circuit_writes_prompt_version(mem_conn, cfg):
     assert len(result.stored) == 1
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
     assert mem["prompt_version"] == "l1_extraction:v001"
-    assert RefineRunRecorder.list_by_stage(mem_conn, "l1_conflict") == []
+    # L1.5 P1（T1.7）：空短路路径新增 empty_pool 独立记录（承载零候选事实）；
+    # 该路径仍无 LLM 批裁决 run（未调 LLM），action_counts 为 empty_pool_store
+    runs = RefineRunRecorder.list_by_stage(mem_conn, "l1_conflict")
+    assert [r["provider"] for r in runs] == ["empty_pool"]
+    assert json.loads(runs[0]["action_counts"]) == {"empty_pool_store": 1}
 
 
 def test_parse_l15_output_trailing_text_after_array():

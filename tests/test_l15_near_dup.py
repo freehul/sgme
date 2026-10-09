@@ -365,6 +365,10 @@ def test_integration_empty_pool_hit_quarantines(mem_conn, cfg, monkeypatch):
     assert json.loads(nd_rows[0]["action_counts"]) == {"near_dup_quarantined": 1, "near_dup_gray": 0}
     assert nd_rows[0]["memories_count"] == 1
     assert nd_rows[0]["status"] == "ok"
+    # T1.7：同分支另写 empty_pool 独立记录（stored_n=0），二者共存（写入顺序无关）
+    ep_rows = [r for r in _runs(mem_conn) if r["provider"] == "empty_pool"]
+    assert len(ep_rows) == 1
+    assert json.loads(ep_rows[0]["action_counts"]) == {"empty_pool_store": 0}
 
 
 def test_integration_batch_store_path_quarantines(mem_conn, cfg, monkeypatch):
@@ -387,6 +391,12 @@ def test_integration_batch_store_path_quarantines(mem_conn, cfg, monkeypatch):
     nd_rows = _near_dup_rows(mem_conn)
     assert len(nd_rows) == 1
     assert json.loads(nd_rows[0]["action_counts"]) == {"near_dup_quarantined": 1, "near_dup_gray": 0}
+    # T1.7：批行候选留痕三列——candidate_count / ids_hash 与批候选集一致（reason 不传 → None）
+    batch_rows = [r for r in _runs(mem_conn) if r["candidate_count"] is not None]
+    assert len(batch_rows) == 1
+    assert batch_rows[0]["candidate_count"] == 1
+    assert batch_rows[0]["candidate_ids_hash"] == l15._candidate_ids_hash([old_id])
+    assert batch_rows[0]["short_circuit_reason"] is None
 
 
 def test_integration_update_fallback_quarantines(mem_conn, cfg, monkeypatch):
@@ -468,3 +478,27 @@ def test_integration_quarantine_write_failure_not_blocking(mem_conn, cfg, monkey
     assert near_dup_dao.list_items(mem_conn) == []
     warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("隔离表写入失败" in m and content in m for m in warns), warns
+
+
+# ---------- 3. empty_pool 独立记录（T1.7：全空短路路径承载） ----------
+
+def test_integration_empty_pool_record_written(mem_conn, cfg, monkeypatch):
+    """T1.7：空库 + embed 不可达放行 → 正常 store；empty_pool 记录 action_counts 对账。"""
+    _apply_integ_cfg(cfg)
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)  # 端到端不可达 → F1 fail-open
+    monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: pytest.fail("不应调用"))
+
+    content = "空池直存内容 G"
+    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
+
+    assert len(res.stored) == 1 and res.skipped == []
+    assert res.near_dup_quarantined == 0 and res.near_dup_gray == 0
+    assert _count_content(mem_conn, content) == 1
+    # empty_pool 独立记录（本分支执行即写，承载零候选事实 + 实际 store 数）
+    ep_rows = [r for r in _runs(mem_conn) if r["provider"] == "empty_pool"]
+    assert len(ep_rows) == 1
+    assert json.loads(ep_rows[0]["action_counts"]) == {"empty_pool_store": 1}
+    assert ep_rows[0]["memories_count"] == 1
+    assert ep_rows[0]["status"] == "ok"
+    # 无近似信号 → 不写 near_dup 记录（两记录独立，互不依赖）
+    assert _near_dup_rows(mem_conn) == []

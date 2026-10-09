@@ -16,6 +16,7 @@ TTL 字段按维度默认回填（ttl_days=None 时取维度默认）。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -764,6 +765,44 @@ def _record_near_dup_run(
     )
 
 
+# ---------- F2：候选留痕与 empty_pool 记录（L1.5 P1，T1.7） ----------
+
+def _candidate_ids_hash(candidate_ids: list[str]) -> str:
+    """F2 候选集留痕（L1.5 P1，T1.7）：批内候选 memory_id 排序拼接后 sha256[:16]。
+
+    排序保证同一候选集（与批内顺序无关）哈希稳定；写入 refine_runs.candidate_ids_hash，
+    供「同候选集相同但裁决不同」异常批次排查 + 事后从归档反查同候选集批次（v4 §二.5）。
+    """
+    joined = "\x1f".join(sorted(candidate_ids))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def _record_empty_pool_run(
+    mem_conn: sqlite3.Connection,
+    bucket_key: str,
+    stored_n: int,
+    bucket_ctx,
+) -> None:
+    """F2 独立记录（L1.5 P1，T1.7）：全空短路分支执行即写一条 refine_run。
+
+    该路径不调批级 finish（无 LLM 批），承载「查了确实无候选」的零候选事实 +
+    本路径实际 store 条数（stored_n ≥ 0；同型记录范式照 ``_record_prescreen_skip_run``）。
+    与 prescreen/near_dup 同型记录可共存（写入顺序无关）。
+    """
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    pv = PromptStore().get("l1_conflict", bucket_ctx)
+    run_id = RefineRunRecorder.start(
+        mem_conn, file_id=bucket_key, stage="l1_conflict",
+        version=pv.version, variant=pv.variant,
+        provider="empty_pool", bucket_key=bucket_key,
+    )
+    RefineRunRecorder.finish(
+        mem_conn, run_id, memories_count=stored_n,
+        action_counts={"empty_pool_store": stored_n}, status="ok", error=None,
+    )
+
+
 def _store_memory(
     mem_conn: sqlite3.Connection,
     new_mem: dict,
@@ -1084,6 +1123,7 @@ def resolve_conflicts(
         # T-132：若因预筛降级清空候选，独立记一条 refine_run 标记（否则完全不可见）
         if prescreen_skipped > 0:
             _record_prescreen_skip_run(mem_conn, bucket_key, prescreen_skipped, bucket_ctx)
+        stored_n = 0  # T1.7：本路径实际 store 条数（empty_pool 独立记录承载）
         for i, new_mem in enumerate(new_memories):
             if i in idem_skip:
                 result.skipped.append(i)
@@ -1097,7 +1137,10 @@ def resolve_conflicts(
             new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
             new_mem["memory_id"] = new_id
             result.stored.append(new_id)
-        # T1.6：F1 独立计数记录（拦截/灰区有信号才写；与本分支其它同型记录共存）
+            stored_n += 1
+        # T1.7：全空短路独立记录（无条件写——本分支执行即写，n≥0，承载零候选事实）
+        _record_empty_pool_run(mem_conn, bucket_key, stored_n, bucket_ctx)
+        # T1.6：F1 独立计数记录（拦截/灰区有信号才写；与上条可共存，写入顺序无关）
         _record_near_dup_run(mem_conn, bucket_key, result, bucket_ctx)
         return result
 
@@ -1188,6 +1231,9 @@ def resolve_conflicts(
             mem_conn, run_id, memories_count=len(batch.new_memories),
             action_counts=action_counts, status=run_status, error=run_error,
             usage=usage,
+            # F2（T1.7）：批路径候选留痕（short_circuit_reason 仅短路记录承载，此处不传）
+            candidate_count=len(batch.candidates),
+            candidate_ids_hash=_candidate_ids_hash([c["memory_id"] for c in batch.candidates]),
         )
         logger.info("L1.5 批完成: version=%s variant=%s provider=%s actions=%s",
                     pv.version, pv.variant, provider_name, action_counts)

@@ -64,22 +64,33 @@ class RefineRunRecorder:
         status: str,
         error: str | None = None,
         usage: dict | None = None,
+        candidate_count: int | None = None,
+        candidate_ids_hash: str | None = None,
+        short_circuit_reason: str | None = None,
     ) -> None:
         """结束批次：写计数 / action 分布 / 状态（ok|error）。
 
         usage（v0.5）：LLM 响应 usage dict {prompt_tokens, completion_tokens, total_tokens, ...}。
+
+        L1.5 P1 F2（T1.7）候选留痕三列，None → NULL：
+        - ``candidate_count`` / ``candidate_ids_hash`` **仅批路径承载**（本批候选数 +
+          候选 memory_id 集排序拼接哈希 sha256[:16]，供「同候选集反查批次」）；
+        - ``short_circuit_reason`` **仅非批路径独立短路记录承载**（如 rule_low_sim）；
+          语义区分不依赖脆弱组合约定（v4 §二.4）。
         """
         u = usage or {}
         conn.execute(
             """
             UPDATE refine_runs
             SET finished_at=?, memories_count=?, action_counts=?, status=?, error=?,
-                prompt_tokens=?, completion_tokens=?, total_tokens=?
+                prompt_tokens=?, completion_tokens=?, total_tokens=?,
+                candidate_count=?, candidate_ids_hash=?, short_circuit_reason=?
             WHERE run_id=?
             """,
             (_now_iso(), int(memories_count), json.dumps(action_counts or {}, ensure_ascii=False),
              status, error,
              u.get("prompt_tokens"), u.get("completion_tokens"), u.get("total_tokens"),
+             candidate_count, candidate_ids_hash, short_circuit_reason,
              run_id),
         )
         conn.commit()
