@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import random
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
@@ -88,6 +89,15 @@ class L15Result:
     prompt_meta: dict | None = None                         # #33：本次 L1.5 提示词版本元信息
     prescreen_skipped: int = 0                              # T-132：本批因 embed 不可达走 skip_conflict 降级的新记忆数（可观测标记）
     semantic_edges_written: int = 0                         # T-135：本次落库写入的语义边数（source='l1_conflict'）
+
+
+@dataclass
+class NearDupResult:
+    """F1 近似查重判定结果（落库前全池向量检索 top-1，limit=1）。"""
+    matched_id: str | None   # 命中的既有 memory_id（无命中/放行为 None）
+    score: float             # 向量相似度（0-1，越高越相似）
+    hit: bool                # True=score≥threshold：调用方写隔离表、不落 memories
+    gray: bool = False       # True=灰区 [gray_zone, threshold)：放行落库 + 计数/抽样观测
 
 
 # ---------- prompt 渲染 ----------
@@ -610,6 +620,70 @@ def _exact_dup_check(mem_conn: sqlite3.Connection, content: str | None) -> str |
         (content,),
     ).fetchone()
     return row[0] if row else None
+
+
+def _near_dup_check(
+    mem_conn: sqlite3.Connection,
+    content: str | None,
+    cfg: dict,
+    *,
+    precomputed_sim: float | None = None,
+) -> NearDupResult:
+    """F1 近似查重（L1.5 P1，T-167 词法扩展）：落库前全池向量近似检索（limit=1）。
+
+    动机：_exact_dup_check 只拦完全相同 content，换措辞重复漏过率 4.5%
+    （副本库 400 条抽样 18 条）。判定运行于向量（bge-m3）口径，threshold=0.92
+    为首发保守示值（宁少拦不误杀），向量口径首标定以 P1 观察期为准。
+
+    四分支（fail-open，绝不阻塞落库主链）：
+    1. embed 不可达（None/异常）→ 放行 + WARNING ``near_dup embed failed``；
+    2. vector_search 异常 → 放行 + WARNING ``near_dup vector_search failed``；
+    3. 检索空 → 放行（正常）；
+    4. 有结果：score≥threshold → hit=True（调用方写隔离表）；gray_zone≤score<threshold
+       → gray=True（放行落库，计数 + 10% 明细抽样日志）；score<gray_zone → 放行。
+
+    precomputed_sim（F3 复用位，P1 仅预留不接线）：传入值 < gray_zone 时直接放行
+    免二次查询；≥ gray_zone 时正常检索（F1 需要 matched_id 与精确分数）。
+    """
+    nd = _near_dup_cfg(cfg)
+    if nd["enabled"] is False:
+        return NearDupResult(None, 0.0, False)
+
+    # F3 复用位：低相似直接放行（免二次 embed+检索）；高相似继续正常检索
+    if precomputed_sim is not None and precomputed_sim < nd["gray_zone"]:
+        return NearDupResult(None, 0.0, False)
+
+    try:
+        vec = vector_mod.embed(content or "", cfg)
+    except Exception as e:  # embed 内部已有降级链，此处兜底异常形态
+        logger.warning("near_dup embed failed: %s", e)
+        return NearDupResult(None, 0.0, False)
+    if vec is None:
+        logger.warning("near_dup embed failed")
+        return NearDupResult(None, 0.0, False)
+
+    try:
+        rows = vector_mod.vector_search(mem_conn, vec, limit=1)
+    except Exception as e:
+        logger.warning("near_dup vector_search failed: %s", e)
+        return NearDupResult(None, 0.0, False)
+    if not rows:
+        return NearDupResult(None, 0.0, False)
+
+    top = rows[0]
+    mid = top.get("memory_id")
+    score = float(top.get("score", 0.0) or 0.0)
+    if score >= nd["threshold"]:
+        return NearDupResult(mid, score, hit=True)
+    if score >= nd["gray_zone"]:
+        # 灰区：调用方聚合计数；明细 10% 抽样日志（防日志淹没，用于阈值校准回算）
+        if random.random() < 0.1:
+            logger.info(
+                "near_dup 灰区命中（抽样）: score=%s matched_id=%s content=%s",
+                round(score, 4), mid, (content or "")[:80],
+            )
+        return NearDupResult(mid, score, hit=False, gray=True)
+    return NearDupResult(None, 0.0, False)
 
 
 def _store_memory(
