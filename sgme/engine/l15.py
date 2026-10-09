@@ -547,6 +547,52 @@ def _backfill_ttl(ttl_days: int | None, dimension_ids: list[str], dimensions: li
     return backfill_ttl(ttl_days, dimension_ids, dimensions, memory_type=memory_type)
 
 
+# ---------- F1 近似查重：配置读取与校验（L1.5 P1，T-167 词法扩展） ----------
+
+#: near_dup 出厂保守值（配置缺失/非法时回退此组；不静默降档）。
+#: threshold=0.92 为首发保守示值——bigram 标定参照，向量口径首标定以 P1 观察期为准；
+#: gray_zone=0.85 为灰区下界（灰区只聚合计数 + 明细抽样，供阈值校准回算）。
+DEFAULT_NEAR_DUP: dict = {
+    "enabled": True,
+    "threshold": 0.92,
+    "gray_zone": 0.85,
+}
+
+
+def _near_dup_cfg(cfg: dict | None) -> dict:
+    """读取并校验 l15.near_dup 配置，返回含 enabled/threshold/gray_zone 的字典。
+
+    缺省键回退出厂保守值（配置丢失不静默降档）；单键类型非法（字符串/布尔等）
+    回退该键出厂值；跨键校验 ``0 <= gray_zone < threshold <= 1``（近似命中阈值
+    必须高于灰区下界，否则分层失效）——非法值 WARNING + 整组回退出厂值。
+    任何读取异常同样回退出厂值（配置问题绝不放行非法值、不阻塞落库主链）。
+    """
+    base = dict(DEFAULT_NEAR_DUP)
+    try:
+        l15_cfg = cfg.get("l15") if isinstance(cfg, dict) else None
+        nd = l15_cfg.get("near_dup") if isinstance(l15_cfg, dict) else None
+        if isinstance(nd, dict):
+            if isinstance(nd.get("enabled"), bool):
+                base["enabled"] = nd["enabled"]
+            for k in ("threshold", "gray_zone"):
+                v = nd.get(k)
+                # bool 是 int 子类，显式排除；仅接受 int/float 数值
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    base[k] = float(v)
+        gz, th = base["gray_zone"], base["threshold"]
+        if not 0.0 <= gz < th <= 1.0:
+            logger.warning(
+                "near_dup 配置非法（gray_zone=%s, threshold=%s；需满足 "
+                "0<=gray_zone<threshold<=1）→ 回退出厂保守值",
+                gz, th,
+            )
+            return dict(DEFAULT_NEAR_DUP)
+        return base
+    except Exception as e:
+        logger.warning("near_dup 配置读取异常 → 回退出厂保守值: %s", e)
+        return dict(DEFAULT_NEAR_DUP)
+
+
 # ---------- 四动作落库 ----------
 
 def _exact_dup_check(mem_conn: sqlite3.Connection, content: str | None) -> str | None:

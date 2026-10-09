@@ -12,6 +12,11 @@ l15:
     vector_top_k: 50
     dimension_top_n: 50
     fallback: skip_conflict   # embed 不可达 → 跳过冲突检测直接 store（防全量召回烧钱）
+  # F1 近似查重（L1.5 P1）：落库前向量近似判定；命中进隔离表人工复核（不静默丢弃）
+  near_dup:
+    enabled: true
+    threshold: 0.92     # 首发保守示值（bigram 标定参照；向量口径首标定=观察期）
+    gray_zone: 0.85
 refine:
   refine_on_append: false
   # 用户指定专用提炼 LLM（2026-08-18，T-53 免费托底）：
