@@ -148,6 +148,18 @@ def test_parse_l15_output_bad_json_raises():
         l15.parse_l15_output("not json")
 
 
+def test_parse_l15_output_unescaped_quotes_raises_l15error():
+    """T1.10 回归：模型输出含未转义引号（实测形态）→ 收敛为 L15Error（进重试链），
+    不得逃逸原始 JSONDecodeError。"""
+    bad = (
+        '[{"new_memory_index": 0, "candidate_ids": [], "action": "store", '
+        '"merged_content": null, "reason": "新记忆内容为占位符"新记忆内容"，'
+        '候选记忆均为"旧记忆X内容"占位符，无法判定共享主体", "relations": []}]'
+    )
+    with pytest.raises(l15.L15Error):
+        l15.parse_l15_output(bad)
+
+
 # ---------- 候选池 ----------
 
 def test_candidate_pool_or_semantics(mem_conn):

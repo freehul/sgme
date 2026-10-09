@@ -200,7 +200,13 @@ def parse_l15_output(text: str) -> list[ConflictDecision]:
         end = text.rfind("]")
         if start == -1 or end == -1:
             raise L15Error(f"JSON 解析失败: {text[:200]}")
-        data = json.loads(text[start:end + 1])
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError as e:
+            # T1.10：兜底切片仍非法（如模型输出内含未转义引号——实测形态）→ 统一收敛为
+            # L15Error：否则原始 JSONDecodeError 会逃逸 resolve_conflicts 的 L15Error
+            # 重试链（T-53），直达 pipeline 降级直存（绕过重试与落库期 F1 守卫）。
+            raise L15Error(f"JSON 解析失败（兜底切片仍非法）: {e}: {text[:200]}") from e
     if not isinstance(data, list):
         raise L15Error(f"期望 JSON 数组，得到 {type(data).__name__}")
     result = []
