@@ -414,9 +414,26 @@ def test_prescreen_normal_path_no_skip_marker(mem_conn, cfg, monkeypatch):
         ],
     )
 
+    # T1.10：mock LLM 链——本用例走批裁决路径，不得依赖真实模型输出（零网络）
+    called = {"llm": False}
+
+    def fake_call(fallback_cfg, prompt, chain_name, client=None):
+        called["llm"] = True
+        n = prompt.count("[新记忆#")
+        body = json.dumps([
+            {"new_memory_index": i, "candidate_ids": [], "action": "store"}
+            for i in range(n)
+        ])
+        return body, "mock", {}
+
+    import sgme.llm.chain as llm_chain
+    monkeypatch.setattr(llm_chain, "call_with_fallback", fake_call)
+
     cfg["l15"] = {"prescreen": _ps_cfg()}
     result = l15.resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
 
+    assert result.error is None
+    assert called["llm"], "对照组应走批裁决路径（mock 记录调用）"
     assert result.prescreen_skipped == 0
     rows = mem_conn.execute(
         "SELECT action_counts FROM refine_runs WHERE stage='l1_conflict'"
