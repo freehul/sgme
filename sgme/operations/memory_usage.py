@@ -27,6 +27,7 @@ import logging
 import sqlite3
 
 from sgme.data import memory_usage_dao
+from sgme.operations.errors import OperationResult
 
 logger = logging.getLogger("sgme.operations.memory_usage")
 
@@ -61,3 +62,99 @@ def record_memory_usage(
             source,
             e,
         )
+
+
+def query_memory_usage(
+    mem_conn: sqlite3.Connection,
+    *,
+    days: int = DEFAULT_DAYS,
+    source: str | None = None,
+    caller: str | None = None,
+    memory_id: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    order: str = "hits",
+) -> OperationResult:
+    """近 N 天记忆调用统计：按「记忆 × 来源」聚合（hits / last_ts 两种排序）。
+
+    回答「哪些记忆常被用 / 被谁用」（对齐 ``operations/skill_usage.query_skill_usage``
+    的查询形态）。days / limit 越界自动钳制（照 skills/usage 先例）；
+    ``source`` / ``order`` 非法 → ``ERR_INVALID_ARGS``。
+    """
+    try:
+        days_v = max(1, min(int(days or DEFAULT_DAYS), MAX_DAYS))
+    except (TypeError, ValueError):
+        return OperationResult.fail(
+            "ERR_INVALID_ARGS", f"days 需为整数（1~{MAX_DAYS}）"
+        )
+    try:
+        limit_v = max(1, min(int(limit or DEFAULT_LIMIT), MAX_LIMIT))
+    except (TypeError, ValueError):
+        return OperationResult.fail(
+            "ERR_INVALID_ARGS", f"limit 需为整数（1~{MAX_LIMIT}）"
+        )
+    if source is not None and source not in SOURCES:
+        return OperationResult.fail(
+            "ERR_INVALID_ARGS", f"source 仅支持 {'/'.join(SOURCES)}"
+        )
+    if order not in ORDERS:
+        return OperationResult.fail(
+            "ERR_INVALID_ARGS", f"order 仅支持 {'/'.join(ORDERS)}"
+        )
+    items = memory_usage_dao.query_usage(
+        mem_conn,
+        days=days_v,
+        source=source,
+        caller=caller,
+        memory_id=memory_id,
+        limit=limit_v,
+        order=order,
+    )
+    return OperationResult.succeed(
+        {
+            "mode": "usage",
+            "days": days_v,
+            "source": source,
+            "caller": caller,
+            "memory_id": memory_id,
+            "limit": limit_v,
+            "order": order,
+            "sources": list(SOURCES),
+            "total_rows": len(items),
+            "items": items,
+        }
+    )
+
+
+def query_unused_memories(
+    mem_conn: sqlite3.Connection,
+    *,
+    days: int = DEFAULT_DAYS,
+    limit: int = DEFAULT_UNUSED_LIMIT,
+) -> OperationResult:
+    """窗口内零调用的 active 记忆清单（「从未被用过 / 已冷」——活跃度分析另一半）。
+
+    窗口外旧调用不影响判定（窗口内无调用即视为本窗口未被使用）。
+    days / limit 越界自动钳制；响应 ``mode="unused"``。
+    """
+    try:
+        days_v = max(1, min(int(days or DEFAULT_DAYS), MAX_DAYS))
+    except (TypeError, ValueError):
+        return OperationResult.fail(
+            "ERR_INVALID_ARGS", f"days 需为整数（1~{MAX_DAYS}）"
+        )
+    try:
+        limit_v = max(1, min(int(limit or DEFAULT_UNUSED_LIMIT), MAX_LIMIT))
+    except (TypeError, ValueError):
+        return OperationResult.fail(
+            "ERR_INVALID_ARGS", f"limit 需为整数（1~{MAX_LIMIT}）"
+        )
+    items = memory_usage_dao.query_unused(mem_conn, days=days_v, limit=limit_v)
+    return OperationResult.succeed(
+        {
+            "mode": "unused",
+            "days": days_v,
+            "limit": limit_v,
+            "total_rows": len(items),
+            "items": items,
+        }
+    )

@@ -1043,6 +1043,59 @@ def admin_skills_usage(
         limit=limit,
     )
 
+
+# ---------- T-253：GET /v1/admin/memories/usage（记忆调用统计） ----------
+# ⚠️ 注册顺序：当前 /v1/admin/memories 段只有静态路径（列表端点），不存在
+# /v1/admin/memories/{...} 动态路由，本静态路径不会被吞；仍按「静态路径先于
+# 动态路由」惯例集中在 usage 端点区（同 /v1/admin/skills/usage 先例）。
+
+
+@router.get("/v1/admin/memories/usage")
+def admin_memories_usage(
+    request: Request,
+    days: int = 30,
+    source: str | None = None,
+    caller: str | None = None,
+    memory_id: str | None = None,
+    limit: int = 200,
+    order: str = "hits",
+    unused: bool = False,
+    _: str = Depends(require_admin_key),
+):
+    """记忆调用统计（T-253）：近 N 天按「记忆 × 来源」聚合 / 零调用清单两模式。
+
+    - days ∈ [1, 400]（默认 30）；source ∈ {search, inject}（缺省=全部）；
+      caller / memory_id 为精确过滤；limit ∈ [1, 1000]（默认 200，unused 模式 500）
+    - order ∈ {hits, last_ts}（默认 hits=次数降序）；参数非法 → ERR_INVALID_ARGS
+    - unused=true → 零调用模式：窗口内无调用记录的 active 记忆清单（「从未被用过」）
+    - 数据源 memory_usage_daily（memory.db 日聚合）：检索命中（search）+ 画像注入
+      （inject）双源埋点——前两层统计（api_usage_daily / skill_usage_daily）到不了
+      单条记忆粒度，本端点回答「哪些记忆常被用 / 从未被用过」
+    """
+    from sgme.operations.memory_usage import (
+        query_memory_usage as query_memory_usage_operation,
+    )
+    from sgme.operations.memory_usage import (
+        query_unused_memories as query_unused_memories_operation,
+    )
+
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    if unused:
+        return run_operation(
+            query_unused_memories_operation, mem_conn, days=days, limit=limit
+        )
+    return run_operation(
+        query_memory_usage_operation,
+        mem_conn,
+        days=days,
+        source=source,
+        caller=caller,
+        memory_id=memory_id,
+        limit=limit,
+        order=order,
+    )
+
+
 # ---------- POST /v1/admin/skills/sync（0.8 ST-11：skills-hub copy 模式真实同步） ----------
 
 class SkillsSyncRequest(BaseModel):
