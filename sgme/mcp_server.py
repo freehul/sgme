@@ -602,7 +602,7 @@ def build_mcp_server():
 
     @mcp.tool()
     @tool
-    def inject(mode: str = "daily", max_tokens: int = 800) -> str:
+    def inject(mode: str = "daily", max_tokens: int = 800, ctx: Context | None = None) -> str:
         """记忆注入：按模式模板查询记忆池，返回注入块（画像视图）。"""
         from sgme.operations.inject import inject as inject_operation
         import json
@@ -610,7 +610,9 @@ def build_mcp_server():
 
         mem_conn: sqlite3.Connection = _app_state["mem_conn"]
         cfg = _app_state["cfg"]
-        data = _op_json(inject_operation, mem_conn, cfg, mode=mode)
+        # T-252：调用方反查（鉴权 key → agent_id；直调/失败 → unknown），
+        # 供记忆调用统计（source='inject'）记录
+        data = _op_json(inject_operation, mem_conn, cfg, mode=mode, caller=_usage_caller(ctx))
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()

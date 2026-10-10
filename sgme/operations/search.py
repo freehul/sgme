@@ -54,7 +54,9 @@
 
 依赖：调 ``sgme.data.search``（search_memories / search_scenes）+ ``sgme.wiki.fts``
 （search_wiki_fts，扩展模块检索，同 operations/wiki.py 先例），engine 是禁区。
-副作用：无（检索为纯读路径；向量不可达时由业务层自动降级 BM25/LIKE）。
+副作用：检索为纯读路径（向量不可达时由业务层自动降级 BM25/LIKE）；唯一例外是
+T-252 记忆调用统计——memory 层命中记入 ``memory_usage_daily``（best-effort 全静默
+旁路，A2 政策放宽仅限本表，2026-10-10 用户批；见 operations/memory_usage.py）。
 """
 from __future__ import annotations
 
@@ -71,6 +73,7 @@ from sgme.data import search as search_mod
 from sgme.data import session_dao
 from sgme.operations.errors import ERR_INTERNAL, InvalidArgs, OperationResult
 from sgme.operations.llm import model_keys_notice
+from sgme.operations.memory_usage import record_memory_usage
 from sgme.operations.session import _resolve_raw_path as _resolve_l0_raw_path
 from sgme.wiki import fts as wiki_fts
 
@@ -454,18 +457,27 @@ def search(
     try:
         # 层 1：memory 记忆池（BM25 + 向量 + RRF，v0.6 路由逐行等价）
         if "memory" in scopes:
-            results.extend(
-                search_mod.search_memories(
-                    mem_conn, session_conn,
-                    query=query,
-                    dimensions=dimensions,
-                    match=match,
-                    limit=limit,
-                    include_sources=include_sources,
-                    cfg=cfg,
-                    client=client,
-                    agent_id=agent_id,  # T-140：多 Agent scope（默认 None=不过滤）
-                )
+            memory_layer = search_mod.search_memories(
+                mem_conn, session_conn,
+                query=query,
+                dimensions=dimensions,
+                match=match,
+                limit=limit,
+                include_sources=include_sources,
+                cfg=cfg,
+                client=client,
+                agent_id=agent_id,  # T-140：多 Agent scope（默认 None=不过滤）
+            )
+            results.extend(memory_layer)
+            # T-252：记忆调用统计（双源之一：检索命中）——A2 政策放宽**仅限本表**
+            # （2026-10-10 用户批）：search 链路可写 memory_usage_daily；
+            # 单次批量 upsert + 全静默（见 operations/memory_usage.py）。
+            # caller：既有 agent_id 参数（T-140 入口按 key 反查），None → unknown。
+            record_memory_usage(
+                mem_conn,
+                [mid for r in memory_layer if (mid := r.get("memory_id"))],
+                "search",
+                agent_id,
             )
         # 层 2：wiki 场景叙事文档（L2；"scenes" 为历史别名 scope，两者等价）
         if "wiki" in scopes or "scenes" in scopes:

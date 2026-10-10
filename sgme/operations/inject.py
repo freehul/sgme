@@ -22,7 +22,10 @@
 - 其余意外异常（pipeline/DAO 层）→ ``fail(ERR_INTERNAL, ...)``
 
 依赖：只调 profile.template / profile.inject / profile.tier0 / storage.memory_dao
-（业务层，全部只读；engine 是禁区）。副作用：无——inject 不写库、不调 LLM、不发信号。
+（业务层，全部只读；engine 是禁区）。副作用：不调 LLM、不发信号；唯一写操作是
+统计类（均 best-effort 全静默，失败不影响注入）——既有 memory_stats.record_inject
+（注入计数 sidecar，原样保留）+ T-252 记忆调用统计 ``memory_usage_daily``
+（source='inject'，A2 政策放宽仅限本表，2026-10-10 用户批）。
 
 投影函数说明：HTTP 与 MCP 两端对注入响应的历史契约形态**本就一致**
 （路由原样返回 response，MCP 直接 json.dumps(response)），因此按
@@ -34,6 +37,7 @@ import sqlite3
 from typing import Any
 
 from sgme.operations.errors import ERR_INTERNAL, ERR_INVALID_ARGS, OperationResult
+from sgme.operations.memory_usage import record_memory_usage
 from sgme.profile import inject as inject_mod
 from sgme.profile import template as template_mod
 from sgme.profile import tier0 as tier0_mod
@@ -94,6 +98,7 @@ def inject(
     cfg: dict[str, Any],
     mode: str | None = None,
     custom_filter: dict[str, Any] | None = None,
+    caller: str | None = None,
 ) -> OperationResult:
     """记忆注入：mode 模板查询 或 custom_filter 自定义查询 → blocks + tier0。
 
@@ -108,6 +113,8 @@ def inject(
         custom_filter: 自定义过滤条件 dict，可含
             ``dimensions``/``memory_types``（二选一）、``match``（默认 any）、
             ``limit``（默认 10）。
+        caller: 调用方标识（T-252；入口层按鉴权 key 反查 agent_id），仅供
+            记忆调用统计（source='inject'）记录使用，None → ``unknown``。
 
     Returns:
         OperationResult(ok=True)，``data`` 为注入响应（HTTP/MCP 共用形态）：
@@ -141,6 +148,14 @@ def inject(
                 inject_mod.query_section(mem_conn, s, dimensions)
                 for s in tmpl.get("sections", [])
             ]
+            # T-252：记忆调用统计（双源之二：画像注入）——section_results 即注入集
+            # （T-203 G1 在案）；跨 section 去重由 DAO 兜底（同批一次 upsert）。
+            record_memory_usage(
+                mem_conn,
+                [r["memory_id"] for sr in section_results for r in sr if r.get("memory_id")],
+                "inject",
+                caller,
+            )
             tier0_summary = tier0_mod.load_summary()
             response = inject_mod.build_inject_blocks(
                 tmpl, section_results, tier0_summary=tier0_summary,
@@ -181,6 +196,13 @@ def inject(
             from sgme.data.memory_stats_dao import record_inject
             for r in results:
                 record_inject(mem_conn, r["memory_id"])
+            # T-252：记忆调用统计（source='inject'；既有 memory_stats 链路保持原样）
+            record_memory_usage(
+                mem_conn,
+                [r["memory_id"] for r in results],
+                "inject",
+                caller,
+            )
             # 拼装为单个 section
             tmpl = {
                 "name": "custom",
