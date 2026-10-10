@@ -261,3 +261,44 @@ def test_connect_memory_creates_quarantine_table(tmp_path):
         assert {"idx_quarantine_matched", "idx_quarantine_status"} <= idx
     finally:
         conn.close()
+
+
+# ---------- T-251：记忆调用统计表 memory_usage_daily（2026-10-10） ----------
+
+
+def test_legacy_memory_usage_table_migration(tmp_path):
+    """老库（无 memory_usage_daily）→ connect_memory 自动补建表 + 双索引（幂等）。
+
+    模拟生产老库形态：schema_versions 已登记 memory_v4、无新表——
+    `_ensure_schema` 不会重跑新表 DDL，必须由 `_migrate_memory_usage_table` 补齐。
+    """
+    conn = sqlite3.connect(str(tmp_path / "memory.db"))
+    conn.execute(
+        "CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, name TEXT NOT NULL,"
+        " applied_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO schema_versions VALUES (4, 'memory_v4', '2026-01-01T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    upgraded = db_mod.connect_memory(tmp_path)
+    try:
+        assert "memory_usage_daily" in set(db_mod.list_tables(upgraded))
+        idx = {r["name"] for r in upgraded.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()}
+        assert {"idx_mem_usage_memory", "idx_mem_usage_day"} <= idx
+        # 重复迁移（幂等）不报错
+        db_mod._migrate_memory_usage_table(upgraded)
+        db_mod._migrate_memory_usage_table(upgraded)
+    finally:
+        upgraded.close()
+
+    # 二次连接（老库已被补表）不报错、表仍在
+    again = db_mod.connect_memory(tmp_path)
+    try:
+        assert "memory_usage_daily" in set(db_mod.list_tables(again))
+    finally:
+        again.close()

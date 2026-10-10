@@ -130,14 +130,17 @@ def append_session(
 def inject_memories(
     payload: InjectRequest,
     request: Request,
-    _: str = Depends(require_agent_key),
+    auth_key: str = Depends(require_agent_key),
 ):
     """记忆注入：mode 或 custom_filter → 模板查询 → blocks。
 
     v0.7：业务逻辑已下沉 ``sgme.operations.inject``，本函数只做协议翻译。
+    T-252：按鉴权 key 反查请求方 agent_id（与 search 路由同款反查）→ 传 caller，
+    供记忆调用统计（source='inject'）记录；未注册 key → None（操作层回落 unknown）。
     """
     cfg = request.app.state.cfg
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    store: AgentKeyStore = request.app.state.key_store
 
     return run_operation(
         inject_operation,
@@ -145,6 +148,7 @@ def inject_memories(
         cfg,
         mode=payload.mode,
         custom_filter=payload.custom_filter,
+        caller=store.resolve_agent_id(auth_key),
     )
 
 

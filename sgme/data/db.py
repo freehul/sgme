@@ -390,6 +390,28 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage_daily(skill, day
 CREATE INDEX IF NOT EXISTS idx_skill_usage_layer ON skill_usage_daily(layer, day DESC);
 """
 
+# ---------- T-251：记忆调用统计（memory.db，独立 DDL 常量） ----------
+# 第三层调用统计（api_usage_daily=端点/工具、skill_usage_daily=技能消费之后）：
+# 对象维度下探到**单条记忆**——双源埋点（检索命中 search + 画像注入 inject），
+# 回答「哪些记忆常被用 / 从未被用过」的活跃度分析。
+# A2 政策修订（2026-10-10 用户批）：**仅限本表**——检索链路可写 memory_usage_daily
+# （单次批量 upsert + 日聚合，控写放大）；memory_stats / last_recalled_at 链路
+# 照旧禁止（不受本次放宽影响，见 memory_stats_dao docstring）。
+# day = UTC（对齐 usage_dao）；行粒度 = (day, memory_id, source, caller) 日聚合
+# upsert；保留 400 天由 memory_usage_dao.prune_memory_usage 控制。
+MEMORY_USAGE_DDL = """
+CREATE TABLE IF NOT EXISTS memory_usage_daily (
+  day       TEXT NOT NULL,     -- UTC 日 YYYY-MM-DD
+  memory_id TEXT NOT NULL,     -- 记忆 id（对象维度）
+  source    TEXT NOT NULL,     -- search | inject（双源）
+  caller    TEXT NOT NULL,     -- agent_id / default / anonymous / unknown
+  hits      INTEGER NOT NULL DEFAULT 0,
+  last_ts   TEXT,              -- 最近调用时刻（ISO UTC）
+  PRIMARY KEY (day, memory_id, source, caller));
+CREATE INDEX IF NOT EXISTS idx_mem_usage_memory ON memory_usage_daily(memory_id, day DESC);
+CREATE INDEX IF NOT EXISTS idx_mem_usage_day ON memory_usage_daily(day DESC);
+"""
+
 # ---------- 0.8 T-13：ingest 任务持久化（wiki.db，独立 DDL 常量） ----------
 # 图纸：`SGME-数据模型设计-v0.1.md` §二 wiki.db → ingest_tasks。
 # 原 `_TASKS` 进程内内存字典 → SQLite 表：任务创建/状态流转/查询全落库，
@@ -511,6 +533,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_signal_acks_table(conn)
     _migrate_api_usage_table(conn)
     _migrate_skill_usage_table(conn)
+    _migrate_memory_usage_table(conn)
     _migrate_persona_tables(conn)
     _migrate_memory_edges_table(conn)
     _migrate_mem_facts_json(conn)
@@ -1152,6 +1175,17 @@ def _migrate_skill_usage_table(conn: sqlite3.Connection) -> None:
     老库（schema_versions 已登记）不会重跑新表的 DDL，必须走迁移函数补齐。
     """
     conn.executescript(SKILL_USAGE_DDL)
+    conn.commit()
+
+
+def _migrate_memory_usage_table(conn: sqlite3.Connection) -> None:
+    """老库迁移：建记忆调用统计表 memory_usage_daily（T-251，2026-10-10）。幂等。
+
+    与 ``_migrate_skill_usage_table`` 同模式：独立成 MEMORY_USAGE_DDL + 本迁移函数——
+    老库（schema_versions 已登记 memory_v4）不会重跑 MEMORY_DDL 之外的变更，
+    必须走迁移函数才能补齐新表（第三层调用统计；A2 放宽仅限本表）。
+    """
+    conn.executescript(MEMORY_USAGE_DDL)
     conn.commit()
 
 

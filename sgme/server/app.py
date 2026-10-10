@@ -905,6 +905,13 @@ def create_app(
                 prune_usage(mem_conn, keep_days=400)
             except Exception as e:
                 print(f"[SGME usage] 调用统计清理失败（不影响启动）: {e}")
+            # T-251：记忆调用统计保留期清理（400 天，失败不阻断启动）
+            try:
+                from sgme.data.memory_usage_dao import prune_memory_usage
+
+                prune_memory_usage(mem_conn, keep_days=400)
+            except Exception as e:
+                print(f"[SGME memory usage] 记忆调用统计清理失败（不影响启动）: {e}")
             _start_batch_scan_scheduler(app)
             # ST-35 T-101：人格月度校准定时器（失败不阻断启动）
             try:
