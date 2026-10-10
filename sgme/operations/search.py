@@ -403,6 +403,7 @@ def search(
     wiki_conn: sqlite3.Connection | None = None,
     skills_conn: sqlite3.Connection | None = None,
     agent_id: str | None = None,
+    caller: str | None = None,
 ) -> OperationResult:
     """混合检索：记忆池（BM25+向量+RRF）+ wiki 场景（L2）+ wiki 知识库页面
     + L0 原始层会话（raw_files 索引，ST-33）+ 技能（git 源 SKILL.md，ST-36 M2，
@@ -427,6 +428,9 @@ def search(
         client: 可选 httpx 客户端（向量 embed 注入点；缺省 None = v0.6 行为）。
         wiki_conn: wiki.db 连接（wiki_pages 层用）。None 或该层检索失败 →
             空结果，不影响 memory / scenes 层（T-34：wiki 扩展不可用不拖累整体）。
+        agent_id: 请求方 agent 标识（T-140 多 Agent scope 过滤；缺省 None=不过滤）。
+        caller: 记忆调用统计（T-252）用的调用方标识；缺省 None → 回落 agent_id
+            （HTTP 按 key 反查链路复用），两者皆空 → 统计落 unknown。
 
     Returns:
         OperationResult(ok=True)，data 为协议无关信息超集：
@@ -472,12 +476,13 @@ def search(
             # T-252：记忆调用统计（双源之一：检索命中）——A2 政策放宽**仅限本表**
             # （2026-10-10 用户批）：search 链路可写 memory_usage_daily；
             # 单次批量 upsert + 全静默（见 operations/memory_usage.py）。
-            # caller：既有 agent_id 参数（T-140 入口按 key 反查），None → unknown。
+            # caller：显式 caller 参数优先（MCP 经 _usage_caller(ctx) 反查）——
+            # T-252 补；缺省回落 agent_id（HTTP 按 key 反查链路复用）；None → unknown。
             record_memory_usage(
                 mem_conn,
                 [mid for r in memory_layer if (mid := r.get("memory_id"))],
                 "search",
-                agent_id,
+                caller or agent_id,
             )
         # 层 2：wiki 场景叙事文档（L2；"scenes" 为历史别名 scope，两者等价）
         if "wiki" in scopes or "scenes" in scopes:

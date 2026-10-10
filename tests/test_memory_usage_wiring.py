@@ -6,7 +6,7 @@
 2. 端到端：``inject()`` mode 分支 / custom_filter 分支 → inject 行（跨 section 去重）
 3. 记录失败静默：表缺失 / DAO 抛错时主流程照常（best-effort 旁路）
 4. 入口传参：HTTP ``POST /v1/inject``、``POST /v1/search`` 按鉴权 key 反查 caller；
-   MCP ``inject`` 工具经 ``_usage_caller(ctx)`` 反查
+   MCP ``inject`` / ``search`` 工具经 ``_usage_caller(ctx)`` 反查
 
 零真实网络、零 LLM：向量默认关闭（出厂基线 enabled:false），检索走 BM25/LIKE。
 """
@@ -335,3 +335,23 @@ def test_mcp_inject_tool_passes_caller(conns, app, summary_path):
     assert {(r["memory_id"], r["source"], r["caller"]) for r in rows} == {
         (mid, "inject", "planner")
     }
+
+
+def test_mcp_search_tool_passes_caller(conns, app):
+    """MCP search 工具经 _usage_caller(ctx) 反查注册 key 绑定 agent_id → caller（T-252 补）。"""
+    mem_conn, _, _ = conns
+    mid = _insert(mem_conn, "McpSearchToken 检索调用方用例")
+
+    mcp = mount_mcp(app, start_server=False)
+    starlette_app = mcp.streamable_http_app()
+    starlette_app.add_middleware(ApiKeyMiddleware, key_store=app.state.key_store)
+
+    key = app.state.key_store.register_agent("searcher", [])
+    with TestClient(starlette_app) as client:
+        body = _mcp_call_tool(client, "search", {"query": "McpSearchToken"}, api_key=key)
+    assert body is not None and "result" in body, body
+
+    rows = _rows(mem_conn)
+    assert [(r["memory_id"], r["source"], r["caller"]) for r in rows] == [
+        (mid, "search", "searcher")
+    ]
