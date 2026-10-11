@@ -1078,8 +1078,27 @@ def create_app(
 
     # 限流中间件（T-7 §6）：按 X-API-Key 滑动窗口限流（默认 120 req/min/Key；0=关闭）
     # 必须注册才能使限流生效；读取 request.app.state.cfg["server"]["rate_limit_per_min"]
+    # （ST-55 / T-264 收口：本装配将由 SecurityGate 承接限流后移除，此行暂留保行为不变）
     from sgme.server.ratelimit import RateLimitMiddleware
     app.add_middleware(RateLimitMiddleware)
+
+    # 请求体上限（ST-55 / T-255，方案 §2.8-1）：框架原生中间件，本仓 starlette==1.6.0 内置，
+    # 签名 (app, max_body_size) 已复验。max_body_bytes<=0 = 不装配（显式关闭）。
+    # ⚠️ 陷阱（DS 实测，禁改用）：FastAPI(max_body_size=...) 构造参数与 app.max_body_size=…
+    # 属性赋值均被【静默忽略】——配置体限只能走本中间件。
+    # 413 形态（细节 9 校准）：中间件自产 text/plain "Content Too Large"（非 {"detail":…}
+    # JSON）——网关级拒绝，接受框架默认形态，I3 用例按此断言（tests/test_security.py）。
+    # chunked 生效条件（细节 10 校准）：中间件在 receive 流上计数、须端点读取请求体才触发；
+    # 不读 body 的路径不会 413，属预期行为。
+    # S7 装配顺序口径（§2.4，写死）：HTTP 侧注册序 RequestBodyLimit →（T-262 起 SecurityGate）
+    # → RateLimitMiddleware → UsageMiddleware；add_middleware 后加者在【外层】
+    # （user_middleware.insert(0) + 逆序包裹，本仓已实证）。⇒ 外→内 = Usage → RateLimit →
+    # SecurityGate → 体限 → 路由。体限-鉴权相对位置已锁定，断言不绿只准调 SecurityGate 位次。
+    max_body_bytes = int(cfg.get("server", {}).get("max_body_bytes", 0) or 0)
+    if max_body_bytes > 0:
+        from starlette.middleware.body_limit import RequestBodyLimitMiddleware
+
+        app.add_middleware(RequestBodyLimitMiddleware, max_body_size=max_body_bytes)
 
     # T-163：接口调用统计（纯 ASGI 旁路；全静默，统计失败不影响请求）
     app.add_middleware(UsageMiddleware, conn=mem_conn, key_store=store)

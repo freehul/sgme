@@ -356,6 +356,18 @@ def run_mcp_server(mcp, key_store, host: str = "127.0.0.1", port: int = 9913, co
     starlette_app = mcp.streamable_http_app()
     starlette_app.add_middleware(ApiKeyMiddleware, key_store=key_store, conn=conn)
 
+    # 请求体上限（ST-55 / T-255，方案 §2.8-1）：框架原生 RequestBodyLimitMiddleware，
+    # max_body_bytes<=0 = 不装配（显式关闭）。cfg 经 _app_state 读取（mount_mcp 已绑定）。
+    # ⚠️ 陷阱（禁改用）：FastAPI/Starlette 构造参数与属性赋值形式（max_body_size=…）均被
+    # 【静默忽略】——配置体限只能走本中间件。
+    # S7 装配顺序口径（§2.4）：注册序 ApiKey → RequestBodyLimit →（T-263 起 SecurityGate）
+    # 后加者在外层 ⇒ 外→内 = SecurityGate → 体限 → 鉴权（T-263 落齐后收口断言）。
+    max_body_bytes = int((_app_state.get("cfg") or {}).get("server", {}).get("max_body_bytes", 0) or 0)
+    if max_body_bytes > 0:
+        from starlette.middleware.body_limit import RequestBodyLimitMiddleware
+
+        starlette_app.add_middleware(RequestBodyLimitMiddleware, max_body_size=max_body_bytes)
+
     config = uvicorn.Config(
         starlette_app,
         host=host,
