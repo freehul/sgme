@@ -372,6 +372,110 @@ class TestNonAsciiKeyOverHttp:
         )
         assert r.status_code in (401, 403)
 
+
+# ---------- I1 + I3 收口：HTTP 侧接线（T-262） ----------
+
+
+class TestHttpWiring:
+    """T-262 接线断言：I1 封禁触发链 + I3 413 副作用收口 + app.state 单实例。"""
+
+    def _make_client(self, conns, cfg, tmp_path, server_overrides=None):
+        mem_conn, session_conn, wiki_conn = conns
+        if server_overrides:
+            cfg["server"].update(server_overrides)
+        app = create_app(
+            cfg=cfg,
+            mem_conn=mem_conn,
+            session_conn=session_conn,
+            wiki_conn=wiki_conn,
+            admin_key="test-admin-key-security",
+            agent_key="test-agent-key-security",
+            bearer_token="",
+            agent_store_path=tmp_path / "agent_keys.json",
+        )
+        return TestClient(app), app
+
+    def test_i1_failure_counting_wired(self, conns, cfg, tmp_path):
+        """I1（回环视角）：错 key ×20 全部计数入安全状态；回环豁免封禁（K2/D3）。
+
+        远程来源的完整封禁触发链（threshold 触发 → 429 → 有效 key 也拦）已在
+        TestBanLifecycle（Gate 单测）端到端验证；本用例验证接线面：
+        create_app 创建的状态实例真实吃到 401/403 计数。
+        """
+        client, app = self._make_client(
+            conns, cfg, tmp_path, {"auth_fail_threshold": 20}
+        )
+        state = app.state.security_state
+        for i in range(20):
+            r = client.get("/v1/events", headers={"X-API-Key": f"wrong-key-{i}"})
+            assert r.status_code in (401, 403)
+        # testclient = 回环来源 → 豁免封禁（继续 401 而非 429，K2 观察期读数）
+        r = client.get("/v1/events", headers={"X-API-Key": "test-agent-key-security"})
+        assert r.status_code == 200
+        snap = state.snapshot(__import__("time").time())
+        assert snap["fail_counts"] and sum(snap["fail_counts"].values()) >= 20
+
+    def test_i1_health_unaffected(self, conns, cfg, tmp_path):
+        """I1：封禁期间 /v1/health 探针语义不变（D9）。"""
+        client, _app = self._make_client(
+            conns, cfg, tmp_path, {"auth_fail_threshold": 5}
+        )
+        for i in range(6):
+            client.get("/v1/events", headers={"X-API-Key": f"wrong-{i}"})
+        r = client.get("/v1/health")
+        assert r.status_code == 200
+
+    def test_i3_413_no_auth_failure_side_effect(self, conns, cfg, tmp_path):
+        """I3 收口：413 不产生 401/403 失败计数副作用（跨卡断言落点）。"""
+        client, app = self._make_client(
+            conns,
+            cfg,
+            tmp_path,
+            {"max_body_bytes": 1024, "auth_fail_threshold": 3},
+        )
+        state = app.state.security_state
+        big = "x" * 4096
+        r = client.post(
+            "/v1/append",
+            json={
+                "session_key": "sec-i3",
+                "started_at": "2026-10-11T00:00:00Z",
+                "content": f"# 2026-10-11T00:00:00Z user\n{big}",
+            },
+            headers={"X-API-Key": "test-agent-key-security"},
+        )
+        assert r.status_code == 413
+        snap = state.snapshot(__import__("time").time())
+        assert snap["fail_counts"] == {} and snap["fail_keys"] == 0
+
+    def test_state_single_instance_shared(self, conns, cfg, tmp_path):
+        """app.state.security_state 单实例：中间件与端点共享同一对象。"""
+        client, app = self._make_client(conns, cfg, tmp_path)
+        from sgme.security_state import SecurityState
+
+        assert isinstance(app.state.security_state, SecurityState)
+        assert app.state.security_log is not None
+
+    def test_admin_security_endpoints_live(self, conns, cfg, tmp_path):
+        """接线后 events/status 端点可用（T-265 端点吃到真实实例）。"""
+        client, _app = self._make_client(conns, cfg, tmp_path)
+        r = client.get(
+            "/v1/admin/security/status",
+            headers={"X-API-Key": "test-admin-key-security"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert "active_bans" in body
+        r2 = client.get(
+            "/v1/admin/security/events",
+            params={"date": "2026-10-11"},
+            headers={"X-API-Key": "test-admin-key-security"},
+        )
+        assert r2.status_code == 200
+        body2 = r2.json()
+        assert body2.get("events") == [] and body2.get("count") == 0
+
+
 # ---------- U2 状态机单元 / U7 状态有界（T-258，§2.2 K1/K2/K5） ----------
 
 

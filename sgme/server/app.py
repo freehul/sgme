@@ -86,14 +86,29 @@ _LOCALHOST_HOSTS = net_guard.LOCALHOST_HOSTS
 
 
 def _is_localhost_source(request: Request) -> bool:
-    """来源是否本机回环：``request.client.host`` 属于回环集合。
+    """来源是否本机回环（T-262 改用解析后来源，K3 消费点 3）：
 
-    client 信息缺失（None）→ 视为非本机来源（安全侧失败：宁可误拒不可漏放）。
+    经 resolve_client_ip 按 trusted_proxies 解析 XFF 后判定（is_loopback_source）——
+    部署在可信代理后时以真实客户端来源为准，代理串内回环不作为豁免依据。
+    client 信息缺失且无 XFF → 按连接对端（空串）判定，安全侧失败。
     """
     client = getattr(request, "client", None)
-    if client is None:
-        return False
-    return net_guard.is_localhost_host(getattr(client, "host", None))
+    peer = getattr(client, "host", None) if client else None
+    xff = request.headers.get("x-forwarded-for")
+    proxies = _resolve_trusted_proxies(request)
+    source = net_guard.resolve_client_ip(peer, xff, proxies)
+    return net_guard.is_loopback_source(source)
+
+
+def _resolve_trusted_proxies(request: Request) -> list:
+    """trusted_proxies 配置 → 网络对象列表（复用 SecurityGate 缓存解析，D6）。"""
+    from sgme.server.security import _cached_trusted_proxies
+
+    try:
+        raw = (request.app.state.cfg.get("server", {}) or {}).get("trusted_proxies") or []
+    except Exception:  # noqa: BLE001——cfg 缺失按空名单（不解析转发头）
+        return []
+    return _cached_trusted_proxies(raw)
 
 
 # ---------- operations 层 → HTTP 协议翻译（v0.7 §7） ----------
@@ -838,6 +853,28 @@ def create_app(
     if (missing_key_notice := model_keys_notice(cfg)):
         logger.warning("模型 Key 缺失告警：%s", missing_key_notice)
 
+    # 安全配置启动摘要（ST-55 / T-262，D6；供 §五 部署验证直接引用）
+    _sec = cfg.get("server", {}) or {}
+    logger.warning(
+        "安全配置摘要：封禁阈值=%s(0=观察期只计数) 失败窗口=%ss 基础封禁=%ss 封顶=%ss "
+        "升级=%s 无key限流=%s/min per-key限流=%s/min 体限=%sB(0=关) "
+        "可信代理=%s项 审计保留=%s天(0=不清理)",
+        _sec.get("auth_fail_threshold", 0), _sec.get("auth_fail_window_sec", 300),
+        _sec.get("ban_seconds", 900), _sec.get("ban_max_seconds", 3600),
+        _sec.get("ban_escalation", True), _sec.get("ip_rate_limit_per_min", 60),
+        _sec.get("rate_limit_per_min", 120), _sec.get("max_body_bytes", 0),
+        len(_sec.get("trusted_proxies", []) or []), _sec.get("security_log_keep_days", 0),
+    )
+    # 审计保留清理（Q4）：启动触发一次（keep_days=0 跳过；此后每日首写惰性触发）
+    try:
+        _keep = int(_sec.get("security_log_keep_days", 0) or 0)
+        if _keep > 0:
+            _n = app.state.security_log.cleanup_expired(_keep)
+            if _n:
+                logger.info("安全审计启动清理：%s 个过期日志文件", _n)
+    except Exception as _e:  # noqa: BLE001——清理失败不阻塞启动
+        logger.warning("安全审计启动清理失败（不影响启动）: %s", _e)
+
     @asynccontextmanager
     def _skills_bootstrap(
         cfg: dict,
@@ -1005,6 +1042,23 @@ def create_app(
     app.state.bearer_token = bearer
     app.state.started_at = _now_iso()
 
+    # ---- 安全状态与审计（ST-55 / T-262，方案 §2.2/§2.5）----
+    # HTTP/MCP 两入口共享同一实例（per-key 预算双入口同额、封禁互可见，S7）。
+    # 进程内存、重启清空（= 解封）；三个限流桶 SlidingWindowRateLimiter 同源共享。
+    from sgme.security_log import SecurityLog
+    from sgme.security_state import SecurityState
+    from sgme.server.ratelimit import SlidingWindowRateLimiter
+    from sgme.server.security import SecurityGate
+
+    app.state.security_state = SecurityState()
+    app.state.security_ip_limiter = SlidingWindowRateLimiter(limit_per_min=60)
+    app.state.security_key_limiter = SlidingWindowRateLimiter(limit_per_min=120)
+    app.state.security_tool_limiter = SlidingWindowRateLimiter(limit_per_min=120)
+    app.state.security_log = SecurityLog(
+        sgme_config.LOG_DIR,
+        keep_days=int((cfg.get("server", {}) or {}).get("security_log_keep_days", 0) or 0),
+    )
+
     # 初始化 FTS5（search 模块）：记忆层 + 场景层（v5）+ raw 正文层（T-207 ①）
     from sgme.data.search import init_fts, init_scenes_fts, raw_fts as raw_fts_mod
     init_fts(mem_conn)
@@ -1084,9 +1138,24 @@ def create_app(
 
     # 限流中间件（T-7 §6）：按 X-API-Key 滑动窗口限流（默认 120 req/min/Key；0=关闭）
     # 必须注册才能使限流生效；读取 request.app.state.cfg["server"]["rate_limit_per_min"]
-    # （ST-55 / T-264 收口：本装配将由 SecurityGate 承接限流后移除，此行暂留保行为不变）
+    # （ST-55 / T-264 收口：per-key 限流已由 SecurityGate 承接，本行届时移除）
     from sgme.server.ratelimit import RateLimitMiddleware
     app.add_middleware(RateLimitMiddleware)
+
+    # SecurityGate 安全门（ST-55 / T-262，§2.4）：注册在 RateLimit 之后 = 更外层。
+    # S7 装配口径（外→内）：Usage → RateLimit → SecurityGate → 体限 → 路由。
+    # 体限-鉴权相对位置已锁定（T-255）；断言不绿只准调本门位次保持最外。
+    app.add_middleware(
+        SecurityGate,
+        state=app.state.security_state,
+        ip_limiter=app.state.security_ip_limiter,
+        key_limiter=app.state.security_key_limiter,
+        tool_limiter=app.state.security_tool_limiter,
+        cfg_getter=lambda: getattr(app.state, "cfg", None),
+        log_dir=str(sgme_config.LOG_DIR),
+        entry="http",
+        log=app.state.security_log,
+    )
 
     # 请求体上限（ST-55 / T-255，方案 §2.8-1）：框架原生中间件，本仓 starlette==1.6.0 内置，
     # 签名 (app, max_body_size) 已复验。max_body_bytes<=0 = 不装配（显式关闭）。

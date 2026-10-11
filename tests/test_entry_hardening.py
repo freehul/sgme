@@ -187,7 +187,12 @@ def test_is_default_dev_key_unit():
 
 
 def test_is_localhost_source_unit(default_key_app):
-    """来源判定：回环集合（含 ::1/localhost/testclient）True，远程/缺失 False。"""
+    """来源判定（T-262 改用解析后来源）：回环 IP/testclient True，远程/主机名/缺失 False。
+
+    「localhost」主机名自 T-262 起不再属于判定面（is_loopback_source 只认
+    127/8、::1、testclient——解析后来源是 IP/对端串，无主机名形态；
+    Host 头的 localhost 场景由 is_localhost_host_header 另行覆盖）。
+    """
 
     def _req(host: str | None) -> Request:
         scope = {
@@ -200,7 +205,7 @@ def test_is_localhost_source_unit(default_key_app):
 
     assert _is_localhost_source(_req("127.0.0.1")) is True
     assert _is_localhost_source(_req("::1")) is True
-    assert _is_localhost_source(_req("localhost")) is True
+    assert _is_localhost_source(_req("localhost")) is False  # 主机名非 IP：不在解析后判定面
     assert _is_localhost_source(_req("testclient")) is True
     assert _is_localhost_source(_req("10.0.0.1")) is False
     assert _is_localhost_source(_req(REMOTE_HOST)) is False
