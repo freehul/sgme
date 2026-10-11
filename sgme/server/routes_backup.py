@@ -39,6 +39,9 @@ from sgme.operations.backup import (
 )
 from sgme.server.app import require_admin_key, run_operation
 
+# T-265（ST-55）：admin_op 审计与 routes_admin 同源（事件形态一致）
+from sgme.server.routes_admin import audit_admin_op
+
 router = APIRouter()
 
 
@@ -122,13 +125,25 @@ def backup_restore(
     # 不停止会 unlink 失败 PermissionError；restore 后下次备份端点触发时自动重启）
     _stop_backup_scheduler(timeout=2.0)
 
-    data = run_operation(
-        backup_restore_operation,
-        cfg,
-        mem_conn,
-        session_conn,
-        wiki_conn,
-        snapshot_id=payload.snapshot_id,
+    try:
+        data = run_operation(
+            backup_restore_operation,
+            cfg,
+            mem_conn,
+            session_conn,
+            wiki_conn,
+            snapshot_id=payload.snapshot_id,
+        )
+    except Exception:
+        # T-265（ST-55）：admin_op 审计（§2.8-3）——restore 是最高危管理写操作，
+        # 失败（快照不存在 404 / 校验 400 等）同样留痕；异常继续上抛走统一信封
+        audit_admin_op(
+            request, "backup_restore", target=payload.snapshot_id, result="fail"
+        )
+        raise
+    # T-265（ST-55）：admin_op 审计（§2.8-3）——key_ref 脱敏不落明文
+    audit_admin_op(
+        request, "backup_restore", target=payload.snapshot_id, result="success"
     )
 
     # 更新 app.state 中的 conn 引用（旧 conn 已被 restore 关闭）

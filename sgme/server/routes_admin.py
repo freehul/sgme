@@ -56,6 +56,9 @@ from sgme.operations.refine import refine_trigger as refine_trigger_operation
 from sgme.operations.refine import refine_trigger_async as refine_trigger_async_operation
 from sgme.profile import tier0 as tier0_mod
 from sgme.server.app import _now_iso, api_error, require_admin_key, run_operation
+from sgme.security_log import (
+    mask_key,
+)  # T-265：admin_op 审计脱敏指纹（_mask_key 同款语义）
 from sgme.data import stats_dao
 
 logger = logging.getLogger("sgme.server.admin")
@@ -67,6 +70,58 @@ router = APIRouter()
 _SECURITY_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _EVENTS_LIMIT_DEFAULT = 100
 _EVENTS_LIMIT_MAX = 1000
+
+
+# ---------- T-265（ST-55）：admin 写操作审计（方案 §2.8-3，4 处明确 + config 采纳） ----------
+#
+# 五处点名：注册 /v1/admin/agents/register、吊销 DELETE /v1/admin/agents/{id}、
+# backup restore、update request、config 更新。字段：操作者 key_ref（mask_key
+# 脱敏，绝不落明文 key）/ 动作 op / 目标 target / 结果 result（success/fail）。
+# 实现口径：实例从 request.app.state.security_log 取（T-262 接线）；缺失时跳过
+# 审计不阻塞业务（fail-open，与安全侧 §2.0-5 口径一致）；写失败由 SecurityLog
+# 内部 WARNING 兜底，同样不阻塞主请求。本助手供 routes_backup / routes_config
+# 复用（backup_restore / config_update 两处审计同源，保证事件形态一致）。
+
+
+def audit_admin_op(request: Request, op: str, *, target: str, result: str) -> None:
+    """记一条 admin_op 审计事件（旁路：任何失败不影响主请求/不改变响应）。
+
+    Args:
+        request: FastAPI 请求（取 key_ref 脱敏所需 X-API-Key 与 app.state）。
+        op: 动作名（register_agent / revoke_agent / backup_restore /
+            update_request / config_update）。
+        target: 操作目标（agent_id / snapshot_id / target_version / 配置段）。
+        result: "success" | "fail"。
+    """
+    try:
+        key = request.headers.get("X-API-Key")
+        store = request.app.state.key_store
+        if store.is_admin(key):
+            agent_id = (
+                "default"  # admin key（env 主 key）→ default（resolve_agent_id 同口径）
+            )
+        else:
+            agent_id = store.resolve_agent_id(key) or "unknown"
+        detail = (
+            f"target={target};result={result};"
+            f"key_ref={mask_key(key)};operator={agent_id}"
+        )
+        try:
+            log = request.app.state.security_log  # type: ignore[attr-defined]
+        except AttributeError:
+            return  # T-262 未接线 → 跳过审计不阻塞业务（fail-open）
+        log.record_admin_op(op, source=_audit_source(request), detail=detail)
+    except Exception:  # (BLE001 豁免) 审计旁路：任何异常不得影响主请求（fail-open）
+        logger.warning("admin_op 审计失败 op=%s", op, exc_info=True)
+
+
+def _audit_source(request: Request) -> str:
+    """审计来源（best-effort）：连接对端 host；缺失 → "unknown"（usage 同惯例）。
+
+    注：XFF/trusted_proxies 解析归 T-262 SecurityGate 域，本处不重复解析。
+    """
+    client = getattr(request, "client", None)
+    return getattr(client, "host", None) or "unknown"
 
 
 # ---------- 请求模型 ----------
@@ -97,12 +152,18 @@ def register_agent(
     """签发新 Agent API Key。"""
     store = request.app.state.key_store
     if store.agent_exists(payload.agent_id):
+        # T-265（ST-55）：注册撞名失败也审计（fail 侧，§2.8-3 字段「结果」）
+        audit_admin_op(
+            request, "register_agent", target=payload.agent_id, result="fail"
+        )
         raise api_error(
             "ERR_CONFLICT",
             f"Agent 已存在: {payload.agent_id}（如需新 Key 请先吊销后重签）",
         )
     key = store.register_agent(agent_id=payload.agent_id, scope=payload.scope,
                                agent_model=payload.agent_model)
+    # T-265（ST-55）：admin_op 审计（§2.8-3）——key_ref 脱敏，绝不落明文 key
+    audit_admin_op(request, "register_agent", target=payload.agent_id, result="success")
     return {
         "agent_id": payload.agent_id,
         "api_key": key,
@@ -123,11 +184,17 @@ def revoke_agent(
     store = request.app.state.key_store
     if agent_id == "default":
         from sgme.server.app import api_error
+        # T-265（ST-55）：default 不可吊销的拒绝也审计（fail 侧）
+        audit_admin_op(request, "revoke_agent", target=agent_id, result="fail")
         raise api_error("ERR_INVALID_ARGS", "default（env 主 key）不可吊销，请改环境变量")
     revoked = store.revoke_agent(agent_id)
     if revoked == 0:
         from sgme.server.app import api_error
+        # T-265（ST-55）：吊销不存在的 agent 也审计（fail 侧）
+        audit_admin_op(request, "revoke_agent", target=agent_id, result="fail")
         raise api_error("ERR_NOT_FOUND", f"Agent 不存在或已吊销: {agent_id}")
+    # T-265（ST-55）：admin_op 审计（§2.8-3）
+    audit_admin_op(request, "revoke_agent", target=agent_id, result="success")
     logger.info("吊销 Agent: %s（%d 个 Key）", agent_id, revoked)
     return {"status": "ok", "agent_id": agent_id, "revoked": revoked}
 
@@ -1567,9 +1634,21 @@ def write_update_request(
     from sgme.operations.update_request import write_update_request as write_update_request_op
     from sgme.config import USER_ROOT
 
-    return run_operation(
-        write_update_request_op, USER_ROOT, target_version=body.target_version,
+    try:
+        data = run_operation(
+            write_update_request_op, USER_ROOT, target_version=body.target_version,
+        )
+    except Exception:
+        # T-265（ST-55）：写意图文件失败也审计（fail 侧），异常继续上抛走统一 500
+        audit_admin_op(
+            request, "update_request", target=body.target_version, result="fail"
+        )
+        raise
+    # T-265（ST-55）：admin_op 审计（§2.8-3）——更新意图落盘是管理面写操作
+    audit_admin_op(
+        request, "update_request", target=body.target_version, result="success"
     )
+    return data
 
 
 @router.get("/v1/admin/update/request")
