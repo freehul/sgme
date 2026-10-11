@@ -23,8 +23,10 @@ L1.5 LLM 不可用时降级直存（保守不丢数据）。
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,11 +56,72 @@ from sgme.operations.refine import refine_trigger as refine_trigger_operation
 from sgme.operations.refine import refine_trigger_async as refine_trigger_async_operation
 from sgme.profile import tier0 as tier0_mod
 from sgme.server.app import _now_iso, api_error, require_admin_key, run_operation
+from sgme.security_log import (
+    mask_key,
+)  # T-265：admin_op 审计脱敏指纹（_mask_key 同款语义）
 from sgme.data import stats_dao
 
 logger = logging.getLogger("sgme.server.admin")
 
 router = APIRouter()
+
+# T-265（ST-55）安全观测端点参数口径（方案 §2.5）：
+# date 严格形态校验（防路径穿越，非法 400）；limit 缺省 100、上限 1000（clamp）
+_SECURITY_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_EVENTS_LIMIT_DEFAULT = 100
+_EVENTS_LIMIT_MAX = 1000
+
+
+# ---------- T-265（ST-55）：admin 写操作审计（方案 §2.8-3，4 处明确 + config 采纳） ----------
+#
+# 五处点名：注册 /v1/admin/agents/register、吊销 DELETE /v1/admin/agents/{id}、
+# backup restore、update request、config 更新。字段：操作者 key_ref（mask_key
+# 脱敏，绝不落明文 key）/ 动作 op / 目标 target / 结果 result（success/fail）。
+# 实现口径：实例从 request.app.state.security_log 取（T-262 接线）；缺失时跳过
+# 审计不阻塞业务（fail-open，与安全侧 §2.0-5 口径一致）；写失败由 SecurityLog
+# 内部 WARNING 兜底，同样不阻塞主请求。本助手供 routes_backup / routes_config
+# 复用（backup_restore / config_update 两处审计同源，保证事件形态一致）。
+
+
+def audit_admin_op(request: Request, op: str, *, target: str, result: str) -> None:
+    """记一条 admin_op 审计事件（旁路：任何失败不影响主请求/不改变响应）。
+
+    Args:
+        request: FastAPI 请求（取 key_ref 脱敏所需 X-API-Key 与 app.state）。
+        op: 动作名（register_agent / revoke_agent / backup_restore /
+            update_request / config_update）。
+        target: 操作目标（agent_id / snapshot_id / target_version / 配置段）。
+        result: "success" | "fail"。
+    """
+    try:
+        key = request.headers.get("X-API-Key")
+        store = request.app.state.key_store
+        if store.is_admin(key):
+            agent_id = (
+                "default"  # admin key（env 主 key）→ default（resolve_agent_id 同口径）
+            )
+        else:
+            agent_id = store.resolve_agent_id(key) or "unknown"
+        detail = (
+            f"target={target};result={result};"
+            f"key_ref={mask_key(key)};operator={agent_id}"
+        )
+        try:
+            log = request.app.state.security_log  # type: ignore[attr-defined]
+        except AttributeError:
+            return  # T-262 未接线 → 跳过审计不阻塞业务（fail-open）
+        log.record_admin_op(op, source=_audit_source(request), detail=detail)
+    except Exception:  # (BLE001 豁免) 审计旁路：任何异常不得影响主请求（fail-open）
+        logger.warning("admin_op 审计失败 op=%s", op, exc_info=True)
+
+
+def _audit_source(request: Request) -> str:
+    """审计来源（best-effort）：连接对端 host；缺失 → "unknown"（usage 同惯例）。
+
+    注：XFF/trusted_proxies 解析归 T-262 SecurityGate 域，本处不重复解析。
+    """
+    client = getattr(request, "client", None)
+    return getattr(client, "host", None) or "unknown"
 
 
 # ---------- 请求模型 ----------
@@ -89,12 +152,18 @@ def register_agent(
     """签发新 Agent API Key。"""
     store = request.app.state.key_store
     if store.agent_exists(payload.agent_id):
+        # T-265（ST-55）：注册撞名失败也审计（fail 侧，§2.8-3 字段「结果」）
+        audit_admin_op(
+            request, "register_agent", target=payload.agent_id, result="fail"
+        )
         raise api_error(
             "ERR_CONFLICT",
             f"Agent 已存在: {payload.agent_id}（如需新 Key 请先吊销后重签）",
         )
     key = store.register_agent(agent_id=payload.agent_id, scope=payload.scope,
                                agent_model=payload.agent_model)
+    # T-265（ST-55）：admin_op 审计（§2.8-3）——key_ref 脱敏，绝不落明文 key
+    audit_admin_op(request, "register_agent", target=payload.agent_id, result="success")
     return {
         "agent_id": payload.agent_id,
         "api_key": key,
@@ -115,11 +184,17 @@ def revoke_agent(
     store = request.app.state.key_store
     if agent_id == "default":
         from sgme.server.app import api_error
+        # T-265（ST-55）：default 不可吊销的拒绝也审计（fail 侧）
+        audit_admin_op(request, "revoke_agent", target=agent_id, result="fail")
         raise api_error("ERR_INVALID_ARGS", "default（env 主 key）不可吊销，请改环境变量")
     revoked = store.revoke_agent(agent_id)
     if revoked == 0:
         from sgme.server.app import api_error
+        # T-265（ST-55）：吊销不存在的 agent 也审计（fail 侧）
+        audit_admin_op(request, "revoke_agent", target=agent_id, result="fail")
         raise api_error("ERR_NOT_FOUND", f"Agent 不存在或已吊销: {agent_id}")
+    # T-265（ST-55）：admin_op 审计（§2.8-3）
+    audit_admin_op(request, "revoke_agent", target=agent_id, result="success")
     logger.info("吊销 Agent: %s（%d 个 Key）", agent_id, revoked)
     return {"status": "ok", "agent_id": agent_id, "revoked": revoked}
 
@@ -1559,9 +1634,21 @@ def write_update_request(
     from sgme.operations.update_request import write_update_request as write_update_request_op
     from sgme.config import USER_ROOT
 
-    return run_operation(
-        write_update_request_op, USER_ROOT, target_version=body.target_version,
+    try:
+        data = run_operation(
+            write_update_request_op, USER_ROOT, target_version=body.target_version,
+        )
+    except Exception:
+        # T-265（ST-55）：写意图文件失败也审计（fail 侧），异常继续上抛走统一 500
+        audit_admin_op(
+            request, "update_request", target=body.target_version, result="fail"
+        )
+        raise
+    # T-265（ST-55）：admin_op 审计（§2.8-3）——更新意图落盘是管理面写操作
+    audit_admin_op(
+        request, "update_request", target=body.target_version, result="success"
     )
+    return data
 
 
 @router.get("/v1/admin/update/request")
@@ -1604,3 +1691,101 @@ def check_update_now(
         "update_checked_at": result.get("update_checked_at"),
         "update_error": result.get("update_error"),
     }
+
+
+# ---------- T-265（ST-55）：安全观测端点（S4 / 方案 §2.5，P0） ----------
+#
+# GET /v1/admin/security/events  安全事件审计分页读（SecurityLog.read_events）
+# GET /v1/admin/security/status  安全状态快照（SecurityState.snapshot，纯读）
+#
+# ⚠️ 注册顺序确认（任务点 5）：本 router 内既有动态路由均为
+# /v1/admin/<固定段>/{param} 形态（agents/{agent_id}、templates/{name}、
+# skills/{name}、sessions/{file_id}、demands/{demand_id}、projects/{project_id}、
+# dream/reports/{date}），路径前缀与 /v1/admin/security/... 无重叠，
+# FastAPI 按注册序逐条匹配不会抢先命中；本 router 全部为静态路径，
+# 不存在「静态路径被动态路由吞掉」风险（同 /v1/admin/skills/usage 先例结论）。
+#
+# ⚠️ 自锁说明（方案 §2.5）：封禁中的 IP 调不了任何端点（含本观测端点）——
+# 唯一解法 = 重启进程（SecurityState 为进程内存态，重启即解封）。
+# 部署前请用非封禁来源把 events/status 各演练一次。
+#
+# 依赖注入：security_log / security_state 实例由 T-262 在 create_app 接线挂到
+# app.state；本卡（T-265）先于接线完成，实例缺失时观测端点回空数据不 5xx
+# （观测是旁路，fail-open 与安全侧口径一致）。
+
+
+def _security_log_of(request: Request):
+    """取 app.state.security_log（T-262 接线；缺失返回 None，调用方自行兜底）。"""
+    return getattr(request.app.state, "security_log", None)
+
+
+@router.get("/v1/admin/security/events")
+def security_events(
+    request: Request,
+    date: str | None = None,
+    limit: str | None = None,
+    _: str = Depends(require_admin_key),
+):
+    """安全事件审计查询（按日，时间升序，至多 limit 条）。
+
+    - date 缺省 = 本地今天；非 ``YYYY-MM-DD`` 形态 → 400 ERR_INVALID_ARGS
+      （严格正则校验，防路径穿越，D4）
+    - limit 非整数 → 回退 100；整数 clamp 到 [1, 1000]（与 SecurityLog
+      读接口钳制口径一致）
+    - 日志文件不存在 → 200 空列表（read_events 内置语义）
+    """
+    # date 严格校验（^\d{4}-\d{2}-\d{2}$）：格式不符一律 400，不进入文件路径拼接
+    qdate = date if date else datetime.now().astimezone().strftime("%Y-%m-%d")
+    if not _SECURITY_DATE_RE.match(qdate):
+        raise api_error("ERR_INVALID_ARGS", f"date 必须为 YYYY-MM-DD 形态: {date!r}")
+    # limit：str 收入手工解析（本文件 _parse_active_within 同惯例）；
+    # 非整数回退 100（缺省值），整数 clamp [1, 1000]
+    qlimit = _EVENTS_LIMIT_DEFAULT
+    if limit:
+        try:
+            qlimit = int(limit)
+        except (TypeError, ValueError):
+            qlimit = _EVENTS_LIMIT_DEFAULT
+    qlimit = max(1, min(qlimit, _EVENTS_LIMIT_MAX))
+
+    log = _security_log_of(request)
+    events = log.read_events(qdate, limit=qlimit) if log is not None else []
+    return {
+        "events": events,
+        "date": qdate,
+        "limit": qlimit,
+        "count": len(events),
+        "generated_at": _now_iso(),
+    }
+
+
+@router.get("/v1/admin/security/status")
+def security_status(
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """安全状态快照（S4）：活封禁列表 + 失败计数概览。纯读。
+
+    响应 = SecurityState.snapshot(now) 透传（active_bans / fail_counts /
+    fail_keys / ban_entries / size / max_entries）+ available 注记
+    （security_state 未接线/缺失时 false + 空快照，不 5xx）。
+
+    ⚠️ 自锁说明：封禁中的 IP 调不了本端点——唯一解 = 重启进程（= 解封）。
+    """
+    state = getattr(request.app.state, "security_state", None)
+    if state is None:
+        # T-262 未接线（或测试未注入）→ 空快照 + available=false，观测旁路不报错
+        return {
+            "active_bans": [],
+            "fail_counts": {},
+            "fail_keys": 0,
+            "ban_entries": 0,
+            "size": 0,
+            "max_entries": 0,
+            "available": False,
+            "generated_at": _now_iso(),
+        }
+    snapshot = state.snapshot(time.time())
+    snapshot["available"] = True
+    snapshot["generated_at"] = _now_iso()
+    return snapshot

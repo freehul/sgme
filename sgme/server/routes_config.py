@@ -31,6 +31,9 @@ from sgme.operations.config import update_config as update_config_operation
 from sgme.operations.config import update_payload as config_update_payload
 from sgme.server.app import require_admin_key, run_operation
 
+# T-265（ST-55）：admin_op 审计与 routes_admin 同源（事件形态一致）
+from sgme.server.routes_admin import audit_admin_op
+
 router = APIRouter(prefix="/v1/admin/config", tags=["config"])
 
 # 可写段白名单（权威源在 sgme.config.CONFIG_SECTIONS）
@@ -86,8 +89,19 @@ def _do_update_config(payload: ConfigUpdateRequest, request: Request) -> dict:
     同一个字典对象，这行实际是幂等的，但保留可避免未来换成不可变配置时漏改。
     """
     cfg = request.app.state.cfg
-    data = run_operation(
-        update_config_operation, cfg, section=payload.section, values=payload.values,
-    )
+    # T-265（ST-55）：审计目标 = 配置段（单段形态）；多段形态段名逗号拼接
+    target = payload.section if payload.section else ",".join(payload.values.keys())
+    try:
+        data = run_operation(
+            update_config_operation, cfg, section=payload.section, values=payload.values,
+        )
+    except Exception:
+        # T-265（ST-55）：业务失败（未知段 404/400）与落盘异常（500）同样留痕
+        # （fail 侧）；异常继续上抛走统一错误信封
+        audit_admin_op(request, "config_update", target=target, result="fail")
+        raise
+    # T-265（ST-55）：admin_op 审计（§2.8-3）——config 自我指涉，最该有审计；
+    # run_operation 已把业务失败（未知段等）翻译为 HTTPException，此处收 success
+    audit_admin_op(request, "config_update", target=target, result="success")
     request.app.state.cfg = cfg
     return config_update_payload(data)
