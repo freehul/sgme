@@ -196,12 +196,16 @@ class AgentKeyStore:
         return key
 
     def is_admin(self, key: str | None) -> bool:
-        return key is not None and key == self.admin_key
+        # T-261（S6）：常数时间比较，防时序侧信道（含非 ASCII 按「不匹配」处理）
+        return net_guard.const_eq(key, self.admin_key)
 
     def is_agent(self, key: str | None) -> bool:
         if key is None:
             return False
-        if key == self.agent_key or key == self.admin_key:
+        # T-261（S6）：env 主/管理员 key 常数时间比较；
+        # agt_* 注册 key 走 _extra_agents 字典精确匹配——豁免声明：
+        # 随机 128-bit hex 无实际时序可挖，dict 哈希比较不构成可比对时序信道
+        if net_guard.const_eq(key, self.agent_key) or net_guard.const_eq(key, self.admin_key):
             return True
         with self._lock:
             return key in self._extra_agents
@@ -220,7 +224,8 @@ class AgentKeyStore:
         """
         if key is None:
             return None
-        if key == self.agent_key or key == self.admin_key:
+        # T-261（S6）：常数时间比较（与 is_agent 同口径）
+        if net_guard.const_eq(key, self.agent_key) or net_guard.const_eq(key, self.admin_key):
             return "default"
         with self._lock:
             rec = self._extra_agents.get(key)
@@ -412,7 +417,8 @@ def require_bearer(request: Request) -> None:
             "缺失 Bearer 令牌：请设置 SGME_BEARER_TOKEN 环境变量，并在请求头携带 Authorization: Bearer <token>",
         )
     token = auth[len("Bearer "):].strip()
-    if token != bearer_token:
+    # T-261（S6）：常数时间比较
+    if not net_guard.const_eq(token, bearer_token):
         raise api_error(
             "ERR_UNAUTHORIZED",
             "Bearer 令牌无效：请核对请求头与 SGME_BEARER_TOKEN 环境变量是否一致",

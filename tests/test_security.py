@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
 from sgme.net_guard import (
+    const_eq,
     ip_key,
     is_loopback_source,
     parse_trusted_proxies,
@@ -301,3 +303,69 @@ class TestParseTrustedProxies:
 # ---------- I3 收口位（T-262 落） ----------
 # 「413 不产生 401/403 失败计数副作用」为跨卡断言：
 # 本卡落 413 形态部分；完整副作用断言在 T-262（接线后）追加到此类。
+
+
+# ---------- U8：鉴权 Key 常数时间比较（T-261，S6） ----------
+
+
+class TestConstEq:
+    """net_guard.const_eq：先 encode 再 compare_digest，非 ASCII → 不匹配不炸。"""
+
+    def test_equal_keys(self):
+        assert const_eq("test-admin-key-security", "test-admin-key-security")
+
+    def test_different_keys(self):
+        assert not const_eq("test-admin-key-security", "test-admin-key-wrong")
+
+    def test_non_ascii_no_typeerror(self):
+        """含非 ASCII 的 key：encode 失败语义 = 不匹配（不得抛 TypeError）。"""
+        assert not const_eq("kéy-with-é", "test-admin-key-security")
+        assert not const_eq("测试中文键", "test-admin-key-security")
+
+    def test_none_handling(self):
+        assert not const_eq(None, "test-admin-key-security")
+        assert not const_eq("test-admin-key-security", None)
+        assert not const_eq(None, None)
+
+    def test_empty_strings(self):
+        assert const_eq("", "")
+        assert not const_eq("", "x")
+
+
+class TestNonAsciiKeyOverHttp:
+    """非 ASCII X-API-Key 走 HTTP / MCP → 403 不得 500（至少覆盖 HTTP 一点位）。"""
+
+    def _make_client(self, conns, cfg, tmp_path) -> TestClient:
+        mem_conn, session_conn, wiki_conn = conns
+        app = create_app(
+            cfg=cfg,
+            mem_conn=mem_conn,
+            session_conn=session_conn,
+            wiki_conn=wiki_conn,
+            admin_key="test-admin-key-security",
+            agent_key="test-agent-key-security",
+            bearer_token="",
+            agent_store_path=tmp_path / "agent_keys.json",
+        )
+        return TestClient(app)
+
+    def test_non_ascii_key_returns_4xx_not_500(self, conns, cfg, tmp_path):
+        """攻击者发非 ASCII key：真实流 = 字节头经 uvicorn 按 latin-1 解码成 str。
+
+        TestClient 直接传 bytes 头模拟（httpx 拒绝 str 非 ASCII 头）。
+        """
+        client = self._make_client(conns, cfg, tmp_path)
+        r = client.get(
+            "/v1/events",
+            headers={"X-API-Key": b"k\xe9y-w\xeeth-n\xf6n-\xe4scii"},
+        )
+        assert r.status_code < 500
+        assert r.status_code in (401, 403)
+
+    def test_admin_compare_uses_const_time(self, conns, cfg, tmp_path):
+        """admin 判定路径同样吃非 ASCII key 不炸（is_admin → const_eq）。"""
+        client = self._make_client(conns, cfg, tmp_path)
+        r = client.get(
+            "/v1/admin/agents", headers={"X-API-Key": b"\xc0\x80admin-key-\xff"}
+        )
+        assert r.status_code in (401, 403)

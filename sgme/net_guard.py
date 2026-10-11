@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hmac
 from ipaddress import (
     IPv4Address,
     IPv4Network,
@@ -61,6 +62,24 @@ def is_default_key_from_remote(key_store: Any, key: str | None, client_host: str
     if not key_store.is_default_dev_key(key):
         return False
     return not is_localhost_host(client_host)
+
+
+def const_eq(a: str | None, b: str | None) -> bool:
+    """鉴权 Key 常数时间比较（ST-55 / T-261，S6，两入口共用防双实现漂移）。
+
+    落点原因：hmac.compare_digest 对含非 ASCII 的 str 直接 TypeError
+    （X-API-Key 按 latin-1 解码，攻击者发非 ASCII 即触发）——必须先
+    encode() 再比对；编码失败按「不匹配」处理（调用方回 403，不得 500）。
+
+    豁免声明：agt_* 注册 key 保持字典精确匹配（随机 128-bit hex，
+    无实际时序可挖），不适用本函数。
+    """
+    if a is None or b is None:
+        return False
+    try:
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    except (UnicodeError, LookupError):
+        return False
 
 
 # ---------------------------------------------------------------------------

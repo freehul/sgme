@@ -37,7 +37,7 @@ from typing import Any, Callable, Dict
 import anyio
 from mcp.server.fastmcp import Context
 
-from sgme.net_guard import is_default_key_from_remote
+from sgme.net_guard import const_eq, is_default_key_from_remote
 
 logger = logging.getLogger("sgme.mcp")
 
@@ -153,8 +153,9 @@ def _require_admin(ctx: "Context | None" = None) -> tuple[bool, str]:
     if key_store is not None and key_store.is_admin(presented):
         return True, ""
     # 兜底：无 key_store 时比对环境变量（与仓库既有 _require_admin 语义兼容）
+    # T-261（S6）：常数时间比较（先 encode 再比对，防非 ASCII 触发 TypeError 500）
     admin_key = os.environ.get("SGME_ADMIN_KEY")
-    if admin_key and presented == admin_key:
+    if admin_key and const_eq(presented, admin_key):
         return True, ""
     return False, "需要管理员 Key（SGME_ADMIN_KEY）才能执行写侧操作"
 
