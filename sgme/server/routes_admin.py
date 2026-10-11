@@ -23,8 +23,10 @@ L1.5 LLM 不可用时降级直存（保守不丢数据）。
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -59,6 +61,12 @@ from sgme.data import stats_dao
 logger = logging.getLogger("sgme.server.admin")
 
 router = APIRouter()
+
+# T-265（ST-55）安全观测端点参数口径（方案 §2.5）：
+# date 严格形态校验（防路径穿越，非法 400）；limit 缺省 100、上限 1000（clamp）
+_SECURITY_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_EVENTS_LIMIT_DEFAULT = 100
+_EVENTS_LIMIT_MAX = 1000
 
 
 # ---------- 请求模型 ----------
@@ -1604,3 +1612,101 @@ def check_update_now(
         "update_checked_at": result.get("update_checked_at"),
         "update_error": result.get("update_error"),
     }
+
+
+# ---------- T-265（ST-55）：安全观测端点（S4 / 方案 §2.5，P0） ----------
+#
+# GET /v1/admin/security/events  安全事件审计分页读（SecurityLog.read_events）
+# GET /v1/admin/security/status  安全状态快照（SecurityState.snapshot，纯读）
+#
+# ⚠️ 注册顺序确认（任务点 5）：本 router 内既有动态路由均为
+# /v1/admin/<固定段>/{param} 形态（agents/{agent_id}、templates/{name}、
+# skills/{name}、sessions/{file_id}、demands/{demand_id}、projects/{project_id}、
+# dream/reports/{date}），路径前缀与 /v1/admin/security/... 无重叠，
+# FastAPI 按注册序逐条匹配不会抢先命中；本 router 全部为静态路径，
+# 不存在「静态路径被动态路由吞掉」风险（同 /v1/admin/skills/usage 先例结论）。
+#
+# ⚠️ 自锁说明（方案 §2.5）：封禁中的 IP 调不了任何端点（含本观测端点）——
+# 唯一解法 = 重启进程（SecurityState 为进程内存态，重启即解封）。
+# 部署前请用非封禁来源把 events/status 各演练一次。
+#
+# 依赖注入：security_log / security_state 实例由 T-262 在 create_app 接线挂到
+# app.state；本卡（T-265）先于接线完成，实例缺失时观测端点回空数据不 5xx
+# （观测是旁路，fail-open 与安全侧口径一致）。
+
+
+def _security_log_of(request: Request):
+    """取 app.state.security_log（T-262 接线；缺失返回 None，调用方自行兜底）。"""
+    return getattr(request.app.state, "security_log", None)
+
+
+@router.get("/v1/admin/security/events")
+def security_events(
+    request: Request,
+    date: str | None = None,
+    limit: str | None = None,
+    _: str = Depends(require_admin_key),
+):
+    """安全事件审计查询（按日，时间升序，至多 limit 条）。
+
+    - date 缺省 = 本地今天；非 ``YYYY-MM-DD`` 形态 → 400 ERR_INVALID_ARGS
+      （严格正则校验，防路径穿越，D4）
+    - limit 非整数 → 回退 100；整数 clamp 到 [1, 1000]（与 SecurityLog
+      读接口钳制口径一致）
+    - 日志文件不存在 → 200 空列表（read_events 内置语义）
+    """
+    # date 严格校验（^\d{4}-\d{2}-\d{2}$）：格式不符一律 400，不进入文件路径拼接
+    qdate = date if date else datetime.now().astimezone().strftime("%Y-%m-%d")
+    if not _SECURITY_DATE_RE.match(qdate):
+        raise api_error("ERR_INVALID_ARGS", f"date 必须为 YYYY-MM-DD 形态: {date!r}")
+    # limit：str 收入手工解析（本文件 _parse_active_within 同惯例）；
+    # 非整数回退 100（缺省值），整数 clamp [1, 1000]
+    qlimit = _EVENTS_LIMIT_DEFAULT
+    if limit:
+        try:
+            qlimit = int(limit)
+        except (TypeError, ValueError):
+            qlimit = _EVENTS_LIMIT_DEFAULT
+    qlimit = max(1, min(qlimit, _EVENTS_LIMIT_MAX))
+
+    log = _security_log_of(request)
+    events = log.read_events(qdate, limit=qlimit) if log is not None else []
+    return {
+        "events": events,
+        "date": qdate,
+        "limit": qlimit,
+        "count": len(events),
+        "generated_at": _now_iso(),
+    }
+
+
+@router.get("/v1/admin/security/status")
+def security_status(
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """安全状态快照（S4）：活封禁列表 + 失败计数概览。纯读。
+
+    响应 = SecurityState.snapshot(now) 透传（active_bans / fail_counts /
+    fail_keys / ban_entries / size / max_entries）+ available 注记
+    （security_state 未接线/缺失时 false + 空快照，不 5xx）。
+
+    ⚠️ 自锁说明：封禁中的 IP 调不了本端点——唯一解 = 重启进程（= 解封）。
+    """
+    state = getattr(request.app.state, "security_state", None)
+    if state is None:
+        # T-262 未接线（或测试未注入）→ 空快照 + available=false，观测旁路不报错
+        return {
+            "active_bans": [],
+            "fail_counts": {},
+            "fail_keys": 0,
+            "ban_entries": 0,
+            "size": 0,
+            "max_entries": 0,
+            "available": False,
+            "generated_at": _now_iso(),
+        }
+    snapshot = state.snapshot(time.time())
+    snapshot["available"] = True
+    snapshot["generated_at"] = _now_iso()
+    return snapshot
