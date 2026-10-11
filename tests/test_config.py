@@ -319,3 +319,195 @@ def test_load_sgme_config_backup_dir_fallback_when_missing_or_blank(tmp_path):
         yaml_path.write_text(content, encoding="utf-8")
         cfg = config.load_config(sgme_path=str(yaml_path))
         assert cfg["backup"]["dir"] == "data/backups"
+
+
+# ---------- T-257（ST-55）：server 段安全加固键（§2.7 全量校验 + D6 缓存） ----------
+# 数据卫生：样例一律假值（10.0.0.x 私网段 / TEST-NET 文档段）。
+
+
+def test_t257_server_defaults_complete():
+    """缺省回退：不传 server 段 → 14 键全默认（§2.7 观察期口径）。"""
+    cfg = config._merge_server_config(None)
+    d = config.DEFAULT_SERVER_CONFIG
+    assert cfg == d
+    assert cfg["rate_limit_per_min"] == 120
+    assert cfg["ip_rate_limit_per_min"] == 60
+    assert cfg["auth_fail_threshold"] == 0  # 观察期：只计数不封
+    assert cfg["auth_fail_window_sec"] == 300
+    assert cfg["ban_seconds"] == 900
+    assert cfg["ban_escalation"] is True
+    assert cfg["ban_max_seconds"] == 3600
+    assert cfg["ban_reset_sec"] == 86400
+    assert cfg["trusted_proxies"] == []
+    assert cfg["max_body_bytes"] == 5242880
+    assert cfg["llm_route_limits"] == {
+        "/v1/answer": 10,
+        "/v1/admin/refine": 5,
+        "/v1/admin/dream": 5,
+        "/v1/admin/tier0": 5,
+        "/v1/wiki": 5,
+        "/v1/admin/skills": 5,
+    }
+    assert cfg["llm_mcp_tool_limits"] == {
+        "answer": 10,
+        "refine_trigger": 5,
+        "refine_batch": 2,
+        "wiki_evolve_trigger": 5,
+    }
+    assert cfg["security_log_keep_days"] == 90
+
+
+def test_t257_server_defaults_not_mutated_by_caller():
+    """防串改：调用方改合并结果内层容器不得污染 DEFAULT_SERVER_CONFIG。"""
+    cfg = config._merge_server_config(None)
+    cfg["cors_origins"].append("http://10.0.0.5:8080")
+    cfg["trusted_proxies"].append("10.0.0.0/8")
+    cfg["llm_route_limits"]["/v1/answer"] = 1
+    cfg["llm_mcp_tool_limits"]["answer"] = 1
+    fresh = config._merge_server_config(None)
+    assert fresh == config.DEFAULT_SERVER_CONFIG
+    assert fresh["cors_origins"] == []
+    assert fresh["trusted_proxies"] == []
+    assert fresh["llm_route_limits"]["/v1/answer"] == 10
+    assert fresh["llm_mcp_tool_limits"]["answer"] == 10
+
+
+def test_t257_server_int_keys_valid_override():
+    """合法非负整数逐键采纳（0 是合法值 = 关闭语义，必须能写入）。"""
+    user = {
+        "rate_limit_per_min": 0,
+        "ip_rate_limit_per_min": 30,
+        "auth_fail_threshold": 20,
+        "auth_fail_window_sec": 0,
+        "ban_seconds": 0,
+        "ban_max_seconds": 86400,
+        "ban_reset_sec": 0,
+        "max_body_bytes": 0,
+        "security_log_keep_days": 0,
+        "ban_escalation": False,
+    }
+    cfg = config._merge_server_config(user)
+    for k, v in user.items():
+        assert cfg[k] == v, k
+
+
+def test_t257_server_int_keys_negative_falls_back():
+    """负数 → 逐键回退默认。"""
+    d = config.DEFAULT_SERVER_CONFIG
+    for key in config._SERVER_INT_KEYS:
+        cfg = config._merge_server_config({key: -1})
+        assert cfg[key] == d[key], key
+
+
+def test_t257_server_int_keys_non_int_falls_back():
+    """非整数（float/str/None/dict）→ 逐键回退默认。"""
+    d = config.DEFAULT_SERVER_CONFIG
+    for key in config._SERVER_INT_KEYS:
+        for bad in (12.5, "120", None, {"a": 1}):
+            cfg = config._merge_server_config({key: bad})
+            assert cfg[key] == d[key], (key, bad)
+
+
+def test_t257_server_bool_rejected_in_int_keys():
+    """bool 是 int 子类：True/False 不得冒充 1/0 写入数值键。"""
+    d = config.DEFAULT_SERVER_CONFIG
+    for key in config._SERVER_INT_KEYS:
+        for bad in (True, False):
+            cfg = config._merge_server_config({key: bad})
+            assert cfg[key] == d[key], (key, bad)
+
+
+def test_t257_server_ban_escalation_non_bool_falls_back():
+    """ban_escalation 仅接受 bool；字符串/整数回退默认 True。"""
+    cfg = config._merge_server_config({"ban_escalation": "yes"})
+    assert cfg["ban_escalation"] is True
+    cfg = config._merge_server_config({"ban_escalation": 1})
+    assert cfg["ban_escalation"] is True
+    cfg = config._merge_server_config({"ban_escalation": False})
+    assert cfg["ban_escalation"] is False  # 合法关
+
+
+def test_t257_server_list_type_keys_invalid_falls_back():
+    """cors_origins / trusted_proxies 非 list → 回退默认。"""
+    for key in ("cors_origins", "trusted_proxies"):
+        for bad in ("10.0.0.0/8", 5, {"a": 1}, True):
+            cfg = config._merge_server_config({key: bad})
+            assert cfg[key] == config.DEFAULT_SERVER_CONFIG[key], (key, bad)
+
+
+def test_t257_server_trusted_proxies_invalid_cidr_filtered_and_warned(caplog):
+    """CIDR 非法项过滤 + WARNING（比对过滤前后数量差）。"""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="sgme.config"):
+        cfg = config._merge_server_config(
+            {"trusted_proxies": ["10.0.0.1", "10.0.0.0/24", "not-an-ip", "not-an-ip", "192.0.2.0/24"]}
+        )
+    assert cfg["trusted_proxies"] == ["10.0.0.1", "10.0.0.0/24", "not-an-ip", "not-an-ip", "192.0.2.0/24"]
+    assert any(
+        "trusted_proxies" in r.message and "2" in r.message for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
+def test_t257_server_trusted_proxies_cache_same_raw_no_reparse(monkeypatch):
+    """D6 缓存：同原始值不重解析（parse_trusted_proxies 计数桩证）。"""
+    calls = {"n": 0}
+    real = config.parse_trusted_proxies
+
+    def spy(raw):
+        calls["n"] += 1
+        return real(raw)
+
+    monkeypatch.setattr(config, "parse_trusted_proxies", spy)
+    raw = ["10.0.0.1", "192.0.2.0/24"]
+    first = config._merge_server_config({"trusted_proxies": list(raw)})
+    assert calls["n"] == 1
+    second = config._merge_server_config({"trusted_proxies": list(raw)})  # 同原始值
+    assert calls["n"] == 1  # 命中缓存，未重解析
+    assert second["trusted_proxies"] == first["trusted_proxies"] == raw
+    config._merge_server_config({"trusted_proxies": ["192.0.2.1"]})  # 新原始值
+    assert calls["n"] == 2
+
+
+def test_t257_server_llm_route_limits_structure():
+    """llm_route_limits：子集合并 + 非法值/键丢弃。"""
+    cfg = config._merge_server_config({"/v1/answer": 99})
+    # 非 dict：忽略，整表保留默认
+    d = config.DEFAULT_SERVER_CONFIG
+    assert cfg["llm_route_limits"] == d["llm_route_limits"]
+    cfg = config._merge_server_config({"llm_route_limits": {"/v1/answer": 99}})
+    assert cfg["llm_route_limits"]["/v1/answer"] == 99  # 用户覆盖生效
+    assert cfg["llm_route_limits"]["/v1/wiki"] == 5  # 未写路由保留默认（子集合并）
+    cfg = config._merge_server_config(
+        {"llm_route_limits": {"/v1/answer": -1, "/v1/wiki": "5", "route": 3}}
+    )
+    assert cfg["llm_route_limits"]["/v1/answer"] == 10  # 负数丢弃
+    assert cfg["llm_route_limits"]["/v1/wiki"] == 5  # 非整数丢弃
+    assert cfg["llm_route_limits"]["route"] == 3  # 新合法键可登记
+
+
+def test_t257_server_llm_mcp_tool_limits_structure():
+    """llm_mcp_tool_limits：同构校验（{str: 非负 int}，子集合并）。"""
+    d = config.DEFAULT_SERVER_CONFIG
+    cfg = config._merge_server_config({"llm_mcp_tool_limits": "nope"})
+    assert cfg["llm_mcp_tool_limits"] == d["llm_mcp_tool_limits"]
+    cfg = config._merge_server_config(
+        {"llm_mcp_tool_limits": {"answer": 20, "refine_batch": 0, "bad": -5}}
+    )
+    assert cfg["llm_mcp_tool_limits"]["answer"] == 20  # 覆盖生效
+    assert cfg["llm_mcp_tool_limits"]["refine_batch"] == 0  # 0 合法
+    assert cfg["llm_mcp_tool_limits"]["wiki_evolve_trigger"] == 5  # 默认保留
+    assert "bad" not in cfg["llm_mcp_tool_limits"]  # 负数丢弃
+
+
+def test_t257_server_bundle_template_synced_with_defaults():
+    """出厂模板 server: 段与 DEFAULT_SERVER_CONFIG 键全量一致（14 键两处同步）。"""
+    import yaml
+
+    doc = yaml.safe_load(config.BUNDLE_SGME_CONFIG.read_text(encoding="utf-8"))
+    srv = doc.get("server")
+    assert isinstance(srv, dict)
+    assert set(srv) == set(config.DEFAULT_SERVER_CONFIG)
+    merged = config._merge_server_config(srv)
+    for k, v in config.DEFAULT_SERVER_CONFIG.items():
+        assert merged[k] == v, k  # 模板值 = 缺省值（出厂态）

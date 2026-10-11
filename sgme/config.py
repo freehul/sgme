@@ -15,6 +15,9 @@ from typing import Any
 import yaml
 import logging
 
+# T-257（ST-55）：复用 T-256 已落叶子 parse_trusted_proxies（纯函数，无环风险）
+from sgme.net_guard import parse_trusted_proxies
+
 logger = logging.getLogger("sgme.config")
 
 # 项目根目录（本文件位于 sgme/config.py，根 = 父目录）
@@ -421,13 +424,68 @@ DEFAULT_AGENT_SCOPE_CONFIG = {
 }
 
 # 限流段默认兜底（§6 限流，T-7）：默认 120 req/min/Key；0 = 关闭
+# T-257（ST-55）：§2.7 安全加固键全量就位——IP 限流 / 认证失败计数 / 封禁 /
+# 可信代理 / 请求体上限 / LLM 端点低限 / 审计保留。缺省 = 观察期口径
+# （封禁关：threshold=0 只计数不封；无 key 限流开；体限开；审计开）。
+# SECURITY_STATE_MAX_ENTRIES=100000 为模块常量（T-258），不入配置面。
 DEFAULT_SERVER_CONFIG = {
     "rate_limit_per_min": 120,
     # 浏览器跨源白名单（F-1，2026-09-24）：默认空 = 仅放行本机回环来源；
     # 局域网/自定义来源（如其它设备上的 HTML 工具）在此显式登记，
     # 例：["http://10.0.0.5:8080", "http://tools.example.com"]
     "cors_origins": [],
+    # 无 key 请求按来源 IP 限流（§2.8）；0 = 关
+    "ip_rate_limit_per_min": 60,
+    # 认证失败封禁（§2.2）：观察期缺省 0 = 只计数不封；实测通过后转 20
+    "auth_fail_threshold": 0,
+    "auth_fail_window_sec": 300,
+    "ban_seconds": 900,
+    # 升级阶梯：逐次翻倍至 ban_max_seconds；ban_reset_sec 内无失败则归零
+    "ban_escalation": True,
+    "ban_max_seconds": 3600,
+    "ban_reset_sec": 86400,
+    # 可信代理 IP/CIDR（XFF 定稿算法前置条件）；空 = 不信任转发头。
+    # T-257 D6：解析结果按原始值缓存（_trusted_proxies_cache），勿每请求重解析
+    "trusted_proxies": [],
+    # 请求体上限（§2.8-1）；0 = 关
+    "max_body_bytes": 5242880,
+    # LLM 端点分钟限（HTTP 按 key 前缀匹配；MCP 按工具名；§2.8-2）。
+    # 嵌套 dict 拷贝防串改：_merge_server_config 深拷贝这两个键
+    "llm_route_limits": {
+        "/v1/answer": 10,
+        "/v1/admin/refine": 5,
+        "/v1/admin/dream": 5,
+        "/v1/admin/tier0": 5,
+        "/v1/wiki": 5,
+        "/v1/admin/skills": 5,
+    },
+    "llm_mcp_tool_limits": {
+        "answer": 10,
+        "refine_trigger": 5,
+        "refine_batch": 2,
+        "wiki_evolve_trigger": 5,
+    },
+    # 安全审计日志保留天数；0 = 不清理
+    "security_log_keep_days": 90,
 }
+
+# T-257（ST-55）：_merge_server_config 数值键清单（非负整数校验，非法回退默认）。
+# ban_escalation（bool）与列表/映射键不在此列。
+_SERVER_INT_KEYS = (
+    "rate_limit_per_min",
+    "ip_rate_limit_per_min",
+    "auth_fail_threshold",
+    "auth_fail_window_sec",
+    "ban_seconds",
+    "ban_max_seconds",
+    "ban_reset_sec",
+    "max_body_bytes",
+    "security_log_keep_days",
+)
+
+# T-257（ST-55）D6：trusted_proxies 解析缓存——键为归一化原始值 tuple，
+# 值为（网络对象 tuple, 解析失败条数）。同原始值不重解析、不重复告警。
+_trusted_proxies_cache: dict[tuple[str, ...], tuple[tuple[Any, ...], int]] = {}
 
 # Dream 夜间整理段默认兜底（0.8 ST-10，设计文档 SGME-Dream夜间整理设计-v0.1.md §3）
 # enabled：总开关；schedule：每日执行时刻（本地时区 HH:MM，空 = 不自动只手动）
@@ -1057,20 +1115,127 @@ def _merge_server_config(user_cfg: dict | None) -> dict:
     ``rate_limit_per_min`` 必须为非负整数；非法值（负数/非整数/缺失）回退默认 120。
     ``cors_origins``（F-1，2026-09-24）只接受非空字符串列表；非法项过滤，
     非法类型（非 list）回退默认空表（空表 = 仅本机回环来源）。
+
+    T-257（ST-55）：§2.7 安全加固键全量纳入校验——
+    - 数值键（*_per_min/*_sec/keep_days/max_body_bytes）：非负整数，否则回退默认；
+      bool 是 int 子类，显式排除（True 不能冒充 1 秒/1 分钟）。
+    - ``ban_escalation``：仅接受 bool；非 bool 回退默认 True。
+    - ``trusted_proxies``：list 才采纳；经 net_guard.parse_trusted_proxies 复析，
+      过滤前后条数差 >0 打 WARNING（CIDR 非法项对用户可见）；非 list 回退默认空表。
+    - ``llm_route_limits`` / ``llm_mcp_tool_limits``：{str key: 非负 int} 结构，
+      非法项（非 dict / key 非 str / 值为负数、非 int、bool）逐项丢弃，全空回退默认表；
+      子集合并——用户只写部分路由时其余路由保留默认限额。
+
+    D6 缓存：trusted_proxies 解析结果按原始值缓存（_trusted_proxies_cache），
+    同原始值不重解析；缓存键为归一化 tuple（去重保持顺序），命中不触发复析与告警。
     """
     base = dict(DEFAULT_SERVER_CONFIG)
     # 防可变默认值串改：浅拷贝仍与 DEFAULT_SERVER_CONFIG 共享同一 list 引用
     base["cors_origins"] = list(DEFAULT_SERVER_CONFIG["cors_origins"])
+    base["trusted_proxies"] = list(DEFAULT_SERVER_CONFIG["trusted_proxies"])
+    # 嵌套 dict 同理：逐键拷贝，防调用方串改 DEFAULT_SERVER_CONFIG 内层表
+    base["llm_route_limits"] = dict(DEFAULT_SERVER_CONFIG["llm_route_limits"])
+    base["llm_mcp_tool_limits"] = dict(DEFAULT_SERVER_CONFIG["llm_mcp_tool_limits"])
     if not isinstance(user_cfg, dict):
         return base
-    rlm = user_cfg.get("rate_limit_per_min")
-    if isinstance(rlm, int) and rlm >= 0:
-        base["rate_limit_per_min"] = rlm
+
+    def _nonneg_int(value: Any) -> bool:
+        # bool 是 int 子类：isinstance(True, int) 为真，须显式排除
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    # ---- 数值键：非负整数，非法回退默认（照 rate_limit_per_min 先例） ----
+    for _key in _SERVER_INT_KEYS:
+        val = user_cfg.get(_key)
+        if _nonneg_int(val):
+            base[_key] = val
+        elif val is not None:
+            logger.warning(
+                "config server.%s 非法值 %r（须非负整数），回退默认 %s",
+                _key,
+                val,
+                DEFAULT_SERVER_CONFIG[_key],
+            )
+
+    # ---- ban_escalation：仅 bool（观察期口径默认开） ----
+    esc = user_cfg.get("ban_escalation")
+    if isinstance(esc, bool):
+        base["ban_escalation"] = esc
+    elif esc is not None:
+        logger.warning(
+            "config server.ban_escalation 非法值 %r（须布尔），回退默认 %s",
+            esc,
+            DEFAULT_SERVER_CONFIG["ban_escalation"],
+        )
+
+    # ---- cors_origins：照既有先例（非空字符串列表，非法项过滤） ----
     cors = user_cfg.get("cors_origins")
     if isinstance(cors, list):
         base["cors_origins"] = [
             str(x).strip() for x in cors if isinstance(x, str) and str(x).strip()
         ]
+    elif cors is not None:
+        logger.warning(
+            "config server.cors_origins 非法类型 %s（须列表），回退默认空表",
+            type(cors).__name__,
+        )
+
+    # ---- trusted_proxies：CIDR 解析（复用 T-256 net_guard 叶子）+ D6 缓存 ----
+    proxies = user_cfg.get("trusted_proxies")
+    if proxies is None:
+        pass  # 键缺失：保留默认空表，不动缓存
+    elif not isinstance(proxies, list):
+        logger.warning(
+            "config server.trusted_proxies 非法类型 %s（须列表），回退默认空表",
+            type(proxies).__name__,
+        )
+    else:
+        # D6 缓存：原始值归一化为 tuple 作缓存键（同原始值不重解析）
+        cache_key = tuple(str(x).strip() for x in proxies)
+        cached = _trusted_proxies_cache.get(cache_key)
+        if cached is None:
+            nets = parse_trusted_proxies(proxies)
+            dropped = len(cache_key) - len(nets)
+            if dropped > 0:
+                logger.warning(
+                    "config server.trusted_proxies %d 项 CIDR 解析失败已过滤（%d/%d 有效）",
+                    dropped,
+                    len(nets),
+                    len(cache_key),
+                )
+            cached = (tuple(nets), dropped)
+            # 简单上限防膨胀：非法值无限变异时旧键先出（LRU 语义按插入序近似）
+            if len(_trusted_proxies_cache) >= 16:
+                _trusted_proxies_cache.pop(next(iter(_trusted_proxies_cache)))
+            _trusted_proxies_cache[cache_key] = cached
+        base["trusted_proxies"] = list(cache_key)
+
+    # ---- llm_route_limits / llm_mcp_tool_limits：{str: 非负 int} 子集合并 ----
+    for _lkey in ("llm_route_limits", "llm_mcp_tool_limits"):
+        table = user_cfg.get(_lkey)
+        if table is None:
+            continue  # 键缺失：保留默认表
+        if not isinstance(table, dict):
+            logger.warning(
+                "config server.%s 非法类型 %s（须映射），回退默认表",
+                _lkey,
+                type(table).__name__,
+            )
+            continue
+        merged = dict(base[_lkey])
+        for rk, rv in table.items():
+            if not isinstance(rk, str) or not rk.strip():
+                logger.warning("config server.%s 非法键 %r，已丢弃", _lkey, rk)
+                continue
+            if not _nonneg_int(rv):
+                logger.warning(
+                    "config server.%s[%r] 非法值 %r（须非负整数），已丢弃",
+                    _lkey,
+                    rk,
+                    rv,
+                )
+                continue
+            merged[rk] = rv
+        base[_lkey] = merged
     return base
 
 
