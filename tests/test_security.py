@@ -23,8 +23,11 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 from fastapi.testclient import TestClient
+
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
@@ -301,3 +304,223 @@ class TestParseTrustedProxies:
 # ---------- I3 收口位（T-262 落） ----------
 # 「413 不产生 401/403 失败计数副作用」为跨卡断言：
 # 本卡落 413 形态部分；完整副作用断言在 T-262（接线后）追加到此类。
+
+
+# ---------- U2 状态机单元 / U7 状态有界（T-258，§2.2 K1/K2/K5） ----------
+
+
+class TestSecurityState:
+    """SecurityState 状态机（U2 状态机单元部分 + U7 状态有界部分）。
+
+    时间全部用假 now 参数驱动（不 sleep）；阈值每次显式传入（构造与阈值分离）。
+    参数口径：window=300 / ban=100 / ban_max=3600 / reset=86400。
+    """
+
+    P: ClassVar[dict] = {
+        "window_sec": 300,
+        "ban_seconds": 100,
+        "ban_max_seconds": 3600,
+        "ban_reset_sec": 86400,
+    }
+
+    @staticmethod
+    def _flood(state, key, start, threshold=5):
+        """从 start 时刻起连打 threshold 次失败触发封禁，返回封禁决策。"""
+        decision = {}
+        for i in range(threshold):
+            decision = state.record_failure(
+                key, now=start + i, threshold=threshold, **TestSecurityState.P
+            )
+        return decision
+
+    def test_observation_period_counts_only(self):
+        """threshold=0 = 观察期（K2）：只计数不封。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        for i in range(50):
+            d = s.record_failure("203.0.113.1", now=i, threshold=0, **self.P)
+            assert d["banned"] is False
+            assert d["fail_count"] == i + 1
+        assert s.is_banned("203.0.113.1", now=50) == (False, 0, 0)
+
+    def test_ban_triggered_at_threshold(self):
+        """达阈值触发封禁：基础时长 / level=1 / 未升级。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        d = self._flood(s, "203.0.113.2", start=0)
+        assert d["banned"] is True
+        assert d["duration"] == 100.0
+        assert d["escalated"] is False
+        assert d["level"] == 1
+        assert s.is_banned("203.0.113.2", now=4) == (True, 100, 1)
+
+    def test_ban_expires_then_escalates_within_reset_window(self):
+        """封禁 → 到期解除 → reset 窗口内再触发 → 时长加倍（K1）。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        d1 = self._flood(s, "203.0.113.3", start=0)
+        assert d1["duration"] == 100.0 and d1["level"] == 1
+        # 到期解除（禁期至 104：0~4 连打，4 时刻触发封 100s）
+        assert s.is_banned("203.0.113.3", now=103.5) == (True, 1, 1)
+        assert s.is_banned("203.0.113.3", now=104) == (False, 0, 0)
+        # reset 窗口内（100 → 204 ≤ 86400）再触发 → ×2
+        d2 = self._flood(s, "203.0.113.3", start=200)
+        assert d2["banned"] is True
+        assert d2["duration"] == 200.0
+        assert d2["escalated"] is True
+        assert d2["level"] == 2
+
+    def test_escalation_caps_at_max(self):
+        """升级阶梯 ×2 封顶 ban_max_seconds=3600；封顶后仍记 escalated。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        now = 0.0
+        durations = []
+        for _ in range(10):
+            d = self._flood(s, "203.0.113.4", start=now)
+            assert d["banned"] is True
+            durations.append(d["duration"])
+            now = d["until"] + 10.0  # 每轮到期后小间隔再触发（均在 reset 窗口内）
+        # 100→200→400→800→1600→3200→3600（封顶后维持）
+        assert durations == [
+            100.0,
+            200.0,
+            400.0,
+            800.0,
+            1600.0,
+            3200.0,
+            3600.0,
+            3600.0,
+            3600.0,
+            3600.0,
+        ]
+        assert all(d <= 3600.0 for d in durations)
+
+    def test_ladder_resets_after_clean_period(self):
+        """清洁期满（连续 reset 窗口无新封禁）→ 阶梯归零，回基础时长 / level=1。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        d1 = self._flood(s, "203.0.113.5", start=0)
+        assert d1["duration"] == 100.0
+        d2 = self._flood(s, "203.0.113.5", start=200)  # 升级到 200
+        assert d2["duration"] == 200.0 and d2["level"] == 2
+        # 等 reset 窗口（86400）过完再触发 → 归零
+        clean_start = d2["until"] + 86400 + 10
+        d3 = self._flood(s, "203.0.113.5", start=clean_start)
+        assert d3["duration"] == 100.0
+        assert d3["escalated"] is False
+        assert d3["level"] == 1
+
+    def test_window_expiry_does_not_trigger(self):
+        """窗口过期：散点失败不累计触发（window_sec=300 内过期戳惰性清除）。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        for i in range(4):
+            s.record_failure("203.0.113.6", now=i * 400, threshold=5, **self.P)
+        d = s.record_failure("203.0.113.6", now=1600, threshold=5, **self.P)
+        assert d["banned"] is False
+        assert d["fail_count"] == 1  # 旧戳全部出窗，仅剩本次
+
+    def test_in_ban_failure_not_counted(self):
+        """禁期内 record_failure 不覆盖既有封禁（防御兜底；调用侧 T-260 先查再计数）。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        d1 = self._flood(s, "203.0.113.7", start=0)
+        assert d1["banned"] is True
+        for i in range(10):
+            d = s.record_failure("203.0.113.7", now=10 + i, threshold=5, **self.P)
+            assert d["banned"] is False
+        # 封禁决策不变（until 仍是原值 104），is_banned 一致
+        assert s.is_banned("203.0.113.7", now=15) == (True, 89, 1)
+
+    def test_u7_flood_bounded_with_warning(self, caplog):
+        """U7（K5）：随机 key 洪泛后状态尺寸有界（≤ 上限），丢最旧 + WARNING。"""
+        import logging as _logging
+        import random
+
+        from sgme.security_state import SecurityState
+
+        s = SecurityState(max_entries=500)
+        rng = random.Random(42)
+        with caplog.at_level(_logging.WARNING, logger="sgme.security_state"):
+            for i in range(2000):
+                key = f"198.51.100.{rng.randint(0, 9999)}"
+                s.record_failure(
+                    key, now=i * 0.1, threshold=0, **self.P
+                )  # 观察期：只计数
+        snap = s.snapshot(now=2000)
+        assert snap["fail_keys"] <= 500
+        assert snap["size"] <= 500
+        assert snap["max_entries"] == 500
+        warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+        assert warnings, "超限丢最旧必须打 WARNING"
+
+    def test_u7_ban_entries_removed_after_reset_window(self):
+        """U7（K5）：封禁条目在「禁期 + reset 窗口」后删除（低频全扫路径）。"""
+        from sgme.security_state import FULL_SWEEP_INTERVAL, SecurityState
+
+        s = SecurityState()
+        d = self._flood(s, "203.0.113.8", start=0)
+        until = d["until"]
+        # 推到「禁期 + reset 窗口」之后，且凑一次全扫触发
+        target = until + 86400 + 1
+        writes = 0
+        while (
+            s.is_banned("203.0.113.8", now=target)[0] is False
+            and writes < FULL_SWEEP_INTERVAL + 1
+        ):
+            s.record_failure(
+                "203.0.113.9", now=target + writes, threshold=10**9, **self.P
+            )
+            writes += 1
+        snap = s.snapshot(now=target)
+        assert snap["ban_entries"] == 0, "禁期+reset 窗口过后封禁条目必须被清扫"
+
+    def test_snapshot_shape(self):
+        """快照形状：活封禁列表（key/剩余秒/层级）+ 计数概览（T-265 status 数据源）。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        d = self._flood(s, "203.0.113.10", start=0)
+        s.record_failure(
+            "203.0.113.11", now=1, threshold=0, **self.P
+        )  # 观察期计数 1 条
+        snap = s.snapshot(now=40)
+        assert set(snap) == {
+            "active_bans",
+            "fail_counts",
+            "fail_keys",
+            "ban_entries",
+            "size",
+            "max_entries",
+        }
+        assert snap["active_bans"] == [
+            {"key": "203.0.113.10", "remaining_sec": 64, "level": 1}
+        ]
+        assert snap["fail_counts"] == {"203.0.113.11": 1}
+        assert snap["fail_keys"] == 1
+        assert snap["ban_entries"] == 1
+        assert snap["size"] == 2
+        # 过期后活封禁清空（条目仍在，等 reset 窗口过完才删）
+        later = s.snapshot(now=d["until"] + 1)
+        assert later["active_bans"] == []
+        assert later["ban_entries"] == 1
+
+    def test_time_injection_no_wallclock(self):
+        """时间外部注入：旧 now 也能回放（可复现），不依赖墙钟。"""
+        from sgme.security_state import SecurityState
+
+        s = SecurityState()
+        self._flood(s, "203.0.113.12", start=1000)
+        # 同一场景重放到新实例，结果逐字段一致
+        s2 = SecurityState()
+        self._flood(s2, "203.0.113.12", start=1000)
+        snap1, snap2 = s.snapshot(now=1004), s2.snapshot(now=1004)
+        assert snap1 == snap2
