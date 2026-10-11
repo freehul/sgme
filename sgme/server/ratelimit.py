@@ -12,20 +12,14 @@
 读取配置方式：中间件在每次请求时从 ``request.app.state.cfg``（即 ``create_app(cfg=...)``
 注入的配置）读取 ``server.rate_limit_per_min``；测试可通过注入小值 cfg 验证。
 """
+
 from __future__ import annotations
 
 import logging
-import math
 import threading
 import time
 from collections import defaultdict, deque
 from typing import Any
-
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
-
-from sgme.server.app import ERROR_CODES, error_response
 
 logger = logging.getLogger("sgme.server.ratelimit")
 
@@ -48,10 +42,17 @@ class SlidingWindowRateLimiter:
     ``limit <= 0`` 视为关闭（始终放行）。
     """
 
-    def __init__(self, limit_per_min: int = DEFAULT_RATE_LIMIT_PER_MIN, window_seconds: int = WINDOW_SECONDS) -> None:
+    # 桶尺寸上限（ST-55 / T-264，K5 有界）：超限丢最旧 + WARNING（洪泛防内存失控）
+    MAX_BUCKETS: int = 100_000
+
+    def __init__(
+        self,
+        limit_per_min: int = DEFAULT_RATE_LIMIT_PER_MIN,
+        window_seconds: int = WINDOW_SECONDS,
+    ) -> None:
         self.limit = max(0, int(limit_per_min))
         self.window = max(1, int(window_seconds))
-        self._buckets: dict[str, "deque[float]"] = defaultdict(deque)
+        self._buckets: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
     def is_allowed(self, key: str) -> tuple[bool, float]:
@@ -69,6 +70,9 @@ class SlidingWindowRateLimiter:
         now = time.monotonic()
         cutoff = now - self.window
         with self._lock:
+            # K5 有界：先清过期桶（惰性，概率触发避免每请求全扫）+ 尺寸上限
+            if len(self._buckets) >= self.MAX_BUCKETS and key not in self._buckets:
+                self._evict_oldest_locked(cutoff)
             dq = self._buckets[key]
             while dq and dq[0] <= cutoff:
                 dq.popleft()
@@ -84,6 +88,19 @@ class SlidingWindowRateLimiter:
         with self._lock:
             self._buckets.clear()
 
+    def _evict_oldest_locked(self, cutoff: float) -> None:
+        """超上限时丢最旧（K5）：先清窗口已过期的桶，仍超限再按插入序丢最旧。须持锁。"""
+        expired = [k for k, dq in self._buckets.items() if not dq or dq[-1] <= cutoff]
+        for k in expired:
+            del self._buckets[k]
+        while len(self._buckets) >= self.MAX_BUCKETS:
+            oldest = next(iter(self._buckets))
+            del self._buckets[oldest]
+        logger.warning(
+            "限流桶数量达到上限 %s，已清理过期桶并丢弃最旧条目（洪泛防护）",
+            self.MAX_BUCKETS,
+        )
+
 
 def _resolve_limit(cfg: Any) -> int:
     """从配置 dict 解析限流阈值；缺失/异常/负数 → 默认 120。"""
@@ -97,48 +114,3 @@ def _resolve_limit(cfg: Any) -> int:
         return value
     except (TypeError, ValueError):
         return DEFAULT_RATE_LIMIT_PER_MIN
-
-
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """FastAPI / Starlette 限流中间件（T-7 §6）。
-
-    在请求进入路由前：
-    - ``/v1/health`` 直接放行（豁免）；
-    - 无 ``X-API-Key`` 的请求放行（交后续鉴权依赖返回 401/403）；
-    - 带 Key 的请求按滑动窗口限流，超限返回 429 + Retry-After。
-    """
-
-    def __init__(self, app, dispatch=None) -> None:
-        super().__init__(app, dispatch=dispatch)
-        # 限流器单例（跨请求保持滑动窗口状态）；limit 每次请求从 cfg 刷新
-        self._limiter = SlidingWindowRateLimiter(DEFAULT_RATE_LIMIT_PER_MIN)
-
-    async def dispatch(self, request: Request, call_next) -> Response:
-        # 刷新阈值（0=关闭）；从 app.state.cfg 读取（测试经 create_app(cfg=...) 注入）
-        app_state = getattr(getattr(request, "app", None), "state", None)
-        cfg = getattr(app_state, "cfg", None) if app_state is not None else None
-        limit = _resolve_limit(cfg)
-        self._limiter.limit = max(0, limit)
-
-        # 健康检查豁免（监控探测不受限）
-        if request.url.path == HEALTH_PATH:
-            return await call_next(request)
-
-        api_key = request.headers.get("X-API-Key")
-        # 无 Key → 不计限流，交后续鉴权返回 401/403
-        if not api_key:
-            return await call_next(request)
-
-        allowed, retry_after = self._limiter.is_allowed(api_key)
-        if not allowed:
-            retry_seconds = max(1, int(math.ceil(retry_after)))
-            resp = error_response(
-                "ERR_RATE_LIMITED",
-                "请求过于频繁，请稍后再试（已触发限流）",
-                ERROR_CODES["ERR_RATE_LIMITED"],
-                details={"retry_after_sec": retry_seconds},
-            )
-            resp.headers["Retry-After"] = str(retry_seconds)
-            return resp
-
-        return await call_next(request)

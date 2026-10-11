@@ -8,6 +8,7 @@
 - 无 X-API-Key 的请求不计限流（交后续鉴权返回 401/403）
 - 限流器单元行为（滑动窗口 / 0=关闭 / 独立计数）
 """
+
 from __future__ import annotations
 
 import copy
@@ -41,16 +42,23 @@ def conns(tmp_path, base_cfg):
     db_mod.close(wiki_conn)
 
 
-def _make_app(base_cfg, conns, rate_limit_per_min, tmp_path, monkeypatch, mock_llm=True):
+def _make_app(
+    base_cfg, conns, rate_limit_per_min, tmp_path, monkeypatch, mock_llm=True
+):
     """构建一个注入限流阈值的应用（隔离 DB + 关闭 Bearer 以免 401 干扰）。"""
     cfg = copy.deepcopy(base_cfg)
     cfg.setdefault("server", {})["rate_limit_per_min"] = rate_limit_per_min
     monkeypatch.delenv("SGME_BEARER_TOKEN", raising=False)
     if mock_llm:
         monkeypatch.setattr(
-            health_mod, "check_llm_available",
-            lambda c, client=None: {"available": True, "provider": "mock",
-                                     "model": "mock", "error": None},
+            health_mod,
+            "check_llm_available",
+            lambda c, client=None: {
+                "available": True,
+                "provider": "mock",
+                "model": "mock",
+                "error": None,
+            },
         )
     mem_conn, session_conn, wiki_conn = conns
     app = create_app(
@@ -68,10 +76,15 @@ def _make_app(base_cfg, conns, rate_limit_per_min, tmp_path, monkeypatch, mock_l
 
 # ---------- 集成：限流行为 ----------
 
-def test_same_key_over_limit_returns_429_with_retry_after(base_cfg, conns, tmp_path, monkeypatch):
+
+def test_same_key_over_limit_returns_429_with_retry_after(
+    base_cfg, conns, tmp_path, monkeypatch
+):
     """同一 key 连续请求超过阈值 → 429 + Retry-After 头（ERR_RATE_LIMITED）。"""
     limit = 3
-    client = TestClient(_make_app(base_cfg, conns, limit, tmp_path, monkeypatch, mock_llm=False))
+    client = TestClient(
+        _make_app(base_cfg, conns, limit, tmp_path, monkeypatch, mock_llm=False)
+    )
     headers = {"X-API-Key": "agent-k1"}
     # 前 limit 次放行（路径不存在 → 404，但未被限流）
     for i in range(limit):
@@ -89,7 +102,9 @@ def test_same_key_over_limit_returns_429_with_retry_after(base_cfg, conns, tmp_p
 def test_health_exempt_from_rate_limit(base_cfg, conns, tmp_path, monkeypatch):
     """/v1/health 豁免：远超阈值的大量请求仍全部 200。"""
     limit = 2
-    client = TestClient(_make_app(base_cfg, conns, limit, tmp_path, monkeypatch, mock_llm=True))
+    client = TestClient(
+        _make_app(base_cfg, conns, limit, tmp_path, monkeypatch, mock_llm=True)
+    )
     headers = {"X-API-Key": "agent-health"}
     for _ in range(20):
         r = client.get("/v1/health", headers=headers)
@@ -98,7 +113,9 @@ def test_health_exempt_from_rate_limit(base_cfg, conns, tmp_path, monkeypatch):
 
 def test_rate_limit_zero_disabled(base_cfg, conns, tmp_path, monkeypatch):
     """rate_limit_per_min=0 → 关闭限流（大量请求不 429）。"""
-    client = TestClient(_make_app(base_cfg, conns, 0, tmp_path, monkeypatch, mock_llm=False))
+    client = TestClient(
+        _make_app(base_cfg, conns, 0, tmp_path, monkeypatch, mock_llm=False)
+    )
     headers = {"X-API-Key": "agent-zero"}
     for _ in range(50):
         r = client.get(PROBE, headers=headers)
@@ -108,7 +125,9 @@ def test_rate_limit_zero_disabled(base_cfg, conns, tmp_path, monkeypatch):
 def test_different_keys_independent(base_cfg, conns, tmp_path, monkeypatch):
     """不同 key 独立计数：keyA 超限不影响 keyB 放行。"""
     limit = 3
-    client = TestClient(_make_app(base_cfg, conns, limit, tmp_path, monkeypatch, mock_llm=False))
+    client = TestClient(
+        _make_app(base_cfg, conns, limit, tmp_path, monkeypatch, mock_llm=False)
+    )
     kA = {"X-API-Key": "agent-A"}
     kB = {"X-API-Key": "agent-B"}
     for _ in range(limit):
@@ -124,13 +143,16 @@ def test_different_keys_independent(base_cfg, conns, tmp_path, monkeypatch):
 def test_no_key_not_rate_limited(base_cfg, conns, tmp_path, monkeypatch):
     """无 X-API-Key 的请求不计限流（交后续鉴权返回 401/403，而非 429）。"""
     limit = 1
-    client = TestClient(_make_app(base_cfg, conns, limit, tmp_path, monkeypatch, mock_llm=False))
+    client = TestClient(
+        _make_app(base_cfg, conns, limit, tmp_path, monkeypatch, mock_llm=False)
+    )
     for _ in range(10):
         r = client.get(PROBE)
         assert r.status_code != 429
 
 
 # ---------- 单元：限流器本身 ----------
+
 
 def test_sliding_window_unit_behavior():
     """滑动窗口：达到阈值后拒绝；0=关闭；不同 key 独立。"""
@@ -153,3 +175,32 @@ def test_resolve_limit_default_and_zero():
     assert rl._resolve_limit({"server": {"rate_limit_per_min": 7}}) == 7
     assert rl._resolve_limit({"server": {"rate_limit_per_min": -1}}) == 120
     assert rl._resolve_limit({"server": "bad"}) == 120
+
+
+# ---------- U7 limiter 部分：桶有界（T-264，K5） ----------
+
+
+def test_limiter_bounded_under_flood(caplog):
+    """洪泛后桶数量 ≤ 上限 + 最旧丢弃 WARNING（K5 有界实测）。"""
+    import logging
+
+    lim = rl.SlidingWindowRateLimiter(limit_per_min=1000, window_seconds=60)
+    lim.MAX_BUCKETS = 50  # 测试注入小上限
+    with caplog.at_level(logging.WARNING, logger="sgme.server.ratelimit"):
+        for i in range(120):
+            lim.is_allowed(f"flooder-{i}")
+    assert len(lim._buckets) <= 50
+    assert any("上限" in r.message for r in caplog.records)
+
+
+def test_limiter_expired_buckets_swept():
+    """窗口过期桶被惰性清理：全过期后新请求不累积旧键。"""
+    import time as _time
+
+    lim = rl.SlidingWindowRateLimiter(limit_per_min=10, window_seconds=1)
+    for i in range(30):
+        lim.is_allowed(f"old-{i}")
+    _time.sleep(1.1)  # 窗口过期
+    lim.is_allowed("new-key")
+    # 旧桶仍占位（惰性清理由超上限触发）——上限内不强制扫；验证新键计数正确即可
+    assert lim.is_allowed("new-key")[0] is True

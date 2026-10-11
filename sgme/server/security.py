@@ -254,6 +254,16 @@ class SecurityGate:
 
         # ---- 限流：per-key（D1 含无效 key 计桶）/ 无 key IP 桶（§2.3）----
         if key_present:
+            # 热更新语义对齐 ratelimit._resolve_limit 先例（T-264 迁入）：每请求刷桶 limit
+            self._safe_state(
+                "key_limit_refresh",
+                lambda: setattr(
+                    self._key_limiter,
+                    "limit",
+                    self._int_opt(server, "rate_limit_per_min", 120),
+                ),
+                None,
+            )
             allowed, retry = self._safe_state(
                 "key_limit",
                 lambda: self._key_limiter.is_allowed(presented),

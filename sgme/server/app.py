@@ -1136,12 +1136,6 @@ def create_app(
             "agent_key": store.agent_key,
         }
 
-    # 限流中间件（T-7 §6）：按 X-API-Key 滑动窗口限流（默认 120 req/min/Key；0=关闭）
-    # 必须注册才能使限流生效；读取 request.app.state.cfg["server"]["rate_limit_per_min"]
-    # （ST-55 / T-264 收口：per-key 限流已由 SecurityGate 承接，本行届时移除）
-    from sgme.server.ratelimit import RateLimitMiddleware
-    app.add_middleware(RateLimitMiddleware)
-
     # SecurityGate 安全门（ST-55 / T-262，§2.4）：注册在 RateLimit 之后 = 更外层。
     # S7 装配口径（外→内）：Usage → RateLimit → SecurityGate → 体限 → 路由。
     # 体限-鉴权相对位置已锁定（T-255）；断言不绿只准调本门位次保持最外。
@@ -1165,10 +1159,12 @@ def create_app(
     # JSON）——网关级拒绝，接受框架默认形态，I3 用例按此断言（tests/test_security.py）。
     # chunked 生效条件（细节 10 校准）：中间件在 receive 流上计数、须端点读取请求体才触发；
     # 不读 body 的路径不会 413，属预期行为。
-    # S7 装配顺序口径（§2.4，写死）：HTTP 侧注册序 RequestBodyLimit →（T-262 起 SecurityGate）
-    # → RateLimitMiddleware → UsageMiddleware；add_middleware 后加者在【外层】
-    # （user_middleware.insert(0) + 逆序包裹，本仓已实证）。⇒ 外→内 = Usage → RateLimit →
+    # S7 装配顺序口径（§2.4，写死）：HTTP 侧注册序 RequestBodyLimit → SecurityGate
+    # → UsageMiddleware；add_middleware 后加者在【外层】
+    # （user_middleware.insert(0) + 逆序包裹，本仓已实证）。⇒ 外→内 = Usage →
     # SecurityGate → 体限 → 路由。体限-鉴权相对位置已锁定，断言不绿只准调 SecurityGate 位次。
+    # （T-264 收口：RateLimitMiddleware 已移除，per-key 限流由 SecurityGate 的
+    # key_limiter 桶承接——按 X-API-Key 取值计桶含无效 key，D1 语义不变。）
     max_body_bytes = int(cfg.get("server", {}).get("max_body_bytes", 0) or 0)
     if max_body_bytes > 0:
         from starlette.middleware.body_limit import RequestBodyLimitMiddleware
