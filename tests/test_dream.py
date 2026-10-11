@@ -54,9 +54,16 @@ def _stop_dream_scheduler():
 
 @pytest.fixture
 def cfg(tmp_path):
-    """load_config + 日报目录隔离到 tmp（防真实 data/reports/ 落盘）。"""
+    """load_config + 日报目录隔离到 tmp（防真实 data/reports/ 落盘）。
+
+    ST-55：LLM 路由低限（llm_route_limits，/v1/admin/dream 5/min）会与
+    本文件的密集 dream 请求交互（单用例内同 key 多次触发/校验请求即超 5），
+    打断原有 4xx 断言序列——本文件聚焦 Dream 业务行为，显式关掉低限维度
+    （低限自身行为由 tests/test_security_gate.py / test_security_mcp.py 覆盖）。
+    """
     base = sgme_config.load_config()
     base["dream"] = {**base.get("dream", {}), "report_dir": str(tmp_path / "reports")}
+    base.setdefault("server", {})["llm_route_limits"] = {}
     return base
 
 
