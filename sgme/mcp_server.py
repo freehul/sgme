@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict
 import anyio
 from mcp.server.fastmcp import Context
 
+from sgme import config as sgme_config
 from sgme.net_guard import const_eq, is_default_key_from_remote
 
 logger = logging.getLogger("sgme.mcp")
@@ -189,10 +190,18 @@ class ApiKeyMiddleware:
     EventSourceResponse）组合是社区已知死锁高危形态（任务组收尾互相等待）。
     纯 ASGI 只在 scope 上写一个键、403 直接经 send 下发，零桥接零死锁面。
     """
-    def __init__(self, app, key_store, conn=None):
+    # ST-55 / T-263：LLM 工具低限清单（§2.8-2）；其余 MCP 工具显式声明
+    # 「本期仅 per-key 120/min 兜底」（P2 登记细粒度扩展）。
+    _TOOL_LIMIT_KEY = "llm_mcp_tool_limits"
+
+    def __init__(self, app, key_store, conn=None, *, tool_limiter=None, cfg_getter=None, audit_log=None):
         self.app = app
         self._key_store = key_store
         self._conn = conn  # T-163：接口调用统计连接（None=禁用统计）
+        # T-263：共享工具低限桶 / 每请求读阈值 / 审计叶子（全部可选，测试与旧调用方兼容）
+        self._tool_limiter = tool_limiter
+        self._cfg_getter = cfg_getter or (lambda: {})
+        self._audit_log = audit_log
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -229,9 +238,23 @@ class ApiKeyMiddleware:
             return
         # 供工具内 resolve_agent_id 反查（PR#2）——Request.state 即 scope["state"] 视图
         scope.setdefault("state", {})["api_key"] = key
-        # T-163：tools/call 调用统计（读 body 后完整重放；全静默）
+        # ST-55 / T-263：4 工具低限（在统计之前做——两者共享一次 body 缓存重放：
+        # 工具检查缓存 body 存 self._pending_replay，统计路径优先消费该缓存，
+        # 避免对原始 receive 二次读导致 body 丢失。SSE 不受阻：判定在请求期、
+        # 超限直接 429 短路，不进入流式响应）
+        self._pending_replay = None
+        if self._tool_limiter is not None and scope.get("method") == "POST":
+            limited = await self._check_tool_rate_limit(scope, receive, key, send)
+            if limited:
+                return
+        # T-163：tools/call 调用统计（优先消费工具低限缓存的 body 重放；全静默）
         if self._conn is not None and scope.get("method") == "POST":
-            receive = await self._wrap_receive_with_usage(scope, receive, key)
+            receive = await self._wrap_receive_with_usage(
+                scope, self._pending_replay or receive, key
+            )
+        elif self._pending_replay is not None:
+            # 统计未启用：工具低限缓存的重放直接接回调用链（body 不丢）
+            receive = self._pending_replay
         await self.app(scope, receive, send)
 
     @staticmethod
@@ -247,6 +270,100 @@ class ApiKeyMiddleware:
             "headers": [
                 (b"content-type", b"application/json; charset=utf-8"),
                 (b"content-length", str(len(body)).encode("latin-1")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+    async def _check_tool_rate_limit(self, scope, receive, key, send) -> bool:
+        """ST-55 / T-263：4 工具低限（§2.8-2）。命中超限 → 429 自建 JSON 并返回 True。
+
+        读 body 解析 ``tools/call`` 的 ``params.name`` 后完整重放（与 T-163 统计
+        同一缓存重放模式；本方法与统计各自包装 receive 会双重读——这里改为
+        复用统计的缓存：直接再读一次原始 receive 会丢 body。因此本检查只在
+        统计包装【未】启用时自己做轻量解析（缓存一次性读 + 重放）。
+        其余 MCP 工具显式声明：本期仅 per-key 120/min 兜底（P2 登记细粒度）。
+        """
+        import json as _json
+
+        server = (self._cfg_getter() or {}).get("server", {}) or {}
+        limits = server.get(self._TOOL_LIMIT_KEY)
+        if not isinstance(limits, dict) or not limits:
+            return False
+        # 读 body（一次性缓存 + 重放；与统计互斥路径，见上）
+        chunks: list[bytes] = []
+        pending: list[dict] = []
+        while True:
+            message = await receive()
+            if message.get("type") != "http.request":
+                pending.append(message)
+                break
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        body = b"".join(chunks)
+        tool_name: str | None = None
+        try:
+            if b"tools/call" in body:
+                payload = _json.loads(body)
+                params = payload.get("params") or {}
+                tool_name = params.get("name")
+        except Exception:  # noqa: BLE001——解析失败不限流不阻塞（fail-open）
+            tool_name = None
+        consumed = False
+
+        async def replay():
+            nonlocal consumed
+            if not consumed:
+                consumed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            if pending:
+                return pending.pop(0)
+            return await receive()
+
+        # 未命中清单 / 解析不出工具名：缓存重放交还调用链（统计路径复用），放行
+        if tool_name is None or tool_name not in limits:
+            self._pending_replay = replay
+            return False
+        try:
+            limit = int(limits[tool_name])
+        except (TypeError, ValueError):
+            limit = 0
+        if limit <= 0:
+            self._pending_replay = replay
+            return False
+        allowed, retry = self._tool_limiter.is_allowed(f"{tool_name}:{key}")
+        if allowed:
+            self._pending_replay = replay
+            return False
+        # 超限：429 自建 JSON（D8，与 SecurityGate 同形态）；审计记一条
+        if self._audit_log is not None:
+            try:
+                from datetime import datetime as _dt
+
+                self._audit_log.record_rate_limited(
+                    mask_key(key), scope="mcp_tool", limit=limit,
+                    now=_dt.now().astimezone(),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        await self._send_429(send, max(1, int(retry) + 1))
+        return True
+
+    @staticmethod
+    async def _send_429(send, retry_after: int) -> None:
+        """429 ERR_RATE_LIMITED（D8 自建 JSON，与 SecurityGate 同形态）。"""
+        body = json.dumps(
+            {"error": {"code": "ERR_RATE_LIMITED",
+                        "message": f"工具调用过于频繁，请 {retry_after} 秒后重试"}},
+            ensure_ascii=False,
+        ).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": 429,
+            "headers": [
+                (b"content-type", b"application/json; charset=utf-8"),
+                (b"content-length", str(len(body)).encode("latin-1")),
+                (b"retry-after", str(retry_after).encode("latin-1")),
             ],
         })
         await send({"type": "http.response.body", "body": body})
@@ -355,19 +472,48 @@ def run_mcp_server(mcp, key_store, host: str = "127.0.0.1", port: int = 9913, co
     import uvicorn
 
     starlette_app = mcp.streamable_http_app()
-    starlette_app.add_middleware(ApiKeyMiddleware, key_store=key_store, conn=conn)
+    starlette_app.add_middleware(
+        ApiKeyMiddleware,
+        key_store=key_store,
+        conn=conn,
+        # ST-55 / T-263：4 工具低限（共享桶 + 每请求读阈值 + 审计叶子；缺实例时
+        # 内部自动跳过 = 仅 per-key 兜底，向后兼容旧调用方）
+        tool_limiter=_app_state.get("security_tool_limiter"),
+        cfg_getter=lambda: _app_state.get("cfg") or {},
+        audit_log=_app_state.get("security_log"),
+    )
 
     # 请求体上限（ST-55 / T-255，方案 §2.8-1）：框架原生 RequestBodyLimitMiddleware，
     # max_body_bytes<=0 = 不装配（显式关闭）。cfg 经 _app_state 读取（mount_mcp 已绑定）。
     # ⚠️ 陷阱（禁改用）：FastAPI/Starlette 构造参数与属性赋值形式（max_body_size=…）均被
     # 【静默忽略】——配置体限只能走本中间件。
-    # S7 装配顺序口径（§2.4）：注册序 ApiKey → RequestBodyLimit →（T-263 起 SecurityGate）
-    # 后加者在外层 ⇒ 外→内 = SecurityGate → 体限 → 鉴权（T-263 落齐后收口断言）。
-    max_body_bytes = int((_app_state.get("cfg") or {}).get("server", {}).get("max_body_bytes", 0) or 0)
+    _mcp_server_cfg = (_app_state.get("cfg") or {}).get("server", {}) or {}
+    max_body_bytes = int(_mcp_server_cfg.get("max_body_bytes", 0) or 0)
     if max_body_bytes > 0:
         from starlette.middleware.body_limit import RequestBodyLimitMiddleware
 
         starlette_app.add_middleware(RequestBodyLimitMiddleware, max_body_size=max_body_bytes)
+
+    # SecurityGate 安全门（ST-55 / T-263，S7 三方口径最后一块）：最后注册 = 最外层。
+    # 外→内 = SecurityGate → 体限 → ApiKey 鉴权 → MCP app；Gate 必须在 ApiKey 之后
+    # 注册（否则看不到其 403，不计数不封禁）。实例与 HTTP 侧共享（app.state）。
+    _sec_state = _app_state.get("security_state")
+    if _sec_state is not None:
+        from sgme.server.security import SecurityGate
+
+        starlette_app.add_middleware(
+            SecurityGate,
+            state=_sec_state,
+            ip_limiter=_app_state.get("security_ip_limiter"),
+            key_limiter=_app_state.get("security_key_limiter"),
+            tool_limiter=_app_state.get("security_tool_limiter"),
+            cfg_getter=lambda: _app_state.get("cfg"),
+            log_dir=str(_app_state.get("log_dir") or ""),
+            entry="mcp",
+            log=_app_state.get("security_log"),
+        )
+    else:
+        logger.warning("SecurityGate 未装配（app.state.security_state 缺失）——MCP 侧安全门未生效")
 
     config = uvicorn.Config(
         starlette_app,
@@ -1737,6 +1883,15 @@ def mount_mcp(app, start_server: bool = True):
         # T-112：技能索引库（模块禁用时为 None，MCP 工具自动回退内存索引）
         "skills_conn": getattr(app.state, "skills_conn", None),
         "key_store": app.state.key_store,
+        # ST-55 / T-263：安全实例与 HTTP 侧共享同一对象（per-key 双入口同预算、
+        # 封禁互可见，S7）；T-262 起由 create_app 创建，旧调用方缺属性时回落 None
+        # （run_mcp_server 检测到 None 只告警不装配，向后兼容）。
+        "security_state": getattr(app.state, "security_state", None),
+        "security_ip_limiter": getattr(app.state, "security_ip_limiter", None),
+        "security_key_limiter": getattr(app.state, "security_key_limiter", None),
+        "security_tool_limiter": getattr(app.state, "security_tool_limiter", None),
+        "security_log": getattr(app.state, "security_log", None),
+        "log_dir": str(sgme_config.LOG_DIR),
     })
     mcp = build_mcp_server()
     # 测试/CI 环境跳过启动（SGME_MCP_PORT=0 或 MCP_DISABLED=1）
