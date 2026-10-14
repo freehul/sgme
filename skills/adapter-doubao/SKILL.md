@@ -108,7 +108,7 @@ SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、
 | 33 | skill_search | HTTP | `sgme_client.py skill-search "<q>"` |
 | 34 | skill_digest | HTTP | `sgme_client.py skill-digest <name>` |
 | 35 | skill_get | HTTP | `sgme_client.py skill-get <name> [--section <s>]` |
-| 36 | skill_materialize | HTTP | `sgme_client.py skill-materialize <name> <dest_dir>`（返回 path + sha256；落盘在服务端，跨机改用 skill-get） |
+| 36 | skill_materialize | HTTP | `sgme_client.py skill-materialize <name> <dest_dir>`（返回 path + sha256；落盘在服务端文件系统，跨机改用包通道 `fetch`） |
 | 37 | skill_list | HTTP | `sgme_client.py skill-list [--offset 0] [--limit N]` |
 | 38 | skill_coldstart | HTTP | `sgme_client.py skill-coldstart` |
 | 39 | skill_put | MCP | `sgme_client.py skill-put <name> --file <SKILL.md>`（需管理员 Key） |
@@ -117,7 +117,7 @@ SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、
 | 42 | credential_list | HTTP | `sgme_client.py credential-list` |
 | 43 | credential_get | HTTP | `sgme_client.py credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
 
-适配器自有扩展（超出基准）：`events-pull`（HTTP 事件游标）、`events-after`（增量拉取）、`wiki-raw`（取原始文件）、`capabilities`（能力矩阵核对）、`env-info`（端点自检）、`mcp <tool> k=v …`（逃生口：直接调任意 MCP 工具，加 `--admin` 走管理员 Key）。
+适配器自有扩展（超出基准）：`fetch <name> <dest_dir>`（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包；失败不留残件）、`events-pull`（HTTP 事件游标）、`events-after`（增量拉取）、`wiki-raw`（取原始文件）、`capabilities`（能力矩阵核对）、`env-info`（端点自检）、`mcp <tool> k=v …`（逃生口：直接调任意 MCP 工具，加 `--admin` 走管理员 Key）。
 
 ## 主动关怀守护（可选）
 

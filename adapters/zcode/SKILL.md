@@ -128,7 +128,7 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 33 | skill_search | HTTP | `skill-search` |
 | 34 | skill_digest | HTTP | `skill-digest` |
 | 35 | skill_get | HTTP | `skill-get` |
-| 36 | skill_materialize | HTTP | `skill-materialize`（返回 path + sha256；落盘在服务端，跨机改用 skill-get） |
+| 36 | skill_materialize | HTTP | `skill-materialize`（返回 path + sha256；落盘在服务端文件系统，跨机改用包通道 `fetch <name> <dest_dir>`） |
 | 37 | skill_list | HTTP | `skill-list` |
 | 38 | skill_coldstart | HTTP | `skill-coldstart` |
 | 39 | skill_put | MCP | `skill-put` |
@@ -137,7 +137,7 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 42 | credential_list | HTTP | `credential-list` |
 | 43 | credential_get | HTTP | `credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
 
-扩展命令：`events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
+扩展命令：`fetch <name> <dest_dir>`（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包；失败不留残件） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
 
 ## 主动关怀守护（可选，默认不启用）
 

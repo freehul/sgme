@@ -254,7 +254,7 @@ Admin tools state their requirement in their description.
 3. **Edited the bridge but nothing changed** — after editing `adapters/hermes/`, re-run `install.py` to sync `<HERMES_HOME>/plugins/sgme/`; Hermes loads the deployed copy.
 4. **Skills / wiki endpoints return 404** — those server modules may be disabled (`skills.enabled`, wiki extension). Memory features are unaffected.
 5. **Admin tools return 403** — `SGME_ADMIN_KEY` is not set (or lacks rights). Read tools keep working; this is “can read, can't write”, by design.
-6. **`sgme_skill_materialize` “writes the file but I can't find it”** — `path` is on the **SGME host**. When Hermes and SGME are on different machines, use `sgme_skill_get` instead.
+6. **`sgme_skill_materialize` “writes the file but I can't find it”** — `path` is on the **SGME host**. When Hermes and SGME are on different machines, use the **package channel** instead: `GET /v1/skills/{name}/package` (or `skill_fetch.py --name <name> --dest <dir>`, which downloads → verifies against `MANIFEST.sha256` → unpacks safely, leaving no residue on failure).
 7. **`sgme_refine_trigger` hangs and costs money** — that's synchronous refinement; use `sgme_refine_batch` (async) and watch `sgme_refine_status`.
 8. **Panel says “not configured” although a key is set** — for remote servers the built-in dev fallback key never counts as configured; set a real key (`settings → agent_key`), and check `base_url` isn't a loopback address.
 
