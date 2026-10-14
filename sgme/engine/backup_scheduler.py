@@ -11,6 +11,9 @@
 不共享宿主 app.state 连接（v1.0 连接隔离修复，2026-08-14——对齐
 batch_scan.py/dream.py：Windows 多线程共享 sqlite 连接存在 access
 violation 竞态）。线程退出时关闭自建连接；宿主关闭连接与本线程无关。
+凭据库（T-273）：线程同样**不自建** credentials.db 连接（creds_conn 传 None），
+是否纳入每日快照由 manager 按数据目录文件存在性回退决定（含/不含语义
+单一实现源：文件在 → 含，不在 → 跳过空库），与手动备份同口径。
 """
 
 from __future__ import annotations
@@ -53,8 +56,12 @@ def _seconds_until(schedule: str) -> float:
     return delta
 
 
-def _run_backup(cfg: dict[str, Any], mem_conn, session_conn, wiki_conn) -> dict:
+def _run_backup(cfg: dict[str, Any], mem_conn, session_conn, wiki_conn, creds_conn=None) -> dict:
     """执行一次完整备份：快照 → 轮转 → 异地推送（失败不阻塞后续）。
+
+    creds_conn（T-273）：credentials.db 连接；定时线程**不自建**该连接，
+    缺省 None——快照含/不含凭据库由 manager 按数据目录文件存在性回退决定
+    （文件在 → 含，不在 → 跳过空库），与手动备份同口径（含语义单一实现源）。
 
     Returns:
         {snapshot_id, level, rotated, remote}
@@ -67,12 +74,13 @@ def _run_backup(cfg: dict[str, Any], mem_conn, session_conn, wiki_conn) -> dict:
     # 不再按进程 CWD——Docker WORKDIR=/app 时快照曾落容器层而非 /data 卷。
     backup_dir = sgme_config.resolve_backup_dir(cfg)
 
-    # 1) 一致快照（SQLite backup API 免停机；传三库连接避免临时裸连接）
+    # 1) 一致快照（SQLite backup API 免停机；传库连接避免临时裸连接；
+    #    creds_conn=None 时凭据库走文件存在性回退，T-273）
     snap = backup_manager.create_snapshot(
         cfg.get("paths", {}).get("data_dir", "data"),
         backup_dir,
         level=level,
-        conn_pair=(mem_conn, session_conn, wiki_conn),
+        conn_pair=(mem_conn, session_conn, wiki_conn, creds_conn),
         id_prefix="daily_",
     )
     # 2) 轮转（full 保留 keep_full 份；incremental/pre_restore 不轮转）
