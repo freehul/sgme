@@ -284,6 +284,21 @@ E2E SMOKE V04 PASSED
 > **注意**：L2 场景生成、Tier0 摘要、向量检索均依赖 LLM（本地或云端 OpenAI 兼容提供商，见 §4.2）。
 > LLM 不可达时自动降级（直存记忆、Tier0 静态直出、纯 BM25 检索），冒烟仍可通过。
 
+
+### 5.8 技能包跨机获取（skill_fetch）
+
+```bash
+# 下载技能完整包（tar.gz + MANIFEST.sha256 校验，落盘 <dest>/<name>/）
+python scripts/skill_fetch.py -n adapter-dsh -d ./skills
+
+# 单文件读（X-File-Sha256 校验）
+curl -H "X-API-Key: $SGME_AGENT_KEY" "$SGME_HTTP_URL/v1/skills/adapter-dsh/files/install.py" -o install.py
+
+# 消费遥测（layer=package；管理员 Key）
+curl -H "X-API-Key: $SGME_ADMIN_KEY" "$SGME_HTTP_URL/v1/admin/skills/usage?days=7&layer=package"
+```
+
+> 配额键 `skills.package_quota.*`（单文件/整包/文件数上限）；同机场景仍用 skill_materialize（落盘在服务端）。
 ## 6. 测试
 
 ```bash
