@@ -3,6 +3,7 @@
 # 定位：SGME 每新增一个 agent 可消费能力（= 一个 MCP 工具）就新增一个基准项；
 #       八个官方适配器（hermes / dsh / doubao / mimo / workbuddy / zcode / codex / claude-code）**平级**，必须在同一批工作内评估对齐。
 #       背景见《SGME-接入契约》§2 与 Backlog ST-42。
+#       注（T-283）：HTTP 包通道（GET /v1/skills/{name}/package）不入工具面基线；四家 CLI 实现（fetch）登记于各自 extra。
 #
 # 用法：
 #   python scripts/adapter_parity.py            # 日常检查（未声明缺口 = 失败；待补齐 = 警告）
@@ -122,10 +123,10 @@ passthrough: {}
 extra:
   hermes: [conversation_search, role_save, role_delete]  # conversation_search=查 sessions 原始层；role_save/role_delete=角色卡写侧（T-211）
   dsh: [conversation_search]  # 查 sessions 原始层（T-207 ③ 实现；T-226 重建产物后对 dsh 运行时生效）
-  doubao: [events_pull, events_after, wiki_raw, mcp_raw, describe]
-  mimo: [events_pull, events_after, wiki_raw, mcp_raw, describe]
-  workbuddy: [events_pull, events_after, wiki_raw, mcp_raw, describe]
-  zcode: [events_pull, events_after, wiki_raw, mcp_raw, describe]
+  doubao: [events_pull, events_after, wiki_raw, mcp_raw, describe, fetch]
+  mimo: [events_pull, events_after, wiki_raw, mcp_raw, describe, fetch]
+  workbuddy: [events_pull, events_after, wiki_raw, mcp_raw, describe, fetch]
+  zcode: [events_pull, events_after, wiki_raw, mcp_raw, describe, fetch]
 
 # ---------- 已登记待补齐（必须带任务号）----------
 # 形如：

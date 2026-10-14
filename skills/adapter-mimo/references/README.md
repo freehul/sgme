@@ -15,7 +15,7 @@ MiMo Desktop 同时支持原生 MCP（Settings → MCP 挂 `sgme`）。适配器
 
 ## 能力面（MCP 基准 43 工具）
 
-与 `sgme/mcp_server.py` 基准一一对应；CLI 命令面同步 43 + 扩展 6（`events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp`）。
+与 `sgme/mcp_server.py` 基准一一对应；CLI 命令面同步 43 + 扩展 7（`fetch`（跨机取技能完整包） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp`）。
 
 ```bash
 python scripts/sgme_client.py capabilities   # 离线核对 43/43

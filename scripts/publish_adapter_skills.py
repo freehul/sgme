@@ -2,8 +2,10 @@
 """scripts/publish_adapter_skills.py：把官方适配器打包进技能库（A2 分发通道）。
 
 真源 = ``adapters/<host>/``（只读）；分发包 = ``skills/adapter-<host>/``（可重建）。
-agent 侧路径：``skill_search`` → ``skill_get``（跨机：取正文自行写盘）→ ``skill_materialize``
-（仅同机：落盘完整包；落盘在 SGME 服务端文件系统，跨机调用方同一机器上不产出文件）。
+agent 侧路径：``skill_search`` → ``skill_get``（读指引）→ **取完整包**：同机 ``skill_materialize``
+（落盘在 SGME 服务端文件系统）；跨机走**包通道** ``GET /v1/skills/{name}/package``
+（四家 CLI 适配器即 ``sgme_client.py fetch <name> <dest_dir>``；或 ``skill_fetch.py --name --dest``
+一键下载校验解包）。
 
 打包布局（保证 materialize 后可直接 ``install.py``）::
 

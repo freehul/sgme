@@ -11,6 +11,7 @@
 - agent_id 解析链（T-233）：显式 → 环境变量 → 身份文件 → 默认；空值回退；
   构造解析 / append 请求体取值 / install.py 身份播种既有值保留
 - 43 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
+- fetch 技能完整包（T-283）：下载 → MANIFEST 校验 → 安全解包 → 原子落盘；失败不留残件
 - 新增/修正方法与 CLI 命令的参数转译（含管理员 Key 范围）
 - 测试样例全部使用假值：私网语义用 10.0.0.x，密钥用低熵占位
 
@@ -23,10 +24,12 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
 import sys
+import tarfile
 import tempfile
 import unittest
 import urllib.error
@@ -143,6 +146,55 @@ def env_ctx(**kw):
 def req_headers(req) -> dict:
     """urllib.Request 头部转小写字典（get_header 在本环境不做大小写规范化）。"""
     return {k.lower(): v for k, v in req.header_items()}
+
+
+class FakePkgResp:
+    """技能包下载响应替身（二进制体 + 响应头；客户端 _http_raw 走 read()/headers）。"""
+
+    def __init__(self, raw: bytes, headers: dict | None = None, status: int = 200):
+        self._raw = raw
+        self.headers = headers or {}
+        self.status = status
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def make_skill_package(name: str = "demo-skill", entries: dict | None = None,
+                       *, tamper_digest: bool = False,
+                       omit_from_manifest: str | None = None):
+    """构造技能完整包 tar.gz（含包根 MANIFEST.sha256）；返回 (bytes, 聚合 sha256)。
+
+    entries = {相对技能根路径: bytes}；MANIFEST 相对路径基点 = <name>/（方案 §4.3 口径）。
+    tamper_digest / omit_from_manifest 用于构造完整性破坏样本（负例）。
+    """
+    files = {"SKILL.md": b"---\nname: demo-skill\n---\n# Demo\n"}
+    files.update(entries or {})
+    lines = [f"{hashlib.sha256(files[rel]).hexdigest()}  {rel}"
+             for rel in sorted(files, key=lambda s: s.encode("utf-8"))]
+    if tamper_digest:
+        _digest, _sep, rel = lines[0].partition("  ")
+        lines[0] = f"{'0' * 64}  {rel}"
+    if omit_from_manifest:
+        lines = [ln for ln in lines if not ln.endswith("  " + omit_from_manifest)]
+    lines.sort(key=lambda ln: ln.split("  ", 1)[1].encode("utf-8"))
+    manifest = ("\n".join(lines) + "\n").encode("utf-8")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for rel, data in files.items():
+            info = tarfile.TarInfo(f"{name}/{rel}")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        info = tarfile.TarInfo("MANIFEST.sha256")
+        info.size = len(manifest)
+        tar.addfile(info, io.BytesIO(manifest))
+    return buf.getvalue(), hashlib.sha256(manifest).hexdigest()
 
 
 class NoDeployConfig(unittest.TestCase):
@@ -497,6 +549,143 @@ class TestHttpCalls(NoDeployConfig):
             with self.assertRaises(SGMEError) as ctx:
                 c.health()
             self.assertIn("403", str(ctx.exception))
+
+
+class TestSkillFetchPackage(NoDeployConfig):
+    """fetch：跨机取技能完整包（下载 → MANIFEST 校验 → 安全解包 → 原子落盘，T-283）。
+
+    关键语义：校验失败 / 路径穿越 / 链接成员 / 服务端版本不足 → 中止且**不留残件**；
+    目标已存在时整包替换；任何输出不打印密钥。
+    """
+
+    def _client(self, raw, headers=None):
+        c = make_client()
+        patcher = mock.patch.object(c._opener, "open",
+                                    return_value=FakePkgResp(raw, headers or {}))
+        mo = patcher.start()
+        self.addCleanup(patcher.stop)
+        return c, mo
+
+    def test_fetch_happy_path_lands_package_and_reports_hash(self):
+        raw, agg = make_skill_package("demo-skill", {"scripts/run.py": b"print('hi')\n"})
+        c, mo = self._client(raw, {"X-Skill-Sha256": agg, "X-Skill-Files": "2"})
+        with tempfile.TemporaryDirectory() as d:
+            r = c.fetch("demo-skill", d)
+            req = mo.call_args.args[0]
+            self.assertEqual(req.full_url,
+                             "http://127.0.0.1:9910/v1/skills/demo-skill/package")
+            self.assertEqual(req_headers(req)["x-api-key"], KEY)
+            dest = Path(d) / "demo-skill"
+            self.assertTrue((dest / "SKILL.md").is_file())
+            self.assertTrue((dest / "scripts" / "run.py").is_file())
+            self.assertEqual((dest / "scripts" / "run.py").read_bytes(), b"print('hi')\n")
+            # 校验后自删 MANIFEST：包根与产物目录都不该出现
+            self.assertFalse((Path(d) / "MANIFEST.sha256").exists())
+            self.assertFalse((dest / "MANIFEST.sha256").exists())
+            self.assertEqual(r["sha256"], agg)
+            self.assertEqual(r["files"], 2)
+            self.assertEqual(r["name"], "demo-skill")
+            self.assertEqual(r["path"], str(dest))
+            self.assertEqual(list(Path(d).glob(".demo-skill.fetch-*")), [])
+            self.assertNotIn(KEY, json.dumps(r, ensure_ascii=False))
+
+    def test_fetch_is_extension_with_method_and_cli(self):
+        """fetch 是适配器自有扩展（包通道），不入 43 基准；方法 + CLI 双面必须齐。"""
+        self.assertIn("fetch", CLI_NAMES)
+        self.assertTrue(hasattr(SGME, "fetch"))
+        self.assertNotIn("fetch", BASELINE_TOOLS)
+        m = mock.MagicMock()
+        buf = io.StringIO()
+        with mock.patch.object(sc, "SGME", m), \
+                mock.patch.object(sc, "_print", lambda obj: None):
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                code = sc.main(["fetch", "demo-skill", "out-dir"])
+        self.assertEqual(code, 0, msg=buf.getvalue())
+        m.return_value.fetch.assert_called_once_with("demo-skill", "out-dir")
+
+    def test_fetch_manifest_digest_mismatch_aborts_without_residue(self):
+        raw, _agg = make_skill_package("demo-skill", tamper_digest=True)
+        c, _mo = self._client(raw)
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SGMEError) as ctx:
+                c.fetch("demo-skill", d)
+            self.assertIn("sha256 校验失败", str(ctx.exception))
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_fetch_manifest_file_set_mismatch_aborts(self):
+        raw, _agg = make_skill_package("demo-skill", {"extra.txt": b"x"},
+                                       omit_from_manifest="extra.txt")
+        c, _mo = self._client(raw)
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SGMEError) as ctx:
+                c.fetch("demo-skill", d)
+            self.assertIn("不一致", str(ctx.exception))
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_fetch_rejects_traversal_member(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            info = tarfile.TarInfo("../escape.txt")
+            info.size = 3
+            tar.addfile(info, io.BytesIO(b"bad"))
+        c, _mo = self._client(buf.getvalue())
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SGMEError) as ctx:
+                c.fetch("demo-skill", d)
+            self.assertIn("路径非法", str(ctx.exception))
+            self.assertFalse((Path(d).parent / "escape.txt").exists())
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_fetch_rejects_link_member(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            info = tarfile.TarInfo("demo-skill/link-out")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "../outside"
+            tar.addfile(info)
+        c, _mo = self._client(buf.getvalue())
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SGMEError) as ctx:
+                c.fetch("demo-skill", d)
+            self.assertIn("链接成员", str(ctx.exception))
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_fetch_header_aggregate_mismatch_rejected(self):
+        raw, _agg = make_skill_package("demo-skill")
+        c, _mo = self._client(raw, {"X-Skill-Sha256": "0" * 64})
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SGMEError) as ctx:
+                c.fetch("demo-skill", d)
+            self.assertIn("X-Skill-Sha256", str(ctx.exception))
+            self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_fetch_404_gives_version_hint_and_no_residue(self):
+        c = make_client()
+        err = urllib.error.HTTPError("http://127.0.0.1:9910/v1/skills/demo-skill/package",
+                                     404, "Not Found", {},
+                                     io.BytesIO(b'{"detail":"skill not found"}'))
+        with mock.patch.object(c._opener, "open", side_effect=err):
+            with tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(SGMEError) as ctx:
+                    c.fetch("demo-skill", d)
+                self.assertEqual(list(Path(d).iterdir()), [])
+        msg = str(ctx.exception)
+        self.assertIn("404", msg)
+        self.assertIn("服务端版本", msg)
+
+    def test_fetch_replaces_existing_package(self):
+        c, _mo = self._client(make_skill_package("demo-skill", {"old.txt": b"old\n"})[0])
+        with tempfile.TemporaryDirectory() as d:
+            c.fetch("demo-skill", d)
+            self.assertTrue((Path(d) / "demo-skill" / "old.txt").is_file())
+            raw2, agg2 = make_skill_package("demo-skill", {"new.txt": b"new\n"})
+            c2, _mo2 = self._client(raw2, {"X-Skill-Sha256": agg2, "X-Skill-Files": "2"})
+            r2 = c2.fetch("demo-skill", d)
+            dest = Path(d) / "demo-skill"
+            self.assertTrue((dest / "new.txt").is_file())
+            self.assertFalse((dest / "old.txt").exists())
+            self.assertEqual(r2["sha256"], agg2)
+            self.assertEqual(list(Path(d).glob(".demo-skill.fetch-*")), [])
 
 
 class TestMcpMethodSignatures(NoDeployConfig):

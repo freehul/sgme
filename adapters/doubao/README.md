@@ -26,13 +26,13 @@
 |---|---|---|
 | HTTP（零依赖，21 个） | `health` `append` `inject` `search` `answer` `memory-get/reject/unreject` `skill-list/coldstart/search/digest/get/materialize` `wiki-search/pages/page/page-add/page-update` `credential-list/get` | 记忆/检索/技能读/wiki 读写/凭据读侧 |
 | MCP（需 mcp 库，22 个） | `agent-onboarding` `refine-trigger/batch/status` `stats` `config-get/update` `idea-add` `demand-create` `project-register` `signal-pull/claim/ack/clear` `role-list/assemble/active-get/active-set` `wiki-evolve-trigger` `skill-put/delete/rename` | 提炼/统计/配置/三池/信号闭环/角色/自进化/技能写侧 |
-| 适配器扩展（6 个） | `events-pull` `events-after` `wiki-raw` `mcp`（逃生口）`capabilities` `env-info` | 超出基准的自有通道 |
+| 适配器扩展（7 个） | `fetch`（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包）`events-pull` `events-after` `wiki-raw` `mcp`（逃生口）`capabilities` `env-info` | 超出基准的自有通道 |
 
-合计 49 个 CLI 子命令（43 基准 + 6 扩展）。
+合计 50 个 CLI 子命令（43 基准 + 7 扩展）。
 
 - 离线核对全量矩阵：`python scripts/sgme_client.py capabilities`（输出 43/43 覆盖表）。
 - 写侧/管理类（`skill-put` / `skill-delete` / `skill-rename` 服务端强制；`config-update` / `signal-clear` 有管理员 Key 时自动使用）走环境变量 `SGME_ADMIN_KEY`。
-- `skill_get` 支持 `--section` 章节取用；`skill_materialize` 返回 `path` + `sha256`（**落盘在 SGME 服务端文件系统**、返回的是服务端路径——跨机调用拿不到产物，请改用 `skill_get` 取正文自行写盘）。
+- `skill_get` 支持 `--section` 章节取用；`skill_materialize` 返回 `path` + `sha256`（**落盘在 SGME 服务端文件系统**、返回的是服务端路径——同机调用可用；**跨机改用包通道 `fetch <name> <dest_dir>`**：下载 → `MANIFEST.sha256` 校验 → 安全解包，失败不留残件）。
 
 ## 工作原理
 

@@ -40,3 +40,7 @@ SGME_CODEX_KEY=<issued-by-sgme-admin>
 - HTTP/MCP 客户端均使用 `trust_env=False`，避免本机代理劫持。
 - 远端 MCP 工具权限仍由 SGME 的 agent key / admin key 规则约束。
 
+## 获取完整包（技能库）
+
+本适配器是终端 agent：跨机取技能完整包直接走**包通道**——`GET /v1/skills/{name}/package`（tar.gz；按包内 `MANIFEST.sha256` 校验后解包，失败不留残件），或 `skill_fetch.py --name <name> --dest <目录>` 一键下载校验解包（脚本经 `GET /v1/onboarding/docs` 在线获取）；同机可用 `skill_materialize`（落盘在 SGME 服务端文件系统）。
+
