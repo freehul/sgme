@@ -593,3 +593,443 @@ class TestFtsDriftSelfHeal:
         assert r.ok is True
         assert r.data.get("embedded") == 0
         assert r.data.get("pending_embed") == 2  # 向量空表 → 待补 2 条
+
+
+# =====================================================================
+# T-280/T-281：包文件集（iter_package_files）+ 跨机包通道（package_skill / read_skill_file）
+# =====================================================================
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_SKILLS_DIR = REPO_ROOT / "skills"
+
+
+def _alpha_root(skills_cfg) -> Path:
+    return Path(skills_cfg["skills"]["source_dirs"][0]) / "alpha"
+
+
+def _fill_companions(root: Path, big_bytes: int = 0, many_files: int = 0, big_count: int = 1) -> None:
+    """铺随附文件：顶层 / 深层 / 中文名 / junk（任意深度）/ 空目录（可加大文件与多文件）。"""
+    (root / "install.py").write_text("# install\n", encoding="utf-8")
+    (root / "scripts").mkdir(exist_ok=True)
+    (root / "scripts" / "sgme_client.py").write_text("print('client')\n", encoding="utf-8")
+    deep = root / "corpus" / "金匮要略"
+    deep.mkdir(parents=True, exist_ok=True)
+    (deep / "序.md").write_text("# 序\n\n中医经典注文。\n", encoding="utf-8")
+    # junk：任意深度（目录名命中 / 后缀名命中）
+    (root / "scripts" / "__pycache__").mkdir(exist_ok=True)
+    (root / "scripts" / "__pycache__" / "sgme_client.cpython-312.pyc").write_bytes(b"junk")
+    (root / "scripts" / "debug.log").write_text("noise\n", encoding="utf-8")
+    (root / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    (root / "tests").mkdir(exist_ok=True)
+    (root / "tests" / "test_x.py").write_text("pass\n", encoding="utf-8")
+    # 空目录：不入包、不入列
+    (root / "emptydir").mkdir(exist_ok=True)
+    if big_bytes:
+        (root / "assets").mkdir(exist_ok=True)
+        for i in range(max(1, big_count)):
+            (root / "assets" / f"big-{i}.bin").write_bytes(bytes(range(256)) * (big_bytes // 256))
+    if many_files:
+        wide = root / "wide"
+        wide.mkdir(exist_ok=True)
+        for i in range(many_files):
+            (wide / f"item-{i:03d}.txt").write_text(f"{i}\n", encoding="utf-8")
+
+
+def _try_symlink(target: Path, link: Path) -> bool:
+    """尽力创建符号链接；平台不允许（无权限）→ False（用例按 skip 处理）。"""
+    import os
+
+    try:
+        os.symlink(target, link)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+
+
+class TestIterPackageFiles:
+    """T-280 共享枚举：junk 任意深度排除 / 符号链接排除 + WARNING / 空目录不入包。"""
+
+    def test_collects_expected_relpaths_deterministically(self, skills_cfg):
+        from sgme.operations.skills import iter_package_files
+
+        root = _alpha_root(skills_cfg)
+        _fill_companions(root)
+        first = iter_package_files(root)
+        assert {rel for rel, _p in first} == {
+            "SKILL.md",
+            "install.py",
+            "scripts/sgme_client.py",
+            "corpus/金匮要略/序.md",
+        }
+        assert first == iter_package_files(root), "枚举必须确定性（同输入同序）"
+        # 目录带 / 的形态不出现（只产出文件；空目录 emptydir 不入包）
+        assert all(not rel.endswith("/") for rel, _p in first)
+
+    def test_junk_excluded_at_any_depth(self, skills_cfg):
+        from sgme.operations.skills import iter_package_files
+
+        root = _alpha_root(skills_cfg)
+        _fill_companions(root)
+        rels = {rel for rel, _p in iter_package_files(root)}
+        assert not any("__pycache__" in r for r in rels)
+        assert not any(r.endswith((".pyc", ".pyo", ".log")) for r in rels)
+        assert ".env" not in rels and "tests/test_x.py" not in rels
+
+    def test_symlink_excluded_with_warning(self, skills_cfg, tmp_path, caplog):
+        """符号链接：排除 + WARNING（防经链接逃逸出技能目录）。"""
+        import logging
+
+        from sgme.operations.skills import iter_package_files
+
+        root = _alpha_root(skills_cfg)
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("secret\n", encoding="utf-8")
+        if not _try_symlink(outside, root / "escape.txt"):
+            pytest.skip("当前平台/权限不支持创建符号链接")
+        (root / "scripts" / "dirlink").parent.mkdir(exist_ok=True)
+        linked_dir = _try_symlink(tmp_path, root / "scripts" / "dirlink")
+
+        with caplog.at_level(logging.WARNING, logger="sgme.operations.skills"):
+            rels = {rel for rel, _p in iter_package_files(root)}
+        assert "escape.txt" not in rels
+        if linked_dir:
+            assert not any(r.startswith("scripts/dirlink") for r in rels)
+        # 链接排除必须留 warning（可观测，不静默）
+        assert any("符号链接" in rec.getMessage() for rec in caplog.records)
+
+    def test_missing_dir_returns_empty(self, tmp_path):
+        from sgme.operations.skills import iter_package_files
+
+        assert iter_package_files(None) == []
+        assert iter_package_files(tmp_path / "nope") == []
+        # 传文件（非目录）也安全返回空
+        f = tmp_path / "file.txt"
+        f.write_text("x", encoding="utf-8")
+        assert iter_package_files(f) == []
+
+
+class TestPackageSkill:
+    """T-281 package_skill：canonical manifest / 聚合哈希 / 回退单文件包 / 配额。"""
+
+    def test_manifest_canonical_and_aggregate(self, skills_cfg, wiki_conn):
+        import hashlib
+
+        from sgme.operations.skills import package_skill
+
+        _fill_companions(_alpha_root(skills_cfg))
+        res = package_skill(skills_cfg, wiki_conn, name="alpha")
+        assert res.ok is True, res
+        data = res.data
+        lines = data["manifest"].split("\n")[:-1]
+        # 行格式：<64 位 hex><两个空格><relpath>；LF 结尾、UTF-8、按 relpath 字节序
+        assert data["manifest"].endswith("\n")
+        assert all(line[64:66] == "  " for line in lines)
+        assert len(data["manifest"]) == sum(len(ln) + 1 for ln in lines)
+        rels = [line[66:] for line in lines]
+        assert rels == sorted(rels, key=lambda s: s.encode("utf-8"))
+        # 基点 = 技能根：行内不含 <name>/ 前缀；MANIFEST 不收录自身
+        assert "SKILL.md" in rels and "install.py" in rels
+        assert not any(r.startswith("alpha/") for r in rels)
+        assert all("MANIFEST" not in r for r in rels)
+        # 聚合哈希 = canonical manifest 文本 sha256；文件数 = 行数
+        assert data["sha256"] == hashlib.sha256(data["manifest"].encode("utf-8")).hexdigest()
+        assert data["count"] == len(rels) == len(data["members"])
+        # 逐行 sha 与成员 sha 对账
+        by_path = {m["path"]: m["sha256"] for m in data["members"]}
+        assert {line[66:]: line[:64] for line in lines} == by_path
+
+    def test_members_byte_fidelity_large_and_chinese(self, skills_cfg, wiki_conn):
+        import hashlib
+
+        from sgme.operations.skills import package_skill
+
+        root = _alpha_root(skills_cfg)
+        _fill_companions(root, big_bytes=1024 * 1024)  # 1 MiB 构造大文件
+        res = package_skill(skills_cfg, wiki_conn, name="alpha")
+        assert res.ok is True
+        members = {m["path"]: m for m in res.data["members"]}
+        # 大文件
+        big_src = (root / "assets" / "big-0.bin").read_bytes()
+        assert members["assets/big-0.bin"]["size"] == len(big_src) == 1024 * 1024
+        assert members["assets/big-0.bin"]["sha256"] == hashlib.sha256(big_src).hexdigest()
+        assert members["assets/big-0.bin"]["data"] is None  # 盘上成员只留路径（流式组包再读）
+        # 中文深层路径
+        cn = "corpus/金匮要略/序.md"
+        assert cn in members
+        assert members[cn]["sha256"] == hashlib.sha256(
+            (root / "corpus" / "金匮要略" / "序.md").read_bytes()
+        ).hexdigest()
+        # SKILL.md 原文件字节（git 源读盘 → source_path 标注真实源文件；data 已在手）
+        assert members["SKILL.md"]["data"] == (root / "SKILL.md").read_bytes()
+        assert members["SKILL.md"]["source_path"] == root / "SKILL.md"
+
+    def test_source_missing_falls_back_to_single_file_package(self, wiki_conn, tmp_path):
+        """源文件缺失（对齐 materialize 口径）→ 索引正文单文件包。"""
+        from sgme.operations.skills import _package_members, _canonical_manifest
+        from sgme.skills.indexer import SkillRecord
+
+        rec = SkillRecord(
+            name="ghost-src",
+            content="# 回退正文\n\n索引记录即全文。\n",
+            source="git",
+            origin_path=str(tmp_path / "gone" / "SKILL.md"),  # 文件不存在
+        )
+        members = _package_members(rec)
+        assert [m["path"] for m in members] == ["SKILL.md"]
+        assert members[0]["data"] == rec.content.encode("utf-8")
+        assert members[0]["source_path"] is None
+        assert _canonical_manifest(members).count("\n") == 1
+
+    def test_builtin_protocol_skill_single_file_package(self, skills_cfg, wiki_conn):
+        """内置《技能检索协议》兜底：对齐 skill_get 提供单文件包（成本≈0）。"""
+        from sgme.operations.skills import package_skill
+
+        res = package_skill(skills_cfg, wiki_conn, name="skill-registry-protocol")
+        assert res.ok is True, res
+        assert [m["path"] for m in res.data["members"]] == ["SKILL.md"]
+        assert res.data["count"] == 1
+        assert res.data["manifest"].count("\n") == 1
+
+    def test_skill_without_companions_single_file_package(self, skills_cfg, wiki_conn):
+        """无随附文件的技能 = 仅 SKILL.md 的单文件包（合法，非错误）。"""
+        from sgme.operations.skills import package_skill
+
+        res = package_skill(skills_cfg, wiki_conn, name="beta")
+        assert res.ok is True, res
+        assert [m["path"] for m in res.data["members"]] == ["SKILL.md"]
+        assert res.data["count"] == 1 and res.data["bytes"] == len(
+            (Path(skills_cfg["skills"]["source_dirs"][0]) / "beta" / "SKILL.md").read_bytes()
+        )
+
+    def test_unknown_skill_not_found(self, skills_cfg, wiki_conn):
+        from sgme.operations.skills import package_skill
+
+        res = package_skill(skills_cfg, wiki_conn, name="ghost")
+        assert res.ok is False and res.error_code == ERR_NOT_FOUND
+
+    # ---------- 容量（skills.package_quota.* 独立标定） ----------
+
+    def test_quota_exceeded_raises_with_config_key(self, skills_cfg, wiki_conn):
+        from sgme.operations.errors import InvalidArgs
+        from sgme.operations.skills import package_skill
+
+        root = _alpha_root(skills_cfg)
+        _fill_companions(root)
+
+        skills_cfg["skills"]["package_quota"] = {"max_files": 1}
+        with pytest.raises(InvalidArgs) as ei:
+            package_skill(skills_cfg, wiki_conn, name="alpha")
+        assert "文件数超限" in str(ei.value) and "package_quota.max_files" in str(ei.value)
+
+        skills_cfg["skills"]["package_quota"] = {"max_file_bytes": 10}
+        with pytest.raises(InvalidArgs) as ei2:
+            package_skill(skills_cfg, wiki_conn, name="alpha")
+        assert "单文件超限" in str(ei2.value)
+        assert "package_quota.max_file_bytes" in str(ei2.value)
+
+        skills_cfg["skills"]["package_quota"] = {"max_total_bytes": 32}
+        with pytest.raises(InvalidArgs) as ei3:
+            package_skill(skills_cfg, wiki_conn, name="alpha")
+        assert "总量超限" in str(ei3.value) and "package_quota.max_total_bytes" in str(ei3.value)
+
+    def test_quota_positive_three_dimensions(self, skills_cfg, wiki_conn):
+        """正例（三维同时超写侧 asset_quota：单文件 256 KiB / 总量 2 MiB / 100 文件）。
+
+        生产样本 nihaisha（3.21 MiB / 108 文件）与 quarkclouddrive（单文件 616.9 KiB）
+        不在本仓，故按同口径构造：1 MiB 单文件 + 3 MiB 总量 + 104 文件，必须全绿。
+        """
+        from sgme.operations.skills import package_skill
+
+        root = _alpha_root(skills_cfg)
+        _fill_companions(root, big_bytes=1024 * 1024, many_files=101, big_count=3)
+        res = package_skill(skills_cfg, wiki_conn, name="alpha")
+        assert res.ok is True, res
+        assert res.data["bytes"] > 2 * 1024 * 1024      # 超写侧总量 2 MiB
+        assert res.data["count"] > 100                   # 超写侧文件数 100
+        biggest = max(m["size"] for m in res.data["members"])
+        assert biggest >= 1024 * 1024                    # 超写侧单文件 256 KiB
+
+    def test_quota_defaults_and_invalid_config_fall_back(self, skills_cfg, wiki_conn):
+        from sgme.operations.skills import (
+            DEFAULT_PACKAGE_MAX_FILE_BYTES,
+            DEFAULT_PACKAGE_MAX_FILES,
+            DEFAULT_PACKAGE_MAX_TOTAL_BYTES,
+            _package_quota,
+        )
+
+        assert _package_quota({}) == {
+            "max_file_bytes": DEFAULT_PACKAGE_MAX_FILE_BYTES,
+            "max_total_bytes": DEFAULT_PACKAGE_MAX_TOTAL_BYTES,
+            "max_files": DEFAULT_PACKAGE_MAX_FILES,
+        }
+        # 非法值回落默认（读侧不因配置错中断）
+        bad = {"skills": {"package_quota": {"max_files": "lots", "max_file_bytes": None}}}
+        assert _package_quota(bad)["max_files"] == DEFAULT_PACKAGE_MAX_FILES
+        assert _package_quota(bad)["max_file_bytes"] == DEFAULT_PACKAGE_MAX_FILE_BYTES
+
+    def test_resource_config_yaml_matches_code_defaults(self):
+        """配置同步门禁：出厂模板 skills.package_quota 三键 == 码内 DEFAULT_PACKAGE_*。"""
+        import yaml
+
+        from sgme.operations.skills import (
+            DEFAULT_PACKAGE_MAX_FILE_BYTES,
+            DEFAULT_PACKAGE_MAX_FILES,
+            DEFAULT_PACKAGE_MAX_TOTAL_BYTES,
+        )
+
+        raw = yaml.safe_load(
+            (REPO_ROOT / "sgme" / "resources" / "config" / "sgme.yaml").read_text(encoding="utf-8")
+        )
+        quota = raw["skills"]["package_quota"]
+        assert quota == {
+            "max_file_bytes": DEFAULT_PACKAGE_MAX_FILE_BYTES,
+            "max_total_bytes": DEFAULT_PACKAGE_MAX_TOTAL_BYTES,
+            "max_files": DEFAULT_PACKAGE_MAX_FILES,
+        }
+
+
+class TestReadSkillFile:
+    """T-281 read_skill_file：成员命中制 + 形态内核（读宽写严）。"""
+
+    def test_top_level_install_py_readable(self, skills_cfg, wiki_conn):
+        """白名单外顶层成员（install.py）必须可读——写侧三目录白名单不适用。"""
+        import hashlib
+
+        from sgme.operations.skills import read_skill_file
+
+        root = _alpha_root(skills_cfg)
+        _fill_companions(root)
+        res = read_skill_file(skills_cfg, wiki_conn, name="alpha", relpath="install.py")
+        assert res.ok is True, res
+        body = (root / "install.py").read_bytes()
+        assert res.data["content"] == body
+        assert res.data["sha256"] == hashlib.sha256(body).hexdigest()
+        assert res.data["source"] == "disk" and res.data["size"] == len(body)
+
+    def test_chinese_deep_member_and_skill_md(self, skills_cfg, wiki_conn):
+        from sgme.operations.skills import read_skill_file
+
+        root = _alpha_root(skills_cfg)
+        _fill_companions(root)
+        cn = read_skill_file(skills_cfg, wiki_conn, name="alpha", relpath="corpus/金匮要略/序.md")
+        assert cn.ok is True and b"#" in cn.data["content"]
+        md = read_skill_file(skills_cfg, wiki_conn, name="alpha", relpath="SKILL.md")
+        assert md.ok is True
+        assert md.data["content"] == (root / "SKILL.md").read_bytes()
+
+    def test_junk_and_nonmember_rejected_404(self, skills_cfg, wiki_conn):
+        from sgme.operations.skills import read_skill_file
+
+        _fill_companions(_alpha_root(skills_cfg))
+        for rel in ("__pycache__/x.pyc", "scripts/debug.log", ".env", "tests/test_x.py",
+                    "emptydir", "scripts/nope.py"):
+            res = read_skill_file(skills_cfg, wiki_conn, name="alpha", relpath=rel)
+            assert res.ok is False, rel
+            assert res.error_code == ERR_NOT_FOUND, rel
+            assert "包成员不存在" in (res.message or ""), rel
+
+    def test_symlink_member_rejected(self, skills_cfg, wiki_conn, tmp_path):
+        from sgme.operations.skills import read_skill_file
+
+        root = _alpha_root(skills_cfg)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret\n", encoding="utf-8")
+        if not _try_symlink(outside, root / "escape.txt"):
+            pytest.skip("当前平台/权限不支持创建符号链接")
+        res = read_skill_file(skills_cfg, wiki_conn, name="alpha", relpath="escape.txt")
+        assert res.ok is False and res.error_code == ERR_NOT_FOUND
+
+    def test_invalid_shape_raises_400_class(self, skills_cfg, wiki_conn):
+        from sgme.operations.errors import InvalidArgs
+        from sgme.operations.skills import read_skill_file
+
+        _fill_companions(_alpha_root(skills_cfg))
+        for bad in ("/etc/passwd", "C:/windows/x", "..\\..\\x", "scripts/../../x", ""):
+            with pytest.raises(InvalidArgs):
+                read_skill_file(skills_cfg, wiki_conn, name="alpha", relpath=bad)
+
+    def test_unknown_skill_404(self, skills_cfg, wiki_conn):
+        from sgme.operations.skills import read_skill_file
+
+        res = read_skill_file(skills_cfg, wiki_conn, name="ghost", relpath="SKILL.md")
+        assert res.ok is False and res.error_code == ERR_NOT_FOUND
+
+    def test_fallback_package_exposes_only_skill_md(self, wiki_conn, tmp_path):
+        """回退单文件包：除 SKILL.md 外任何成员都不存在（源文件缺失技能）。"""
+        from sgme.operations import skills as ops
+        from sgme.skills.indexer import SkillRecord
+
+        rec = SkillRecord(
+            name="ghost-src", content="# 回退正文\n", source="git",
+            origin_path=str(tmp_path / "gone" / "SKILL.md"),
+        )
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(ops, "_load_records", lambda cfg, conn: [rec])
+        try:
+            ok = ops.read_skill_file({}, wiki_conn, name="ghost-src", relpath="SKILL.md")
+            assert ok.ok is True and ok.data["content"] == b"# \xe5\x9b\x9e\xe9\x80\x80\xe6\xad\xa3\xe6\x96\x87\n"
+            miss = ops.read_skill_file({}, wiki_conn, name="ghost-src", relpath="install.py")
+            assert miss.ok is False and miss.error_code == ERR_NOT_FOUND
+        finally:
+            monkey.undo()
+
+
+class TestMaterializePackageEquivalence:
+    """T-280 等价测试：materialize 落盘 vs 包文件集**逐文件对照**（含 adapter-dsh 真样本）。"""
+
+    @staticmethod
+    def _landed_hashes(base: Path) -> dict:
+        import hashlib
+
+        return {
+            p.relative_to(base).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(base.rglob("*"))
+            if p.is_file()
+        }
+
+    def test_real_adapter_dsh_sample(self, wiki_conn, tmp_path):
+        from sgme.operations.skills import materialize, package_skill
+
+        sample = REPO_SKILLS_DIR / "adapter-dsh"
+        assert sample.is_dir(), "真实样本缺失：仓库内 skills/adapter-dsh"
+        cfg = {"skills": {"enabled": True, "source_dirs": [str(REPO_SKILLS_DIR)], "budget": 40}}
+
+        dest = tmp_path / "ws_eq"
+        mat = materialize(cfg, wiki_conn, name="adapter-dsh", dest_dir=str(dest))
+        assert mat.ok is True, mat
+        pkg = package_skill(cfg, wiki_conn, name="adapter-dsh")
+        assert pkg.ok is True, pkg
+
+        landed = self._landed_hashes(dest / "adapter-dsh")
+        members = {m["path"]: m["sha256"] for m in pkg.data["members"]}
+        assert landed == members, f"落盘与包文件集不一致: {set(landed) ^ set(members)}"
+        # 真样本关键成员在列（适配器包顶层文件 = 读宽必要性的证明）
+        assert "install.py" in members and "SKILL.md" in members
+        assert any(p.startswith("package/sgme-bridge/") for p in members)
+        # 返回形状回归：companions 仍是顶层条目（目录带 /）
+        assert "install.py" in mat.data["companions"]
+        assert "package/" in mat.data["companions"] and "references/" in mat.data["companions"]
+        assert mat.data["companions"] == sorted(mat.data["companions"])
+
+    def test_constructed_sample_with_junk_and_symlink(self, skills_cfg, wiki_conn, tmp_path):
+        from sgme.operations.skills import materialize, package_skill
+
+        root = _alpha_root(skills_cfg)
+        _fill_companions(root)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret\n", encoding="utf-8")
+        _try_symlink(outside, root / "escape.txt")
+
+        dest = tmp_path / "ws_eq2"
+        mat = materialize(skills_cfg, wiki_conn, name="alpha", dest_dir=str(dest))
+        assert mat.ok is True, mat
+        pkg = package_skill(skills_cfg, wiki_conn, name="alpha")
+        assert pkg.ok is True, pkg
+
+        landed = self._landed_hashes(dest / "alpha")
+        members = {m["path"]: m["sha256"] for m in pkg.data["members"]}
+        assert landed == members, f"落盘与包文件集不一致: {set(landed) ^ set(members)}"
+        assert "escape.txt" not in landed  # 链接两侧同排除
+        assert "emptydir" not in landed and not any(p.startswith("emptydir") for p in landed)
+        # companions 形状：顶层条目、目录带 /、junk/空目录不入列
+        assert mat.data["companions"] == ["corpus/", "install.py", "scripts/"]
