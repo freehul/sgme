@@ -33,7 +33,7 @@ from sgme.data import memory_dao, stats_dao
 # ---------- v0.6 冻结契约（改造前逐字段抄录，任何变动即破坏性变更） ----------
 # ST-22② 有意新增顶层 vector 字段（只增不改既有字段）——列表随之更新。
 
-HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "vector", "model_config", "update_available", "latest_version", "update_checked_at", "update_error", "onboarding"]  # T-53/ST-34 只增不改；T-215 P1 接入指引指针
+HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "vector", "model_config", "update_available", "latest_version", "update_checked_at", "update_error", "onboarding", "credentials_ok"]  # T-53/ST-34 只增不改；T-215 P1 接入指引指针；EP-11 凭据模块状态
 HTTP_REFINEMENT_KEYS = [
     "watermark_age_sec",
     "queue_depth",
