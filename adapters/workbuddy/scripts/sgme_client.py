@@ -7,7 +7,8 @@ WorkBuddy官方适配器（adapters/workbuddy）的运行时客户端。两层�
 
   HTTP 层（agent key 直接可用，标准库零依赖）：
     health / append / inject / search / answer / memory_get / memory_reject /
-    memory_unreject / events_pull / events_after / skill_*（读+写）/ wiki_*（读+写）
+    memory_unreject / events_pull / events_after / skill_*（读+写）/ wiki_*（读+写）/
+    fetch（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包）
 
   MCP 层（需 mcp 库，用 SGME 项目 venv 执行）：
     agent_onboarding / refine_* / stats / config_get / config_update / signal_* /
@@ -41,6 +42,7 @@ agent_id（溯源打标，构造时求值；多设备接入必须本机覆盖）
   python sgme_client.py answer "我最近在做什么项目？"
   python sgme_client.py events-pull --subscriber workbuddy
   python sgme_client.py skill-search "数字人"
+  python sgme_client.py fetch <name> <dest_dir>  # 跨机取技能完整包（下载→校验→安全解包）
   python sgme_client.py wiki-search "接入"
   python sgme_client.py stats / config-get / refine-status / signal-pull / role-list
   python sgme_client.py demand-create "待办标题" --project-id <id>
@@ -58,9 +60,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
+import shutil
 import sys
+import tarfile
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -568,6 +574,36 @@ class SGME:
         return self._http("POST", f"/v1/skills/{urllib.parse.quote(name)}/materialize",
                           {"dest_dir": dest_dir})
 
+    def fetch(self, name: str, dest_dir: str) -> dict:
+        """跨机取技能完整包并按规则落盘（包通道，T-283；方法 + CLI 双面）。
+
+        `GET /v1/skills/<name>/package`（tar.gz）→ 包内 MANIFEST.sha256 逐文件校验
+        → 安全解包 → 原子落盘；失败即中止且不留残件，任何输出不打印密钥。
+        返回 {name, path, sha256, files}。同机快速路径仍用 skill_materialize。
+        """
+        return _fetch_skill_package(self, name, dest_dir)
+
+    def _http_raw(self, path: str, timeout: int = 300) -> tuple[bytes, dict]:
+        """原始 GET（二进制安全）：返回 (响应体 bytes, 响应头小写化 dict)。
+
+        `_http` 走 JSON 解码，不适合二进制包下载；错误包装与其同口径。
+        """
+        url = self.base_url + path
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("X-API-Key", self.key)
+        try:
+            with self._opener.open(req, timeout=timeout) as resp:
+                return resp.read(), {str(k).lower(): v for k, v in resp.headers.items()}
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            if e.code in (404, 405):
+                detail = ("技能不存在，或服务端版本不足（技能包通道需支持 "
+                          "/v1/skills/{name}/package 的 SGME 版本）；可先 skill-get 核对技能名。"
+                          + detail[:200])
+            raise SGMEError(f"HTTP {e.code} {e.reason}: {detail[:300]}") from e
+        except urllib.error.URLError as e:
+            raise SGMEError(f"连接失败 {url}: {e.reason}") from e
+
     # ---------- HTTP 层：wiki ----------
     def wiki_search(self, query: str, limit: int = 5):
         q = urllib.parse.urlencode({"q": query, "limit": limit})
@@ -741,6 +777,143 @@ class SGME:
         return self._mcp(tool, args or {}, scope=scope)
 
 
+# ================= 技能完整包（跨机获取通道，T-283） =================
+
+_PKG_MANIFEST = "MANIFEST.sha256"
+_PKG_TIMEOUT = 300
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _validate_rel(rel: str) -> str:
+    """相对路径安全校验：拒绝对路径 / 盘符 / `..` / 空段（读侧防穿越）。"""
+    p = rel.replace("\\", "/")
+    if not p or p.startswith("/") or (len(p) > 1 and p[1] == ":") \
+            or any(seg in ("", ".", "..") for seg in p.split("/")):
+        raise SGMEError(f"包内路径非法（拒绝）: {rel!r}")
+    return p
+
+
+def _safe_extract_package(tar_path: Path, dest: Path) -> None:
+    """安全解包 tar.gz：逐成员校验（拒绝对路径 / `..` / 链接成员）。
+
+    Python >=3.12 加挂官方 data filter（双保险）；低版本由手工校验等效拦截。
+    归档契约（服务端生成）不含链接成员——出现即异常，整包拒收。
+    """
+    try:
+        with tarfile.open(tar_path, "r:gz") as tar:
+            for m in tar.getmembers():
+                _validate_rel(m.name.rstrip("/"))
+                if m.issym() or m.islnk():
+                    raise SGMEError(f"包内出现链接成员（不符合归档契约，拒绝）: {m.name}")
+            dest.mkdir(parents=True, exist_ok=True)
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(dest, filter="data")
+            else:  # pragma: no cover - Python <3.12 分支（手工校验已在上方完成）
+                tar.extractall(dest)
+    except tarfile.TarError as e:
+        raise SGMEError(f"包解压失败（tar.gz 无效或截断）: {e}") from e
+
+
+def _verify_package(extracted: Path, name: str, headers: dict) -> tuple[str, int]:
+    """包完整性校验：顶层布局 / 逐文件 sha256 / 文件集双向相等 / 响应头聚合哈希。
+
+    返回 (聚合 sha256, 文件数)；聚合哈希 = canonical MANIFEST 文本 sha256。
+    校验通过后 MANIFEST 不随包落盘（仅 `<name>/` 原子改名进目标目录）。
+    """
+    top = {p.name for p in extracted.iterdir()} if extracted.is_dir() else set()
+    if top != {name, _PKG_MANIFEST}:
+        raise SGMEError(
+            f"包顶层布局异常 {sorted(top)}（期望 [{name!r}, {_PKG_MANIFEST!r}]）——拒绝落盘")
+    manifest_bytes = (extracted / _PKG_MANIFEST).read_bytes()
+    entries: list[tuple[str, str]] = []
+    for line in manifest_bytes.decode("utf-8", "replace").splitlines():
+        if not line.strip():
+            continue
+        digest, sep, rel = line.partition("  ")
+        if not sep or len(digest) != 64 or not rel:
+            raise SGMEError(f"包内 MANIFEST 行格式非法: {line[:80]!r}")
+        entries.append((digest.strip().lower(), _validate_rel(rel)))
+    if not entries:
+        raise SGMEError("包内 MANIFEST 为空——拒绝落盘")
+    pkg_dir = extracted / name
+    expected = {rel for _digest, rel in entries}
+    actual = ({p.relative_to(pkg_dir).as_posix() for p in pkg_dir.rglob("*") if p.is_file()}
+              if pkg_dir.is_dir() else set())
+    if expected != actual:
+        raise SGMEError(
+            f"包内文件集与 MANIFEST 不一致（缺 {sorted(expected - actual)[:3]}"
+            f" / 多 {sorted(actual - expected)[:3]}）——拒绝落盘")
+    for digest, rel in entries:
+        if _sha256_file(pkg_dir / rel) != digest:
+            raise SGMEError(f"包内文件 sha256 校验失败: {rel}——拒绝落盘")
+    aggregate = hashlib.sha256(manifest_bytes).hexdigest()
+    header_hash = str(headers.get("x-skill-sha256") or "").strip().lower()
+    if header_hash and header_hash != aggregate:
+        raise SGMEError("包聚合哈希与响应头 X-Skill-Sha256 不一致——拒绝落盘")
+    header_files = str(headers.get("x-skill-files") or "").strip()
+    if header_files and header_files != str(len(entries)):
+        raise SGMEError("包文件数与响应头 X-Skill-Files 不一致——拒绝落盘")
+    return aggregate, len(entries)
+
+
+def _fetch_skill_package(client, name: str, dest_dir: str) -> dict:
+    """下载技能完整包 → 清单校验 → 安全解包 → 原子落盘（跨机获取通道，T-283）。
+
+    失败即中止且不留残件（全程临时目录 + 原子改名；目标已存在时先备份、失败回滚）；
+    任何输出不打印密钥。返回 {name, path, sha256, files}。
+    """
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise SGMEError(f"技能名非法: {name!r}")
+    # ① 先下载（失败时尚无任何本地写入——零残件）
+    data, headers = client._http_raw(
+        f"/v1/skills/{urllib.parse.quote(name)}/package", timeout=_PKG_TIMEOUT)
+    target_root = Path(dest_dir).expanduser()
+    created_root = not target_root.exists()
+    try:
+        try:
+            target_root.mkdir(parents=True, exist_ok=True)
+            tmp_root = Path(tempfile.mkdtemp(prefix=f".{name}.fetch-", dir=str(target_root)))
+        except OSError as e:
+            raise SGMEError(f"目标目录不可用（{target_root}）: {e}") from e
+        try:
+            # ② 解包 + 清单校验全部在临时目录内完成（失败即中止，目标目录不受影响）
+            tar_path = tmp_root / "package.tar.gz"
+            tar_path.write_bytes(data)
+            extracted = tmp_root / "extracted"
+            _safe_extract_package(tar_path, extracted)
+            aggregate, files = _verify_package(extracted, name, headers)
+            # ③ 原子改名落盘（目标已存在时先移走，替换失败回滚）
+            target = target_root / name
+            backup = None
+            if target.exists():
+                backup = tmp_root / ".previous"
+                os.replace(str(target), str(backup))
+            try:
+                os.replace(str(extracted / name), str(target))
+            except OSError as e:
+                if backup is not None:
+                    os.replace(str(backup), str(target))
+                raise SGMEError(f"落盘失败（已回滚原目录）: {e}") from e
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+        return {"name": name, "path": str(target), "sha256": aggregate, "files": files}
+    except BaseException:
+        if created_root and target_root.is_dir():
+            try:
+                if not any(target_root.iterdir()):
+                    target_root.rmdir()
+            except OSError:
+                pass
+        raise
+
+
 # ================= 能力矩阵 =================
 
 def capability_report() -> list[dict]:
@@ -818,8 +991,8 @@ def _print_matrix(_c, _a):
         mark = "✅" if (r["method_ok"] and r["cli_ok"]) else "❌"
         print(f"  {mark} {r['tool']:<22} {r['layer']:<4} 方法={r['method']:<22} "
               f"命令=sgme_client.py {r['cli']}")
-    print("\n另含适配器自有扩展命令：events-pull / events-after / wiki-raw / mcp（逃生口）"
-          " / capabilities / env-info")
+    print("\n另含适配器自有扩展命令：fetch（跨机取技能完整包：下载 → 校验 → 解包）"
+          " / events-pull / events-after / wiki-raw / mcp（逃生口） / capabilities / env-info")
 
 
 def _print_env_info(_c, _a):
@@ -979,6 +1152,15 @@ CMD_SPECS: list[dict] = [
             {"dest": "dest_dir", "help": "落盘目标目录"},
         ],
         "run": lambda c, a: c.skill_materialize(a.name, a.dest_dir),
+    },
+    {
+        "cli": "fetch",
+        "help": "跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包落盘（失败不留残件）",
+        "positionals": [
+            {"dest": "name", "help": "技能名"},
+            {"dest": "dest_dir", "help": "落盘目标目录（产出 <dest_dir>/<name>/）"},
+        ],
+        "run": lambda c, a: c.fetch(a.name, a.dest_dir),
     },
     # ---- HTTP 层：wiki ----
     {
