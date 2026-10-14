@@ -23,6 +23,7 @@ DOC_NAMES = {
     "README.md",
     "agent-onboarding.md",
     "selfcheck.md",
+    "skill_fetch.py",
     "免费模型Key申请指南.md",
     "prompts/01-install.md",
     "prompts/02-connect.md",
