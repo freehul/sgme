@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import json
 
 import pytest
@@ -103,8 +105,13 @@ def test_record_usage_day_bucketing(mem_conn):
 
 def test_query_usage_filters_and_aggregates(mem_conn):
     usage_dao.record_usage(mem_conn, "http", "/v1/append", "default")
+    # 相对时间戳：固定日期会随 days 滑动窗口滑出（时间炸弹），窗口用例一律相对化
     usage_dao.record_usage(
-        mem_conn, "http", "/v1/append", "default", ts="2026-09-12T10:00:00Z"
+        mem_conn,
+        "http",
+        "/v1/append",
+        "default",
+        ts=(datetime.now(UTC) - timedelta(days=5)).isoformat(timespec="seconds"),
     )
     usage_dao.record_usage(mem_conn, "mcp", "search", "default")
     usage_dao.record_usage(
