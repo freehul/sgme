@@ -594,3 +594,329 @@ class TestSkillsReindexEndpoint:
     def test_reindex_rejects_agent_key(self, reindex_client):
         r = reindex_client.post("/v1/admin/skills/reindex", headers=AGENT_HEADERS)
         assert r.status_code == 403
+
+
+# =====================================================================
+# T-281：跨机包通道（GET /v1/skills/{name}/package + GET /v1/skills/{name}/files/{relpath}）
+#
+# 与 materialize 同源同过滤（operations.iter_package_files）；归档根 MANIFEST.sha256，
+# 归档内全部为服务端生成的相对路径（无宿主路径）。
+# =====================================================================
+
+
+def _fill_pkg_tree(tree) -> None:
+    """给 alpha 铺随附文件：顶层 install.py / 深层中文路径 / 1 MiB 大文件 / junk / 空目录。"""
+    from pathlib import Path
+
+    root = Path(tree) / "alpha"
+    (root / "install.py").write_text("# install\n", encoding="utf-8")
+    (root / "scripts").mkdir(exist_ok=True)
+    (root / "scripts" / "sgme_client.py").write_text("print('client')\n", encoding="utf-8")
+    deep = root / "corpus" / "金匮要略"
+    deep.mkdir(parents=True, exist_ok=True)
+    (deep / "序.md").write_text("# 序\n\n金匮要略第一。\n", encoding="utf-8")
+    (root / "assets").mkdir(exist_ok=True)
+    (root / "assets" / "big.bin").write_bytes(bytes(range(256)) * 4096)  # 1 MiB 可复现样本
+    (root / "__pycache__").mkdir(exist_ok=True)
+    (root / "__pycache__" / "x.pyc").write_bytes(b"junk")
+    (root / "debug.log").write_text("noise\n", encoding="utf-8")
+    (root / "empty").mkdir(exist_ok=True)
+
+
+@pytest.fixture
+def pkg_client(tmp_path, monkeypatch, raw_dir):
+    """读侧 app（agent key）+ 富随附文件树；三连接全传非 None（防静默切真实库）。"""
+    from sgme.data import db as db_mod
+    from sgme.data import memory_dao
+    from sgme.server.app import create_app
+
+    monkeypatch.delenv("SGME_BEARER_TOKEN", raising=False)
+    monkeypatch.setenv("SGME_CONFIG_PATH", str(tmp_path / "sgme_test.yaml"))
+    monkeypatch.setenv("SGME_HOME", str(tmp_path))
+
+    tree = _make_skill_tree(tmp_path)
+    _fill_pkg_tree(tree)
+    cfg = sgme_config.load_config()
+    cfg["skills"] = {"enabled": True, "source_dirs": [str(tree)], "budget": 40}
+
+    mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
+    memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
+    app = create_app(
+        cfg=cfg,
+        mem_conn=mem_conn,
+        session_conn=session_conn,
+        wiki_conn=wiki_conn,
+        admin_key="test-admin-key",
+        agent_key="test-agent-key",
+        bearer_token="",
+        agent_store_path=tmp_path / "agent_keys.json",
+    )
+    yield TestClient(app), app, tree
+    db_mod.close(mem_conn)
+    db_mod.close(session_conn)
+    db_mod.close(wiki_conn)
+
+
+def _read_tar_gz(blob: bytes):
+    """解析 tar.gz：返回 (成员名列表, {成员名: 原始字节})。"""
+    import io
+    import tarfile
+
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        files = {
+            m.name: tf.extractfile(m).read()
+            for m in tf.getmembers()
+            if m.isfile()
+        }
+        return tf.getnames(), files
+
+
+def _parse_manifest(text: str) -> dict:
+    """canonical manifest → {relpath: sha256}（校验行格式）。"""
+    out = {}
+    for line in text.split("\n")[:-1]:
+        assert len(line) > 66 and line[64:66] == "  ", f"manifest 行格式非法: {line!r}"
+        out[line[66:]] = line[:64]
+    return out
+
+
+class TestSkillPackageEndpoint:
+    def test_download_bytes_headers_and_manifest(self, pkg_client):
+        """包下载：字节保真 + X-Skill-* 头 + 归档结构（MANIFEST 平级、无宿主路径）。"""
+        import hashlib
+        from pathlib import Path
+
+        client, _app, tree = pkg_client
+        src = Path(tree) / "alpha"
+        resp = client.get("/v1/skills/alpha/package", headers=AGENT_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"] == "application/gzip"
+        assert resp.headers["content-disposition"] == 'attachment; filename="alpha.tar.gz"'
+        sha = resp.headers["X-Skill-Sha256"]
+        n_files = int(resp.headers["X-Skill-Files"])
+
+        names, files = _read_tar_gz(resp.content)
+        assert names[0] == "MANIFEST.sha256"
+        manifest_blob = files.pop("MANIFEST.sha256")
+        expected = {
+            "alpha/SKILL.md", "alpha/install.py", "alpha/scripts/sgme_client.py",
+            "alpha/corpus/金匮要略/序.md", "alpha/assets/big.bin",
+        }
+        assert set(files) == expected, set(files) ^ expected
+        # 字节保真：逐文件与服务端源文件 sha256 一致（含 1 MiB 大文件与中文路径）
+        for arc, blob in files.items():
+            rel = arc.split("/", 1)[1]
+            assert blob == (src / rel).read_bytes(), rel
+            if rel == "assets/big.bin":
+                assert len(blob) == 1024 * 1024
+        # junk / 空目录不入包
+        assert not any("__pycache__" in n or n.endswith(".log") for n in files)
+        assert not any(n.endswith("/empty") or "empty/" in n for n in files)
+
+        manifest_text = manifest_blob.decode("utf-8")
+        manifest = _parse_manifest(manifest_text)
+        assert set(manifest) == {n.split("/", 1)[1] for n in files}
+        assert len(manifest) == n_files  # X-Skill-Files = 清单行数（不含 MANIFEST）
+        assert sha == hashlib.sha256(manifest_text.encode("utf-8")).hexdigest()
+        for rel, digest in manifest.items():
+            assert hashlib.sha256(files[f"alpha/{rel}"]).hexdigest() == digest, rel
+        assert resp.headers["ETag"] == f'"{sha}"'
+
+    def test_etag_304_roundtrip(self, pkg_client):
+        """ETag = 聚合哈希；If-None-Match 命中 → 304，且不重复记一次下载。"""
+        client, app, _tree = pkg_client
+        first = client.get("/v1/skills/alpha/package", headers=AGENT_HEADERS)
+        assert first.status_code == 200
+        etag = first.headers["ETag"]
+        second = client.get(
+            "/v1/skills/alpha/package",
+            headers={**AGENT_HEADERS, "If-None-Match": etag},
+        )
+        assert second.status_code == 304
+        assert second.content == b""
+        assert second.headers["X-Skill-Sha256"] == first.headers["X-Skill-Sha256"]
+        calls = app.state.mem_conn.execute(
+            "SELECT calls FROM skill_usage_daily WHERE layer='package' AND skill='alpha'"
+        ).fetchone()
+        assert calls["calls"] == 1  # 304 不计下载
+
+    def test_format_zip_reserved_400(self, pkg_client):
+        """zip 为保留参数 → 400 引导文案（当前唯一正式格式 = tar.gz）。"""
+        client, _app, _tree = pkg_client
+        resp = client.get("/v1/skills/alpha/package?format=zip", headers=AGENT_HEADERS)
+        assert resp.status_code == 400, resp.text
+        err = resp.json()["error"]
+        assert err["code"] == "ERR_INVALID_ARGS"
+        assert "tar.gz" in err["message"] and "zip" in err["message"]
+        assert client.get(
+            "/v1/skills/alpha/package?format=rar", headers=AGENT_HEADERS
+        ).status_code == 400
+
+    def test_unknown_skill_404_and_auth(self, pkg_client):
+        client, _app, _tree = pkg_client
+        assert client.get("/v1/skills/ghost/package", headers=AGENT_HEADERS).status_code == 404
+        assert client.get("/v1/skills/ghost/package").status_code in (401, 403)
+        assert client.get("/v1/skills/ghost/files/SKILL.md").status_code in (401, 403)
+
+    def test_quota_exceeded_400(self, pkg_client):
+        """超配 → 400 明确报错（skills.package_quota.* 独立键）。"""
+        client, app, _tree = pkg_client
+        app.state.cfg["skills"]["package_quota"] = {"max_total_bytes": 2048}
+        resp = client.get("/v1/skills/alpha/package", headers=AGENT_HEADERS)
+        assert resp.status_code == 400, resp.text
+        msg = resp.json()["error"]["message"]
+        assert "超限" in msg and "package_quota.max_total_bytes" in msg
+
+    def test_builtin_protocol_single_file_package(self, pkg_client):
+        """内置《技能检索协议》：对齐 skill_get 提供单文件包（消除新不一致）。"""
+        client, _app, _tree = pkg_client
+        resp = client.get("/v1/skills/skill-registry-protocol/package", headers=AGENT_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert int(resp.headers["X-Skill-Files"]) == 1
+        names, files = _read_tar_gz(resp.content)
+        assert set(names) == {"MANIFEST.sha256", "skill-registry-protocol/SKILL.md"}
+        assert files["MANIFEST.sha256"].count(b"\n") == 1
+
+    def test_package_matches_materialize_landing(self, pkg_client, tmp_path):
+        """等价：包内逐文件字节 == materialize 落盘逐文件字节（HTTP 端到端对照）。"""
+        import io
+        import tarfile
+        from pathlib import Path
+
+        client, _app, _tree = pkg_client
+        pkg = client.get("/v1/skills/alpha/package", headers=AGENT_HEADERS)
+        assert pkg.status_code == 200
+
+        unzipped = tmp_path / "unzipped"
+        unzipped.mkdir()
+        with tarfile.open(fileobj=io.BytesIO(pkg.content), mode="r:gz") as tf:
+            tf.extractall(unzipped, filter="data")
+
+        landed = tmp_path / "landed"
+        mat = client.post(
+            "/v1/skills/alpha/materialize",
+            json={"dest_dir": str(landed)},
+            headers=AGENT_HEADERS,
+        )
+        assert mat.status_code == 200, mat.text
+
+        def _hashes(base: Path) -> dict:
+            import hashlib
+
+            return {
+                p.relative_to(base).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in sorted(base.rglob("*"))
+                if p.is_file()
+            }
+
+        assert _hashes(unzipped / "alpha") == _hashes(landed / "alpha")
+
+    def test_package_records_usage_layer(self, pkg_client):
+        """遥测：包下载 note=format=tar.gz;files=N；单文件读 note=file;<扩展名>。"""
+        client, app, _tree = pkg_client
+        resp = client.get("/v1/skills/alpha/package", headers=AGENT_HEADERS)
+        assert resp.status_code == 200
+        n_files = int(resp.headers["X-Skill-Files"])
+        rows = [dict(r) for r in app.state.mem_conn.execute("SELECT * FROM skill_usage_daily")]
+        assert len(rows) == 1
+        assert (rows[0]["layer"], rows[0]["skill"], rows[0]["caller"]) == (
+            "package", "alpha", "default",
+        )
+        assert rows[0]["note"] == f"format=tar.gz;files={n_files}"
+
+        assert client.get(
+            "/v1/skills/alpha/files/install.py", headers=AGENT_HEADERS
+        ).status_code == 200
+        rows2 = [dict(r) for r in app.state.mem_conn.execute("SELECT * FROM skill_usage_daily")]
+        assert len(rows2) == 1 and rows2[0]["calls"] == 2  # 同组聚合成一行
+        assert rows2[0]["note"] == "file;.py"  # 只记扩展名，不记真实路径
+
+
+class TestSkillFileEndpoint:
+    def test_raw_bytes_and_sha_header(self, pkg_client):
+        import hashlib
+        from pathlib import Path
+
+        client, _app, tree = pkg_client
+        src = (Path(tree) / "alpha" / "install.py").read_bytes()
+        resp = client.get("/v1/skills/alpha/files/install.py", headers=AGENT_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"] == "application/octet-stream"
+        assert resp.headers["X-File-Sha256"] == hashlib.sha256(src).hexdigest()
+        assert resp.content == src
+
+    def test_chinese_deep_member_and_big_file(self, pkg_client):
+        from pathlib import Path
+
+        client, _app, tree = pkg_client
+        cn = client.get(
+            "/v1/skills/alpha/files/corpus/金匮要略/序.md", headers=AGENT_HEADERS
+        )
+        assert cn.status_code == 200, cn.text
+        assert cn.content == (Path(tree) / "alpha" / "corpus" / "金匮要略" / "序.md").read_bytes()
+        big = client.get("/v1/skills/alpha/files/assets/big.bin", headers=AGENT_HEADERS)
+        assert big.status_code == 200 and len(big.content) == 1024 * 1024
+
+    def test_junk_and_nonmember_404(self, pkg_client):
+        client, _app, _tree = pkg_client
+        for rel in (
+            "__pycache__/x.pyc",
+            "debug.log",
+            "scripts/nope.py",
+            "empty",
+            "SKILL.md.bak",
+        ):
+            resp = client.get(f"/v1/skills/alpha/files/{rel}", headers=AGENT_HEADERS)
+            assert resp.status_code == 404, (rel, resp.status_code, resp.text[:120])
+        # 成员不存在 ≠ 技能不存在：文案区分
+        resp = client.get("/v1/skills/alpha/files/scripts/nope.py", headers=AGENT_HEADERS)
+        assert "包成员不存在" in resp.json()["error"]["message"]
+        # 技能不存在 → 404
+        assert client.get(
+            "/v1/skills/ghost/files/SKILL.md", headers=AGENT_HEADERS
+        ).status_code == 404
+
+    def test_shape_invalid_400(self, pkg_client):
+        """形态非法（绝对 / 盘符 / ..）→ 400（URL 编码形态绕过框架归一化）。"""
+        client, _app, _tree = pkg_client
+        for encoded in ("..%2Fetc%2Fpasswd", "%2Fetc%2Fpasswd", "C%3A%2Fwindows%2Fx"):
+            resp = client.get(f"/v1/skills/alpha/files/{encoded}", headers=AGENT_HEADERS)
+            assert resp.status_code == 400, (encoded, resp.status_code, resp.text[:120])
+            assert resp.json()["error"]["code"] == "ERR_INVALID_ARGS"
+
+
+class TestSkillPackageDisabled:
+    def test_package_endpoints_404_when_disabled(self, tmp_path, monkeypatch, raw_dir):
+        from sgme.data import db as db_mod
+        from sgme.data import memory_dao
+        from sgme.server.app import create_app
+
+        monkeypatch.delenv("SGME_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("SGME_CONFIG_PATH", str(tmp_path / "sgme_test.yaml"))
+        monkeypatch.setenv("SGME_HOME", str(tmp_path))
+        cfg = sgme_config.load_config()
+        cfg["skills"] = {"enabled": False}
+        mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data3")
+        memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
+        app = create_app(
+            cfg=cfg,
+            mem_conn=mem_conn,
+            session_conn=session_conn,
+            wiki_conn=wiki_conn,
+            admin_key="test-admin-key",
+            agent_key="test-agent-key",
+            bearer_token="",
+            agent_store_path=tmp_path / "agent_keys3.json",
+        )
+        try:
+            client = TestClient(app)
+            assert client.get(
+                "/v1/skills/alpha/package", headers=AGENT_HEADERS
+            ).status_code == 404
+            assert client.get(
+                "/v1/skills/alpha/files/SKILL.md", headers=AGENT_HEADERS
+            ).status_code == 404
+        finally:
+            db_mod.close(mem_conn)
+            db_mod.close(session_conn)
+            db_mod.close(wiki_conn)

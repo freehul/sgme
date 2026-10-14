@@ -6,6 +6,8 @@
 - HTTP  ``GET  /v1/skills/{name}/digest``          → ``skill_digest``（L1）
 - HTTP  ``GET  /v1/skills/{name}?section=``        → ``skill_get``（L2）
 - HTTP  ``POST /v1/skills/{name}/materialize``     → ``materialize``（L3）
+- HTTP  ``GET  /v1/skills/{name}/package``         → ``package_skill``（跨机完整包，T-281）
+- HTTP  ``GET  /v1/skills/{name}/files/{relpath}`` → ``read_skill_file``（跨机单文件，T-281）
 - MCP   ``skill_search / skill_digest / skill_get / skill_materialize``
 - 统一搜索 ``scopes=["skills"]``                    → ``search_skills``
 
@@ -20,6 +22,9 @@
 - L2 全文：正文全文注入上下文（显式调用）；section 为标题名时截取该节省 token
   （节名接受纯标题或 digest 骨架形态 `## 标题`，内部归一化后匹配）
 - L3 物化：字节保真写盘 dest_dir/<name>/SKILL.md（不走 LLM 转写），遥测一条
+- 跨机包通道（T-281）：包文件集与 L3 **同源同过滤**（``iter_package_files``，T-280 单一
+  真相）——逐文件 sha256 → canonical manifest（相对基点 = 技能根）；入口层先枚举算哈希
+  再开流，归档内全部为服务端生成的相对路径（无宿主路径）
 
 数据源：``sgme.skills.index_all(source_dirs)``（git 工作区 SKILL.md，按名排序）。
 2026-08-28 起 wiki 桥接已移除，技能唯一来源为 ``skills.source_dirs`` 的 SKILL.md；
@@ -97,6 +102,16 @@ def _find_record(records: list[SkillRecord], name: str) -> SkillRecord | None:
     except ValueError as e:
         raise InvalidArgs(str(e)) from e
     return next((rec for rec in records if rec.name == name), None)
+
+
+def _find_record_with_builtin(records: list[SkillRecord], name: str) -> SkillRecord | None:
+    """按名取记录，找不到时兜底内置《技能检索协议》（T-281 包通道与 skill_get 同语义）。"""
+    rec = _find_record(records, name)
+    if rec is None:
+        bp = _load_builtin_protocol()
+        if bp is not None and bp.name == name:
+            rec = bp
+    return rec
 
 
 def _load_builtin_protocol() -> SkillRecord | None:
@@ -344,7 +359,10 @@ def not_found(name: str, extra: str = "") -> OperationResult:
     return OperationResult.fail(ERR_NOT_FOUND, msg)
 
 
-# 物化时随附的顶层相对路径（A2：适配器完整包）；其余 junk 跳过
+# ---------- T-280：包文件集（materialize 与跨机包通道的单一真相） ----------
+
+# 包文件集 junk 清单：materialize 落盘与 GET /v1/skills/{name}/package 共用一套排除语义
+# （任意深度生效）。.env 精确匹配、不放宽为 .env*——会误伤 .env.example 类合法模板。
 _COMPANION_JUNK = {
     "__pycache__", ".env", ".git", ".gitignore", "node_modules",
     ".pytest_cache", ".tmp-events-test", "tests", "coverage", "htmlcov",
@@ -352,32 +370,82 @@ _COMPANION_JUNK = {
 _COMPANION_JUNK_SUFFIXES = (".pyc", ".pyo", ".log")
 
 
+def iter_package_files(skill_dir: Path | str | None) -> list[tuple[str, Path]]:
+    """递归枚举技能目录的**包文件集**（T-280 共享真相；materialize 与包通道同用）。
+
+    语义（钉死，调用侧勿二次过滤、勿改口径）：
+    - 递归任意深度，排除 junk 名（:data:`_COMPANION_JUNK`）与 junk 后缀
+      （``.pyc`` / ``.pyo`` / ``.log``）；``SKILL.md`` **属于**包文件集
+      （其字节来源由调用方决定：materialize 另行按原文件字节写盘）；
+    - **符号链接一律排除**（含指向目录的链接，不跟随、不打包）——防经链接逃逸出
+      技能目录（安全动机）。行为变更声明：materialize 旧实现对链接为解引用复制，
+      T-280 起统一为「排除 + WARNING」（生产全量扫描链接成员 = 0，影响面为零）；
+    - 只产出**文件**（空目录不入包）；
+    - 返回 ``[(relpath, 源路径)]``：relpath 相对技能根、以 ``/`` 分隔
+      （如 ``scripts/x.py``），按每层名字序稳定排列；目录不可读等 OSError 逐项
+      WARNING 跳过（不中断整包）。
+
+    Args:
+        skill_dir: 技能根目录；缺失/非法直接返回空列表（不抛异常）。
+
+    Returns:
+        包文件集（空列表 = 仅 SKILL.md 的单文件包）。
+    """
+    out: list[tuple[str, Path]] = []
+    root = Path(skill_dir) if skill_dir else None
+    if root is None or not root.is_dir():
+        return out
+
+    def _walk(d: Path, prefix: str) -> None:
+        try:
+            entries = sorted(d.iterdir(), key=lambda p: p.name)
+        except OSError as e:
+            logger.warning("skill package: 目录不可读已跳过 %s: %s", prefix or ".", e)
+            return
+        for entry in entries:
+            rel = f"{prefix}{entry.name}"
+            if entry.name in _COMPANION_JUNK or entry.name.endswith(_COMPANION_JUNK_SUFFIXES):
+                continue
+            if entry.is_symlink():
+                logger.warning("skill package: 符号链接已排除（防目录逃逸）: %s", rel)
+                continue
+            try:
+                if entry.is_dir():
+                    _walk(entry, rel + "/")
+                elif entry.is_file():
+                    out.append((rel, entry))
+            except OSError as e:  # 竞态/权限：逐项跳过，不中断整包
+                logger.warning("skill package: 条目不可读已跳过 %s: %s", rel, e)
+
+    _walk(root, "")
+    return out
+
+
 def _copy_skill_companions(src_dir: Path, target_dir: Path) -> list[str]:
-    """把技能源目录随附文件拷到物化目标（跳过 junk）；返回相对路径清单。"""
-    copied: list[str] = []
-    if not src_dir or not src_dir.is_dir():
-        return copied
-    for entry in sorted(src_dir.iterdir()):
-        rel = entry.name
+    """把技能源目录随附文件拷到物化目标（T-280 起走 ``iter_package_files`` 单一真相）。
+
+    返回形状**保持不变**（tests/test_operations_skills.py 形状断言依赖）：
+    顶层条目名清单，目录带 ``/`` 后缀、按名排序；``SKILL.md`` 不入列
+    （它由 materialize 按原文件字节单独写盘）；空目录（无包文件）不入列。
+    """
+    tops: set[str] = set()
+    for rel, src in iter_package_files(src_dir):
         if rel == "SKILL.md":
             continue
-        if rel in _COMPANION_JUNK or entry.name.endswith(_COMPANION_JUNK_SUFFIXES):
-            continue
+        head, _, tail = rel.partition("/")
+        tops.add(f"{head}/" if tail else head)
         dest = target_dir / rel
         try:
-            if entry.is_dir():
-                shutil.copytree(
-                    entry, dest, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns(
-                        *_COMPANION_JUNK, *_COMPANION_JUNK_SUFFIXES, "tests"),
-                )
-                copied.append(rel + "/")
-            elif entry.is_file():
-                shutil.copy2(entry, dest)
-                copied.append(rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                # 目录模式位随源（copy2 只保文件模式；旧 copytree 语义等价）
+                shutil.copystat(src.parent, dest.parent)
+            except OSError:
+                pass
+            shutil.copy2(src, dest)
         except OSError as e:
-            logger.warning("skill materialize companion skip %s: %s", entry, e)
-    return copied
+            logger.warning("skill materialize companion skip %s: %s", rel, e)
+    return sorted(tops)
 
 
 # ---------- T-232：跨机物化语义（服务端落盘侧判别） ----------
@@ -419,8 +487,9 @@ def materialize(
     - **跨机语义（T-232）**：落盘发生在**服务端文件系统**——dest_dir 与返回 path
       均为服务端视角，产物不会出现在调用方机器上（成功响应记 ``landing_side="server"``）；
       非 Windows 服务端收到 Windows 盘符 dest_dir → InvalidArgs（400 / MCP error），
-      不再按相对路径在服务端造出 ``C:/…`` 目录树造成假成功——跨机调用请改用 skill_get
-      取正文，在本地自行写盘；
+      不再按相对路径在服务端造出 ``C:/…`` 目录树造成假成功——跨机取**完整包**请用
+      HTTP 包通道 ``GET /v1/skills/{name}/package``（T-281，tar.gz + MANIFEST.sha256），
+      或 ``skill_get`` 取技能正文在本地自行写盘；
     - 成功记遥测日志一条（name/sha/ts），供使用统计与排障；
     - dest_dir 必填且非空（InvalidArgs）。
     """
@@ -433,7 +502,8 @@ def materialize(
             "dest_dir 是 Windows 盘符路径（如 C:/…），但 SGME 服务端为 Linux/类 Unix 系统，"
             "无法解释该路径。"
             "物化落盘发生在服务端文件系统，产物不会出现在调用方机器上；"
-            "跨机调用请改用 skill_get 取技能正文，在本地自行写盘。"
+            "跨机取完整包请用 HTTP 包通道 GET /v1/skills/{name}/package（tar.gz + MANIFEST.sha256），"
+            "或 skill_get 取技能正文，在本地自行写盘。"
         )
     records = _load_records(cfg, wiki_conn)
     rec = _find_record(records, name)
@@ -471,6 +541,242 @@ def materialize(
         # T-232：落盘侧标注——产物在服务端文件系统（跨机调用方本机拿不到）
         "landing_side": "server",
     })
+
+
+# ---------- T-281：跨机包通道（完整包枚举 + 单文件读；入口层只做组包/流式） ----------
+
+#: 归档根清单名（与 ``<name>/`` 平级；**不收录自身**）
+MANIFEST_NAME = "MANIFEST.sha256"
+
+#: 包通道容量配额默认值（``skills.package_quota.*`` 可覆盖；与写侧 asset_quota **独立标定**）
+DEFAULT_PACKAGE_MAX_FILE_BYTES = 2 * 1024 * 1024     # 单文件 2 MiB
+DEFAULT_PACKAGE_MAX_TOTAL_BYTES = 8 * 1024 * 1024    # 整包合计 8 MiB
+DEFAULT_PACKAGE_MAX_FILES = 512                      # 整包文件数 512
+
+
+def _package_quota(cfg: dict | None) -> dict[str, int]:
+    """包通道配额（``cfg.skills.package_quota``）；缺失/非法取默认（读侧不因此中断）。"""
+    section = (cfg or {}).get("skills") or {}
+    quota = section.get("package_quota") if isinstance(section, dict) else None
+    quota = quota if isinstance(quota, dict) else {}
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return int(quota.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "max_file_bytes": _int("max_file_bytes", DEFAULT_PACKAGE_MAX_FILE_BYTES),
+        "max_total_bytes": _int("max_total_bytes", DEFAULT_PACKAGE_MAX_TOTAL_BYTES),
+        "max_files": _int("max_files", DEFAULT_PACKAGE_MAX_FILES),
+    }
+
+
+def _package_members(rec: SkillRecord) -> list[dict[str, Any]]:
+    """装载技能的**包成员**（与 materialize 单一真相：同源、同过滤、同回退口径）。
+
+    - git 源且 SKILL.md 文件在 → SKILL.md 原文件字节 + ``iter_package_files`` 随附文件
+      （junk 任意深度排除、链接排除）；
+    - 其余（wiki 源 / 源文件缺失 / 内置协议技能）→ 对齐 materialize 回退口径：索引记录
+      正文即 SKILL.md，产出**单文件包**；
+    - 逐成员算 sha256（canonical manifest 原料）；期间字节不常驻（盘上成员只留路径，
+      由入口层组包时再读）。
+
+    Returns:
+        ``[{"path", "sha256", "size", "mode", "source_path": Path|None, "data": bytes|None}]``
+        —— ``data`` 仅回退/内置（以及 git 源 SKILL.md）有值。
+    """
+    import hashlib
+
+    def _entry(rel: str, data: bytes, mode: int, source_path: Path | None = None) -> dict[str, Any]:
+        return {
+            "path": rel,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+            "mode": mode,
+            "source_path": source_path,
+            "data": data,
+        }
+
+    src_dir: Path | None = None
+    data_bytes: bytes | None = None
+    skill_md_path: Path | None = None
+    if rec.source == "git" and rec.origin_path:
+        p = Path(rec.origin_path)
+        if p.is_file():
+            data_bytes = p.read_bytes()
+            src_dir = p.parent
+            skill_md_path = p
+    if data_bytes is None:
+        # 对齐 materialize：索引内容即全文（wiki 源 / 源文件缺失 / 内置技能）→ 单文件包
+        return [_entry("SKILL.md", rec.content.encode("utf-8"), 0o644)]
+
+    members = [_entry("SKILL.md", data_bytes, 0o644, skill_md_path)]
+    for rel, path in iter_package_files(src_dir):
+        if rel == "SKILL.md":
+            continue
+        try:
+            body = path.read_bytes()
+            mode = path.stat().st_mode & 0o777
+        except OSError as e:
+            logger.warning("skill package: 成员不可读已跳过 %s: %s", rel, e)
+            continue
+        members.append({**_entry(rel, body, mode or 0o644, path), "data": None})
+    return members
+
+
+def _canonical_manifest(members: list[dict[str, Any]]) -> str:
+    """canonical manifest 文本（T-281 哈希口径钉死）。
+
+    - 每行 ``<sha256 十六进制><两个空格><relpath>\\n``；
+    - relpath **相对技能根**（行内不含 ``<name>/`` 前缀——归档成员名 = ``<name>/`` + relpath，
+      客户端以技能根为基点校验）；
+    - 按 relpath **字节序**（UTF-8）排序；UTF-8 编码；LF 换行；不收录 MANIFEST 自身。
+    """
+    rows = sorted(((m["path"], m["sha256"]) for m in members), key=lambda r: r[0].encode("utf-8"))
+    return "".join(f"{sha}  {path}\n" for path, sha in rows)
+
+
+def package_skill(
+    cfg: dict[str, Any],
+    wiki_conn: sqlite3.Connection | None,
+    *,
+    name: str,
+) -> OperationResult:
+    """跨机**完整包**（T-281）：枚举包文件集 → 逐文件 sha256 → canonical manifest。
+
+    - 文件集与 materialize **同源同过滤**（``iter_package_files``）：git 源技能 =
+      SKILL.md + 随附文件（scripts/ install.py locales/ package/ 等）；wiki 源 / 源文件
+      缺失 / 内置《技能检索协议》→ 回退索引正文的**单文件包**（合法）；
+    - 聚合哈希 = canonical manifest 文本（UTF-8）的 sha256；文件数 = 清单行数
+      （= ``<name>/`` 下文件数，不含 MANIFEST 自身）；
+    - 容量：``skills.package_quota.*`` 单文件 / 整包 / 文件数三维（**独立于**写侧
+      asset_quota，勿沿用写侧同值）；超限 → InvalidArgs（入口层 400）+ WARNING；
+    - 返回 data 供入口层组包（``members`` 带 source_path/data，**先枚举算哈希再开流**）：
+      ``{name, sha256, count, bytes, manifest, members}``。
+    """
+    import hashlib
+
+    records = _load_records(cfg, wiki_conn)
+    rec = _find_record_with_builtin(records, name)
+    if rec is None:
+        return not_found(name)
+
+    members = _package_members(rec)
+    quota = _package_quota(cfg)
+    total = sum(int(m["size"]) for m in members)
+    if quota["max_files"] and len(members) > quota["max_files"]:
+        raise InvalidArgs(
+            f"技能包文件数超限：{len(members)} > {quota['max_files']}"
+            "（配置项 skills.package_quota.max_files）"
+        )
+    for m in members:
+        if quota["max_file_bytes"] and int(m["size"]) > quota["max_file_bytes"]:
+            raise InvalidArgs(
+                f"技能包单文件超限：{m['path']} {m['size']} 字节 > {quota['max_file_bytes']} 字节"
+                "（配置项 skills.package_quota.max_file_bytes）"
+            )
+    if quota["max_total_bytes"] and total > quota["max_total_bytes"]:
+        raise InvalidArgs(
+            f"技能包总量超限：{total} 字节 > {quota['max_total_bytes']} 字节"
+            "（配置项 skills.package_quota.max_total_bytes）"
+        )
+
+    manifest = _canonical_manifest(members)
+    aggregate = hashlib.sha256(manifest.encode("utf-8")).hexdigest()
+    logger.info(
+        "skill package: name=%s sha=%s files=%d bytes=%d",
+        rec.name, aggregate[:12], len(members), total,
+    )
+    return OperationResult.succeed(
+        {
+            "name": rec.name,
+            "sha256": aggregate,
+            "count": len(members),
+            "bytes": total,
+            "manifest": manifest,
+            "members": members,
+        }
+    )
+
+
+def _normalize_member_relpath(relpath: str) -> str:
+    """包成员路径归一内核（对齐 ``skills.store._validate_asset_relpath``，**去写侧首段白名单**）。
+
+    - 必须相对：禁绝对路径与盘符（``/…``、``X:…``）；反斜杠归一为正斜杠；剥两侧空白；
+    - 禁 ``..``（防路径穿越）；空段与 ``.`` 段归一丢弃；
+    - **不套首段白名单**（读宽写严：``install.py`` / ``locales/**`` / ``package/**`` 等
+      顶层成员是合法包成员，写侧三目录白名单会误拒）；
+    - 读侧安全由**成员命中制**承担（必须命中 ``iter_package_files`` 的包文件集）。
+
+    Raises:
+        ValueError: 形态非法（调用方转 InvalidArgs → 400）。
+    """
+    raw = str(relpath or "").strip().replace("\\", "/")
+    if not raw:
+        raise ValueError("包成员路径不能为空")
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        raise ValueError(f"包成员路径必须是相对路径: {relpath!r}")
+    parts = [p for p in raw.split("/") if p not in ("", ".")]
+    if not parts:
+        raise ValueError(f"包成员路径非法: {relpath!r}")
+    if ".." in parts:
+        raise ValueError(f"包成员路径不得包含 ..（防路径穿越）: {relpath!r}")
+    return "/".join(parts)
+
+
+def read_skill_file(
+    cfg: dict[str, Any],
+    wiki_conn: sqlite3.Connection | None,
+    *,
+    name: str,
+    relpath: str,
+) -> OperationResult:
+    """跨机**单文件读**（T-281）：返回包成员的**原始字节** + sha256（字节保真，不走转写）。
+
+    - 校验 = 归一内核（``_normalize_member_relpath``）+ **成员命中制**：relpath 必须命中
+      包文件集——junk（__pycache__/.env/…）、符号链接、不存在的成员一律 NOT_FOUND（404）；
+      形态非法（绝对 / 盘符 / ``..``）→ InvalidArgs（400）；
+    - git 源成员读原文件字节；回退单文件包（wiki 源 / 源缺失 / 内置协议）读索引正文；
+    - 状态码语义（入口层）：技能不存在 404 / 成员不存在 404 / 形态非法 400；
+    - 本操作**不套整包配额**（单文件读是精确取用面，配额在 ``package_skill`` 把关）。
+    """
+    import hashlib
+
+    records = _load_records(cfg, wiki_conn)
+    rec = _find_record_with_builtin(records, name)
+    if rec is None:
+        return not_found(name)
+    try:
+        rel = _normalize_member_relpath(relpath)
+    except ValueError as e:
+        raise InvalidArgs(str(e)) from e
+
+    hit = next((m for m in _package_members(rec) if m["path"] == rel), None)
+    if hit is None:
+        return OperationResult.fail(
+            ERR_NOT_FOUND,
+            f"包成员不存在: {rel}（技能 {rec.name} 在；完整包清单见 "
+            f"GET /v1/skills/{rec.name}/package 的 MANIFEST.sha256）",
+        )
+    data = hit["data"]
+    if data is None and hit["source_path"] is not None:
+        try:
+            data = hit["source_path"].read_bytes()
+        except OSError as e:
+            return OperationResult.fail(ERR_NOT_FOUND, f"包成员读取失败: {rel}（{e}）")
+    body: bytes = data or b""
+    return OperationResult.succeed(
+        {
+            "name": rec.name,
+            "path": rel,
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "content": body,
+            "source": "disk" if hit["source_path"] is not None else "index",
+        }
+    )
 
 
 def search_skills(

@@ -14,8 +14,9 @@
 - 行粒度 = (day, layer, skill, caller)：一天一层一技能一调用方一行，upsert 累加；
   空间 O(天 × 层 × 技能 × 调用方)，保留 400 天由 ``prune_skill_usage`` 控制
 - caller 取值同 api_usage_daily：agent_id / default / anonymous / unknown
-- ``note`` 是「最近一次」诊断摘要（**非聚合**）：只允许两类——检索摘要
-  （``q=…;hits=N;top=…``）与物化目标目录**类型**（windows/absolute/relative/…）。
+- ``note`` 是「最近一次」诊断摘要（**非聚合**）：只允许四类——检索摘要
+  （``q=…;hits=N;top=…``）、物化目标目录**类型**（windows/absolute/relative/…）、
+  包下载摘要（``format=tar.gz;files=N``）、单文件读扩展名（``file;.py``）。
   数据卫生：**真实路径不入库**（本机盘符路径、NAS 卷路径均为敏感值）
 
 分层：本模块只做 SQL，不做业务判断（层/技能名提取在 operations 层，
@@ -27,8 +28,9 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-#: 四级披露的消费层（与 SGME-Skills管理模块设计-v0.2 §四级披露一一对应）
-LAYERS = ("search", "digest", "get", "materialize")
+#: 技能消费层枚举（真源）：四级披露 search/digest/get/materialize + 跨机包通道 package
+#: （T-281：完整包下载与单文件读同层记——见 SGME-Skills管理模块设计 §四级披露）
+LAYERS = ("search", "digest", "get", "materialize", "package")
 
 #: note 长度上限（防不可控输入撑大聚合列；调用方已截断，此处再兜一层）
 NOTE_MAX = 160
@@ -52,7 +54,7 @@ def record_skill_usage(
 
     Args:
         conn: memory.db 连接（调用方持有；本函数自 commit）
-        layer: ``search`` / ``digest`` / ``get`` / ``materialize``
+        layer: ``search`` / ``digest`` / ``get`` / ``materialize`` / ``package``
         skill: 技能名；无单一技能名的调用（检索）用 ``-``
         caller: 调用方标识（agent_id / default / anonymous / unknown）
         note: 最近一次诊断摘要（可选；None 不覆盖已有值）

@@ -237,6 +237,25 @@ def test_query_skill_usage_validation(mem_conn):
     assert set(ok.data["layers"]) == set(skill_usage_dao.LAYERS)
 
 
+def test_layers_enumeration_includes_package():
+    """T-281：跨机包通道层并入枚举真源（包下载 / 单文件读同层记）。"""
+    assert skill_usage_dao.LAYERS == ("search", "digest", "get", "materialize", "package")
+    assert op.LAYERS is skill_usage_dao.LAYERS  # operations 层仅转发，不另立枚举
+
+
+def test_record_package_layer_notes(mem_conn):
+    """T-281 包通道 note 口径：format=tar.gz;files=N / file;<扩展名>（只记类型）。"""
+    op.record_skill_usage(mem_conn, "package", "alpha", "default", note="format=tar.gz;files=5")
+    row = _rows(mem_conn)[0]
+    assert (row["layer"], row["skill"]) == ("package", "alpha")
+    assert row["note"] == "format=tar.gz;files=5"
+    svc = op.query_skill_usage(mem_conn, days=30, layer="package")
+    assert svc.ok is True and svc.data["items"][0]["layer"] == "package"
+    # 未知层仍拒（枚举收拢后不放松校验）
+    bad = op.query_skill_usage(mem_conn, layer="tarball")
+    assert bad.ok is False and bad.error_code == "ERR_INVALID_ARGS"
+
+
 # ---------- 3. HTTP 中间件埋点 ----------
 
 
