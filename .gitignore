@@ -63,6 +63,10 @@ config/providers.yaml
 config/sgme.yaml
 credentials/
 secrets/
+# EP-11（2026-10-15）：上方 credentials/ 是「防误提交凭据目录」通用规则，会误伤 SGME
+# 凭据模块源码包（sgme/credentials/）——显式放行该目录（仅此路径，其它 credentials/ 照旧忽略）
+!sgme/credentials/
+!sgme/credentials/**
 
 # 日志
 *.log
