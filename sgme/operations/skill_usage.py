@@ -6,6 +6,8 @@
 ----------
 - HTTP 中间件（``server/app.py`` ``UsageMiddleware``）→ ``digest`` / ``get`` 两层
 - HTTP 端点（``server/routes_skills.py``）→ ``search`` / ``materialize`` 两层
+- HTTP 端点（``server/routes_skills.py`` 跨机包通道）→ ``package`` 层
+  （T-281：完整包下载 / 单文件读）
 - MCP 中间件（``mcp_server.py`` ``ApiKeyMiddleware``）→ ``digest`` / ``get`` / ``materialize``
 - MCP 工具（``mcp_server.py`` ``skill_search``）→ ``search``
 - HTTP ``GET /v1/admin/skills/usage``（管理员 Key）→ ``query_skill_usage``
@@ -16,7 +18,9 @@
 - ``search``：要记命中数与首条命中，只有端点 / 工具拿得到结果 → 业务侧记；
 - ``materialize``：要记目标目录**类型**（Windows 盘符路径落到 Linux 服务端是
   真实缺陷信号），而 HTTP 侧 body 在纯 ASGI 中间件里不可读 → HTTP 业务侧记，
-  MCP 侧 body 可读 → 中间件记。
+  MCP 侧 body 可读 → 中间件记；
+- ``package``：包下载要记**文件数**、单文件读要记**扩展名**（均只记类型，不记
+  真实路径），只有端点拿得到 → HTTP 业务侧记（无对应 MCP 工具）。
 同一次调用只产生一条记录，不重复计数。
 
 依赖：SQL 一律走 ``sgme.data.skill_usage_dao``（data 层唯一出口）；本层只做

@@ -1096,14 +1096,15 @@ def admin_skills_usage(
 ):
     """技能消费统计（T-174）：近 N 天按「层 × 技能 × 调用方」聚合（次数降序）。
 
-    - days ∈ [1, 400]（默认 30）；layer ∈ {search, digest, get, materialize}
+    - days ∈ [1, 400]（默认 30）；layer ∈ {search, digest, get, materialize, package}
     - skill / caller 为精确过滤；limit ∈ [1, 1000]（默认 200）
     - 数据源 skill_usage_daily（memory.db 日聚合）：HTTP 中间件（digest/get）+
-      HTTP 端点（search/materialize）+ MCP 中间件（digest/get/materialize）+
-      MCP 工具（search）四处埋点，回答「四级披露哪一层在被用、哪个技能被取用、
-      谁在用」（api_usage_daily 只到端点/工具粒度，技能名被归一化丢弃）
-    - item.note = 该组最近一次诊断摘要（检索词与命中数 / 物化目标目录类型；
-      真实路径不入库）
+      HTTP 端点（search/materialize + 跨机包通道 package：完整包下载 / 单文件读）+
+      MCP 中间件（digest/get/materialize）+ MCP 工具（search）四处埋点，回答
+      「四级披露哪一层在被用、哪个技能被取用、谁在用」（api_usage_daily 只到
+      端点/工具粒度，技能名被归一化丢弃）
+    - item.note = 该组最近一次诊断摘要（检索词与命中数 / 物化目标目录类型 /
+      包格式与文件数 / 单文件扩展名；真实路径不入库）
     """
     from sgme.operations.skill_usage import query_skill_usage as query_skill_usage_operation
 

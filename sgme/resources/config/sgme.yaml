@@ -87,6 +87,16 @@ skills:
     max_file_bytes: 262144      # 单文件上限 256 KiB
     max_total_bytes: 2097152    # 单技能资产合计上限 2 MiB
     max_files: 100              # 单技能资产文件数上限
+  # T-281 跨机包通道配额（GET /v1/skills/{name}/package + /files/{relpath}）：
+  # **独立标定**——写侧 asset_quota 只覆盖三目录、且仅约束 API 写面；包通道是全量包
+  # （install.py / locales/** / package/** / corpus/** 等不在写侧覆盖内，git 直推也不受
+  # 写侧配额约束），按写侧同值做硬闸会直接拒绝合法存量技能（生产实测：nihaisha 整包
+  # 3.21 MiB / 108 文件）。
+  # 未配置时代码回落到 operations.skills.DEFAULT_PACKAGE_*（同值）；超限 → 400 明确报错。
+  package_quota:
+    max_file_bytes: 2097152     # 单文件上限 2 MiB
+    max_total_bytes: 8388608    # 整包合计上限 8 MiB
+    max_files: 512              # 整包文件数上限
 skills_hub:
   enabled: true
   path: ''

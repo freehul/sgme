@@ -372,19 +372,21 @@ CREATE INDEX IF NOT EXISTS idx_api_usage_name ON api_usage_daily(name, day DESC)
 # 无法回答「四级披露哪一层真在被用、哪个技能被取用、谁在用」。补救而非替代：
 # 两表正交并存，本表保留 skill 列。
 # 埋点：digest/get 由 HTTP/MCP 中间件按路由模板 + 路径参数推导；search/materialize
-# 需响应结果或请求体语义，由业务侧（端点/工具）记录（见 operations/skill_usage.py）。
+# 需响应结果或请求体语义，由业务侧（端点/工具）记录；package（T-281 跨机包通道：
+# 完整包下载 / 单文件读）由 HTTP 端点记录（见 operations/skill_usage.py）。
 # 行粒度 = (day, layer, skill, caller) 日聚合 upsert；写入方全静默；
-# note 是「最近一次」诊断摘要（检索摘要 / 目标目录类型），真实路径不入库。
+# note 是「最近一次」诊断摘要（检索摘要 / 目标目录类型 / 包格式与文件数 / 单文件扩展名），
+# 真实路径不入库。
 SKILL_USAGE_DDL = """
 CREATE TABLE IF NOT EXISTS skill_usage_daily (
   day      TEXT NOT NULL,      -- UTC 日 YYYY-MM-DD
-  layer    TEXT NOT NULL,      -- search | digest | get | materialize（四级披露）
+  layer    TEXT NOT NULL,      -- search | digest | get | materialize（四级披露）| package（跨机包通道）
   skill    TEXT NOT NULL,      -- 技能名；无单一技能名的调用（检索）记 '-'
   caller   TEXT NOT NULL,      -- agent_id / default / anonymous / unknown
   calls    INTEGER NOT NULL DEFAULT 0,
   last_ts  TEXT NOT NULL,      -- 最近调用时刻（ISO UTC）
   last_ip  TEXT,               -- 最近来源 IP
-  note     TEXT,               -- 最近一次诊断摘要（检索摘要 / 目标目录类型）
+  note     TEXT,               -- 最近一次诊断摘要（检索摘要 / 目标目录类型 / 包摘要）
   PRIMARY KEY (day, layer, skill, caller));
 CREATE INDEX IF NOT EXISTS idx_skill_usage_skill ON skill_usage_daily(skill, day DESC);
 CREATE INDEX IF NOT EXISTS idx_skill_usage_layer ON skill_usage_daily(layer, day DESC);
