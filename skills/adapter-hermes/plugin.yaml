@@ -1,5 +1,5 @@
 name: sgme
-version: "1.8.0"  # 版本口径跟随 SGME 版本（1.7.8 = 记忆调用统计：检索+注入双源日账本 + 查询端点（ST-54/T-251~T-253）），见 README
+version: "1.9.0"  # 版本口径跟随 SGME 版本（1.9.0 = 凭据模块：跨机共享 KEY，EP-11），见 README
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理+沟通角色（42 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"
 license: MIT

@@ -229,7 +229,7 @@ Admin tools state their requirement in their description.
 {
   "schema_version": 1,
   "adapter": "hermes",
-  "adapter_version": "1.8.0",
+  "adapter_version": "1.9.0",
   "base_url": "http://127.0.0.1:9910",
   "http": { "host": "127.0.0.1", "port": 9910 },
   "mcp": { "port": 9913 },
@@ -270,7 +270,7 @@ Your memories stay on the SGME server, untouched.
 
 ## Version & compatibility
 
-- The plugin version tracks the SGME engine version (currently `1.8.0`) — keep bridge and engine on the same minor line.
+- The plugin version tracks the SGME engine version (currently `1.9.0`) — keep bridge and engine on the same minor line.
 - Capability baseline = SGME's MCP tool surface (43 tools); this adapter implements 41 of them, declares 2 exemptions, and adds 3 of its own → **44 tools**. Drift is checked by `python scripts/adapter_parity.py`.
 
 ## Links
