@@ -74,7 +74,8 @@ def test_mcp_tools_available(mcp):
                 "idea_add", "demand_create", "project_register",
                 "signal_pull", "signal_claim", "signal_ack", "signal_clear",
                 "role_list", "role_assemble", "role_active_get", "role_active_set",
-                "skill_search", "skill_digest", "skill_get", "skill_materialize"}
+                "skill_search", "skill_digest", "skill_get", "skill_materialize",
+                "credential_get", "credential_list"}
     assert expected <= set(names), f"缺工具: {expected - set(names)}"
 
 
