@@ -501,6 +501,9 @@ export function registerTools(
   ctx.tools.register(createSkillPutTool(client))
   ctx.tools.register(createSkillDeleteTool(client))
   ctx.tools.register(createSkillRenameTool(client))
+  // EP-11 凭据读侧（T-277 对齐）
+  ctx.tools.register(createCredentialListTool(client))
+  ctx.tools.register(createCredentialGetTool(client))
 }
 
 // ---------- 画像注入（T-88：agent 可主动按场景切换注入） ----------
@@ -1805,6 +1808,68 @@ export function createSkillRenameTool(client: SgmeClient) {
         return `[skill_rename 失败：旧名不存在 / 新名被占用 / 未配置 source_dirs / Gateway 不可达（"${a.name}" → "${a.new_name}"）]`
       }
       return `[skill_rename 已完成：${a.name} → ${a.new_name}（旧位置留墓碑）]`
+    },
+  })
+}
+
+// ---------- 凭据读侧（EP-11 T-277 对齐） ----------
+
+/** 创建 credential_list 工具（凭据键名 + 元数据，不含值）。 */
+export function createCredentialListTool(client: SgmeClient) {
+  return defineTool({
+    name: 'credential_list',
+    description: [
+      '列出 SGME 凭据库的键名与元数据（**不含值**；需服务端 credentials.enabled 已启用）。',
+      '想知道「有哪些凭据可用」时用；取值走 credential_get 或 sgme-cred run 注入（值不进对话正文）。',
+    ].join(' '),
+    parameters: {},
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(_args, _exec) {
+      const resp = await client.credentialList()
+      if (!resp) return '[credential_list 失败：凭据模块未启用（credentials.enabled=false）或 Gateway 不可达，稍后重试]'
+      const items = resp.credentials ?? []
+      if (!items.length) return '[credential_list：凭据库为空（或全部已删）]'
+      const lines = items.map(
+        (it) => `- ${it.key_name}（${it.description ?? '无描述'}；更新于 ${it.updated_at}）`,
+      )
+      return [`[credential_list：${resp.count ?? items.length} 条（列表不含值）]`, ...lines].join('\n')
+    },
+  })
+}
+
+/** 创建 credential_get 工具（取凭据单值；⚠️ 值不得进入对话正文）。 */
+export function createCredentialGetTool(client: SgmeClient) {
+  return defineTool({
+    name: 'credential_get',
+    description: [
+      '取凭据单值（需服务端 credentials.enabled 已启用；服务端记 read 审计）。',
+      '⚠️ 值不得进入对话正文：标准姿势是客户端注入（sgme-cred run，值不落盘不进对话）；',
+      '本工具仅限「必须显式查看」场景，取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。',
+    ].join(' '),
+    parameters: {
+      name: {
+        type: 'string',
+        required: true,
+        description: '凭据键名（credential_list 可见）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { name: string }
+      const resp = await client.credentialGet(a.name)
+      if (!resp) {
+        return `[credential_get 失败：凭据不存在 / 凭据模块未启用 / 主密钥不可用 / Gateway 不可达（name="${a.name}"）]`
+      }
+      return [
+        `[credential_get：${resp.key_name}（⚠️ 值不得复述进对话正文；实际使用走 sgme-cred run 注入）]`,
+        resp.value,
+      ].join('\n')
     },
   })
 }

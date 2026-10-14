@@ -12,7 +12,7 @@
   - prefetch(query): 每轮 LLM 前召回相关记忆（/v1/search，<100ms 预算）
   - sync_turn(): 每轮对话后写原始层（/v1/append，后台线程异步）
   - on_session_end(): 会话结束触发提炼（/v1/admin/refine/trigger）
-  - get_tool_schemas()/handle_tool_call(): 42 个 sgme_* 工具（对齐 MCP 41 工具基准；
+  - get_tool_schemas()/handle_tool_call(): 44 个 sgme_* 工具（对齐 MCP 43 工具基准；
     agent_onboarding / append 两项永久豁免 + role_save/role_delete 适配器自有工具，
     详见 adapters/hermes/README.md）
 
@@ -105,7 +105,7 @@ _DEFAULT_AGENT_ID = os.environ.get("SGME_HERMES_AGENT_ID", "hermes")
 _PROBE_FAIL_TTL = 3.0
 _PROBE_OK_TTL = 30.0
 
-# ---------- 工具面常量与参数辅助（能力面对齐 MCP 41 工具基准） ----------
+# ---------- 工具面常量与参数辅助（能力面对齐 MCP 43 工具基准） ----------
 
 # 检索层白名单（取值见 sgme/operations/search.py）
 _SEARCH_SCOPES = ("memory", "wiki", "wiki_pages", "sessions", "skills")
@@ -898,12 +898,12 @@ class SGMEProvider(MemoryProvider):
         except Exception as e:
             logger.warning("sgme refine trigger 异常: %s", e)
 
-    # ---------- 工具（Agent 主动检索 / 治理：对齐 MCP 41 工具基准） ----------
+    # ---------- 工具（Agent 主动检索 / 治理：对齐 MCP 43 工具基准） ----------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """暴露 SGME 能力面工具。
 
-        对齐唯一基准 = SGME MCP 工具面（sgme/mcp_server.py，41 个）；
+        对齐唯一基准 = SGME MCP 工具面（sgme/mcp_server.py，43 个）；
         hermes 侧 2 项永久豁免（agent_onboarding / append）理由见 README。
         """
         return self._TOOL_SCHEMAS
@@ -1459,6 +1459,25 @@ class SGMEProvider(MemoryProvider):
                     "new_name": {"type": "string", "description": "新技能名（kebab-case）"},
                 },
                 "required": ["name", "new_name"],
+            },
+        },
+        {
+            "name": "sgme_credential_list",
+            "description": "列出 SGME 凭据库的键名与元数据（不含值；EP-11，需凭据模块已启用）。"
+                           "想知道「有哪些凭据可用」时用；取值走 sgme_credential_get 或 sgme-cred run 注入。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "name": "sgme_credential_get",
+            "description": "取凭据单值（EP-11，需凭据模块已启用）。⚠️ 值不得进入对话正文——标准姿势是"
+                           "客户端注入（sgme-cred run，值不落盘不进对话）；本工具仅限「必须显式查看」场景，"
+                           "取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "凭据键名（sgme_credential_list 可见）"},
+                },
+                "required": ["name"],
             },
         },
     ]
@@ -2134,6 +2153,29 @@ class SGMEProvider(MemoryProvider):
         if err:
             return self._err(f"技能改名失败（{name} → {new_name}）: {err}")
         return self._ok(data if isinstance(data, dict) else {"name": new_name, "status": "ok"})
+
+    # ---------- 凭据模块（EP-11：读侧两工具，Agent Key 平级） ----------
+
+    def _t_credential_list(self, args: Dict[str, Any]) -> str:
+        """sgme_credential_list：凭据列表（键名+元数据，不含值）。"""
+        data, err = self._request("GET", "/v1/credentials")
+        if err:
+            return self._err(f"列凭据失败: {err}")
+        if not isinstance(data, dict):
+            return self._err("列凭据响应异常")
+        return self._ok(data)
+
+    def _t_credential_get(self, args: Dict[str, Any]) -> str:
+        """sgme_credential_get：取凭据单值（⚠️ 值不得进入对话正文——仅限必须显式查看场景）。"""
+        name = _arg_str(args, "name")
+        if not name:
+            return self._err("缺少 name（凭据键名，sgme_credential_list 可见）")
+        data, err = self._request("GET", f"/v1/credentials/{_path_seg(name)}")
+        if err:
+            return self._err(f"取凭据失败（name={name}）: {err}")
+        if not isinstance(data, dict):
+            return self._err("取凭据响应异常")
+        return self._ok(data)
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         """分发 sgme_* 工具调用 → SGME Gateway HTTP。
