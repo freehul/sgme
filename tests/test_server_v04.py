@@ -213,6 +213,41 @@ def _mock_chat_and_embed_client(chat_text: str, embedding: list[float]) -> httpx
     return httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
 
 
+def _block_embed_egress(monkeypatch) -> None:
+    """embed 出口打桩（B123 家族，= 向量不可达降级语义）。
+
+    背景（2026-10-15 全量运行实测）：refine → finalize → upsert_memory_vector → embed 的
+    外发未打桩时，mock base_url（`.test` 域）在本机代理（Clash 假 IP）下可停摆数分钟，
+    表现为「假挂死」；CI 无 key 环境恒快失败，故此前从未暴露。
+    """
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **k: None)
+
+
+def _block_llm_chain_egress(monkeypatch) -> None:
+    """LLM 链出口打桩（= 无 key 环境语义；用于后台真实 refine 线程快速降级收尾）。"""
+    from sgme.llm import chain as _llm_chain
+    from sgme.llm.provider import LLMUnavailable
+
+    def _down(*a, **k):
+        raise LLMUnavailable("mock down（测试零网络）")
+
+    monkeypatch.setattr(_llm_chain, "call_with_fallback", _down)
+
+
+def _patch_l15_with_client(monkeypatch, mock_client: httpx.Client) -> None:
+    """patch l15.resolve_conflicts 注入 mock client（B123 家族：L1.5 默认走真实 LLM，防外发）。"""
+    from sgme.engine import l15 as _l15_mod
+
+    original_resolve = _l15_mod.resolve_conflicts
+
+    def patched_resolve(new_memories, mem_conn, cfg, client=None, **kwargs):
+        return original_resolve(
+            new_memories, mem_conn, cfg, client=mock_client, **kwargs,
+        )
+
+    monkeypatch.setattr(_l15_mod, "resolve_conflicts", patched_resolve)
+
+
 # ---------- Tier0 注入测试 ----------
 
 def test_inject_tier0_present_when_summary_valid(client, summary_path, monkeypatch):
@@ -524,6 +559,8 @@ def test_agent_revoke_requires_admin(client):
 
 def test_refine_trigger_async_returns_immediately(client, monkeypatch):
     """/v1/admin/refine/trigger_async 立即返回 queued（后台提炼不阻塞）。"""
+    _block_embed_egress(monkeypatch)      # 后台线程 embed 出口打桩
+    _block_llm_chain_egress(monkeypatch)  # 后台线程 LLM 出口打桩（真实 refine 快速降级收尾）
     app = client.app
     mem_conn = app.state.mem_conn
     session_conn = app.state.session_conn
@@ -556,6 +593,7 @@ def test_refine_trigger_async_returns_immediately(client, monkeypatch):
 
 def test_refine_trigger_publishes_memory_updated(client, monkeypatch):
     """/v1/admin/refine/trigger 成功后 signal_events 表出现 memory_updated 事件。"""
+    _block_embed_egress(monkeypatch)
     # Arrange：构造 raw 文件 + raw_files 行
     app = client.app
     mem_conn = app.state.mem_conn
@@ -586,6 +624,7 @@ def test_refine_trigger_publishes_memory_updated(client, monkeypatch):
     ])
     l2_body = json.dumps([])
     cli = _mock_llm_client_sequence([l1_body, l2_body])
+    _patch_l15_with_client(monkeypatch, cli)
     # 注入 mock client 到 refine 模块（refine_file 通过 client 参数透传）
     original_refine_file = refine_mod.refine_file
 
@@ -627,6 +666,7 @@ def test_refine_trigger_publishes_memory_updated(client, monkeypatch):
 
 def test_refine_trigger_creates_l2_scenes(client, monkeypatch):
     """refine 后 memory.db scenes 表出现场景行（mock LLM 输出 CREATE 动作）。"""
+    _block_embed_egress(monkeypatch)
     # Arrange
     app = client.app
     mem_conn = app.state.mem_conn
@@ -660,6 +700,7 @@ def test_refine_trigger_creates_l2_scenes(client, monkeypatch):
          "reason": "新主题"},
     ])
     cli = _mock_llm_client_sequence([l1_body, l2_body])
+    _patch_l15_with_client(monkeypatch, cli)
     original_refine_file = refine_mod.refine_file
 
     def patched_refine_file(file_id, mem, session, cfg, source_type="session", client=None):

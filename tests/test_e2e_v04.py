@@ -187,7 +187,7 @@ def _mock_embed_client(embedding: list[float]) -> httpx.Client:
 
 
 def _patch_refine_with_client(monkeypatch, mock_client: httpx.Client) -> None:
-    """patch refine_mod.refine_file 注入 mock LLM client（端点级集成用）。"""
+    """patch refine_mod.refine_file 注入 mock LLM client（端点级集成用）；并阻断 embed 出口。"""
     original_refine_file = refine_mod.refine_file
 
     def patched_refine_file(file_id, mem, wiki, cfg, source_type="session", client=None):
@@ -196,6 +196,10 @@ def _patch_refine_with_client(monkeypatch, mock_client: httpx.Client) -> None:
         )
 
     monkeypatch.setattr(refine_mod, "refine_file", patched_refine_file)
+    # B123 家族（2026-10-15）：端点级 refine 用例同步阻断 embed 出口——
+    # refine→finalize→upsert_memory_vector→embed 的外发未打桩时，
+    # mock base_url（`.test` 域）在本机代理下可停摆数分钟（假挂死）
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **k: None)
 
 
 def _patch_l15_with_client(monkeypatch, mock_client: httpx.Client) -> None:

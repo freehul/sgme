@@ -461,6 +461,12 @@ def test_health_watermark_advances_after_refine(client, raw_dir, monkeypatch):
 
     monkeypatch.setattr(llm_chain, "call_with_fallback", _llm_down)
 
+    # B123 家族补口（2026-10-15）：embed 出口一并打桩——refine→finalize→upsert_memory_vector
+    # →embed 的外发不打桩时，本机代理（Clash 假 IP）下可停摆数分钟（CI 无 key 恒快失败故未暴露）
+    from sgme.data.search import vector as vector_mod
+
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **k: None)
+
     # 触发提炼
     rt = client.post("/v1/admin/refine/trigger", json={
         "file_id": file_id,
