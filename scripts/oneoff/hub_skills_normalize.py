@@ -29,7 +29,7 @@ FM_RE = re.compile(r"\A(---\r?\n.*?\r?\n---\r?\n?)(.*)", re.S)
 CATEGORY_RULES: list[tuple[str, str]] = [
     (r"comfyui|工作流|节点|模型部署", "creative"),
     (r"hermes|gateway|memory|插件|desktop", "hermes"),
-    (r"nas|NAS|群晖|docker", "devops"),
+    (r"nas|NAS|飞牛|群晖|docker", "devops"),
     (r"vps|代理|clash|xray|sing-box|proxy", "network"),
     (r"douyin|抖音|视频", "social-media"),
     (r"邮件|mail|email", "email"),
@@ -70,9 +70,11 @@ def normalize_one(skill_dir: Path, apply: bool) -> dict:
     fm, body = m.group(1), m.group(2)
     fm_eol = "\r\n" if "\r\n" in fm else "\n"
 
-    # 解析现有字段（简化：按行找 key: value）
+    # 解析现有字段（只认无缩进的顶层行——缩进的是 metadata 嵌套，lint 不认）
     fields: dict[str, str] = {}
     for line in fm.split(fm_eol):
+        if line.startswith(" ") or line.startswith("\t"):
+            continue  # 嵌套字段（metadata.hermes 下）跳过
         line = line.strip()
         if line.startswith("---") or ":" not in line:
             continue
@@ -80,30 +82,32 @@ def normalize_one(skill_dir: Path, apply: bool) -> dict:
         fields[k.strip()] = v.strip().strip('"').strip("'")
 
     additions: list[str] = []
+    # 顶层字段检查（排除 metadata.hermes 嵌套的 category/version 误判——
+    #    2026-08-27 实锤：comfy-desktop-ops 等 category 在 metadata.hermes 下，lint 不认）
+    top_fields = set(fields.keys())
     # version
     if not fields.get("version"):
         additions.append(f"version: 1.0.0")
     # pattern
     if not fields.get("pattern"):
         additions.append(f"pattern: manual")
-    # category
+    # category（顶层缺才补；metadata.hermes.category 存在不影响）
     if not fields.get("category"):
         cat = infer_category(fields.get("description", ""))
         additions.append(f"category: {cat}")
-
-    if not additions:
-        return {"skill": skill_dir.name, "status": "no-change"}
 
     if not apply:
         return {"skill": skill_dir.name, "status": "would-add",
                 "message": "+".join(a.split(":")[0] for a in additions)}
 
-    # 插入 frontmatter 结尾 --- 之前
-    head, sep, tail = fm.rpartition("---")
-    new_fm = head + fm_eol.join(additions) + fm_eol + sep + tail
-    f.write_text(new_fm + body, encoding="utf-8", newline="")
+    # 插入 frontmatter 结尾 --- 之前（有字段要补才写）
+    if additions:
+        head, sep, tail = fm.rpartition("---")
+        new_fm = head + fm_eol.join(additions) + fm_eol + sep + tail
+        f.write_text(new_fm + body, encoding="utf-8", newline="")
 
-    # 拆分（超 8K 时）
+    # 拆分（超 8K 时）——⚠️ 必须在补字段后独立判断（2026-08-27 实锤：
+    #    曾把拆分放「有字段才走」分支内，字段补完后二次运行永不拆分）
     split_result = None
     body_bytes = len(body.encode("utf-8"))
     if body_bytes > 8192:
