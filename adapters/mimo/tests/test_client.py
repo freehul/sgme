@@ -4,7 +4,7 @@
 覆盖：
 - 地址三级解析（环境变量 → 部署配置 client.env → 回环默认）与 MCP 端点推导
 - HTTP 层请求构造（append 首行格式 / 查询参数 / 头部 / 错误包装）
-- 41 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
+- 43 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
 - 新增/修正方法与 CLI 命令的参数转译（含管理员 Key 范围）
 - 测试样例全部使用假值：私网语义用 10.0.0.x，密钥用低熵占位
 
@@ -349,6 +349,14 @@ class TestHttpCalls(NoDeployConfig):
         self.assertIn("offset=40", url)
         self.assertIn("limit=20", url)
 
+    def test_credential_list_and_get_paths(self):
+        """凭据读侧走 v1/credentials；get 的 name 做路径段编码（T-277）。"""
+        c, mo = self._client({"credentials": []})
+        c.credential_list()
+        self.assertIn("/v1/credentials", mo.call_args.args[0].full_url)
+        c.credential_get("db/password")
+        self.assertIn("/v1/credentials/db%2Fpassword", mo.call_args.args[0].full_url)
+
     def test_skill_materialize_returns_path_and_sha256(self):
         c, mo = self._client({"path": "/tmp/x/SKILL.md", "sha256": "0" * 64})
         r = c.skill_materialize("sgme", "/tmp/x")
@@ -535,11 +543,11 @@ class TestMcpMethodSignatures(NoDeployConfig):
 
 
 class TestCapabilityMatrix(unittest.TestCase):
-    """41 个基准能力：方法层 + CLI 层缺一不可。"""
+    """43 个基准能力：方法层 + CLI 层缺一不可。"""
 
     def test_baseline_count(self):
-        self.assertEqual(len(BASELINE_TOOLS), 41)
-        self.assertEqual(len(set(BASELINE_TOOLS)), 41)
+        self.assertEqual(len(BASELINE_TOOLS), 43)
+        self.assertEqual(len(set(BASELINE_TOOLS)), 43)
         self.assertEqual(set(BASELINE_SPEC), set(BASELINE_TOOLS))
 
     def test_every_baseline_has_method(self):
@@ -563,7 +571,7 @@ class TestCapabilityMatrix(unittest.TestCase):
 
     def test_capability_report_all_covered(self):
         rows = sc.capability_report()
-        self.assertEqual(len(rows), 41)
+        self.assertEqual(len(rows), 43)
         bad = [r["tool"] for r in rows if not (r["method_ok"] and r["cli_ok"])]
         self.assertEqual(bad, [])
 
@@ -592,10 +600,10 @@ class TestCLI(NoDeployConfig):
                 code = sc.main(argv)
         return code, buf.getvalue()
 
-    def test_offline_capabilities_lists_41(self):
+    def test_offline_capabilities_lists_43(self):
         code, out = self._run(["capabilities"])
         self.assertEqual(code, 0)
-        self.assertIn("41/41", out)
+        self.assertIn("43/43", out)
         for tool in BASELINE_TOOLS:
             self.assertIn(tool, out)
 
@@ -670,6 +678,20 @@ class TestCLI(NoDeployConfig):
             (["skill-delete", "demo", "--hard"], "skill_delete", ("demo", True, False)),
             (["skill-rename", "old-name", "new-name"],
              "skill_rename", ("old-name", "new-name")),
+        ]
+        for argv, method, expected_args in cases:
+            m = mock.MagicMock()
+            code, out = self._run(argv, m)
+            self.assertEqual(code, 0, msg=f"{argv} 退出码 {code}：{out}")
+            fn = getattr(m.return_value, method)
+            fn.assert_called_once()
+            self.assertEqual(fn.call_args.args, expected_args, msg=f"{argv} 参数不符")
+
+    def test_credential_cli_translates_to_methods(self):
+        """凭据读侧命令：CLI → 方法调用参数核对（T-277）。"""
+        cases = [
+            (["credential-list"], "credential_list", ()),
+            (["credential-get", "db/password"], "credential_get", ("db/password",)),
         ]
         for argv, method, expected_args in cases:
             m = mock.MagicMock()

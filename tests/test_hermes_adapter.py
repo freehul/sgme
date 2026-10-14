@@ -368,8 +368,8 @@ def test_shutdown_is_idempotent_and_concurrent_safe(monkeypatch):
 
 
 # ==========================================================================
-# T-171 / T-211：能力面对齐 MCP 41 工具基准
-# 42 工具 = 39 基准覆盖 + 2 项永久豁免（agent_onboarding / append，理由见 README）
+# T-171 / T-211：能力面对齐 MCP 43 工具基准
+# 44 工具 = 41 基准覆盖 + 2 项永久豁免（agent_onboarding / append，理由见 README）
 #           + 3 项适配器自有（conversation_search / role_save / role_delete，登记 parity extra）。
 # 基准唯一真源 = sgme/mcp_server.py 的工具面。
 # ==========================================================================
@@ -390,7 +390,7 @@ HERMES_EXTRA_TOOLS = {"sgme_conversation_search", "sgme_role_save", "sgme_role_d
 # 基准名 → 适配器名的别名（parity map 的 aliases.search.hermes）
 ALIASED = {"search": "sgme_memory_search"}
 
-# 工具 → 期望 HTTP 端点（方法, 路径）或调用序列；覆盖全部 42 个工具
+# 工具 → 期望 HTTP 端点（方法, 路径）或调用序列；覆盖全部 44 个工具
 # role_save 为双调用序列：[GET 既有卡, POST upsert]
 _ENDPOINTS = {
     "sgme_memory_search": ("POST", "/v1/search"),
@@ -435,6 +435,8 @@ _ENDPOINTS = {
     "sgme_skill_put": ("PUT", "/v1/admin/skills/demo-skill"),
     "sgme_skill_delete": ("DELETE", "/v1/admin/skills/demo-skill"),
     "sgme_skill_rename": ("POST", "/v1/admin/skills/demo-skill/rename"),
+    "sgme_credential_list": ("GET", "/v1/credentials"),
+    "sgme_credential_get": ("GET", "/v1/credentials/demo-cred"),
 }
 
 # 工具 → 最小调用参数（保证走到 HTTP 层，不被参数校验短路）
@@ -481,6 +483,8 @@ _CALL_ARGS = {
     "sgme_skill_put": {"name": "demo-skill", "content": "---\nname: demo\n---\n正文"},
     "sgme_skill_delete": {"name": "demo-skill"},
     "sgme_skill_rename": {"name": "demo-skill", "new_name": "demo-skill-2"},
+    "sgme_credential_list": {},
+    "sgme_credential_get": {"name": "demo-cred"},
 }
 
 # 写侧/管理类工具 → 必须走管理员 Key（服务端 /v1/admin/* 或写侧治理动作）
@@ -571,11 +575,11 @@ def _baseline_tools() -> set:
 
 
 def test_tool_count_and_names():
-    """注册 42 个工具：39 个基准覆盖 + 3 个自有工具（conversation_search / role_save / role_delete）。"""
+    """注册 44 个工具：41 个基准覆盖 + 3 个自有工具（conversation_search / role_save / role_delete）。"""
     p, _ = _tool_provider()
     names = [s["name"] for s in p.get_tool_schemas()]
-    assert len(names) == 42, f"工具数应为 42，实际 {len(names)}"
-    assert len(set(names)) == 42, "工具名重复"
+    assert len(names) == 44, f"工具数应为 44，实际 {len(names)}"
+    assert len(set(names)) == 44, "工具名重复"
     assert set(EXEMPT_TOOLS).isdisjoint({n[len("sgme_"):] for n in names}), "豁免工具不应被实现"
     expected = (
         {f"sgme_{t}" for t in _baseline_tools() - EXEMPT_TOOLS - set(ALIASED)}
@@ -611,7 +615,7 @@ def test_every_tool_resolves_to_handler():
 
 
 def test_endpoint_matrix():
-    """42 个工具各自的 HTTP 方法与端点正确（契约矩阵；值为 (方法, 路径) 或调用序列）。"""
+    """44 个工具各自的 HTTP 方法与端点正确（契约矩阵；值为 (方法, 路径) 或调用序列）。"""
     p, fake = _tool_provider()
     assert set(_ENDPOINTS) == set(_CALL_ARGS), "端点矩阵与参数矩阵工具集不一致"
     for tool, spec in _ENDPOINTS.items():
@@ -742,6 +746,35 @@ def test_hard_delete_and_flags_pass_as_query():
     assert fake.calls[0].get("params") is None
 
 
+# ---------- 凭据模块（EP-11：读侧两工具） ----------
+
+
+def test_credential_tools_use_agent_key_and_path():
+    """credential_list/credential_get 走 Agent Key 平级读侧；get 的 name 做路径段编码。"""
+    p, fake = _tool_provider()
+    p.handle_tool_call("sgme_credential_list", {})
+    assert fake.calls[0]["method"] == "GET"
+    assert fake.calls[0]["url"] == "http://127.0.0.1:9910/v1/credentials"
+    assert fake.calls[0]["headers"]["X-API-Key"] == "agent-key-x"
+    fake.calls.clear()
+    p.handle_tool_call("sgme_credential_get", {"name": "db/password"})
+    assert fake.calls[0]["url"] == "http://127.0.0.1:9910/v1/credentials/db%2Fpassword"
+
+
+def test_credential_get_requires_name():
+    """缺 name 时结构化报错，不发请求。"""
+    p, fake = _tool_provider()
+    parsed = json.loads(p.handle_tool_call("sgme_credential_get", {}))
+    assert "error" in parsed and not fake.calls
+
+
+def test_credential_get_description_warns_no_value_in_conversation():
+    """credential_get 描述必须带「值不得进入对话正文」纪律（EP-11 值扩散不可回收）。"""
+    p, _ = _tool_provider()
+    desc = [s for s in p.get_tool_schemas() if s["name"] == "sgme_credential_get"][0]["description"]
+    assert "值不得进入对话正文" in desc and "sgme-cred run" in desc
+
+
 # ---------- 写侧护栏与参数校验 ----------
 
 
@@ -791,7 +824,7 @@ def test_signal_clear_query_params():
 
 
 def test_gateway_unreachable_returns_structured_error_for_all_tools():
-    """全部 42 个工具在 Gateway 不可达时都返回 {"error": ...}，不抛异常。"""
+    """全部 44 个工具在 Gateway 不可达时都返回 {"error": ...}，不抛异常。"""
     p, _ = _tool_provider(raise_error=True)
     for tool in sorted(_CALL_ARGS):
         try:
