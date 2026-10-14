@@ -8,7 +8,7 @@ description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME
 你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 > 本技能是 SGME 官方适配器（`adapters/doubao/`，源码唯一副本随 SGME 仓库版本控制；本目录是部署副本，由 `install.py` 同步，可随时重建）。
-> **能力面 = CLI 命令面**：本文件「能力矩阵」里列出的命令就是你能调用的全部工具（41 个基准能力一个不少）。
+> **能力面 = CLI 命令面**：本文件「能力矩阵」里列出的命令就是你能调用的全部工具（43 个基准能力一个不少）。
 
 ## 服务发现（找不到 SGME 时按序）
 
@@ -63,7 +63,7 @@ description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME
 
 SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、`anomaly_warn`（异常）。四种接法：① SSE 长连 `GET /v1/events/stream?subscriber_id=<agent_id>`；② 游标拉取 `GET /v1/events/pull?subscriber_id=<agent_id>`（= `events-pull`）；③ 增量拉取 `events-after <ISO时间戳>`；④ MCP `signal-pull`。SSE/pull 走 HTTP `:9910` 带 X-API-Key。积压清理用 `signal-clear`（幂等）。
 
-## 能力矩阵（scripts/sgme_client.py，与 MCP 基准 41 个工具一一对应）
+## 能力矩阵（scripts/sgme_client.py，与 MCP 基准 43 个工具一一对应）
 
 > HTTP 层命令零依赖（任意 python3 可跑）；MCP 层命令需 mcp 库，用
 > `<project-root>/.venv/Scripts/python.exe scripts/sgme_client.py …` 执行。
@@ -112,6 +112,8 @@ SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、
 | 39 | skill_put | MCP | `sgme_client.py skill-put <name> --file <SKILL.md>`（需管理员 Key） |
 | 40 | skill_delete | MCP | `sgme_client.py skill-delete <name> [--hard] [--force]`（需管理员 Key） |
 | 41 | skill_rename | MCP | `sgme_client.py skill-rename <old> <new>`（需管理员 Key） |
+| 42 | credential_list | HTTP | `sgme_client.py credential-list` |
+| 43 | credential_get | HTTP | `sgme_client.py credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
 
 适配器自有扩展（超出基准）：`events-pull`（HTTP 事件游标）、`events-after`（增量拉取）、`wiki-raw`（取原始文件）、`capabilities`（能力矩阵核对）、`env-info`（端点自检）、`mcp <tool> k=v …`（逃生口：直接调任意 MCP 工具，加 `--admin` 走管理员 Key）。
 

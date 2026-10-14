@@ -666,6 +666,34 @@ var SgmeClient = class {
 		}
 		return data;
 	}
+	/**
+	* 凭据列表：键名 + 元数据，**不含值**（GET /v1/credentials）。失败返回 null。
+	*
+	* 需服务端 credentials.enabled 已启用；list 不记审计（高频、无值暴露）。
+	*/
+	async credentialList() {
+		const [data, err] = await this.get("/v1/credentials", "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] credentialList failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 取凭据单值（GET /v1/credentials/{key}，Agent Key 平级；服务端记 read 审计）。
+	*
+	* ⚠️ 返回值含明文凭据（value）——**不得进入对话正文**：标准姿势是客户端注入
+	* （sgme-cred run，值不落盘不进对话）；本方法仅限「必须显式查看」场景，
+	* 取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。
+	*/
+	async credentialGet(name) {
+		const [data, err] = await this.get(`/v1/credentials/${encodeURIComponent(name)}`, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] credentialGet failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
 };
 /**
 * 消息列表 → SGME L0 消息块文本。
@@ -3715,6 +3743,8 @@ function registerTools(ctx, client, defaultLimit, eventSubscriber) {
 	ctx.tools.register(createSkillPutTool(client));
 	ctx.tools.register(createSkillDeleteTool(client));
 	ctx.tools.register(createSkillRenameTool(client));
+	ctx.tools.register(createCredentialListTool(client));
+	ctx.tools.register(createCredentialGetTool(client));
 }
 /** 创建 inject 工具（按场景模式拉取 SGME 画像，agent 主动注入）。 */
 function createInjectTool(client) {
@@ -4892,6 +4922,58 @@ function createSkillRenameTool(client) {
 			const a = args;
 			if (!await client.skillRename(a.name, a.new_name)) return `[skill_rename 失败：旧名不存在 / 新名被占用 / 未配置 source_dirs / Gateway 不可达（"${a.name}" → "${a.new_name}"）]`;
 			return `[skill_rename 已完成：${a.name} → ${a.new_name}（旧位置留墓碑）]`;
+		}
+	});
+}
+/** 创建 credential_list 工具（凭据键名 + 元数据，不含值）。 */
+function createCredentialListTool(client) {
+	return defineTool({
+		name: "credential_list",
+		description: ["列出 SGME 凭据库的键名与元数据（**不含值**；需服务端 credentials.enabled 已启用）。", "想知道「有哪些凭据可用」时用；取值走 credential_get 或 sgme-cred run 注入（值不进对话正文）。"].join(" "),
+		parameters: {},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(_args, _exec) {
+			const resp = await client.credentialList();
+			if (!resp) return "[credential_list 失败：凭据模块未启用（credentials.enabled=false）或 Gateway 不可达，稍后重试]";
+			const items = resp.credentials ?? [];
+			if (!items.length) return "[credential_list：凭据库为空（或全部已删）]";
+			const lines = items.map((it) => `- ${it.key_name}（${it.description ?? "无描述"}；更新于 ${it.updated_at}）`);
+			return [`[credential_list：${resp.count ?? items.length} 条（列表不含值）]`, ...lines].join("\n");
+		}
+	});
+}
+/** 创建 credential_get 工具（取凭据单值；⚠️ 值不得进入对话正文）。 */
+function createCredentialGetTool(client) {
+	return defineTool({
+		name: "credential_get",
+		description: [
+			"取凭据单值（需服务端 credentials.enabled 已启用；服务端记 read 审计）。",
+			"⚠️ 值不得进入对话正文：标准姿势是客户端注入（sgme-cred run，值不落盘不进对话）；",
+			"本工具仅限「必须显式查看」场景，取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。"
+		].join(" "),
+		parameters: { name: {
+			type: "string",
+			required: true,
+			description: "凭据键名（credential_list 可见）"
+		} },
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.credentialGet(a.name);
+			if (!resp) return `[credential_get 失败：凭据不存在 / 凭据模块未启用 / 主密钥不可用 / Gateway 不可达（name="${a.name}"）]`;
+			return [`[credential_get：${resp.key_name}（⚠️ 值不得复述进对话正文；实际使用走 sgme-cred run 注入）]`, resp.value].join("\n");
 		}
 	});
 }

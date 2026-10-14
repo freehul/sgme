@@ -10,7 +10,7 @@ tags: [skill, adapter, sgme]
 你（MiMo Desktop）已接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 > 本技能是 SGME 官方适配器（源码 `adapters/mimo/`；本目录为部署副本，由 `install.py` 同步，可随时重建）。
-> **能力面 = CLI 命令面**：下方矩阵 41 个基准能力一个不少。
+> **能力面 = CLI 命令面**：下方矩阵 43 个基准能力一个不少。
 > **优先用本会话已挂载的 MCP 工具**（同名能力）；无 MCP 或要脚本化时再走 CLI。
 
 ## 服务发现（找不到 SGME 时按序）
@@ -115,6 +115,8 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 39 | skill_put | MCP | `skill-put` |
 | 40 | skill_delete | MCP | `skill-delete` |
 | 41 | skill_rename | MCP | `skill-rename` |
+| 42 | credential_list | HTTP | `credential-list` |
+| 43 | credential_get | HTTP | `credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
 
 扩展命令：`events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
 

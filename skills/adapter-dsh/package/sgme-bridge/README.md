@@ -102,7 +102,7 @@ syncOnTurnEnd: true
 
 ## 用法
 
-接入后，DSH 自动拥有 40 个工具（v0.6.0 起与 SGME 1.7.6 能力面对齐，适配器平级对账零漂移）：
+接入后，DSH 自动拥有 42 个工具（v0.6.0 起与 SGME 1.7.6 能力面对齐，适配器平级对账零漂移）：
 
 **检索与知识库（7）**
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
@@ -155,6 +155,10 @@ syncOnTurnEnd: true
 - `skill_put(name, content, skip_limits)` — 写入/覆盖技能（过 lint 门禁 + 三层查重后落盘并提交技能源仓）；
 - `skill_delete(name, hard, force)` — 删除技能（默认软删；有入向引用需 force）；
 - `skill_rename(name, new_name)` — 墓碑制改名。
+
+**凭据读侧（2，T-277 对齐 EP-11）**
+- `credential_list()` — 凭据键名 + 元数据（**不含值**；需服务端 `credentials.enabled` 已启用）；
+- `credential_get(name)` — 取凭据单值（服务端记 read 审计）。⚠️ **值不得进入对话正文**——标准姿势是客户端注入（`sgme-cred run`，值不落盘不进对话）；本工具仅限「必须显式查看」场景，取用后勿复述值。
 
 > ⚠️ 写侧工具（`config_update` / `skill_put` / `skill_delete` / `skill_rename` / `refine_*` / `signal_clear`）需 **Admin Key**，且会真实改变服务端状态或消耗额度——工具描述内已加护栏，仅在用户明确要求时调用。
 

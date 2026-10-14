@@ -475,6 +475,32 @@ export interface ConfigUpdateResponse {
   section?: string
 }
 
+// ---------- 凭据读侧（EP-11 T-270 契约） ----------
+
+/** GET /v1/credentials 列表项（键名 + 元数据，**不含值**）。 */
+export interface CredentialListItem {
+  key_name: string
+  description: string | null
+  created_at: string
+  updated_at: string
+  updated_by: string | null
+}
+
+/** GET /v1/credentials 响应体。 */
+export interface CredentialListResponse {
+  credentials: CredentialListItem[]
+  count: number
+}
+
+/** GET /v1/credentials/{key} 响应体（⚠️ value 为明文凭据，勿复述进对话正文）。 */
+export interface CredentialGetResponse {
+  key_name: string
+  value: string
+  description: string | null
+  updated_at: string
+  updated_by: string | null
+}
+
 // ---------- 提炼监控（Admin Key） ----------
 
 /** POST /v1/admin/refine/trigger 响应体（同步提炼，file 或 batch 形态）。 */
@@ -1366,6 +1392,41 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] skillRename failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 凭据读侧（EP-11 T-270，Agent Key 平级） ----------
+
+  /**
+   * 凭据列表：键名 + 元数据，**不含值**（GET /v1/credentials）。失败返回 null。
+   *
+   * 需服务端 credentials.enabled 已启用；list 不记审计（高频、无值暴露）。
+   */
+  async credentialList(): Promise<CredentialListResponse | null> {
+    const [data, err] = await this.get<CredentialListResponse>('/v1/credentials', 'agent')
+    if (err) {
+      console.warn(`[sgme-bridge] credentialList failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 取凭据单值（GET /v1/credentials/{key}，Agent Key 平级；服务端记 read 审计）。
+   *
+   * ⚠️ 返回值含明文凭据（value）——**不得进入对话正文**：标准姿势是客户端注入
+   * （sgme-cred run，值不落盘不进对话）；本方法仅限「必须显式查看」场景，
+   * 取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。
+   */
+  async credentialGet(name: string): Promise<CredentialGetResponse | null> {
+    const [data, err] = await this.get<CredentialGetResponse>(
+      `/v1/credentials/${encodeURIComponent(name)}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] credentialGet failed: ${err}`)
       return null
     }
     return data
