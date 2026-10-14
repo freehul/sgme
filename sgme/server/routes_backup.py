@@ -12,7 +12,8 @@ v0.8 T-8：业务逻辑已全部下沉 ``sgme.operations.backup``（三段式）
 为契约基线，不得破坏）。
 
 ⚠️ restore 的 app.state 连接交换是入口层职责：operations 超集里的 ``_new_conns``
-是私有传输字段（restore 已关闭旧连接并重开新连接），由本层取出更新 app.state，
+是私有传输字段（restore 已关闭旧连接并重开新连接），由本层取出更新 app.state
+（四元组：mem / session / wiki / credentials；凭据位可为 None，T-273），
 再由 ``http_payload`` 剔除，不落入 HTTP 响应。
 """
 from __future__ import annotations
@@ -72,6 +73,11 @@ def backup_create(
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     session_conn: sqlite3.Connection = request.app.state.session_conn
     wiki_conn: sqlite3.Connection = request.app.state.wiki_conn
+    # 凭据库连接（T-273）：凭据模块未启用/未接线时 app.state 无该字段 → None，
+    # 是否纳入快照由 manager 按 data_dir 文件存在性回退（空库跳过）
+    creds_conn: sqlite3.Connection | None = getattr(
+        request.app.state, "credentials_conn", None
+    )
 
     # 0.8 方案 B：幂等拉起每日自动备份定时器（生产 Gateway 首次备份后常驻）
     # v1.0 连接隔离修复（2026-08-14）：传 data_dir，线程自建独立连接，不再共享宿主连接
@@ -84,6 +90,7 @@ def backup_create(
         session_conn,
         wiki_conn,
         level=payload.level,
+        creds_conn=creds_conn,
     )
     return http_payload(data)
 
@@ -113,13 +120,19 @@ def backup_restore(
     """从快照恢复（恢复前自动再备份当前状态）。
 
     纯协议翻译 + 入口层职责（app.state 连接交换）：
-    operations 返回的超集含 ``_new_conns``（restore 重开的三库连接），
-    由本层取出更新 app.state，http_payload 负责将其剔除出响应体。
+    operations 返回的超集含 ``_new_conns``（restore 重开的连接四元组：
+    mem / session / wiki / credentials），由本层取出更新 app.state，
+    http_payload 负责将其剔除出响应体。
     """
     cfg = request.app.state.cfg
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     session_conn: sqlite3.Connection = request.app.state.session_conn
     wiki_conn: sqlite3.Connection = request.app.state.wiki_conn
+    # 凭据库连接（T-273）：同 create 端点——无该 state 字段时 None；
+    # restore 内部按「快照含该库 / 原持有连接」规则决定是否重开
+    creds_conn: sqlite3.Connection | None = getattr(
+        request.app.state, "credentials_conn", None
+    )
 
     # restore 替换数据库文件，先停 backup_scheduler（其自建连接持有 WAL 句柄，
     # 不停止会 unlink 失败 PermissionError；restore 后下次备份端点触发时自动重启）
@@ -133,6 +146,7 @@ def backup_restore(
             session_conn,
             wiki_conn,
             snapshot_id=payload.snapshot_id,
+            creds_conn=creds_conn,
         )
     except Exception:
         # T-265（ST-55）：admin_op 审计（§2.8-3）——restore 是最高危管理写操作，
@@ -146,9 +160,15 @@ def backup_restore(
         request, "backup_restore", target=payload.snapshot_id, result="success"
     )
 
-    # 更新 app.state 中的 conn 引用（旧 conn 已被 restore 关闭）
+    # 更新 app.state 中的 conn 引用（旧 conn 已被 restore 关闭；T-273：四目标解包，
+    # credentials 位为 None = 快照无凭据库且原先未接线）
     new_conns = data.get("_new_conns")
     if new_conns:
-        request.app.state.mem_conn, request.app.state.session_conn, request.app.state.wiki_conn = new_conns
+        (
+            request.app.state.mem_conn,
+            request.app.state.session_conn,
+            request.app.state.wiki_conn,
+            request.app.state.credentials_conn,
+        ) = new_conns
 
     return http_payload(data)

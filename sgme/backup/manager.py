@@ -8,11 +8,16 @@
 - restore：恢复前自动再备份 + 覆盖恢复
 - verify_integrity：溯源链完整性校验（memories → sources → raw_files）
 
-快照目录结构：dest_dir/{snapshot_id}/{memory.db, session.db, wiki.db, raw/}
+快照目录结构：dest_dir/{snapshot_id}/{memory.db, session.db, wiki.db, credentials.db(可选), raw/}
 snapshot_id 格式：{level}_{YYYYMMDD_HHMMSS}_{uuid8}
 
 v0.7 三库拆分：raw_files 迁入 session.db，scenes 系列迁入 memory.db，
 故快照/恢复/完整性校验均按三库口径（memory.db + session.db + wiki.db）。
+
+v0.8 凭据模块（T-273）：独立库 credentials.db 纳入备份链（四库口径）。
+含/不含的**单一实现源** = 数据目录文件存在性——文件在 → 含；不在 → 跳过
+（绝不用 sqlite3.connect 建空库，快照内不出现空 credentials.db）；
+手动备份与每日调度同口径。主密钥（SGME_CRED_KEY）不随快照携带。
 """
 from __future__ import annotations
 
@@ -30,36 +35,56 @@ from sgme.data import db as db_mod
 
 logger = logging.getLogger("sgme.backup")
 
-# 三库文件名（快照/恢复统一口径，顺序 = (memory, session, wiki)）
-DB_FILENAMES: tuple[str, str, str] = ("memory.db", "session.db", "wiki.db")
+# 四库文件名（快照/恢复统一口径，顺序 = (memory, session, wiki, credentials)）
+DB_FILENAMES: tuple[str, str, str, str] = (
+    "memory.db", "session.db", "wiki.db", "credentials.db",
+)
 
 
 # ---------- 内部工具 ----------
 
 
 def _resolve_snapshot_sources(
-    conn_pair: tuple[sqlite3.Connection, ...] | None,
+    conn_pair: tuple[sqlite3.Connection | None, ...] | None,
 ) -> tuple[
     sqlite3.Connection | None,
     sqlite3.Connection | None,
     sqlite3.Connection | None,
+    sqlite3.Connection | None,
 ]:
-    """把调用方传入的连接元组归一为 `(mem, session, wiki)`，缺位返回 None。
+    """把调用方传入的连接元组归一为 `(mem, session, wiki, creds)`，缺位返回 None。
 
-    - 三元组 `(mem, session, wiki)`：v0.7 三库口径，原样返回
-    - 二元组 `(mem, wiki)`：v0.7 前旧口径，session 位留空由调用方兜底
-    - None / 空元组：三位全空
+    - 四元组 `(mem, session, wiki, creds)`：v0.8 四库口径（T-273），原样返回
+    - 三元组 `(mem, session, wiki)`：v0.7 三库口径，creds 位留空由调用方兜底
+      （空位 = 无 live 连接，凭据库含/不含交由文件存在性回退决定）
+    - 二元组 `(mem, wiki)`：v0.7 前旧口径，session / creds 位留空由调用方兜底
+    - None / 空元组：四位全空
     - 其余长度视为非法，抛 ValueError（早失败优于静默备错库）
     """
     if not conn_pair:
-        return None, None, None
+        return None, None, None, None
     conns = tuple(conn_pair)
+    if len(conns) == 4:
+        return conns[0], conns[1], conns[2], conns[3]
     if len(conns) == 3:
-        return conns[0], conns[1], conns[2]
+        return conns[0], conns[1], conns[2], None
     if len(conns) == 2:
         # 兼容旧二元组 (mem_conn, wiki_conn)
-        return conns[0], None, conns[1]
-    raise ValueError(f"conn_pair 长度必须为 2 或 3，得到 {len(conns)}")
+        return conns[0], None, conns[1], None
+    raise ValueError(f"conn_pair 长度必须为 2/3/4，得到 {len(conns)}")
+
+
+def _connect_credentials_conn(data_dir: str | Path) -> sqlite3.Connection:
+    """打开凭据库 credentials.db 连接（懒导入 credentials_dao 单一实现源，T-273）。
+
+    凭据模块以 ``sgme.data.credentials_dao.connect_credentials`` 为连接唯一出口
+    （跑结构就绪逻辑，与 db_mod.connect_* 同款「连接归 data 层」纪律）；本模块
+    只转发、不内联建库建表。函数内懒导入：凭据模块未合入/未启用时，备份链
+    其余功能零影响（本函数只被 restore 的凭据重开路径调用）。
+    """
+    from sgme.data import credentials_dao
+
+    return credentials_dao.connect_credentials(data_dir)
 
 def _now_iso() -> str:
     """UTC ISO 8601 时间戳。"""
@@ -170,21 +195,26 @@ def create_snapshot(
     data_dir: str | Path,
     dest_dir: str | Path,
     level: str = "incremental",
-    conn_pair: tuple[sqlite3.Connection, ...] | None = None,
+    conn_pair: tuple[sqlite3.Connection | None, ...] | None = None,
     id_prefix: str | None = None,
 ) -> dict:
     """创建一致快照。
 
     - 使用 SQLite backup API（conn.backup(dst)）做免停机一致快照
-    - level='incremental'：三库全量快照 + 原始层仅复制当日新增/变更文件
-    - level='full'/'monthly'：三库全量 + 原始层全量复制
+    - level='incremental'：四库全量快照 + 原始层仅复制当日新增/变更文件
+    - level='full'/'monthly'：四库全量 + 原始层全量复制
     - 返回 {snapshot_id, level, path, created_at, files}
     - snapshot_id 格式：{id_prefix}{level}_{YYYYMMDD_HHMMSS}_{uuid8}
 
-    conn_pair（v0.7 起语义扩展，保留旧参数名以兼容既有调用方）：
-    - 三元组 `(mem_conn, session_conn, wiki_conn)`：推荐口径
+    conn_pair（v0.8 起四库口径，保留旧参数名以兼容既有调用方）：
+    - 四元组 `(mem_conn, session_conn, wiki_conn, creds_conn)`：推荐口径
+    - 三元组 `(mem_conn, session_conn, wiki_conn)`：v0.7 口径，creds 位空走文件存在性回退
     - 二元组 `(mem_conn, wiki_conn)`：v0.7 前旧口径，session.db 走临时裸连接兜底
-    - None：三库全部走临时裸连接
+    - None：核心三库走临时裸连接，credentials.db 按文件存在性回退
+
+    credentials.db（T-273）：creds 连接为 None 且数据目录无该文件时**跳过**——
+    绝不用 sqlite3.connect 建空库，快照内不出现空 credentials.db；文件在则走
+    临时裸连接纳入（与每日调度同口径，含/不含语义单一实现源）。
     """
     data_dir = Path(data_dir)
     dest_dir = Path(dest_dir)
@@ -197,8 +227,8 @@ def create_snapshot(
     snap_dir = dest_dir / snapshot_id
     snap_dir.mkdir(parents=True, exist_ok=True)
 
-    # 三库一致快照（SQLite backup API）
-    mem_src, session_src, wiki_src = _resolve_snapshot_sources(conn_pair)
+    # 四库一致快照（SQLite backup API）
+    mem_src, session_src, wiki_src, creds_src = _resolve_snapshot_sources(conn_pair)
 
     # 未提供的连接走临时裸连接兜底
     # 源库直连（非 storage.connect_*）：backup API 需要原生 Connection，
@@ -215,10 +245,21 @@ def create_snapshot(
         wiki_src = sqlite3.connect(str(data_dir / "wiki.db"))
         own_conns.append(wiki_src)
 
+    # credentials.db（T-273）：无 live 连接时按文件存在性回退——
+    # 文件在 → 临时裸连接纳入；不在 → 跳过。绝不 sqlite3.connect 建空库
+    # （0 表空库会进快照并污染数据目录；含/不含语义与调度器同源）。
+    if creds_src is None:
+        creds_path = data_dir / "credentials.db"
+        if creds_path.exists():
+            creds_src = sqlite3.connect(str(creds_path))
+            own_conns.append(creds_src)
+
     try:
         _backup_db(mem_src, snap_dir / "memory.db")
         _backup_db(session_src, snap_dir / "session.db")
         _backup_db(wiki_src, snap_dir / "wiki.db")
+        if creds_src is not None:
+            _backup_db(creds_src, snap_dir / "credentials.db")
     finally:
         for c in own_conns:
             try:
@@ -406,7 +447,7 @@ def restore(
     snapshot_path: str | Path,
     data_dir: str | Path,
     raw_dir: str | Path,
-    conn_pair: tuple[sqlite3.Connection, ...] | None = None,
+    conn_pair: tuple[sqlite3.Connection | None, ...] | None = None,
 ) -> dict:
     """从快照恢复。
 
@@ -417,9 +458,10 @@ def restore(
     - 恢复后自动做溯源链校验（F-8，2026-09-24）：integrity = {ok, broken_count,
       broken_samples}；校验异常不影响恢复（integrity=None）
     - 返回 {restored: {...}, raw_restore: {mode}, integrity, pre_restore_snapshot}
-    - 结果中 _new_conns 字段包含重开后的三元组
-      `(mem_conn, session_conn, wiki_conn)`，供调用方更新引用
-    - conn_pair 语义同 `create_snapshot`（三元组优先，兼容旧二元组）
+    - 结果中 _new_conns 字段包含重开后的四元组
+      `(mem_conn, session_conn, wiki_conn, creds_conn)`，供调用方更新引用；
+      creds 位在「快照不含 credentials.db 且调用方未持有其连接」时为 None
+    - conn_pair 语义同 `create_snapshot`（四元组优先，兼容旧三/二元组）
     """
     snapshot_path = Path(snapshot_path)
     data_dir = Path(data_dir)
@@ -438,12 +480,16 @@ def restore(
     # 2. 关闭当前 conn
     if conn_pair:
         for c in conn_pair:
+            if c is None:  # 旧口径/未接线留空位（T-273：creds 位可为 None）
+                continue
             try:
                 c.close()
             except Exception:
                 pass
 
-    # 3. 用 backup API 把快照写回三库（B171：不再删 WAL、不再文件级覆盖）
+    # 3. 用 backup API 把快照写回各库（B171：不再删 WAL、不再文件级覆盖）
+    #    DB_FILENAMES 四库循环；快照内没有的库（如空库被跳过的 credentials.db）
+    #    由 src_db.exists() 守卫自然跳过
     restored_files: list[str] = []
     data_dir.mkdir(parents=True, exist_ok=True)
     for db_name in DB_FILENAMES:
@@ -470,10 +516,18 @@ def restore(
             raw_mode = "overwrite"
         restored_files.append("raw/")
 
-    # 5. 重开 conn（v0.7：三库）
+    # 5. 重开 conn（v0.7：三库；v0.8：+ 凭据库按需，T-273）
     new_mem = db_mod.connect_memory(data_dir)
     new_session = db_mod.connect_session(data_dir)
     new_wiki = db_mod.connect_wiki(data_dir)
+    # credentials 重开规则：快照含该库（已随之恢复）或调用方原先持有其连接
+    # （上面已关闭）→ 经 credentials_dao 重开；否则 None（凭据模块未启用时
+    # 备份链/恢复零影响）。连接与建库归 data 层，本模块不内联。
+    _, _, _, creds_src = _resolve_snapshot_sources(conn_pair)
+    if (snapshot_path / "credentials.db").exists() or creds_src is not None:
+        new_creds = _connect_credentials_conn(data_dir)
+    else:
+        new_creds = None
 
     # 6. 溯源链校验（F-8，2026-09-24 深度审查）：runbook 承诺的「恢复后自动校验」
     #    此前只写在文档里、代码未接——现补上；校验失败绝不影响恢复结果。
@@ -491,7 +545,7 @@ def restore(
         "raw_restore": {"mode": raw_mode},
         "integrity": integrity,
         "pre_restore_snapshot": pre_snap["snapshot_id"],
-        "_new_conns": (new_mem, new_session, new_wiki),
+        "_new_conns": (new_mem, new_session, new_wiki, new_creds),
     }
 
 

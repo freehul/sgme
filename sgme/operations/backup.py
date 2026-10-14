@@ -13,7 +13,7 @@ HTTP ``POST /v1/admin/backup/restore``    ``backup_restore``
 
 三段式结构（照抄 health.py 样板，复制时保持）：
 1. 常量/私有工具函数（_resolve_backup_dir / _parse_level，本模块内聚，不外泄）
-2. ``xxx(...) -> OperationResult`` 操作函数：显式接参（cfg + 三库连接），
+2. ``xxx(...) -> OperationResult`` 操作函数：显式接参（cfg + 库连接：三库 + 可选凭据库），
    返回**协议无关的信息超集**（HTTP 响应所需全部字段 + restore 的 _new_conns 传输字段）
 3. ``http_payload(data)`` 投影函数：把超集裁剪成 HTTP 历史契约形态
 
@@ -97,6 +97,7 @@ def backup_create(
     session_conn: sqlite3.Connection,
     wiki_conn: sqlite3.Connection,
     level: str = "incremental",
+    creds_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
     """创建快照（契约 §5 路径 /v1/admin/backup 与实现路径 /create 等价）。
 
@@ -109,6 +110,9 @@ def backup_create(
         session_conn: session.db 连接。
         wiki_conn: wiki.db 连接。
         level: 快照级别（full / monthly / incremental），默认 incremental。
+        creds_conn: 凭据库连接（T-273，可 None）——None 时是否纳入快照由
+            manager 按数据目录文件存在性回退（空库跳过）；入口层凭据模块
+            未启用/未接线时恒为 None，备份链其余行为零变化。
 
     Returns:
         OperationResult(ok=True)，data 为协议无关信息超集（即 HTTP 历史形态）：
@@ -125,7 +129,7 @@ def backup_create(
         data_dir=cfg["paths"]["data_dir"],
         dest_dir=backup_dir,
         level=level,
-        conn_pair=(mem_conn, session_conn, wiki_conn),
+        conn_pair=(mem_conn, session_conn, wiki_conn, creds_conn),
     )
 
     # 异地副本推送（失败不阻塞本地备份）
@@ -168,6 +172,7 @@ def backup_restore(
     session_conn: sqlite3.Connection,
     wiki_conn: sqlite3.Connection,
     snapshot_id: str,
+    creds_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
     """从快照恢复（恢复前自动再备份当前状态）。
 
@@ -175,12 +180,15 @@ def backup_restore(
         cfg: 运行时配置（backup.dir / paths.data_dir / RAW_DIR 经 sgme_config）。
         mem_conn / session_conn / wiki_conn: 当前三库连接（restore 会关闭它们）。
         snapshot_id: 快照目录名（backup.dir 下的子目录）。
+        creds_conn: 凭据库连接（T-273，可 None；非 None 时 restore 会关闭它）。
+            重开规则：快照含 credentials.db 或原持有其连接 → 重开，否则 None。
 
     Returns:
         OperationResult：
         - 成功：data 含 restored{files, snapshot_id} / raw_restore{mode} /
           integrity{ok, broken_count, broken_samples} / pre_restore_snapshot /
-          **_new_conns**（restore 重开的三库连接三元组——入口层用它更新
+          **_new_conns**（restore 重开的连接四元组
+          (mem, session, wiki, credentials)——入口层用它更新
           app.state 引用，属于协议无关超集里的**私有传输字段**，
           http_payload 投影时会剔除，绝不落入 HTTP 响应）。
         - snapshot_id 非法（含路径分隔符等特殊字符）：
@@ -203,7 +211,7 @@ def backup_restore(
         snapshot_path=snapshot_path,
         data_dir=cfg["paths"]["data_dir"],
         raw_dir=str(sgme_config.RAW_DIR),
-        conn_pair=(mem_conn, session_conn, wiki_conn),
+        conn_pair=(mem_conn, session_conn, wiki_conn, creds_conn),
     )
 
     return OperationResult.succeed(result)

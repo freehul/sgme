@@ -313,3 +313,50 @@ def test_lifespan_skips_backup_scheduler_when_disabled(app_env, tmp_path):
     app = _make_app(cfg, (mem_conn, session_conn, wiki_conn), tmp_path, enabled=False)
     with TestClient(app):
         assert bsch._scheduler_thread is None
+
+
+# ---------- T-273：credentials.db 纳入每日快照（空库跳过，单一实现源） ----------
+
+def test_run_backup_credentials_absent_skipped(backup_env):
+    """数据目录无 credentials.db → 每日快照不含该库，且不建空库（creds_conn 缺省 None）。"""
+    cfg, mem_conn, session_conn, wiki_conn = backup_env
+    data_dir = Path(cfg["paths"]["data_dir"])
+    assert not (data_dir / "credentials.db").exists()
+
+    result = bsch._run_backup(cfg, mem_conn, session_conn, wiki_conn)  # 第 4 参缺省
+
+    snap_dir = Path(result["path"])
+    assert (snap_dir / "memory.db").exists()
+    assert not (snap_dir / "credentials.db").exists()
+    assert not (data_dir / "credentials.db").exists(), "不得 sqlite3.connect 建空库"
+
+
+def test_run_backup_credentials_file_exists_included(backup_env):
+    """数据目录存在 credentials.db → 每日快照（creds_conn 缺省 None）含之（文件存在性回退）。"""
+    cfg, mem_conn, session_conn, wiki_conn = backup_env
+    data_dir = Path(cfg["paths"]["data_dir"])
+    conn = sqlite3.connect(str(data_dir / "credentials.db"))
+    try:
+        conn.execute("CREATE TABLE credentials(id INTEGER PRIMARY KEY)")  # 低熵假表
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = bsch._run_backup(cfg, mem_conn, session_conn, wiki_conn)  # 第 4 参缺省
+
+    assert (Path(result["path"]) / "credentials.db").exists()
+
+
+def test_run_backup_explicit_creds_conn(backup_env):
+    """显式第 4 参 creds_conn（live 连接）→ 快照含 credentials.db（与手动同口径）。"""
+    cfg, mem_conn, session_conn, wiki_conn = backup_env
+    data_dir = Path(cfg["paths"]["data_dir"])
+    creds = sqlite3.connect(str(data_dir / "credentials.db"))
+    try:
+        creds.execute("CREATE TABLE credentials(id INTEGER PRIMARY KEY)")
+        creds.commit()
+        result = bsch._run_backup(cfg, mem_conn, session_conn, wiki_conn, creds)
+    finally:
+        creds.close()
+
+    assert (Path(result["path"]) / "credentials.db").exists()
