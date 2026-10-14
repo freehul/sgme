@@ -40,6 +40,7 @@ pip install -e ".[dev]"
 | `SGME_PORT` | 监听端口 | `9910` |
 | `SGME_ADMIN_KEY` | 管理员 API Key | `dev-admin-key-change-me` |
 | `SGME_AGENT_KEY` | Agent API Key | `dev-agent-key-change-me` |
+| `SGME_CRED_KEY` | 凭据模块主密钥（Fernet，44 字符 base64；只引用变量名、不落盘）——**可选**，仅启用凭据模块时设置；缺失 / 非法 / 非空库探测失败 → 拒绝写路径（绝不自动生成） | （空） |
 | `SGME_BEARER_TOKEN` | Bearer 令牌（传输层鉴权，不设则旁路） | （空，旁路） |
 | `<PROVIDER>_API_KEY` | OpenAI 兼容提供商 API Key（示例：`AGNESAI_API_KEY`（agnes 主链免费）/ `SILICONFLOW_API_KEY`（硅基流动免费）/ `ZHIPU_API_KEY`（智谱免费兜底）；env 引用不落盘，见 `config/providers.yaml`） | （空） |
 | `SILICONFLOW_API_KEY` | 硅基流动 API Key（向量 embedding，`search.vector.api_key_env` 引用；BAAI/bge-m3 免费，实名认证后零费用） | （空） |
@@ -318,8 +319,9 @@ pytest tests/test_e2e_v04.py -q         # T17 端到端验收
 |---|---|
 | `data/memory.db` | 记忆池（memories/archive/tags/sources/registry/memory_vectors/signal_events/signal_subscribers） |
 | `data/wiki.db` | 场景库（raw_files 索引 + scenes/scene_memories/scene_versions） |
+| `data/credentials.db` | 凭据模块独立库（`credentials.enabled=true` 时创建；Fernet 密文 + 审计；主密钥不随快照 / 备份携带） |
 | `data/tier0_summary.json` | Tier0 LLM 摘要（含 generated_at，48h 过期） |
-| `data/agent_keys.json` | 注册 Agent Key 持久化（register 签发记录，重启不丢） |
+| `data/agent_keys.json` | 注册 Agent Key 持久化（register 签发记录，重启不丢）；**敏感等级：高**——明文访问凭据存底，不纳入 SGME 内部快照链，整目录备份会连带复制（存放面自行评估，见 §9.2） |
 | `data/backups/` | 备份快照目录（full_/incremental_/monthly_/pre_restore_ 前缀） |
 | `raw/sessions/*.md` | L0 原始会话文件 |
 | `raw/notes/*.md` | L0 原始笔记文件 |
@@ -403,7 +405,7 @@ server:
 SGME Server 同进程提供 MCP 出口（streamable HTTP transport，端口 9913），与 HTTP API（9910）功能等价。
 
 - 端点：`http://<host>:9913/mcp`
-- 工具集（41；权威清单以 `agent_onboarding` 返回的 ONBOARDING_TOOLS 为准，本行不再硬编码数量防漂移）：append / inject / search / memory_get / memory_reject / refine_trigger / refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding / wiki_page / wiki_search / wiki_pages / idea_add / demand_create / project_register / role_list / role_assemble / role_active_get / role_active_set / signal_pull / signal_claim / signal_ack / refine_status 等（以 agent_onboarding 返回的 ONBOARDING_TOOLS 为准）
+- 工具集（43；权威清单以 `agent_onboarding` 返回的 ONBOARDING_TOOLS 为准，本行不再硬编码数量防漂移）：append / inject / search / memory_get / memory_reject / refine_trigger / refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding / wiki_page / wiki_search / wiki_pages / idea_add / demand_create / project_register / role_list / role_assemble / role_active_get / role_active_set / signal_pull / signal_claim / signal_ack / refine_status 等（以 agent_onboarding 返回的 ONBOARDING_TOOLS 为准）
 - 连接即发现：接入后先调 `agent_onboarding` 工具获取版本 / 能力清单 / 快速上手指引（self-serve，无需人工配置）
 - 用途：SCSM 或其他 Agent 经标准 MCP 协议调用 SGME（跨机部署无需改配置文件，配置经 config_update 远程设置）
 - 端口可配：环境变量 `SGME_MCP_PORT`（默认 9913）；`SGME_MCP_DISABLED=1` 可关闭
@@ -444,6 +446,12 @@ asyncio.run(t())
 | POST | `/v1/admin/backup/create` | Admin | 创建快照（level=full/incremental/monthly） |
 | GET | `/v1/admin/backup/list` | Admin | 列出可用快照 |
 | POST | `/v1/admin/backup/restore` | Admin | 恢复快照（恢复前自动再备份） |
+| GET | `/v1/credentials` | Agent | 凭据列表（键名+元数据，不含值；EP-11，模块启用时） |
+| GET | `/v1/credentials/export` | Agent | 导出 dotenv 子集（原始值） |
+| GET | `/v1/credentials/{key}` | Agent | 取凭据单值 |
+| POST | `/v1/credentials` | Admin | 写入 / 更新凭据（已删键名 → 409） |
+| DELETE | `/v1/credentials/{key}` | Admin | 软删（幂等） |
+| POST | `/v1/credentials/{key}/restore` | Admin | 恢复（幂等） |
 
 *`/v1/health` 仅需 Bearer（若开启），不强制 X-API-Key。
 
@@ -474,6 +482,17 @@ print(r.json())   # {"status": "ok", "agent_id": "my-agent", "revoked": 1}
 ```
 
 **默认 dev key 限制**：`dev-agent-key-change-me` / `dev-admin-key-change-me` 仅限本机回环来源（127.0.0.1 / ::1 / localhost），非本机来源 403；远程部署必须换自定义 key（env 或 register 签发，见 §3）。
+
+## 9.2 agent 重签发流程（灾备重建）
+
+**恢复资产 = 快照 + `config/.env` 两件套**（密钥与密文分家）。「重签发」只针对**灾备重建**（新机 / 数据目录丢失）——**同机逻辑恢复**（`/v1/admin/backup/restore` 只写库 + raw）**不触发**重签发。
+
+1. 恢复数据（快照 + raw）与 `config/.env`；
+2. 逐 agent 重新签发：`POST /v1/admin/agents/register`（`agt_*` 明文**仅返回一次**——捕获后立即更新各机 env / 接入文件，不进对话、不进文档）；
+3. 冒烟验证：各机 `GET /v1/health` + 一次 `append` / `search` 回环；
+4. 名册核对：`GET /v1/admin/agents` 的 `key_ref`（脱敏版）对照「agent_id × 机器 × key 引用位置」清单。
+
+> **agent_keys.json（敏感等级：高）**：明文访问凭据存底——不纳入 SGME 内部快照链（与「主密钥不随快照」同纪律）；NAS 侧整目录 rsync / 文件站备份会**连带复制**该文件，「不纳入」仅覆盖 SGME 内部快照链，存放面需自行评估（见 §7 数据目录表注记）。
 
 ## 10. L2 场景聚合
 
@@ -652,11 +671,13 @@ for e in body["events"]:
 
 ### 14.1 快照分层
 
-| level | 说明 | 双库 | 原始层 |
+| level | 说明 | 数据库 | 原始层 |
 |---|---|---|---|
 | `full` | 全量快照 | 全量 | 全量 |
 | `incremental` | 日增量 | 全量（SQLite 无真增量） | 仅当日新增/变更文件 |
 | `monthly` | 月归档 | 全量 | 全量 |
+
+> 数据库范围：memory / session / wiki（启用时）/ credentials（启用时——按数据目录文件存在性纳入，不存在则跳过、绝不建空库）；**恢复资产 = 快照 + `config/.env`**（主密钥不随快照，见 §14.3 / §9.2）。
 
 ### 14.2 管理端点
 
@@ -673,6 +694,7 @@ for e in body["events"]:
 - **异地副本**：配置 `backup.remote_dir` 时推送副本到远程目录（NAS 挂载 / 异机），失败仅告警不阻塞
 - **冷归档**：`archive_raw_cold(days=90)` >90 天原始文件 zstd 压缩为只读冷归档
 - **恢复**：恢复前自动再备份当前状态（`pre_restore_` 前缀）；raw/ 按快照级别恢复（增量=合并复制，full/monthly=覆盖，见 §8 FAQ）；恢复后自动校验溯源链完整性（结果见响应 `integrity` 字段）
+- **凭据库（EP-11）**：credentials.db 按文件存在性纳入快照；**主密钥（`SGME_CRED_KEY`）不随快照携带**——恢复资产 = 快照 + `config/.env` 两件套；灾备重建后的重签发流程见 §9.2
 
 ### 14.4 配置
 
@@ -751,6 +773,8 @@ print(f"pre_restore: {r.json()['pre_restore_snapshot']}")
 }
 ```
 
+> `credentials.enabled=true` 时 `/v1/health` 另附只读字段 `credentials_ok`（凭据模块主密钥自检状态；false → 凭据写路径被拒绝）。
+
 ### 15.2 提炼停摆检测
 
 - `check_refinement_stalled`：`refined_at` 游标停滞超 24h → `stalled=true` + 产 `anomaly_warn`
@@ -790,6 +814,7 @@ curl $SGME_HTTP_BASE/v1/health
 - **首次启动**（空数据卷）自动把默认 `config/sgme.yaml` 物化到数据卷 `config/` 下（entrypoint 复制镜像内模板）
 - 默认含生产调优：`l15.prescreen.enabled: true` + `fallback: skip_conflict`（embed 不可达时跳过冲突检测直接 store，防全量召回烧钱）与 `search.vector`（siliconflow BAAI/bge-m3 1024 维免费托底）
 - 改配置：编辑数据卷 `config/sgme.yaml` 后重启容器；程序资源 `llm.yaml` / `providers.yaml` 始终读镜像内版本
+- **凭据模块（可选，EP-11）**：默认 `credentials.enabled: false`；启用 = 数据卷 `config/sgme.yaml` 打开该开关，并给容器注入 `SGME_CRED_KEY`（44 字符 Fernet key；生成：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`）后重启
 - 找数据卷：`docker volume ls` / `docker volume inspect <volume>`（compose 卷名形如 `sgme_sgme-data`）
 
 ### 16.4 升级
