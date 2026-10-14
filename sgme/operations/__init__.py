@@ -56,7 +56,8 @@ config.py      GET|POST /v1/config    / MCP config_get      sgme.config
 registry.py    GET|POST /v1/registry/*  —（HTTP 专属）       storage.memory_dao
 prompts.py     GET|POST /v1/admin/prompts/* —（HTTP 专属）   prompts.manager
 backup.py      POST|GET /v1/admin/backup/* —（HTTP 专属）    backup.manager（B30 裸连接例外）
-events.py      GET /v1/events/*       —（HTTP 专属）         data.signal_dao
+| events.py      GET /v1/events/*       —（HTTP 专属）         data.signal_dao
+| credentials.py GET|POST /v1/credentials* / MCP credential_* data.credentials_dao（独立库）
 =============  ==========================================  ==================
 
 注：T-8（2026-08-10）后 backup/events/registry/prompts 已全部下沉 operations 层。

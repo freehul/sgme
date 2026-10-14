@@ -316,6 +316,7 @@ def health(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
     cfg: dict[str, Any],
+    credentials_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
     """健康检查：LLM 可用性 + 提炼水位 + 队列深度 + 心跳。
 
@@ -349,6 +350,16 @@ def health(
 
     update = update_check.get_cached(SGME_VERSION, cfg)
 
+    # —— EP-11：凭据模块只读状态（None=模块未启用；探测异常归 False 不抛）——
+    credentials_ok: bool | None = None
+    if credentials_conn is not None:
+        try:
+            from sgme.operations import credentials as credentials_ops
+
+            credentials_ok = bool(credentials_ops.check_master_key(credentials_conn)["ok"])
+        except Exception:  # noqa: BLE001 —— health 永不抛
+            credentials_ok = False
+
     data: dict[str, Any] = {
         "status": "ok",
         "version": SGME_VERSION,
@@ -360,6 +371,8 @@ def health(
             "missing_keys": detect_missing_model_keys(cfg),
             "notice": model_keys_notice(cfg),
         },
+        # —— EP-11：凭据模块主密钥状态（None=模块未启用；只增不改既有字段）——
+        "credentials_ok": credentials_ok,
         # —— ST-34：自动更新检测结果（只增不改既有字段）——
         "update_available": update["update_available"],
         "latest_version": update["latest_version"],
@@ -413,6 +426,8 @@ def http_payload(data: dict[str, Any]) -> dict[str, Any]:
         "update_error": data["update_error"],
         # T-215 P1：接入指引指针（只增不改，追加末尾）
         "onboarding": data.get("onboarding"),
+        # EP-11：凭据模块主密钥状态（只增不改，追加末尾）
+        "credentials_ok": data.get("credentials_ok"),
     }
 
 

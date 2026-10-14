@@ -37,7 +37,14 @@ def _now_iso() -> str:
 # 明文密钥值模式：常见 API key 前缀 + 12+ 位字母数字/连字符/下划线
 # B196/F-6（2026-09-24）：补 agt_（register_agent 签发的注册 key）与 sgme_ 通用前缀——
 # 原白名单漏 agt_* 形态，注册 Agent Key 可原样写进原始层（已实测复现）。
-_SECRET_PATTERN = re.compile(r"(?:sk-|ark-|agt_|sgme_admin_|sgme_agent_|sgme_)[A-Za-z0-9_-]{12,}")
+# T-275（EP-11 §八，2026-10-15）：与常见凭据前缀对齐——GitHub（ghp_/gho_/ghs_/ghu_/
+# github_pat_）、GitLab（glpat-）、Slack（xoxb-/xoxp-/xoxa-/xoxr-/xoxs-）、
+# AWS（AKIA/ASIA）、Google（AIza）、PyPI（pypi-）——此前实测这些形态不进擦除表。
+_SECRET_PATTERN = re.compile(
+    r"(?:sk-|ark-|agt_|sgme_admin_|sgme_agent_|sgme_"
+    r"|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xoxb-|xoxp-|xoxa-|xoxr-|xoxs-"
+    r"|AKIA|ASIA|AIza|pypi-)[A-Za-z0-9_-]{12,}"
+)
 
 # 通用兜底（B196/F-6，2026-09-24 用户拍板带上）：keyword[:=]value 形态的密钥。
 # 阈值从严（值 ≥16 位、仅字母数字与 _-、两侧引号可选）——只擦值不擦变量名/正文描述，

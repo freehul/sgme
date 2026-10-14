@@ -614,6 +614,8 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "skill_put", "description": "写入/覆盖技能（ST-36 M3 写侧）：content 为 SKILL.md 全文（自动解析 frontmatter）；需管理员 Key"},
     {"name": "skill_delete", "description": "删除技能（ST-36 M3 写侧）：默认软删；hard=True 物理删；有入向 uses 引用需 force=True"},
     {"name": "skill_rename", "description": "改名（ST-36 M3 写侧，墓碑制）：写新名副本+旧位置留 superseded_by 墓碑+登记"},
+    {"name": "credential_list", "description": "凭据列表（EP-11）：键名+元数据，不含值；需凭据模块已启用"},
+    {"name": "credential_get", "description": "取凭据单值（EP-11）：⚠️ 值不得进入对话正文——标准姿势 sgme-cred run 注入；仅限必须显式查看场景"},
 )
 
 
@@ -694,6 +696,7 @@ def build_mcp_server():
             "记忆查看/纠错（memory_get/memory_reject/memory_unreject）、"
             "提炼（refine_trigger/refine_batch/refine_status）、"
             "统计（stats）、健康检查（health）、配置读写（config_get/config_update）、"
+            "凭据读取（credential_get/credential_list，值不得进入对话正文）、"
             "创意/待办/项目管理（idea_add/demand_create/project_register，2026-08-13："
             "创意由用户主动提出、需求池改为跨项目待办池、项目由用户主动立项）、"
             "连接即发现（agent_onboarding）。"
@@ -1772,6 +1775,43 @@ def build_mcp_server():
             ensure_ascii=False,
         )
 
+    # ---------- 凭据模块（EP-11：读侧两工具） ----------
+
+    @mcp.tool()
+    @tool
+    def credential_list() -> str:
+        """凭据列表（EP-11）：键名+元数据，不含值；需凭据模块已启用（credentials.enabled）。"""
+        import json
+
+        from sgme.operations.credentials import list_credentials as list_credentials_operation
+
+        cfg = _app_state.get("cfg") or {}
+        if not (cfg.get("credentials") or {}).get("enabled", False):
+            return json.dumps({"error": "凭据模块未启用（credentials.enabled=false）"}, ensure_ascii=False)
+        conn = _app_state.get("credentials_conn")
+        if conn is None:
+            return json.dumps({"error": "凭据库连接不可用"}, ensure_ascii=False)
+        data = _op_json(list_credentials_operation, conn)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def credential_get(name: str, ctx: Context | None = None) -> str:
+        """取凭据单值（EP-11）。⚠️ 值不得进入对话正文：标准姿势是客户端注入（sgme-cred run，值不落盘不进对话）；本工具仅限「必须显式查看」场景，取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。"""
+        import json
+
+        from sgme.operations.credentials import get_credential as get_credential_operation
+
+        cfg = _app_state.get("cfg") or {}
+        if not (cfg.get("credentials") or {}).get("enabled", False):
+            return json.dumps({"error": "凭据模块未启用（credentials.enabled=false）"}, ensure_ascii=False)
+        conn = _app_state.get("credentials_conn")
+        if conn is None:
+            return json.dumps({"error": "凭据库连接不可用"}, ensure_ascii=False)
+        caller = _usage_caller(ctx)
+        data = _op_json(get_credential_operation, conn, name, actor=f"{caller}(agent,mcp)")
+        return json.dumps(data, ensure_ascii=False)
+
     # ---------- 连接即发现（ST-23①） ----------
 
     @mcp.tool()
@@ -1882,6 +1922,8 @@ def mount_mcp(app, start_server: bool = True):
         "wiki_conn": app.state.wiki_conn,
         # T-112：技能索引库（模块禁用时为 None，MCP 工具自动回退内存索引）
         "skills_conn": getattr(app.state, "skills_conn", None),
+        # EP-11：凭据库（模块禁用时为 None，凭据工具返回友好错误）
+        "credentials_conn": getattr(app.state, "credentials_conn", None),
         "key_store": app.state.key_store,
         # ST-55 / T-263：安全实例与 HTTP 侧共享同一对象（per-key 双入口同预算、
         # 封禁互可见，S7）；T-262 起由 create_app 创建，旧调用方缺属性时回落 None

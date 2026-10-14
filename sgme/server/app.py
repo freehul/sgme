@@ -762,10 +762,11 @@ def create_app(
     bearer_token: str | None = None,
     agent_store_path: str | Path | None = None,
     start_background_tasks: bool = False,
+    credentials_conn: sqlite3.Connection | None = None,
 ) -> FastAPI:
     """创建 FastAPI 应用实例。
 
-    测试可注入 cfg/mem_conn/session_conn/wiki_conn 实现隔离（v0.7 三库）；
+    测试可注入 cfg/mem_conn/session_conn/wiki_conn/credentials_conn 实现隔离（v0.7 三库；EP-11 加凭据库）；
     生产由 __main__ 调用并自动初始化。
     start_background_tasks=True 时启动 Tier0 每日摘要 + 心跳定时任务
     （生产模式），并按 refine.batch_scan.enabled 拉起 Batch 兜底提炼定时器
@@ -804,6 +805,14 @@ def create_app(
         except Exception as e:  # 建库失败不阻断启动，技能模块降级为内存索引
             logger.warning("skills.db 连接失败（技能模块降级为内存索引）: %s", e)
             skills_conn = None
+
+    # credentials.db（EP-11 凭据模块）：仅当模块启用时才连库（与 skills 同款边界；
+    # 禁用时核心零影响——不产生新库文件、路由不挂载）。连接失败**不降级**：
+    # 凭据是关键基础设施，启动即失败暴露问题（绝不明文兜底、绝不静默降级）。
+    if credentials_conn is None and (cfg.get("credentials") or {}).get("enabled", False):
+        from sgme.data import credentials_dao
+
+        credentials_conn = credentials_dao.connect_credentials(d)
 
     # 启动时导入注册表（幂等；YAML 为种子，DB 为运行时真相）
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
@@ -1036,11 +1045,30 @@ def create_app(
     app.state.session_conn = session_conn
     app.state.wiki_conn = wiki_conn
     app.state.skills_conn = skills_conn  # T-112：技能模块禁用时为 None（读侧自动回退内存索引）
+    app.state.credentials_conn = credentials_conn  # EP-11：凭据模块禁用时为 None
     app.state.data_dir = d  # 调度器线程自建独立连接的数据库目录（2026-08-11 连接隔离修复）
     app.state.own_conns = own_conns
     app.state.key_store = store
     app.state.bearer_token = bearer
     app.state.started_at = _now_iso()
+
+    # 凭据模块启动自检（EP-11 §三，K1）：主密钥缺失/非法/非空库探测失败 → 明确告警
+    # （不带密文/明文）；空库视为通过。写路径门禁在 operations 层逐次复核。
+    if credentials_conn is not None:
+        try:
+            from sgme.operations import credentials as credentials_ops
+
+            _ck = credentials_ops.check_master_key(credentials_conn)
+            if _ck["ok"]:
+                logger.info("凭据模块自检通过（主密钥就绪）")
+            else:
+                logger.warning(
+                    "凭据主密钥自检未通过（state=%s）——凭据写路径将拒绝；"
+                    "请在 config/.env 配置合法的 SGME_CRED_KEY（Fernet 44 字符）",
+                    _ck["state"],
+                )
+        except Exception as _e:  # noqa: BLE001 —— 自检失败不阻断启动（写路径另有门禁）
+            logger.warning("凭据模块自检异常（不影响启动）: %s", _e)
 
     # ---- 安全状态与审计（ST-55 / T-262，方案 §2.2/§2.5）----
     # HTTP/MCP 两入口共享同一实例（per-key 预算双入口同额、封禁互可见，S7）。
@@ -1109,6 +1137,11 @@ def create_app(
     if cfg.get("skills", {}).get("enabled", True):
         from sgme.server.routes_skills import router as skills_router
         app.include_router(skills_router)
+
+    # credentials 凭据模块（EP-11；credentials.enabled=false 时不挂载 → 404）
+    if cfg.get("credentials", {}).get("enabled", False):
+        from sgme.server.routes_credentials import router as credentials_router
+        app.include_router(credentials_router)
 
     # ---- WebUI 自动填充密钥端点（2026-08-13 用户需求）----
     # 仅限**本机回环来源**可用（不要求 key 鉴权——前端首次打开无 key 无法鉴权，

@@ -105,6 +105,12 @@ DEFAULT_WIKI_CONFIG = {
     "enabled": True,
 }
 
+# 凭据模块默认兜底（EP-11 T-272）：**默认关**——安全模块 opt-in，升级不惊扰
+# 存量部署；启用后创建 data/credentials.db 并挂载 /v1/credentials（config/sgme.yaml 开关）
+DEFAULT_CREDENTIALS_CONFIG = {
+    "enabled": False,
+}
+
 DEFAULT_SKILLS_HUB_CONFIG = {
     "enabled": False,
     "path": "",
@@ -842,6 +848,7 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
             "care": _merge_care_config(None),
             "update_check": dict(DEFAULT_UPDATE_CHECK_CONFIG),
             "scene_gc": _merge_scene_gc_config(None),
+            "credentials": _merge_credentials_config(None),
         }
     raw = _read_yaml(cfg_path)
     if not isinstance(raw, dict):
@@ -874,6 +881,8 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
     raw["update_check"] = _merge_update_check_config(raw.get("update_check"))
     # scene_gc 段合并默认值（T-97 场景主动治理）
     raw["scene_gc"] = _merge_scene_gc_config(raw.get("scene_gc"))
+    # credentials 段合并默认值（EP-11 凭据模块）
+    raw["credentials"] = _merge_credentials_config(raw.get("credentials"))
     return raw
 
 
@@ -890,6 +899,14 @@ def _merge_care_config(user_cfg: dict | None) -> dict:
     base = dict(DEFAULT_CARE_CONFIG)
     if isinstance(user_cfg, dict):
         base.update({k: v for k, v in user_cfg.items() if v is not None})
+    return base
+
+
+def _merge_credentials_config(user_cfg: dict | None) -> dict:
+    """合并 credentials 段默认值与用户配置（EP-11；enabled 仅接受 bool，非法回退默认）。"""
+    base = dict(DEFAULT_CREDENTIALS_CONFIG)
+    if isinstance(user_cfg, dict) and isinstance(user_cfg.get("enabled"), bool):
+        base["enabled"] = user_cfg["enabled"]
     return base
 
 
@@ -1294,6 +1311,7 @@ def load_config(
         "server": sgme_cfg.get("server", dict(DEFAULT_SERVER_CONFIG)),
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
+        "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
         "wiki": sgme_cfg.get("wiki", dict(DEFAULT_WIKI_CONFIG)),
         "skills": sgme_cfg.get("skills", {"enabled": False}),
         "skills_hub": _merge_skills_hub_config(sgme_cfg.get("skills_hub")),

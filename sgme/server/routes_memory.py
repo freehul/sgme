@@ -330,5 +330,8 @@ def health_check(request: Request):
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     session_conn: sqlite3.Connection = request.app.state.session_conn
 
-    data = run_operation(health_operation, mem_conn, session_conn, cfg)
+    credentials_conn = getattr(request.app.state, "credentials_conn", None)
+    data = run_operation(
+        health_operation, mem_conn, session_conn, cfg, credentials_conn=credentials_conn
+    )
     return health_http_payload(data)

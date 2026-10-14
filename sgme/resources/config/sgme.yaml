@@ -146,3 +146,11 @@ server:
     refine_batch: 2
     wiki_evolve_trigger: 5
   security_log_keep_days: 90       # 审计保留天数；0=不清理
+
+# EP-11（T-272）：凭据模块（第四模块）——跨机共享「重要 KEY」（独立库 credentials.db，
+# 服务端 Fernet 加密；读=全部已注册 agent 平级、写/删/恢复=仅 admin；软删可恢复）。
+# 默认关（安全模块 opt-in）：启用后创建 data/credentials.db 并挂载 /v1/credentials。
+# ⚠️ 启用前须在可写覆盖层 config/.env 配置 SGME_CRED_KEY（Fernet 44 字符）；缺失/格式
+# 非法/与库内密文不匹配时**写路径拒绝**（绝不自动生成、绝不明文兜底）。
+credentials:
+  enabled: false
