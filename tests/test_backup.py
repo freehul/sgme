@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from pathlib import Path
 
@@ -79,6 +80,16 @@ def _set_old_mtime(path: Path, days_ago: int) -> None:
     os.utime(path, (old_time, old_time))
 
 
+def _make_credentials_db(path: Path) -> None:
+    """建一个最小 credentials.db（低熵假值，仅验证备份链文件存在性回退，T-273）。"""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE credentials(id INTEGER PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ---------- create_snapshot ----------
 
 def test_create_snapshot_full(data_dir, backup_dir, raw_dir, conns):
@@ -108,7 +119,6 @@ def test_create_snapshot_full(data_dir, backup_dir, raw_dir, conns):
     assert any("session1.md" in f for f in result["files"])
 
     # 快照的 memory.db 应为有效 SQLite 库（可读 schema_versions）
-    import sqlite3
     chk = sqlite3.connect(str(snap_dir / "memory.db"))
     tables = [
         r[0] for r in chk.execute(
@@ -296,7 +306,7 @@ def test_restore_recovers(data_dir, backup_dir, raw_dir, conns, cfg):
     )
 
     # 用新 conn 验证：只应有 "original memory"，不应有 "after snapshot"
-    new_mem, new_session, new_wiki = result["_new_conns"]
+    new_mem, new_session, new_wiki, new_creds = result["_new_conns"]  # T-273：四元组
     try:
         rows = new_mem.execute("SELECT content FROM memories").fetchall()
         contents = [r["content"] for r in rows]
@@ -304,6 +314,8 @@ def test_restore_recovers(data_dir, backup_dir, raw_dir, conns, cfg):
         assert "after snapshot" not in contents
         # raw_files 已迁入 session.db，恢复后同样可读
         new_session.execute("SELECT COUNT(*) FROM raw_files").fetchone()
+        # 快照无凭据库、入参未持 creds 连接 → 不重开（位为 None）
+        assert new_creds is None
     finally:
         new_mem.close()
         new_session.close()
@@ -485,6 +497,8 @@ def test_backup_restore_missing_snapshot_404(client):
 
 def _close_new_conns(result):
     for c in result.get("_new_conns") or ():
+        if c is None:  # T-273：四元组凭据位可为 None
+            continue
         try:
             c.close()
         except Exception:
@@ -555,3 +569,173 @@ def test_restore_includes_integrity_report(data_dir, backup_dir, raw_dir, conns)
         assert integrity["ok"] is True  # 空库无孤儿引用
     finally:
         _close_new_conns(result)
+
+
+# ---------- T-273：credentials.db 纳入备份链（空库跳过 / 存在性回退 / 四元组） ----------
+
+def test_create_snapshot_credentials_absent_skipped(data_dir, backup_dir, raw_dir, conns):
+    """空库跳过：无 credentials.db → 快照成功但不含该库，且源目录不产生空库（T-273）。"""
+    result = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="full", conn_pair=conns,
+    )
+
+    snap_dir = Path(result["path"])
+    assert not (snap_dir / "credentials.db").exists()
+    assert "credentials.db" not in result["files"]
+    assert not (data_dir / "credentials.db").exists(), "不得 sqlite3.connect 建空库"
+
+
+def test_create_snapshot_credentials_file_fallback(data_dir, backup_dir, raw_dir, conns):
+    """文件存在性回退：无 live 连接（旧三元组入参）但文件在 → 快照含 credentials.db。"""
+    _make_credentials_db(data_dir / "credentials.db")
+
+    result = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="full", conn_pair=conns,
+    )
+
+    snap_dir = Path(result["path"])
+    assert (snap_dir / "credentials.db").exists()
+    assert "credentials.db" in result["files"]
+    # 快照内为有效 SQLite 库（可读假表）
+    chk = sqlite3.connect(str(snap_dir / "credentials.db"))
+    try:
+        names = [
+            r[0] for r in chk.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
+    finally:
+        chk.close()
+    assert "credentials" in names
+
+
+def test_create_snapshot_credentials_live_conn(data_dir, backup_dir, raw_dir, conns):
+    """四元组口径：live creds 连接传在第 4 位 → 快照含 credentials.db（T-273）。"""
+    creds = sqlite3.connect(str(data_dir / "credentials.db"))
+    try:
+        creds.execute("CREATE TABLE credentials(id INTEGER PRIMARY KEY)")
+        creds.commit()
+        result = manager.create_snapshot(
+            data_dir=data_dir, dest_dir=backup_dir, level="full",
+            conn_pair=conns + (creds,),
+        )
+    finally:
+        creds.close()
+
+    snap_dir = Path(result["path"])
+    assert (snap_dir / "credentials.db").exists()
+    assert "credentials.db" in result["files"]
+
+
+def test_resolve_snapshot_sources_four_tuple_and_legacy():
+    """连接元组归一：len4 / len3 / len2 / None / 非法长度（T-273 兼容口径）。"""
+    a, b, c, d = object(), object(), object(), object()
+
+    assert manager._resolve_snapshot_sources((a, b, c, d)) == (a, b, c, d)
+    assert manager._resolve_snapshot_sources((a, b, c)) == (a, b, c, None)
+    assert manager._resolve_snapshot_sources((a, b)) == (a, None, b, None)
+    assert manager._resolve_snapshot_sources(None) == (None, None, None, None)
+
+    with pytest.raises(ValueError) as ei:
+        manager._resolve_snapshot_sources((a,))
+    assert "2/3/4" in str(ei.value)
+
+
+def test_create_snapshot_legacy_two_tuple_compatible(data_dir, backup_dir, raw_dir, conns):
+    """旧二元组 (mem, wiki) 仍可快照：session 走临时裸连接、凭据库跳过（T-273）。"""
+    mem, session, wiki = conns
+
+    result = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="full", conn_pair=(mem, wiki),
+    )
+
+    snap_dir = Path(result["path"])
+    assert (snap_dir / "memory.db").exists()
+    assert (snap_dir / "session.db").exists()  # 临时裸连接读 data_dir/session.db
+    assert (snap_dir / "wiki.db").exists()
+    assert not (snap_dir / "credentials.db").exists()
+
+
+def test_restore_new_conns_four_tuple_no_credentials(data_dir, backup_dir, raw_dir, conns, monkeypatch):
+    """restore：快照无凭据库且入参未持连接 → _new_conns 四元组、位为 None、不调重开助手。"""
+    def _boom(_data_dir):  # pragma: no cover - 走到即契约失败
+        raise AssertionError("快照无凭据库且未持 creds 连接时不应重开 credentials 连接")
+
+    monkeypatch.setattr(manager, "_connect_credentials_conn", _boom)
+
+    snap = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="full", conn_pair=conns,
+    )
+    result = manager.restore(
+        snapshot_path=snap["path"], data_dir=data_dir, raw_dir=raw_dir, conn_pair=conns,
+    )
+
+    new_conns = result["_new_conns"]
+    assert isinstance(new_conns, tuple) and len(new_conns) == 4
+    new_mem, new_session, new_wiki, new_creds = new_conns
+    assert new_creds is None
+    assert "credentials.db" not in result["restored"]["files"]
+    new_mem.close()
+    new_session.close()
+    new_wiki.close()
+
+
+def test_restore_new_conns_reconnects_credentials(data_dir, backup_dir, raw_dir, conns, monkeypatch):
+    """restore：快照含 credentials.db → 调重开助手并装配其返回值（打桩，dao 未合入）。"""
+    _make_credentials_db(data_dir / "credentials.db")
+    sentinel = object()
+    calls: list[Path] = []
+
+    def _fake_connect(d):
+        calls.append(Path(d))
+        return sentinel
+
+    monkeypatch.setattr(manager, "_connect_credentials_conn", _fake_connect)
+
+    snap = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="full", conn_pair=conns,
+    )
+    assert (Path(snap["path"]) / "credentials.db").exists()  # 前置：文件回退已纳入
+
+    result = manager.restore(
+        snapshot_path=snap["path"], data_dir=data_dir, raw_dir=raw_dir, conn_pair=conns,
+    )
+
+    new_mem, new_session, new_wiki, new_creds = result["_new_conns"]
+    assert new_creds is sentinel
+    assert calls == [data_dir]
+    assert "credentials.db" in result["restored"]["files"]
+    new_mem.close()
+    new_session.close()
+    new_wiki.close()
+
+
+def test_restore_reconnects_when_creds_conn_in_pair(data_dir, backup_dir, raw_dir, conns, monkeypatch):
+    """restore：快照无凭据库但入参持 creds 连接（已被关闭）→ 同样重开（规则二选一）。"""
+    snap = manager.create_snapshot(
+        data_dir=data_dir, dest_dir=backup_dir, level="full", conn_pair=conns,
+    )
+    assert not (Path(snap["path"]) / "credentials.db").exists()  # 前置：快照不含凭据库
+
+    creds_live = sqlite3.connect(str(data_dir / "credentials.db"))
+    sentinel = object()
+    calls: list[Path] = []
+
+    def _fake_connect(d):
+        calls.append(Path(d))
+        return sentinel
+
+    monkeypatch.setattr(manager, "_connect_credentials_conn", _fake_connect)
+
+    result = manager.restore(
+        snapshot_path=snap["path"], data_dir=data_dir, raw_dir=raw_dir,
+        conn_pair=conns + (creds_live,),
+    )
+
+    new_mem, new_session, new_wiki, new_creds = result["_new_conns"]
+    assert new_creds is sentinel
+    assert calls == [data_dir]
+    assert "credentials.db" not in result["restored"]["files"]  # 快照无该库 → 不恢复
+    new_mem.close()
+    new_session.close()
+    new_wiki.close()

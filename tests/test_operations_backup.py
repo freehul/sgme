@@ -18,6 +18,7 @@ restore 相关测试结束后必须显式关闭 app.state 中的新连接，
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -127,9 +128,11 @@ ADMIN_HEADERS = {"X-API-Key": "test-admin-key"}
 AGENT_HEADERS = {"X-API-Key": "test-agent-key"}
 
 
-def _close_conns(*conns: sqlite3.Connection) -> None:
-    """关闭 restore 重开的新连接（防 Windows tmp_path 清理撞文件锁）。"""
+def _close_conns(*conns: sqlite3.Connection | None) -> None:
+    """关闭 restore 重开的新连接（防 Windows tmp_path 清理撞文件锁；None 位跳过）。"""
     for c in conns:
+        if c is None:  # restore 四元组里凭据位可为 None（T-273）
+            continue
         try:
             c.close()
         except Exception:
@@ -181,7 +184,11 @@ def test_backup_restore_returns_operation_result_ok(conns, cfg):
     assert isinstance(res, OperationResult)
     assert res.ok is True
     assert res.data["pre_restore_snapshot"].startswith("pre_restore_")
-    _close_conns(*res.data["_new_conns"])
+    # T-273：_new_conns 四元组（mem / session / wiki / credentials；凭据位可为 None）
+    new_conns = res.data["_new_conns"]
+    assert isinstance(new_conns, tuple) and len(new_conns) == 4
+    assert new_conns[3] is None  # 快照无凭据库、未传 creds 连接
+    _close_conns(*new_conns)
 
 
 # ---------- 2. data 超集字段完整（HTTP 形态，键序与改造前一致） ----------
@@ -246,6 +253,9 @@ def test_restore_data_http_shape_complete(conns, cfg, raw_dir):
     assert data["restored"]["snapshot_id"] == snap["snapshot_id"]
     assert set(data["restored"]["files"]) >= {"memory.db", "session.db", "wiki.db", "raw/"}
     assert data["pre_restore_snapshot"].startswith("pre_restore_")
+    # T-273：_new_conns 四元组（快照无凭据库 → 凭据位为 None）
+    assert len(data["_new_conns"]) == 4
+    assert data["_new_conns"][3] is None
     # 投影后 _new_conns 必须被剔除（入口层私有传输字段不进响应）
     assert "_new_conns" not in http_payload(data)
     _close_conns(*data["_new_conns"])
@@ -394,6 +404,8 @@ def test_http_restore_contract_unchanged(client, app, raw_dir):
     # Assert：入口层职责——app.state 连接已交换（旧 conn 已被 restore 关闭）
     assert app.state.mem_conn is not old_mem_conn
     assert app.state.mem_conn.execute("SELECT COUNT(*) FROM memories").fetchone() is not None
+    # T-273：四目标解包（快照无凭据库 → credentials 位为 None）
+    assert app.state.credentials_conn is None
 
     # 清理新连接（防 Windows tmp_path 清理撞文件锁）
     _close_conns(app.state.mem_conn, app.state.session_conn, app.state.wiki_conn)
@@ -476,3 +488,51 @@ def test_resolve_backup_dir_relative_based_on_user_root(tmp_path, monkeypatch):
 
     assert p == root / "rel" / "backups"
     assert p.is_dir()  # 落盘前 mkdir 行为保留
+
+
+# ---------- 8. T-273：凭据库连接透传（四元组口径） ----------
+
+def test_create_credentials_conn_passthrough(conns, cfg):
+    """operations.backup_create(creds_conn=...) → conn_pair 四元组透传，快照含凭据库。"""
+    mem_conn, session_conn, wiki_conn = conns
+    data_dir = Path(cfg["paths"]["data_dir"])
+    creds_conn = sqlite3.connect(str(data_dir / "credentials.db"))
+    creds_conn.execute("CREATE TABLE credentials(id INTEGER PRIMARY KEY)")  # 低熵假表
+    creds_conn.commit()
+    try:
+        data = op_backup_create(
+            cfg, mem_conn, session_conn, wiki_conn, level="full", creds_conn=creds_conn,
+        ).data
+    finally:
+        creds_conn.close()
+
+    assert (Path(data["path"]) / "credentials.db").exists()
+    assert "credentials.db" in data["files"]
+
+
+def test_restore_credentials_reconnect_passthrough(conns, cfg, monkeypatch):
+    """operations.backup_restore → 快照含凭据库则经重开助手装配 _new_conns[3]（打桩）。"""
+    from sgme.backup import manager as manager_mod
+
+    mem_conn, session_conn, wiki_conn = conns
+    data_dir = Path(cfg["paths"]["data_dir"])
+    # 造含凭据库的快照（文件存在性回退 → 快照含之）
+    seed = sqlite3.connect(str(data_dir / "credentials.db"))
+    seed.execute("CREATE TABLE credentials(id INTEGER PRIMARY KEY)")
+    seed.commit()
+    seed.close()
+    snap = op_backup_create(cfg, mem_conn, session_conn, wiki_conn, level="full").data
+    assert (Path(snap["path"]) / "credentials.db").exists()
+
+    sentinel = object()  # 打桩凭据重开助手（credentials_dao 随凭据模块合入）
+    monkeypatch.setattr(manager_mod, "_connect_credentials_conn", lambda d: sentinel)
+
+    res = op_backup_restore(
+        cfg, mem_conn, session_conn, wiki_conn, snapshot_id=snap["snapshot_id"],
+    )
+
+    assert res.ok is True
+    new_conns = res.data["_new_conns"]
+    assert isinstance(new_conns, tuple) and len(new_conns) == 4
+    assert new_conns[3] is sentinel
+    _close_conns(new_conns[0], new_conns[1], new_conns[2])
