@@ -30,7 +30,7 @@
 - `prompts/` —— 可整段复制给 AI 的提示词（每份含中文 + English 两个复制块）。
 - `selfcheck.md` —— 自检清单（**八项**：发现/连通/写入/检索/提炼/技能/**自我配置**/**适配器**）与常见失败处置。
 - 官方适配器经技能库自助获取：`skill_search("adapter")` → 同机 `skill_materialize` 落盘（落盘在服务端文件系统）/ 跨机 `skill_get` 取正文自行写盘（完整包随附文件暂无远程通道，需要时如实报告主人；详见 `agent-onboarding.md` §6.1）。
-- **能力平面**：SGME 核心是 `memory / skills / wiki`；只安装宿主适配器，普通专业 skill 按需检索，不批量复制到本地。
+- **能力平面**：SGME 核心是 `memory / skills / wiki`（另有可选凭据模块 `credentials`——跨机共享重要 KEY，标准姿势 `sgme-cred run` 注入）；只安装宿主适配器，普通专业 skill 按需检索，不批量复制到本地。
 - **内置开发能力**：技能库已纳入 `coding-workflow`、`sgme-development`、`sgme-adapter-development`、`sgme-docs-authoring`、`sgme-operations` 和 `skill-governance`；编码、运维和技能治理先从 SGME 检索，不要求宿主另装一套同名 skill。
 
 ## 三条原则
@@ -53,7 +53,7 @@
 
 **Task cards**: `01-install` (deploy/discover → health 200 + version) → `02-connect` (connect & verify — dedicated key minting + admin key sync included; generic / Hermes / DSH → dedicated key minted + 4 green checks) → `03-init-agent-files` (initialize SOUL / USER / MEMORY / AGENTS → files created + one read/write round-trip) → `04-daily-loop` (retrieve / append / refine / skills → checklist).
 
-**Capability plane**: SGME's three core modules are `memory / skills / wiki`. Install only the host adapter; retrieve ordinary specialist skills from SGME on demand instead of copying many skills locally.
+**Capability plane**: SGME's three core modules are `memory / skills / wiki` (plus an optional `credentials` module for cross-machine KEY sharing, injected via `sgme-cred run`). Install only the host adapter; retrieve ordinary specialist skills from SGME on demand instead of copying many skills locally.
 
 **Files**: `agent-onboarding.md` (protocol source of truth), `免费模型Key申请指南.md` (free API keys), `prompts/` (copy-paste prompts), `selfcheck.md` (post-setup checks). **Online (v1.7.2+, no key)**: `GET /v1/onboarding/docs` (index) / `GET /v1/onboarding/docs/<file>` (full text).
 

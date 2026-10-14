@@ -81,7 +81,7 @@ asyncio.run(main())
 
 ## 3. 连接即发现：agent_onboarding 工具
 
-连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 41 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
+连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 43 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
 
 **自助配置（2026-08-13，接入完成标准之一）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v2`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
 
@@ -94,7 +94,7 @@ asyncio.run(main())
 >
 > **完整「接入完成」定义见 §6.1（八项，与 `selfcheck.md` 同口径）**——自我配置只是其中第 ⑦ 项，不是全部。
 
-**MCP 41 工具清单与用途**（与 `ONBOARDING_TOOLS` 清单程序化对账一致；PR#7 起逐步扩充，含三池/信号/角色/技能九工具）：
+**MCP 43 工具清单与用途**（与 `ONBOARDING_TOOLS` 清单程序化对账一致；PR#7 起逐步扩充，含三池/信号/角色/技能九工具）：
 
 | 工具 | 用途 | 一句话用法 |
 |---|---|---|
@@ -130,6 +130,7 @@ asyncio.run(main())
 | `role_assemble` | 组装角色人设并按其说话 | `role_assemble(role_id)` |
 | `role_active_get` / `role_active_set` | 查看/切换当前生效角色 | `role_active_get()` |
 | `skill_*` | 技能管理九工具：skill_list/skill_coldstart/skill_search/skill_digest/skill_get/skill_materialize/skill_put/skill_delete/skill_rename（B114 补齐 list/coldstart/写侧） | `skill_search(query)` / `skill_get(name)` / `skill_materialize(name, dest_dir)`（落盘在服务端；跨机改用 skill_get） |
+| `credential_list` / `credential_get` | 凭据模块（EP-11）：键名列表（不含值）/ 取单值（需 `credentials.enabled`；EP-11，2026-10-15） | 值不得进对话正文；标准姿势 `sgme-cred run` 注入（见 §4.3） |
 
 **自进化（W4，2026-08-16；B114 后双通道）**：会话经验回写按「归属口诀」选通道——世界知识/通用经验走 `wiki_evolve_trigger`（LLM 提炼后追加到 wiki 手册页，多 agent 共享）；**跟技能本体走的坑直接 `skill_put` 更新该技能的 SKILL.md**（技能真源在 skills 模块 git 仓，已不寄居 wiki）。
 
@@ -182,6 +183,19 @@ content 格式（首行必须）：
 - 无其它通道时：就在当前会话发（当前会话是唯一通道）；
 - 用户明确说「以后不用在当前会话发了」才停止兜底，否则默认一直兜底。
 
+### 4.3 凭据取用（EP-11，可选，2026-10-15）
+
+SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 降级为缓存），任何已注册 agent 可平级读取（写 / 删 / 恢复仅 admin）。模块未启用（`credentials.enabled=false`）时两个工具返回友好提示，属正常。
+
+| 你要做的事 | 姿势 |
+|---|---|
+| 程序需要 KEY 运行 | **标准姿势**：`sgme-cred run -- python app.py`（拉取 → 注入环境变量 → 执行子进程；值不落盘、不进对话） |
+| 看有哪些 KEY | MCP `credential_list()`（键名+元数据，不含值）或 `sgme-cred list` |
+| 必须显式查看某值 | MCP `credential_get(name)` / `sgme-cred get KEY`——**仅限必须**；值不得写入对话正文或记忆 |
+| 落一份本地缓存 | `sgme-cred export > .env`（显式操作；缓存只读不手改，真源始终在 SGME） |
+
+> ⚠️ 值一旦进入对话正文，会经 append 进 L0 原始层并随对话出境云端模型（不可回收）。客户端 `scripts/sgme_cred.py` 单文件零依赖、可裸拷任意机器；认证读 `~/.sgme/install.json`（零明文）。
+
 ## 5. 提炼与限流策略（2026-08-11 Trae 全量提炼实测）
 
 **背景**：Trae 全量提炼 600+ 文件时连环撞 429，提炼直接失败。SGME 已有三道防线（LLM 调用层节流器 0.5 rps + 429 入退避 + batch_scan 兜底），但**你仍然要自律**：
@@ -214,7 +228,7 @@ content 格式（首行必须）：
 | **自律型** | 无 hooks → 会话收尾主动调提炼 | Trae / ZCode | 指引要求：结束前 `refine_trigger(async_mode=true)`，别指望别人 |
 | **保底型** | 服务端兜底，不依赖 agent 自觉 | 任何 agent（最后防线） | 服务端 `batch_scan` 常驻定时器扫 status=new；`refine_on_append=true` 时 append 后自动单文件提炼 |
 
-> **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态）、MiMo Desktop（`adapters/mimo`，Skill + 原生 MCP 优先，2026-09-22 登记）、WorkBuddy（`adapters/workbuddy`，Skill + 原生 MCP 优先，从 `~/.workbuddy/mcp.json` 零配置继承，2026-09-22 登记）、ZCode（`adapters/zcode`，Skill 形态 + 自律接入 + `import_history.py` 历史会话补导入，install.py 可注册 ZCode 原生 MCP server，2026-09-26 登记）、Codex（`adapters/codex`，stdio MCP 代理动态透传 41 工具 + 会话生命周期 CLI，install.py 可注册 Codex MCP server，2026-09-30 登记）、Claude Code（`adapters/claude-code`，stdio MCP 代理动态透传 41 工具 + 原生 hooks 会话生命周期：SessionStart 注入 / Stop 落盘 / SessionEnd 提炼，install.py 注册 Claude Code MCP server 与 hooks，2026-10-01 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
+> **官方适配器登记**：Hermes（memory.provider 插件）、DSH（Cordis 插件）、Doubao Work（豆包工作，`adapters/doubao`，Skill 形态）、MiMo Desktop（`adapters/mimo`，Skill + 原生 MCP 优先，2026-09-22 登记）、WorkBuddy（`adapters/workbuddy`，Skill + 原生 MCP 优先，从 `~/.workbuddy/mcp.json` 零配置继承，2026-09-22 登记）、ZCode（`adapters/zcode`，Skill 形态 + 自律接入 + `import_history.py` 历史会话补导入，install.py 可注册 ZCode 原生 MCP server，2026-09-26 登记）、Codex（`adapters/codex`，stdio MCP 代理动态透传 43 工具 + 会话生命周期 CLI，install.py 可注册 Codex MCP server，2026-09-30 登记）、Claude Code（`adapters/claude-code`，stdio MCP 代理动态透传 43 工具 + 原生 hooks 会话生命周期：SessionStart 注入 / Stop 落盘 / SessionEnd 提炼，install.py 注册 Claude Code MCP server 与 hooks，2026-10-01 登记）为官方维护适配器；其余 agent 走 MCP 通用接入（`agent_onboarding` 自助配置），有 hook 能力者按《SGME-接口契约》自研适配器。
 
 **判断方法**：有 SessionEnd/Stop 事件机制 = hooks 型；没有 = 自律型；两者都失效还有保底型兜底——记忆不会丢，只会晚提炼。
 
