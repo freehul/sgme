@@ -10,8 +10,8 @@
 | 路径 | 适用 | 方式 |
 |---|---|---|
 | **通用直连** | 任何能发 HTTP/MCP 的 Agent | HTTP `http://<NAS_IP>:9910`；MCP `http://<NAS_IP>:9913/mcp`；请求头 `X-API-Key`（用 `SGME_AGENT_KEY` 或签发的 `agt_*`） |
-| **Hermes** | Hermes Agent | 适配器经技能库获取（`skill_search("adapter")` → 同机 `skill_materialize` 落盘装包 / 跨机 `skill_get` 取正文自行写盘；物化落盘在 SGME 服务端，跨机拿不到产物）；源码副本另有 `adapters/hermes/` |
-| **DSH** | DeepSeek Harness | 适配器经技能库获取（`skill_search("adapter")` → 同机 `skill_materialize` 落盘 / 跨机 `skill_get` 取正文自行写盘），按包内 README 执行 `install.py`，再 `dsh plugin add dsh-sgme` |
+| **Hermes** | Hermes Agent | 适配器经技能库获取（`skill_search("adapter")` → 同机 `skill_materialize` 落盘装包 / 跨机 `skill_fetch.py` 拉完整包；详见 `../agent-onboarding.md` §6.1）；源码副本另有 `adapters/hermes/` |
+| **DSH** | DeepSeek Harness | 适配器经技能库获取（`skill_search("adapter")` → 同机 `skill_materialize` 落盘 / 跨机 `skill_fetch.py` 拉完整包），按包内 README 执行 `install.py`，再 `dsh plugin add dsh-sgme` |
 
 > 提示：权限分家——日常记忆读写用 Agent Key（`SGME_AGENT_KEY` / 专属 `agt_*`）；管理端点（含 register 签发）用 admin key（`SGME_ADMIN_KEY`），admin key 不当日常身份用（反查为合成身份 `default`）。默认开发 Key 仅限本机回环，远程调用一律 403（必须自定义 Key）。
 

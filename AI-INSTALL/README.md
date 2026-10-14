@@ -29,7 +29,8 @@
 - `免费模型Key申请指南.md` —— 免费 LLM / 向量 Key 申请（两款免费平台，零充值）。
 - `prompts/` —— 可整段复制给 AI 的提示词（每份含中文 + English 两个复制块）。
 - `selfcheck.md` —— 自检清单（**八项**：发现/连通/写入/检索/提炼/技能/**自我配置**/**适配器**）与常见失败处置。
-- 官方适配器经技能库自助获取：`skill_search("adapter")` → 同机 `skill_materialize` 落盘（落盘在服务端文件系统）/ 跨机 `skill_get` 取正文自行写盘（完整包随附文件暂无远程通道，需要时如实报告主人；详见 `agent-onboarding.md` §6.1）。
+- `skill_fetch.py` —— 跨机技能包拉取脚本（下载→校验→解包→本地落盘；本体可经在线文档端点获取）。
+- 官方适配器经技能库自助获取：`skill_search("adapter")` → `skill_get` 读指引 → **取完整包**：同机 `skill_materialize` 落盘（服务端文件系统）/ 跨机 `skill_fetch.py` 拉取（`GET /v1/skills/{name}/package` 一键下载校验解包；详见 `agent-onboarding.md` §6.1）。
 - **能力平面**：SGME 核心是 `memory / skills / wiki`（另有可选凭据模块 `credentials`——跨机共享重要 KEY，标准姿势 `sgme-cred run` 注入）；只安装宿主适配器，普通专业 skill 按需检索，不批量复制到本地。
 - **内置开发能力**：技能库已纳入 `coding-workflow`、`sgme-development`、`sgme-adapter-development`、`sgme-docs-authoring`、`sgme-operations` 和 `skill-governance`；编码、运维和技能治理先从 SGME 检索，不要求宿主另装一套同名 skill。
 
