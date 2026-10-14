@@ -17,20 +17,20 @@
 
 > ✅ **官方适配器登记（2026-09-19）**：本适配器已登记进 SGME 官方适配器清单——`AI-INSTALL/agent-onboarding.md` §6 与 README（中英两版）「接入你的 AI」放置位置表。其他 agent 接入时可通过官方文档发现豆包适配器。
 
-## 能力面（与 MCP 基准 41 个工具一一对应）
+## 能力面（与 MCP 基准 43 个工具一一对应）
 
 **豆包工作没有「工具注册表」——它的工具面就是 CLI 命令面**（SKILL.md 指示 agent 调 `scripts/sgme_client.py`）。
-因此客户端把 `sgme/mcp_server.py` 的 **41 个基准工具**逐个映射成子命令，缺一不可：
+因此客户端把 `sgme/mcp_server.py` 的 **43 个基准工具**逐个映射成子命令，缺一不可：
 
-| 层 | 基准能力（41） | 说明 |
+| 层 | 基准能力（43） | 说明 |
 |---|---|---|
-| HTTP（零依赖，19 个） | `health` `append` `inject` `search` `answer` `memory-get/reject/unreject` `skill-list/coldstart/search/digest/get/materialize` `wiki-search/pages/page/page-add/page-update` | 记忆/检索/技能读/wiki 读写 |
+| HTTP（零依赖，21 个） | `health` `append` `inject` `search` `answer` `memory-get/reject/unreject` `skill-list/coldstart/search/digest/get/materialize` `wiki-search/pages/page/page-add/page-update` `credential-list/get` | 记忆/检索/技能读/wiki 读写/凭据读侧 |
 | MCP（需 mcp 库，22 个） | `agent-onboarding` `refine-trigger/batch/status` `stats` `config-get/update` `idea-add` `demand-create` `project-register` `signal-pull/claim/ack/clear` `role-list/assemble/active-get/active-set` `wiki-evolve-trigger` `skill-put/delete/rename` | 提炼/统计/配置/三池/信号闭环/角色/自进化/技能写侧 |
 | 适配器扩展（6 个） | `events-pull` `events-after` `wiki-raw` `mcp`（逃生口）`capabilities` `env-info` | 超出基准的自有通道 |
 
-合计 47 个 CLI 子命令（41 基准 + 6 扩展）。
+合计 49 个 CLI 子命令（43 基准 + 6 扩展）。
 
-- 离线核对全量矩阵：`python scripts/sgme_client.py capabilities`（输出 41/41 覆盖表）。
+- 离线核对全量矩阵：`python scripts/sgme_client.py capabilities`（输出 43/43 覆盖表）。
 - 写侧/管理类（`skill-put` / `skill-delete` / `skill-rename` 服务端强制；`config-update` / `signal-clear` 有管理员 Key 时自动使用）走环境变量 `SGME_ADMIN_KEY`。
 - `skill_get` 支持 `--section` 章节取用；`skill_materialize` 返回 `path` + `sha256`（**落盘在 SGME 服务端文件系统**、返回的是服务端路径——跨机调用拿不到产物，请改用 `skill_get` 取正文自行写盘）。
 
@@ -45,17 +45,17 @@
 | 主动关怀 | 短连接 `signal-pull`（对话开始）/ `events-pull`（HTTP 游标）；`care_watch.py` 准常驻轮询（可选定时任务） | `GET /v1/events/pull` + MCP `signal_claim/ack/clear` |
 | 角色扮演 | MCP `role-list` → `role-assemble`（换皮不换芯）；`role-active-get/set` 记录当前角色 | MCP `role_*` |
 | 待办/项目/创意登记 | MCP `demand-create` / `project-register` / `idea-add` | MCP（HTTP 端为 admin 端点） |
-| 接入自检 | `selfcheck.py`：静态能力矩阵（41/41 双覆盖）+ 14 项连通性实测 | 全端点 |
+| 接入自检 | `selfcheck.py`：静态能力矩阵（43/43 双覆盖）+ 14 项连通性实测 | 全端点 |
 
 ## 目录
 
 ```
 adapters/doubao/
-├── SKILL.md            # 豆包工作身份/纪律文件（真源，含 SGME-ONBOARDING-v2 模板 + 41 能力矩阵）
+├── SKILL.md            # 豆包工作身份/纪律文件（真源，含 SGME-ONBOARDING-v2 模板 + 43 能力矩阵）
 ├── install.py          # 部署器：同步到豆包工作技能目录 + 写部署配置 client.env + 自检 + 写接入日志
 ├── .gitignore          # 部署配置 client.env 不入库（含环境实况地址）
 ├── scripts/
-│   ├── sgme_client.py  # 客户端（HTTP 层零依赖 + MCP 层；41 基准能力 = 41 个子命令）
+│   ├── sgme_client.py  # 客户端（HTTP 层零依赖 + MCP 层；43 基准能力 = 43 个子命令）
 │   ├── care_watch.py   # 主动关怀守护（可选：pull/watch/claim/ack/clear）
 │   ├── selfcheck.py    # 接入自检（能力矩阵 + 连通性，可重跑）
 │   └── access-log.md   # 接入日志（部署时追加）
@@ -102,15 +102,15 @@ python adapters/doubao/install.py --no-selfcheck
 
 ## 验证（装完怎么算成功）
 
-1. `selfcheck.py` 全绿：静态能力矩阵 41/41 + 实测 13 项（HTTP 只读 6 + append 心跳 1 + MCP 只读 6）= 14 项全通过
+1. `selfcheck.py` 全绿：静态能力矩阵 43/43 + 实测 13 项（HTTP 只读 6 + append 心跳 1 + MCP 只读 6）= 14 项全通过
 2. 会话内问一个历史问题：豆包工作应通过 `search` 召回 SGME 记忆（强制查询铁律）
 3. 对话结束后 SGME 出现新 L0：`events-pull --subscriber doubao-work` 或管理端 sessions 列表可见
 4. 主动关怀：`python scripts/care_watch.py pull` 正常返回（无信号时输出「暂无未消费信号 ✅」）
-5. 离线核对命令面：`python scripts/sgme_client.py capabilities` → `41/41`
+5. 离线核对命令面：`python scripts/sgme_client.py capabilities` → `43/43`
 
 ## 关键设计
 
-- **能力面 = CLI 命令面**：41 个 MCP 基准工具全部有对应子命令（豆包 agent 靠 SKILL.md 指示调脚本，缺命令 = 缺能力）；`capabilities` 可离线自证覆盖度。
+- **能力面 = CLI 命令面**：43 个 MCP 基准工具全部有对应子命令（豆包 agent 靠 SKILL.md 指示调脚本，缺命令 = 缺能力）；`capabilities` 可离线自证覆盖度。
 - **双通道**：HTTP 层（agent key 全可用、零依赖）覆盖记忆/检索/技能读/wiki；MCP 层补 refine/统计/配置/信号/角色/三池/自进化/技能写侧（HTTP 端这些是 admin 端点，agent key 会 403）。
 - **密钥铁律**：只读环境变量 `SGME_AGENT_KEY` / `SGME_ADMIN_KEY`，不落盘、不硬编码、CLI 不回显；部署配置只写地址与密钥环境变量名。
 - **地址三级解析**：环境变量 → 部署配置 `client.env` → 回环默认；仓库内不出现真实设备地址。

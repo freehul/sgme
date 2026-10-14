@@ -5,7 +5,7 @@ selfcheck.py — SGME × 豆包工作 接入自检（能力矩阵 + 连通性）
 
 两层自检，全部可重跑：
 
-  ① 静态能力矩阵（离线）：核对 41 个 MCP 基准能力是否**方法层 + CLI 层**双覆盖
+  ① 静态能力矩阵（离线）：核对 43 个 MCP 基准能力是否**方法层 + CLI 层**双覆盖
      （权威基准：sgme/mcp_server.py 工具清单）
   ② 连通性实测（在线）：HTTP 只读项 + MCP 只读项 + 一次 append 接入心跳
 
@@ -43,11 +43,11 @@ def _count(resp) -> str:
 
 
 def run_static() -> tuple[list[tuple[str, bool, str]], bool]:
-    """静态能力矩阵核对：41 基准能力的方法层与 CLI 层覆盖。"""
+    """静态能力矩阵核对：43 基准能力的方法层与 CLI 层覆盖。"""
     rows = capability_report()
     bad = [r for r in rows if not (r["method_ok"] and r["cli_ok"])]
     detail = f"{len(rows) - len(bad)}/{len(rows)} 基准能力双覆盖（方法层 + CLI 层）"
-    out = [("静态 ① 基准能力矩阵（41 个）", not bad, detail)]
+    out = [("静态 ① 基准能力矩阵（43 个）", not bad, detail)]
     for r in bad:
         out.append((f"     ↳ 缺失 {r['tool']}", False,
                     f"方法={r['method']}({r['method_ok']}) CLI={r['cli']}({r['cli_ok']})"))

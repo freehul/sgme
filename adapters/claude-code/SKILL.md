@@ -6,7 +6,7 @@ description: Claude Code 的 SGME 官方适配器（MCP stdio 动态透传 + 原
 # SGME × Claude Code 官方适配器
 
 本适配器把 Claude Code 接入 SGME 统一能力平面。它不维护静态工具清单，通过本地
-stdio 代理动态转发远端 SGME MCP 工具面（当前 41 项），并以 Claude Code 原生
+stdio 代理动态转发远端 SGME MCP 工具面（当前 43 项），并以 Claude Code 原生
 hooks 实现会话生命周期自动化。
 
 ## 形态

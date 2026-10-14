@@ -144,7 +144,7 @@ def resolve_addresses(http_url: str | None = None, mcp_url: str | None = None,
     return http.rstrip("/"), mcp.rstrip("/"), src
 
 
-# ---------- MCP 基准工具清单（权威基准：sgme/mcp_server.py，41 个） ----------
+# ---------- MCP 基准工具清单（权威基准：sgme/mcp_server.py，43 个） ----------
 
 BASELINE_TOOLS: tuple[str, ...] = (
     "agent_onboarding", "append", "inject", "search", "answer",
@@ -156,6 +156,7 @@ BASELINE_TOOLS: tuple[str, ...] = (
     "role_list", "role_assemble", "role_active_get", "role_active_set",
     "skill_search", "skill_digest", "skill_get", "skill_materialize", "skill_list",
     "skill_coldstart", "skill_put", "skill_delete", "skill_rename",
+    "credential_list", "credential_get",
 )
 
 # 基准工具 → (客户端方法名, CLI 命令, 层, 密钥范围)
@@ -201,6 +202,9 @@ BASELINE_SPEC: dict[str, tuple[str, str, str, str]] = {
     "skill_put": ("skill_put", "skill-put", "mcp", "admin"),
     "skill_delete": ("skill_delete", "skill-delete", "mcp", "admin"),
     "skill_rename": ("skill_rename", "skill-rename", "mcp", "admin"),
+    # EP-11 凭据读侧（T-277）：agent 平级读，走 HTTP
+    "credential_list": ("credential_list", "credential-list", "http", "agent"),
+    "credential_get": ("credential_get", "credential-get", "http", "agent"),
 }
 
 
@@ -548,6 +552,20 @@ class SGME:
         return self._mcp("skill_rename", {"name": name, "new_name": new_name},
                          scope="admin")
 
+    # ---------- HTTP 层：凭据（EP-11 读侧，agent 平级） ----------
+    def credential_list(self):
+        """凭据列表：键名 + 元数据，**不含值**（需服务端 credentials.enabled 已启用）。"""
+        return self._http("GET", "/v1/credentials")
+
+    def credential_get(self, name: str):
+        """取凭据单值（服务端记 read 审计）。
+
+        ⚠️ 返回值含明文凭据——**不得进入对话正文**：标准姿势是客户端注入
+        （scripts/sgme_cred.py run，值不落盘不进对话）；本方法仅限「必须显式查看」
+        场景，取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。
+        """
+        return self._http("GET", f"/v1/credentials/{urllib.parse.quote(name, safe='')}")
+
     def mcp_raw(self, tool: str, args: dict | None = None, scope: str = "agent"):
         return self._mcp(tool, args or {}, scope=scope)
 
@@ -555,7 +573,7 @@ class SGME:
 # ================= 能力矩阵 =================
 
 def capability_report() -> list[dict]:
-    """逐条核对 41 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
+    """逐条核对 43 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
     rows = []
     for tool in BASELINE_TOOLS:
         method, cli, layer, scope = BASELINE_SPEC[tool]
@@ -979,6 +997,15 @@ CMD_SPECS: list[dict] = [
             {"dest": "new_name", "help": "新技能名"},
         ],
         "run": lambda c, a: c.skill_rename(a.name, a.new_name),
+    },
+    # ---- 凭据读侧（EP-11，T-277） ----
+    {"cli": "credential-list", "help": "凭据列表（键名+元数据，不含值）",
+     "run": lambda c, a: c.credential_list()},
+    {
+        "cli": "credential-get",
+        "help": "取凭据单值（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入）",
+        "positionals": [{"dest": "name", "help": "凭据键名（credential-list 可见）"}],
+        "run": lambda c, a: c.credential_get(a.name),
     },
     # ---- 诊断 / 逃生口 ----
     {"cli": "capabilities", "help": "打印基准能力矩阵（离线核对，不发请求）",

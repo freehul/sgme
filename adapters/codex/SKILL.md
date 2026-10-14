@@ -6,7 +6,7 @@ description: Codex 的 SGME 官方适配器（动态 MCP 代理 + 会话生命�
 # SGME × Codex 官方适配器
 
 本适配器把 Codex 接入 SGME 统一能力平面。它不维护静态工具清单，而是通过
-本地 stdio 代理动态转发远端 SGME MCP 工具面（当前 41 项）。
+本地 stdio 代理动态转发远端 SGME MCP 工具面（当前 43 项）。
 
 ## 形态
 

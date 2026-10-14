@@ -10,7 +10,7 @@
 
 | 组件 | 载体 | 作用 |
 |---|---|---|
-| MCP 透传 | `claude_sgme.mcp_proxy`（stdio） | 把 Claude Code 的工具面动态转发到远端 SGME MCP（41+ 工具，新增工具零改动） |
+| MCP 透传 | `claude_sgme.mcp_proxy`（stdio） | 把 Claude Code 的工具面动态转发到远端 SGME MCP（43+ 工具，新增工具零改动） |
 | 会话启动 | hook `SessionStart` → `cli hook session-start` | `inject` 画像 + `signal_pull` 未消费关怀信号 → additionalContext 注入 |
 | 每轮落盘 | hook `Stop` → `cli hook stop` | 解析 transcript JSONL，增量 append 到 SGME L0（游标对账，服务端幂等） |
 | 收尾提炼 | hook `SessionEnd` → `cli hook session-end` | 补一次追加 + `refine_trigger(async_mode=true)` |

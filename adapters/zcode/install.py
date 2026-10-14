@@ -256,7 +256,7 @@ AGENTS_MD_SECTION = """\
 > 若本会话已挂载 `sgme` MCP server（mcp__sgme__* 工具）优先用 MCP；否则走 CLI。
 
 - **服务发现**：环境变量 `SGME_HTTP_URL` → 部署副本 `scripts/client.env` → `~/.sgme/zcode-agent.json` → `~/.zcode/cli/config.json` 的 `sgme` server → 回环 `http://127.0.0.1:9910`
-- **能力面**：`python {client} capabilities`（41 基准能力矩阵，离线）；`env-info` 看生效端点
+- **能力面**：`python {client} capabilities`（43 基准能力矩阵，离线）；`env-info` 看生效端点
 - **五条铁律**：①每轮对话结束 append 当前轮次（session_key=zcode-<日期>-<项目>）②会话结束 refine-trigger（永远 async）③对话开始 inject/search ④关怀信号 pull→claim→ack ⑤role-list/role-assemble 换皮不换芯
 - **强制查询**：涉及历史事实（之前/上次/还记得…）必须先 search 再回答，查不到如实说「记忆库中未找到」
 - **三池**：待办 demand-create（project_id 一律大写）｜创意 idea-add｜立项 project-register

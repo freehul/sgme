@@ -117,9 +117,9 @@ Three ways to manage roles:
 2. **Ask your agent** — `sgme_role_save` / `sgme_role_delete` / `sgme_role_active_set` let the agent write or switch roles for you.
 3. **SGME WebUI → Roles** — full visual card editor (best for long prompts; desktop text fields are brief by nature).
 
-## Tools (42)
+## Tools (44)
 
-42 = 41 MCP-baseline tools − 2 intentional exemptions + 3 adapter-specific.
+44 = 43 MCP-baseline tools − 2 intentional exemptions + 3 adapter-specific.
 Key column: **agent** = `SGME_AGENT_KEY`; **admin** = `SGME_ADMIN_KEY`.
 Admin tools state their requirement in their description.
 
@@ -205,6 +205,13 @@ Admin tools state their requirement in their description.
 | `sgme_config_get` | Read server runtime config | admin |
 | `sgme_config_update` | Update a config section (hot-applied; biggest blast radius) | admin |
 
+### Credentials (EP-11 — values must never reach the conversation)
+
+| Tool | What it does | Key |
+|---|---|---|
+| `sgme_credential_list` | List key names + metadata (never values); requires `credentials.enabled` | agent |
+| `sgme_credential_get` | Fetch one value — ⚠️ explicit-view scenarios only; the standard path is `sgme-cred run` injection (value never enters the conversation) | agent |
+
 ### Not implemented, on purpose
 
 | Baseline tool | Why |
@@ -264,7 +271,7 @@ Your memories stay on the SGME server, untouched.
 ## Version & compatibility
 
 - The plugin version tracks the SGME engine version (currently `1.8.0`) — keep bridge and engine on the same minor line.
-- Capability baseline = SGME's MCP tool surface (41 tools); this adapter implements 39 of them, declares 2 exemptions, and adds 3 of its own → **42 tools**. Drift is checked by `python scripts/adapter_parity.py`.
+- Capability baseline = SGME's MCP tool surface (43 tools); this adapter implements 41 of them, declares 2 exemptions, and adds 3 of its own → **44 tools**. Drift is checked by `python scripts/adapter_parity.py`.
 
 ## Links
 

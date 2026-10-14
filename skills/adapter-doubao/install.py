@@ -234,7 +234,7 @@ def main() -> int:
         py = args.py or sys.executable
         rc = _run_selfcheck(dest, py)
         if rc == 0:
-            _append_log(dest, f"install.py 重部署 + 自检通过（能力矩阵 41/41 双覆盖）；"
+            _append_log(dest, f"install.py 重部署 + 自检通过（能力矩阵 43/43 双覆盖）；"
                               f"地址来源：{source}")
         else:
             _append_log(dest, "install.py 重部署 + 自检有失败项（见上方输出）")
