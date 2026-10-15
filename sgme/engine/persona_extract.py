@@ -46,7 +46,7 @@ DEFAULT_RULES: list[dict] = [
     {
         "dimension": "responsibility",
         "values": [
-            {"value": "长期负重型", "keywords": ["透析", "照护", "照顾"]},
+            {"value": "长期负重型", "keywords": ["照护", "照顾", "陪护"]},
         ],
     },
 ]

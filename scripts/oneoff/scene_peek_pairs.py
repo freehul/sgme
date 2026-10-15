@@ -15,7 +15,7 @@ def show(sid_short):
         print('    [%s] 不存在或已归档' % sid_short)
 
 for a, b, sim in [
-    ('c99fda69', 'a6b6d7d5', 0.796),  # 透析伴侣 ↔ ?
+    ('c99fda69', 'a6b6d7d5', 0.796),  # 场景对示例
     ('efd0178c', 'b4a7a5e4', 0.776),
     ('32843080', '24c750f6', 0.755),
     ('160e9df7', 'acdc5e31', 0.798),

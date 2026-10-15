@@ -49,10 +49,10 @@ ADMIN = {"X-API-Key": ADMIN_KEY}
 
 #: 泄漏判定用的长正文（120 字截断前的完整文本）：含唯一标记串，便于在响应体中检索
 REJECTED_CONTENT = (
-    "【T171-LEAK-CANARY】主人已明确纠错：父亲透析改为每周二，"
+    "【T171-LEAK-CANARY】主人已明确纠错：家庭安排改为每周二，"
     "此前记录的每周三陪伴安排作废，不得再作为事实引用。"
 )
-ACTIVE_CONTENT = "【T171-ACTIVE】家庭事实：父亲每周二需透析陪伴（主人 2026-09 纠正后口径）。"
+ACTIVE_CONTENT = "【T171-ACTIVE】家庭事实：每周二有固定陪伴安排（主人 2026-09 纠正后口径）。"
 EXPIRED_CONTENT = "【T171-EXPIRED】过时动态事实：主人本季度出差计划（随时间失效）。"
 
 
@@ -140,7 +140,7 @@ def seeded(app, conns):
         time_velocity="static", ttl_days=None, dimension_ids=[dim_a],
         created_at=_iso(2), updated_at=_iso(2), occurred_at=_iso(2),
     )
-    memory_dao.reject_memory(mem_conn, rejected_id, "用户纠错：透析日改为周二")
+    memory_dao.reject_memory(mem_conn, rejected_id, "用户纠错：安排日改为周二")
 
     expired_id = memory_dao.insert_memory(
         mem_conn, content=EXPIRED_CONTENT, memory_type="fact", priority=7,

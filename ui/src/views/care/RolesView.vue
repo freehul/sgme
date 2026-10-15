@@ -48,7 +48,7 @@ const CARE_TYPE_LABEL: Record<string, string> = {
 
 const TRIGGER_HINTS: Record<string, string> = {
   mood_low: '情绪低落', overwork: '过劳', todo_due: '待办到期',
-  dialysis_day: '透析日', bedtime: '睡前', weekend: '周末',
+  medical_day: '就医日', bedtime: '睡前', weekend: '周末',
   goal_stagnant: '目标停滞', major_decision: '重大决策',
 }
 
