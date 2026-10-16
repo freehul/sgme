@@ -90,6 +90,25 @@ _VECTOR_PROBE_TIMEOUT_S = 5.0
 # 健康探测用极短输入（免费模型零费用；仅连通性验证，不产生语义向量用途）
 _VECTOR_PROBE_INPUT = "."
 
+# ST-58/T-292：向量连通性探测的进程内 TTL 缓存（秒）。
+#
+# 背景：Docker HEALTHCHECK `interval: 30s` 每 30 秒实调一次 embeddings 端点，
+# 62 天累计 269,104 次请求（≈4,340/天），其中约 2/3 是探针；本地 Ollama bge-m3
+# 在 NAS 纯 CPU 上单次约 5s，常年超时 → 健康态 degraded 噪音，且 embed 不可达
+# 53 次触发云端 siliconflow 兜底。加缓存后探针流量降约 75%。
+#
+# 代价：真故障最长 120s 才被发现。可接受——容器 healthcheck 另有 3×30s 判定窗口。
+_VECTOR_PROBE_TTL_S = 120.0
+_VECTOR_PROBE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def clear_vector_probe_cache() -> None:
+    """清空向量探测缓存（配置热更新 / 测试隔离用）。
+
+    正常路径**不需要**调用：缓存键是 cfg 指纹，配置一变自然失效。
+    """
+    _VECTOR_PROBE_CACHE.clear()
+
 
 def check_vector_model_connectivity(
     cfg: dict,
@@ -104,6 +123,16 @@ def check_vector_model_connectivity(
 
     与 check_vector_availability 的分工：那是「引擎 + 数据规模」（本地无网络）；
     本函数是「模型 API 连通性」（云端端点可达、key 有效）。两者互补。
+
+    ST-58/T-292 **进程内 TTL 缓存**（默认 `_VECTOR_PROBE_TTL_S = 120s`）：
+    - 缓存键 = cfg 指纹 `hash((base_url, model, provider, api_key_env))`——
+      **配置热更新自动失效**，无需显式清除（指纹变 → 键变 → 未命中）；
+      指纹只含 `api_key_env` **变量名**，不含密钥值（铁律 #10：密钥不落盘）。
+    - 命中即复用上次结果，缓存期内**不走网络**。
+    - 调用方**显式传入 `client` 时绕过缓存**（视为「现在就要真实结果」的意图，
+      也让单测保持确定性）。
+    - 返回值为缓存对象的**副本**，调用方改动不会污染缓存。
+    - 缓存结果带 `cached: True`，便于运维区分「刚探测」与「复用」。
     """
     vec = (cfg.get("search") or {}).get("vector") or {}
     provider = str(vec.get("provider", ""))
@@ -115,39 +144,62 @@ def check_vector_model_connectivity(
             "available": False, "provider": provider, "model": model,
             "latency_ms": None, "error": "向量端点未配置（base_url/model 缺失）",
         }
-    headers = None
-    key = os.environ.get(api_key_env) if api_key_env else None
-    if key:
-        headers = {"Authorization": f"Bearer {key}"}
-    own_client = client is None
-    cli = client or make_client(timeout_s=_VECTOR_PROBE_TIMEOUT_S)
-    t0 = time.monotonic()
-    try:
-        resp = cli.post(
-            f"{base_url}/embeddings",
-            json={"model": model, "input": _VECTOR_PROBE_INPUT},
-            headers=headers,
-            timeout=_VECTOR_PROBE_TIMEOUT_S,
-        )
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        if resp.status_code == 200:
+
+    # T-292：TTL 缓存（显式 client 视为「立即实测」意图，绕过缓存）
+    if client is None:
+        fp = str(hash((base_url, model, provider, api_key_env)))
+        hit = _VECTOR_PROBE_CACHE.get(fp)
+        if hit is not None:
+            ts, cached = hit
+            if (time.monotonic() - ts) < _VECTOR_PROBE_TTL_S:
+                out = dict(cached)
+                out["cached"] = True
+                return out
+            del _VECTOR_PROBE_CACHE[fp]  # 过期即清，避免字典无界增长
+
+    def _do_probe() -> dict[str, Any]:
+        """真实探测一次（缓存未命中时执行）。永不抛异常。"""
+        headers = None
+        key = os.environ.get(api_key_env) if api_key_env else None
+        if key:
+            headers = {"Authorization": f"Bearer {key}"}
+        own_client = client is None
+        cli = client or make_client(timeout_s=_VECTOR_PROBE_TIMEOUT_S)
+        t0 = time.monotonic()
+        try:
+            resp = cli.post(
+                f"{base_url}/embeddings",
+                json={"model": model, "input": _VECTOR_PROBE_INPUT},
+                headers=headers,
+                timeout=_VECTOR_PROBE_TIMEOUT_S,
+            )
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            if resp.status_code == 200:
+                return {
+                    "available": True, "provider": provider, "model": model,
+                    "latency_ms": latency_ms, "error": None,
+                }
             return {
-                "available": True, "provider": provider, "model": model,
-                "latency_ms": latency_ms, "error": None,
+                "available": False, "provider": provider, "model": model,
+                "latency_ms": latency_ms, "error": f"HTTP {resp.status_code}",
             }
-        return {
-            "available": False, "provider": provider, "model": model,
-            "latency_ms": latency_ms, "error": f"HTTP {resp.status_code}",
-        }
-    except httpx.HTTPError as e:
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        return {
-            "available": False, "provider": provider, "model": model,
-            "latency_ms": latency_ms, "error": str(e)[:200],
-        }
-    finally:
-        if own_client:
-            cli.close()
+        except httpx.HTTPError as e:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            return {
+                "available": False, "provider": provider, "model": model,
+                "latency_ms": latency_ms, "error": str(e)[:200],
+            }
+        finally:
+            if own_client:
+                cli.close()
+
+    result = _do_probe()
+    if client is None:
+        # 只缓存「自带 client 的探测」（显式 client 的调用不写缓存，避免污染生产缓存）
+        _VECTOR_PROBE_CACHE[fp] = (time.monotonic(), dict(result))
+        result = dict(result)
+    result["cached"] = False
+    return result
 
 
 def _publish_vector_signal(
