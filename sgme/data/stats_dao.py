@@ -99,6 +99,16 @@ _PERIOD_EXPRESSIONS: dict[str, str] = {
 _DETAIL_SUM_FIELDS: tuple[str, ...] = (
     "runs", "ok", "error",
     "prompt_tokens", "completion_tokens", "total_tokens", "memories_count",
+    # ST-58/T-296（D1）：耗时列随 A2（T-289）落地后纳入聚合——效率由此可观测（G4）。
+    "elapsed_ms", "elapsed_ms_runs",
+)
+
+#: 派生字段（**不对 totals 求和**——比值类字段相加无意义）。
+_DETAIL_DERIVED_FIELDS: tuple[str, ...] = (
+    "tokens_per_memory",   # total_tokens / memories_count：单条记忆的提炼成本
+    "avg_prompt_tokens",   # prompt_tokens / runs：单批平均 prompt 体积
+    "elapsed_ms_avg",      # elapsed_ms / elapsed_ms_runs：单批真实平均耗时
+    "batch_utilization",   # avg_prompt_tokens / batch_budget：批预算利用率（需外部传入预算）
 )
 
 
@@ -109,6 +119,7 @@ def refine_detail(
     stage: str | None = None,
     from_ts: str | None = None,
     to_ts: str | None = None,
+    batch_budget: int | None = None,
 ) -> tuple[list[dict], dict]:
     """提炼 token 成本 / 质量明细聚合（契约 §5.7）。
 
@@ -120,12 +131,17 @@ def refine_detail(
 
     ``totals`` 由 items 在 Python 侧求和而非再跑一次 SQL：两次查询之间若有并发
     写入会导致 totals 与 items 对不上，用户看到「分项加起来 ≠ 合计」。
+    **派生字段不进 totals**（比值相加无意义，见 `_DETAIL_DERIVED_FIELDS`）。
 
     Args:
         conn: memory.db 连接（refine_runs 在 memory.db）。
         period: ``daily`` / ``weekly`` / ``monthly``。
         stage: 可选 stage 过滤。
         from_ts / to_ts: 作用于 ``started_at`` 的闭区间边界。
+        batch_budget: 上下文批预算（tokens），用于算派生字段
+            ``batch_utilization = avg_prompt_tokens / batch_budget``。
+            由 operations 层从 cfg 解析后传入（本层不读配置，保持 data 层纯粹）；
+            不传则该字段为 ``None``（其余派生字段照常给出）。
 
     Returns:
         ``(items, totals)``——items 按 ``period_key ASC, stage ASC`` 排序
@@ -161,7 +177,9 @@ def refine_detail(
                SUM(COALESCE(prompt_tokens, 0)) AS prompt_tokens,
                SUM(COALESCE(completion_tokens, 0)) AS completion_tokens,
                SUM(COALESCE(total_tokens, 0)) AS total_tokens,
-               SUM(COALESCE(memories_count, 0)) AS memories_count
+               SUM(COALESCE(memories_count, 0)) AS memories_count,
+               SUM(COALESCE(elapsed_ms, 0)) AS elapsed_ms,
+               SUM(CASE WHEN elapsed_ms IS NOT NULL THEN 1 ELSE 0 END) AS elapsed_ms_runs
         FROM refine_runs{where_sql}
         GROUP BY period_key, stage
         ORDER BY period_key ASC, stage ASC
@@ -177,8 +195,44 @@ def refine_detail(
             value = int(r[f] or 0)
             item[f] = value
             totals[f] += value
+        item.update(_derive_detail_fields(item, batch_budget=batch_budget))
         items.append(item)
     return items, totals
+
+
+def _derive_detail_fields(item: dict, *, batch_budget: int | None) -> dict:
+    """由聚合计数派生比值字段（**不参与 totals 求和**）。
+
+    分母为 0 时统一返回 ``None``（而不是 0）——「没有数据」与「比值是 0」
+    语义不同，前端据此区分「无样本」与「极低成本」。
+
+    - ``tokens_per_memory``：单条记忆的提炼成本（成本集中度的核心观测量）
+    - ``avg_prompt_tokens``：单批平均 prompt 体积
+    - ``elapsed_ms_avg``：单批真实平均耗时（只对**有耗时值**的行求均值，
+      老行 ``elapsed_ms IS NULL`` 不计入分母，避免拉低均值）
+    - ``batch_utilization``：批预算利用率 = avg_prompt_tokens / batch_budget
+      （批预算由调用方传入；不传则 None）
+    """
+    runs = int(item.get("runs") or 0)
+    memories = int(item.get("memories_count") or 0)
+    total_tokens = int(item.get("total_tokens") or 0)
+    prompt_tokens = int(item.get("prompt_tokens") or 0)
+    elapsed_runs = int(item.get("elapsed_ms_runs") or 0)
+    elapsed_ms = int(item.get("elapsed_ms") or 0)
+
+    tokens_per_memory = round(total_tokens / memories, 2) if memories > 0 else None
+    avg_prompt_tokens = round(prompt_tokens / runs, 1) if runs > 0 else None
+    elapsed_ms_avg = round(elapsed_ms / elapsed_runs, 1) if elapsed_runs > 0 else None
+    utilization = None
+    if batch_budget and avg_prompt_tokens is not None:
+        utilization = round(avg_prompt_tokens / batch_budget, 4)
+
+    return {
+        "tokens_per_memory": tokens_per_memory,
+        "avg_prompt_tokens": avg_prompt_tokens,
+        "elapsed_ms_avg": elapsed_ms_avg,
+        "batch_utilization": utilization,
+    }
 
 
 def count_vector_rows(conn: sqlite3.Connection) -> dict[str, int]:

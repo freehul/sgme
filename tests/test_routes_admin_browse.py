@@ -124,19 +124,24 @@ def _insert_run(
     total_tokens: int | None = 120,
     memories_count: int = 3,
     error: str | None = None,
+    elapsed_ms: int | None = None,
 ) -> None:
-    """直插 refine_runs（需要精确控制 started_at，故不用 RefineRunRecorder）。"""
+    """直插 refine_runs（需要精确控制 started_at，故不用 RefineRunRecorder）。
+
+    ``elapsed_ms``（ST-58/T-296）：默认 None = 模拟 A2（T-289）之前的老行，
+    用于验证派生字段 `elapsed_ms_avg` 只在**有值**的行上求均值。
+    """
     conn.execute(
         """
         INSERT INTO refine_runs
           (run_id, file_id, stage, version, variant, provider, bucket_key,
            started_at, finished_at, memories_count, prompt_tokens,
-           completion_tokens, total_tokens, action_counts, status, error)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           completion_tokens, total_tokens, action_counts, status, error, elapsed_ms)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (run_id, f"file_{run_id}", stage, "v001", None, provider, "bk",
          started_at, started_at, memories_count, prompt_tokens,
-         completion_tokens, total_tokens, '{"store": 3}', status, error),
+         completion_tokens, total_tokens, '{"store": 3}', status, error, elapsed_ms),
     )
     conn.commit()
 
@@ -238,13 +243,18 @@ def seeded(app, conns, raw_dir):
     scene_dao.add_memory_link(mem_conn, "scene_a", active_ids[1])
 
     # --- refine_runs：跨周（2026-08-09 周日 / 2026-08-10 周一）+ 多 stage 多状态 ---
-    _insert_run(mem_conn, "run_ok_1", "l1_extraction", "ok", "2026-08-09T10:00:00Z")
-    _insert_run(mem_conn, "run_ok_2", "l1_extraction", "ok", "2026-08-09T12:00:00Z")
+    # elapsed_ms：4 条有值（1000/3000/5000/2000）+ error 那条为 NULL（老行形态）
+    _insert_run(mem_conn, "run_ok_1", "l1_extraction", "ok", "2026-08-09T10:00:00Z",
+                elapsed_ms=1000)
+    _insert_run(mem_conn, "run_ok_2", "l1_extraction", "ok", "2026-08-09T12:00:00Z",
+                elapsed_ms=3000)
     _insert_run(mem_conn, "run_err", "l1_extraction", "error", "2026-08-10T09:00:00Z",
                 error="LLM 超时", prompt_tokens=None, completion_tokens=None,
-                total_tokens=None, memories_count=0)
-    _insert_run(mem_conn, "run_scene", "l2_scene", "ok", "2026-08-10T11:00:00Z")
-    _insert_run(mem_conn, "run_running", "tier0_summary", "running", "2026-08-10T13:00:00Z")
+                total_tokens=None, memories_count=0, elapsed_ms=None)
+    _insert_run(mem_conn, "run_scene", "l2_scene", "ok", "2026-08-10T11:00:00Z",
+                elapsed_ms=5000)
+    _insert_run(mem_conn, "run_running", "tier0_summary", "running", "2026-08-10T13:00:00Z",
+                elapsed_ms=2000)
 
     # --- raw_files + 磁盘原文 ---
     _insert_raw(session_conn, "f_hermes_1", "hermes-aaa", "hermes", "refined", _iso(2))
@@ -656,6 +666,9 @@ def test_stats_detail_daily_grouping_and_totals(client, seeded):
     assert set(body["items"][0].keys()) == {
         "period_key", "stage", "runs", "ok", "error",
         "prompt_tokens", "completion_tokens", "total_tokens", "memories_count",
+        # ST-58/T-296（D1）：耗时聚合 + 派生字段
+        "elapsed_ms", "elapsed_ms_runs",
+        "tokens_per_memory", "avg_prompt_tokens", "elapsed_ms_avg", "batch_utilization",
     }
     # 时间升序，便于直接喂图表
     assert [i["period_key"] for i in body["items"]] == sorted(
@@ -663,8 +676,13 @@ def test_stats_detail_daily_grouping_and_totals(client, seeded):
     )
 
     for field in ("runs", "ok", "error", "prompt_tokens",
-                  "completion_tokens", "total_tokens", "memories_count"):
+                  "completion_tokens", "total_tokens", "memories_count",
+                  "elapsed_ms", "elapsed_ms_runs"):
         assert body["totals"][field] == sum(i[field] for i in body["items"]), field
+    # 派生字段是比值，**不参与 totals**（相加无意义）
+    for derived in ("tokens_per_memory", "avg_prompt_tokens",
+                    "elapsed_ms_avg", "batch_utilization"):
+        assert derived not in body["totals"], derived
 
     assert body["totals"]["runs"] == 5
     assert body["totals"]["ok"] == 3
@@ -673,6 +691,44 @@ def test_stats_detail_daily_grouping_and_totals(client, seeded):
     assert body["totals"]["prompt_tokens"] == 400
     assert body["totals"]["completion_tokens"] == 80
     assert body["totals"]["total_tokens"] == 480
+    # 4 条有耗时（1000+3000+5000+2000），error 那条 NULL 不计分母
+    assert body["totals"]["elapsed_ms"] == 11000
+    assert body["totals"]["elapsed_ms_runs"] == 4
+
+
+def test_stats_detail_derived_fields(client, seeded):
+    """派生字段算术（ST-58/T-296，契约 §5.7）：tokens_per_memory / avg_prompt / elapsed_avg / utilization。"""
+    items = client.get("/v1/admin/stats/detail?period=daily", headers=ADMIN).json()["items"]
+    keyed = {(i["period_key"], i["stage"]): i for i in items}
+
+    day1 = keyed[("2026-08-09", "l1_extraction")]   # 2 批：各 100 prompt / 3 记忆
+    assert day1["runs"] == 2 and day1["memories_count"] == 6
+    assert day1["total_tokens"] == 240
+    assert day1["tokens_per_memory"] == round(240 / 6, 2) == 40.0
+    assert day1["avg_prompt_tokens"] == 100.0
+    # 只有 2 条 elapsed 有值（1000/3000）→ 均值 2000（NULL 那条不计分母）
+    assert day1["elapsed_ms_runs"] == 2
+    assert day1["elapsed_ms_avg"] == 2000.0
+    # 批预算由 operations 层从 cfg 解析（测试 cfg 的链首 context_window 折算）
+    assert day1["batch_utilization"] is not None
+    assert day1["batch_utilization"] > 0
+
+    # error 那条：memories_count=0 → tokens_per_memory 无样本 → None（不是 0）
+    day2_err = keyed[("2026-08-10", "l1_extraction")]
+    assert day2_err["memories_count"] == 0
+    assert day2_err["tokens_per_memory"] is None
+    assert day2_err["elapsed_ms_avg"] is None   # 唯一一条 elapsed 为 NULL → 无分母
+
+
+def test_stats_detail_without_cfg_budget_is_none(client, seeded):
+    """不给 cfg（预算未知）时 batch_utilization 为 None，其余派生字段照常给出。"""
+    from sgme.data import stats_dao
+
+    items, totals = stats_dao.refine_detail(
+        client.app.state.mem_conn, period="daily", batch_budget=None
+    )
+    assert all(i["batch_utilization"] is None for i in items)
+    assert any(i["tokens_per_memory"] is not None for i in items)
 
 
 def test_stats_detail_daily_rows_split_by_stage(client, seeded):

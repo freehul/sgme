@@ -1052,6 +1052,8 @@ def admin_stats_detail(
     return run_operation(
         stats_detail_operation,
         mem_conn,
+        # ST-58/T-296（D1）：传 cfg 以便 operations 层解析批预算（派生 batch_utilization）
+        request.app.state.cfg,
         period=period,
         stage=stage,
         from_ts=from_,

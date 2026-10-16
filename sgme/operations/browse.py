@@ -484,6 +484,7 @@ def get_session_raw(
 
 def stats_detail(
     mem_conn: sqlite3.Connection,
+    cfg: dict | None = None,
     *,
     period: str | None = None,
     stage: str | None = None,
@@ -497,6 +498,10 @@ def stats_detail(
 
     Args:
         mem_conn: memory.db 连接（``refine_runs`` 在 memory.db）。
+        cfg: 全量配置。ST-58/T-296（D1）：用于解析批预算，算出派生字段
+            ``batch_utilization``（= 单批平均 prompt / 批预算）。**预算解析走
+            engine 的公开口径**（`l15.resolve_batch_budget`），本层不自己折算，
+            避免与 L1.5 实际用的预算口径漂移；不传则该项为 ``None``。
         period: ``daily`` / ``weekly``（缺省）/ ``monthly``。
         stage: 可选 stage 过滤；不传时按 stage 分行。
         from_ts / to_ts: 时间范围，作用于 ``started_at``（契约参数名 ``from`` / ``to``，
@@ -514,12 +519,24 @@ def stats_detail(
     from_value = parse_timestamp(from_ts, "from")
     to_value = parse_timestamp(to_ts, "to")
 
+    # ST-58/T-296（D1）：批预算用于派生字段 batch_utilization。
+    # 走 engine 公开口径，保证与 L1.5 实际装箱用的预算同源；解析失败不阻断明细。
+    batch_budget: int | None = None
+    if cfg:
+        try:
+            from sgme.engine import l15 as l15_mod
+
+            batch_budget = l15_mod.resolve_batch_budget(cfg.get("llm", {}) or {})
+        except Exception:  # noqa: BLE001——派生字段缺失不影响主明细
+            batch_budget = None
+
     items, totals = stats_dao.refine_detail(
         mem_conn,
         period=period_value or DEFAULT_PERIOD,
         stage=stage_value,
         from_ts=from_value,
         to_ts=to_value,
+        batch_budget=batch_budget,
     )
     return OperationResult.succeed({
         "items": items,

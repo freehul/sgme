@@ -1080,14 +1080,27 @@ def _write_semantic_edges(
     return written
 
 
-def _resolve_batch_budget(llm_cfg: dict) -> int:
-    """计算 L1.5 上下文预算（tokens）：链首节点 context_window 折算；失败回退默认值。"""
+def resolve_batch_budget(llm_cfg: dict, default: int = DEFAULT_BATCH_BUDGET) -> int:
+    """计算上下文预算（tokens）：链首节点 context_window 折算；失败回退默认值。
+
+    ST-58/T-296（D1）：由私有名 `_resolve_batch_budget` 提升为公开 API——
+    `operations/browse` 需要同一口径的批预算来算 `batch_utilization`，
+    跨层引用私有名是坏味道；同时避免各层各写一份（口径漂移风险）。
+
+    Args:
+        llm_cfg: `cfg["llm"]` 段。
+        default: 折算失败时的兜底预算（各调用方历史默认值不同，故可覆盖）。
+    """
     try:
         first_node = llm_cfg["chains"]["refinement"][0]
         return llm_chain.batch_budget(first_node, llm_cfg.get("rules", {}))
     except Exception:
-        logger.warning("batch_budget 计算失败，回退默认预算 %d tokens", DEFAULT_BATCH_BUDGET)
-        return DEFAULT_BATCH_BUDGET
+        logger.warning("batch_budget 计算失败，回退默认预算 %d tokens", default)
+        return default
+
+
+# 向后兼容别名（既有引用沿用；新代码用公开名）
+_resolve_batch_budget = resolve_batch_budget
 
 
 def resolve_conflicts(
