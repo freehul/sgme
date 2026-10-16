@@ -141,6 +141,13 @@ def persist_memories(
             logger.warning("L1.5 失败降级直存: %s", l15_res.error)
             stats = _fallback_direct_store(refine_result, mem_conn, cfg, src_refs,
                                            prompt_version=prompt_version)
+            # ST-58/T-291：降级直存 = L1.5 冲突检测被跳过，此前 62 天 937 次全静默，
+            # 事后无补检入口。补发 anomaly_warn（与 refine.py 的 deepseek 告警同型，
+            # 失败不阻塞主流程）。
+            _publish_fallback_warn(
+                mem_conn, file_id, reason=f"l15_error: {l15_res.error}",
+                memories_count=len(refine_result.memories),
+            )
         else:
             refine_result.prompt_versions["l1_conflict"] = l15_res.prompt_meta
             stats = {
@@ -170,11 +177,45 @@ def persist_memories(
         logger.warning("L1.5 异常降级直存: %s", e)
         stats = _fallback_direct_store(refine_result, mem_conn, cfg, src_refs,
                                        prompt_version=prompt_version)
+        # ST-58/T-291：同上下，异常路径的降级直存也要留痕（此前全静默）
+        _publish_fallback_warn(
+            mem_conn, file_id, reason=f"l15_exception: {e}",
+            memories_count=len(refine_result.memories),
+        )
         # 降级路径同样执行替代联动（新记忆已直存带 memory_id）
         superseded = _apply_supersession_linkage_safe(mem_conn, refine_result.memories)
         stats["supersession_rejected"] = len(superseded)
         refine_mod.finalize_refinement(refine_result, mem_conn, cfg)
         return stats
+
+
+def _publish_fallback_warn(
+    mem_conn: sqlite3.Connection,
+    file_id: str,
+    reason: str,
+    memories_count: int,
+) -> None:
+    """降级直存发 `anomaly_warn`（ST-58/T-291，失败不阻塞）。
+
+    降级直存意味着 **L1.5 冲突检测被整体跳过**——重复/冲突记忆会直落入池，
+    且事后没有补检入口。生产 62 天内发生 937 次且全部静默，故在此补信号。
+
+    与 `refine.py` 的 deepseek 告警同型：任何异常只记日志，绝不改变主流程结果。
+    """
+    try:
+        from sgme.signal import engine as signal_engine
+
+        signal_engine.publish(
+            "anomaly_warn", "l15_fallback",
+            {
+                "file_id": file_id,
+                "reason": reason,
+                "memories_count": memories_count,
+            },
+            mem_conn,
+        )
+    except Exception as e:  # noqa: BLE001——告警是旁路，失败不影响降级直存结果
+        logger.warning("L1.5 降级直存告警发布失败（不影响主流程）: %s", e)
 
 
 def _fallback_direct_store(
