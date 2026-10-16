@@ -83,14 +83,28 @@ def _local_refine_node(base_url: str, model: str) -> dict:
 
 
 def build_cfg(arm: dict, *, embed_base_url: str, embed_model: str,
-              refine_base_url: str, refine_model: str, use_vector: bool) -> dict:
-    """基线 cfg + 臂覆盖（单变量：只有臂声明的字段被改）。"""
+              refine_base_url: str, refine_model: str, use_vector: bool,
+              refine_backend: str = "local") -> dict:
+    """基线 cfg + 臂覆盖（单变量：只有臂声明的字段被改）。
+
+    ``refine_backend``：
+    - ``local``（默认）：把提炼链换成本地 LM Studio 节点 + rule 兜底，零云依赖。
+    - ``cloud``：**保留基线链不动**（生产链 agnes→siliconflow→rule）——用于回答
+      「本地 9B 的结论能否代表生产模型」。此时 embed 仍走本地（嵌入与提炼模型无关，
+      且零成本、确定性好）。
+    """
     cfg = sgme_config.load_config()
-    cfg.setdefault("llm", {})["chains"] = {
-        "refinement": [_local_refine_node(refine_base_url, refine_model),
-                       {"provider": "rule", "rule": "drop_batch"}],
-    }
-    cfg["llm"]["rules"] = {"timeout_s": 1800, "max_retries": 2, "throttle": {"enabled": False}}
+    if refine_backend == "cloud":
+        # 保留生产链（含其 throttle/timeout 规则），只确保链存在
+        if not (cfg.get("llm", {}).get("chains", {}) or {}).get("refinement"):
+            raise RuntimeError("基线 cfg 缺少 refinement 链，无法用 cloud 后端")
+    else:
+        cfg.setdefault("llm", {})["chains"] = {
+            "refinement": [_local_refine_node(refine_base_url, refine_model),
+                           {"provider": "rule", "rule": "drop_batch"}],
+        }
+        cfg["llm"]["rules"] = {"timeout_s": 1800, "max_retries": 2,
+                               "throttle": {"enabled": False}}
     cfg.setdefault("search", {})["vector"] = {
         "enabled": bool(use_vector),
         "provider": "local",
@@ -124,7 +138,8 @@ def seed_pool(conn, pool: list[dict]) -> None:
 
 def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
             batches: list[dict], embed_base_url: str, embed_model: str,
-            refine_base_url: str, refine_model: str, use_vector: bool) -> dict:
+            refine_base_url: str, refine_model: str, use_vector: bool,
+            refine_backend: str = "local") -> dict:
     """跑一个臂：独立库 + 固定池 + 逐批 L1.5 裁决。"""
     arm_dir = work_dir / f"arm_{name}"
     if arm_dir.exists():
@@ -134,7 +149,7 @@ def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
 
     cfg = build_cfg(arm, embed_base_url=embed_base_url, embed_model=embed_model,
                     refine_base_url=refine_base_url, refine_model=refine_model,
-                    use_vector=use_vector)
+                    use_vector=use_vector, refine_backend=refine_backend)
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(data_dir)
     try:
         # 全新库的 dimensions 表是空的 → 必须先灌注册表（YAML 为种子，DB 为运行时真相），
@@ -167,7 +182,7 @@ def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
 
         # 成本/候选规模（自诊断：判断 prescreen 上限是否真的卡住）
         runs = mem_conn.execute(
-            "SELECT stage, candidate_count, prompt_tokens, elapsed_ms, status "
+            "SELECT stage, provider, candidate_count, prompt_tokens, elapsed_ms, status "
             "FROM refine_runs WHERE stage='l1_conflict' ORDER BY started_at"
         ).fetchall()
         return {
@@ -232,6 +247,12 @@ def compare(base: dict, arm: dict) -> dict:
 
 
 def summarize_costs(arm: dict) -> dict:
+    """成本/规模聚合 + **实际 provider 分布**。
+
+    provider 分布是**诚实性断言**：链可能是 agnes → siliconflow → rule 逐级降级，
+    若「生产模型对照」实际由 rule 兜底（零 LLM）产出，结论毫无意义。故必须显式记录
+    每个 run 实际由谁服务（`refine_runs.provider`）。
+    """
     runs = arm["runs"]
     cands = [r["candidate_count"] for r in runs if r.get("candidate_count") is not None]
     prompts = [r["prompt_tokens"] for r in runs if r.get("prompt_tokens") is not None]
@@ -241,6 +262,7 @@ def summarize_costs(arm: dict) -> dict:
         "candidate_count_max": max(cands) if cands else None,
         "prompt_tokens_sum": sum(prompts) if prompts else 0,
         "errors": sum(1 for r in runs if r.get("status") == "error"),
+        "providers": dict(Counter(r.get("provider") for r in runs if r.get("provider"))),
     }
 
 
@@ -250,18 +272,23 @@ def render_markdown(report: dict) -> str:
     L.append("")
     L.append(f"> 生成：{report['generated_at']} ｜ 语料：`eval/l15_decision_corpus.py`"
              f"（池 {report['pool_size']} 条 = 手写 {report['pool_base']} + 填充 "
-             f"{report['fillers']}）｜ 向量：{'开' if report['use_vector'] else '关'}")
+             f"{report['fillers']}）｜ 向量：{'开' if report['use_vector'] else '关'}"
+             f"｜ 提炼后端：{(report.get('refine') or {}).get('backend', 'local')}")
     L.append("")
     L.append("## 一、决策准确率（对人工标注 expect 的绝对命中率）")
     L.append("")
-    L.append("| 臂 | 命中/总数 | 准确率 | 成本候选均值 | prompt 合计 | L1.5 error |")
-    L.append("|---|---|---|---|---|---|")
+    L.append("| 臂 | 命中/总数 | 准确率 | 成本候选均值 | prompt 合计 | L1.5 error | 实际 provider |")
+    L.append("|---|---|---|---|---|---|---|")
     for a in report["arms"]:
         acc = a["accuracy"]
         c = a["cost"]
         L.append(f"| {a['arm']} | {acc['hit']}/{acc['total']} | "
                  f"{(acc['rate']*100 if acc['rate'] is not None else 0):.1f}% | "
-                 f"{c['candidate_count_avg']} | {c['prompt_tokens_sum']} | {c['errors']} |")
+                 f"{c['candidate_count_avg']} | {c['prompt_tokens_sum']} | {c['errors']} | "
+                 f"`{c.get('providers') or {}}` |")
+    L.append("")
+    L.append("> **provider 是诚实性断言**：链 agnes→siliconflow→rule 会逐级降级，"
+             "若结果实际由 `rule`（零 LLM）产出，本轮结论无意义。核对上表 provider 列。")
     L.append("")
     L.append("## 二、决策一致率（vs 基线臂，G3-c 门禁量）")
     L.append("")
@@ -330,6 +357,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="要跑的臂（逗号分隔，键见 ARMS）")
     ap.add_argument("--no-vector", action="store_true",
                     help="关闭向量预筛（只看维度 Top-N，调试用）")
+    ap.add_argument("--refine-backend", choices=("local", "cloud"), default="local",
+                    help="提炼后端：local=本地 LM Studio（默认，零云依赖）；"
+                         "cloud=基线生产链 agnes→siliconflow→rule（答案能否外推生产）")
     # ⚠️ 端点默认**固定回环**，不读 SGME_EMBED_*/SGME_REFINE_* 环境变量——
     # 首次实跑踩到：宿主环境里残留的跨机端点（另一台机器:8123）把请求指到了不可达地址，
     # 「零云依赖的本机对照」变成了静默走网络。要换机请显式传参（可审计）。
@@ -353,7 +383,10 @@ def main(argv: list[str] | None = None) -> int:
           f"／新记忆批 {len(corpus.BATCHES)}")
     print(f"臂：{names}｜向量预筛：{'关' if args.no_vector else '开'}"
           f"（{args.embed_base_url} / {args.embed_model}）")
-    print(f"提炼：{args.refine_base_url} / {args.refine_model}")
+    if args.refine_backend == "cloud":
+        print("提炼：**云端生产链**（agnes → siliconflow → rule；实际 provider 见报告）")
+    else:
+        print(f"提炼：本地 {args.refine_base_url} / {args.refine_model}")
 
     arms_raw = []
     for n in names:
@@ -361,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         r = run_arm(n, ARMS[n], work_dir=out_dir, pool=pool, batches=corpus.BATCHES,
                     embed_base_url=args.embed_base_url, embed_model=args.embed_model,
                     refine_base_url=args.refine_base_url, refine_model=args.refine_model,
-                    use_vector=not args.no_vector)
+                    use_vector=not args.no_vector, refine_backend=args.refine_backend)
         arms_raw.append(r)
         for b in r["batches"]:
             print(f"  [{b['batch_id']}] expect={b['expect']} "
@@ -384,7 +417,8 @@ def main(argv: list[str] | None = None) -> int:
         "pool_base": len(corpus.POOL), "fillers": args.fillers, "pool_size": len(pool),
         "batches": len(corpus.BATCHES), "use_vector": not args.no_vector,
         "embed": {"base_url": args.embed_base_url, "model": args.embed_model},
-        "refine": {"base_url": args.refine_base_url, "model": args.refine_model},
+        "refine": {"backend": args.refine_backend,
+                   "base_url": args.refine_base_url, "model": args.refine_model},
         "arms": arms_out,
     }
     (out_dir / "report.json").write_text(

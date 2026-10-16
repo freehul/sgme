@@ -24,14 +24,33 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 #: 固定时间基准（确定性：所有 fixture 的 created/updated 都相对它取值）。
 BASE_TS = "2026-03-01T00:00:00Z"
 
+#: ⚠️ 时间线设计（2026-10-17 修正，首轮实跑踩坑）：
+#: 池条目的 `updated_at` **必须比填充条目更新**。
+#: 因为候选池按 `updated_at DESC` 取 top-n 截断——首版让填充比池更新，结果
+#: `pool-0001` / `pool-0008` 被 60 条填充挤出候选池（environment 维度共 63 条），
+#: 目标候选根本没送到模型眼前，`skip_subsumed` / `escape_path` 两条 expect
+#: **在物理上不可达成**（模型只好判 store，理由也写得很对）。那是语料缺陷，
+#: 不是模型能力问题——绝对准确率因此被严重低估（实测 50%）。
+#: 现排布：池 = day 61..68（最新），填充 = day 1..n（更旧）→ 池条目恒在候选池内，
+#: 而总候选数仍 > 上限（63 > 50 > 30），故 prescreen 上限照旧会卡住。
+_POOL_DAY_BASE = 60
 
-def _ts(day: int, hour: int = 0) -> str:
-    return f"2026-03-{day:02d}T{hour:02d}:00:00Z"
+#: 时间线基准日；`updated_day` 是**相对基准日的天数偏移**（不是月内日号）。
+#: ⚠️ 首版直接把它当「月内日号」拼字符串，偏移 >31 时生成 `2026-03-61` 这类
+#: **非法日期**——字典序排序虽然还能用，但任何 `fromisoformat` 解析都会失败。
+#: 改为真日历偏移，保证产出的是合法 ISO 8601。
+_EPOCH = date(2026, 3, 1)
+
+
+def _ts(day_offset: int, hour: int = 0) -> str:
+    d = _EPOCH + timedelta(days=day_offset)
+    return f"{d.isoformat()}T{hour:02d}:00:00Z"
 
 
 # ---------- 池（既有记忆 = L1.5 的候选来源） ----------
@@ -43,7 +62,7 @@ POOL: list[dict[str, Any]] = [
         "dimension_ids": ["environment"],
         "memory_type": "fact",
         "priority": 60,
-        "updated_day": 1,
+        "updated_day": 61,
     },
     {
         "memory_id": "pool-0002",
@@ -51,7 +70,7 @@ POOL: list[dict[str, Any]] = [
         "dimension_ids": ["habits"],
         "memory_type": "fact",
         "priority": 50,
-        "updated_day": 1,
+        "updated_day": 62,
     },
     {
         "memory_id": "pool-0003",
@@ -59,7 +78,7 @@ POOL: list[dict[str, Any]] = [
         "dimension_ids": ["tech_stack"],
         "memory_type": "fact",
         "priority": 60,
-        "updated_day": 1,
+        "updated_day": 63,
     },
     {
         "memory_id": "pool-0004",
@@ -67,7 +86,7 @@ POOL: list[dict[str, Any]] = [
         "dimension_ids": ["goals"],
         "memory_type": "fact",
         "priority": 70,
-        "updated_day": 2,
+        "updated_day": 64,
     },
     {
         "memory_id": "pool-0005",
@@ -75,7 +94,7 @@ POOL: list[dict[str, Any]] = [
         "dimension_ids": ["environment"],
         "memory_type": "fact",
         "priority": 50,
-        "updated_day": 2,
+        "updated_day": 65,
     },
     {
         "memory_id": "pool-0006",
@@ -83,7 +102,7 @@ POOL: list[dict[str, Any]] = [
         "dimension_ids": ["preferences"],
         "memory_type": "persona",
         "priority": 80,
-        "updated_day": 2,
+        "updated_day": 66,
     },
     {
         # 长记忆：关键信息在**尾部**（B1' 截断正文的专项风险场景）
@@ -96,7 +115,7 @@ POOL: list[dict[str, Any]] = [
         "dimension_ids": ["tech_stack"],
         "memory_type": "fact",
         "priority": 55,
-        "updated_day": 3,
+        "updated_day": 67,
     },
     {
         # 含 Windows 风格路径：JSON 转义 / 就地修复专项场景
@@ -105,7 +124,7 @@ POOL: list[dict[str, Any]] = [
         "dimension_ids": ["environment"],
         "memory_type": "fact",
         "priority": 45,
-        "updated_day": 3,
+        "updated_day": 68,
     },
 ]
 
@@ -197,8 +216,14 @@ def make_fillers(n: int, *, dimension: str = "environment") -> list[dict[str, An
 
     目的：让 prescreen 上限真的卡住 —— 池只有 8 条时，`dimension_top_n=50` 与 `=30`
     都不裁任何东西，B2（50→30）的效果恒为 0，门禁就失去意义。填充条目的
-    `updated_at` 比 POOL 更新，故在「按 updated_at DESC 取 top_n」下会**挤掉**池条目，
-    从而把 30/50 的差异暴露出来。
+    `updated_at` **比 POOL 旧**，故在「按 updated_at DESC 取 top_n」下**不会**挤掉池条目
+    （池条目恒在候选池内，expect 才可能达成）；填充的作用是把总候选数顶到上限之上，
+    让截断真的发生。
+
+    ⚠️ 未覆盖的场景（T-298 待补）：**「相关候选恰好落在 30 与 50 之间」的边界场景**——
+    那才是 B2 真正的风险面（收紧阈值可能丢掉相关候选）。它需要对
+    `updated_at` 排名与 cap 的位置做实测标定，无法凭手写盲配（向量 Top-K 也会并进来），
+    故单列为 T-298 的标定项。
 
     Args:
         n: 填充条数（建议 ≥ 40，使 30 与 50 的截断边界落在池条目之间）。
@@ -216,8 +241,9 @@ def make_fillers(n: int, *, dimension: str = "environment") -> list[dict[str, An
             "dimension_ids": [dimension],
             "memory_type": "fact",
             "priority": 20,
-            # 比 POOL 全部更新（day 4+）→ 在 updated_at DESC 排序下排在前列
-            "updated_day": 4 + (i % 20),
+            # **比池条目更旧**（day 1..n 严格递增）→ 池条目在 updated_at DESC 下恒在前列、
+            # 必然进候选池；填充只负责把总候选数顶到上限之上（截断落在填充区）
+            "updated_day": 1 + (i % 60),
         })
     return out
 

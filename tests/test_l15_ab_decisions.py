@@ -55,8 +55,34 @@ def test_fillers_deterministic_and_same_dimension():
     b = C.make_fillers(5)
     assert [x["content"] for x in a] == [x["content"] for x in b]
     assert all(x["dimension_ids"] == ["environment"] for x in a)
-    # 填充的 updated_at 必须比池更新，否则挤不掉池条目、上限卡不住
-    assert all(x["updated_day"] >= 4 for x in a)
+    # 填充的 updated_at 必须**比池条目旧** —— 否则会把池条目挤出候选池，
+    # 目标候选根本送不到模型眼前，expect 在物理上不可达成（首版踩坑，见模块注释）
+    assert max(x["updated_day"] for x in a) < min(m["updated_day"] for m in C.POOL)
+
+
+def test_pool_entries_survive_candidate_cap():
+    """回归锁：池条目必须**恒在候选池内**（按 updated_at DESC 取 top-n 也挤不掉）。
+
+    首版语料让填充比池更新，`pool-0001`/`pool-0008` 被挤出 63 条候选的 top-30/50，
+    导致 `skip_subsumed`/`escape_path` 两条 expect 不可达成、准确率被严重低估。
+    """
+    pool = C.build_pool(60)
+    env = [m for m in pool if "environment" in m["dimension_ids"]]
+    env_sorted = sorted(env, key=lambda m: -m["updated_day"])
+    hand = [m["memory_id"] for m in env if not m["memory_id"].startswith("filler")]
+    assert len(env) > 50, "候选数必须超过最大上限，否则截断不发生 → 假绿灯"
+    for cap in (30, 50):
+        hit = {m["memory_id"] for m in env_sorted[:cap]}
+        assert set(hand) <= hit, f"cap={cap} 挤掉了池条目: {set(hand) - hit}"
+
+
+def test_all_fixture_timestamps_parse_as_iso():
+    """时间戳必须是真的 ISO 8601（首版把天数偏移当月内日号拼出 `2026-03-61`）。"""
+    from datetime import datetime
+
+    for m in C.build_pool(60):
+        t = C._ts(m["updated_day"])
+        datetime.fromisoformat(t.replace("Z", "+00:00"))  # 不抛即通过
 
 
 def test_build_pool_composition():
@@ -149,6 +175,7 @@ def test_render_markdown_has_gate_sections():
     report = {
         "generated_at": "2026-10-17T00:00:00Z", "pool_base": 8, "fillers": 60,
         "pool_size": 68, "use_vector": True,
+        "refine": {"backend": "cloud", "base_url": "x", "model": "y"},
         "arms": [
             {"arm": "baseline", "note": "", "prescreen": base["prescreen"],
              "batches": base["batches"], "cost": H.summarize_costs(base),
@@ -183,6 +210,36 @@ def test_build_cfg_applies_only_declared_overrides():
     # 其余段落必须逐字段一致
     assert base["llm"] == arm["llm"]
     assert base["search"] == arm["search"]
+
+
+def test_build_cfg_cloud_backend_keeps_production_chain():
+    """cloud 后端：**保留基线生产链**（含 agnes），不注入本地节点。"""
+    cfg = H.build_cfg(H.ARMS["baseline"], embed_base_url="http://127.0.0.1:1/v1",
+                      embed_model="m", refine_base_url="http://127.0.0.1:1/v1",
+                      refine_model="mm", use_vector=False, refine_backend="cloud")
+    providers = [n.get("provider") for n in cfg["llm"]["chains"]["refinement"]]
+    assert "lmstudio_local" not in providers, providers
+    assert "agnes" in providers, providers
+    assert providers[-1] == "rule", providers
+
+
+def test_build_cfg_local_backend_replaces_chain():
+    """local 后端：链被替换为本地节点 + rule 兜底（零云依赖）。"""
+    cfg = H.build_cfg(H.ARMS["baseline"], embed_base_url="http://127.0.0.1:1/v1",
+                      embed_model="m", refine_base_url="http://127.0.0.1:1/v1",
+                      refine_model="mm", use_vector=False, refine_backend="local")
+    providers = [n.get("provider") for n in cfg["llm"]["chains"]["refinement"]]
+    assert providers == ["lmstudio_local", "rule"]
+
+
+def test_summarize_costs_reports_providers():
+    """必须披露实际 provider——否则「生产模型对照」可能其实是 rule 兜底却看不出来。"""
+    arm = _arm("cand", {}, runs=[
+        {"provider": "agnes", "candidate_count": 1, "prompt_tokens": 10, "status": "ok"},
+        {"provider": "agnes", "candidate_count": 2, "prompt_tokens": 20, "status": "ok"},
+        {"provider": "rule", "candidate_count": None, "prompt_tokens": None, "status": "ok"},
+    ])
+    assert H.summarize_costs(arm)["providers"] == {"agnes": 2, "rule": 1}
 
 
 def test_arms_registry_shape():
