@@ -1062,8 +1062,18 @@ def sync_index(
     # 向量永远补不上（2026-08-29 部署实测踩到）。
     # T-217：pending_embed 与 embed 解耦——embed=False（reindex/写后同步快速路径）
     # 也照实上报待补数，否则运维看到的恒为假 0（排查报告 9.2 实测撞上）。
-    covered = skills_dao.vector_covered(skills_conn)
-    todo = sorted({r["name"] for r in dicts} - covered)
+    # T-287（2026-10-16）：判据版本化——旧判据只查向量行存在性，内容更新后
+    # 不重嵌（生产实测 190/541 滞后）。现按「无行 ‖ 内容指纹不符 ‖ 模型不符」
+    # 判待重嵌；存量行指纹为 NULL（迁移产物）→ 自然判待嵌，欠账自动补完。
+    state = skills_dao.vector_state(skills_conn)
+    want_model = _vector_model_name(cfg)
+    todo = sorted(
+        r["name"]
+        for r in dicts
+        if _vector_needs_refresh(
+            state.get(r["name"]), r.get("sha256") or "", want_model
+        )
+    )
     pending = len(todo)
     embedded = 0
     if embed and todo:
@@ -1086,6 +1096,25 @@ def sync_index(
     )
 
 
+def _vector_model_name(cfg: dict) -> str:
+    """当前配置的向量模型名——同步判据与写入同源（防两处取值漂移）。"""
+    from sgme.data.search import vector as vector_mod
+
+    return ((cfg.get("search") or {}).get("vector") or {}).get(
+        "model", vector_mod._DEFAULT_EMBED_MODEL
+    )
+
+
+def _vector_needs_refresh(
+    state: tuple[str | None, str] | None, sha256: str, want_model: str
+) -> bool:
+    """向量是否需（重）嵌（T-287）：无行 ‖ 内容指纹不符 ‖ 模型不符。"""
+    if state is None:
+        return True
+    row_sha, row_model = state
+    return (row_sha or "") != sha256 or row_model != want_model
+
+
 def _embed_into_db(
     cfg: dict,
     skills_conn: sqlite3.Connection,
@@ -1100,16 +1129,15 @@ def _embed_into_db(
     from sgme.data.search import vector as vector_mod
     from sgme.skills.vectors import embed_texts
 
-    texts = [(_record_to_dict(by_name[n])["content"] or "")[:2000] for n in names]
+    rec_dicts = {n: _record_to_dict(by_name[n]) for n in names}
+    texts = [(rec_dicts[n]["content"] or "")[:2000] for n in names]
     try:
         embs = embed_texts(texts, cfg)
     except Exception as e:  # 容错：向量路失败不影响结构化同步
         logger.warning("技能向量嵌入失败（本次同步跳过向量）: %s", e)
         return 0
 
-    model = ((cfg.get("search") or {}).get("vector") or {}).get(
-        "model", vector_mod._DEFAULT_EMBED_MODEL
-    )
+    model = _vector_model_name(cfg)
     items: list[tuple[str, list[float]]] = []
     for i, name in enumerate(names):
         vec = embs.get(str(i))
@@ -1117,7 +1145,11 @@ def _embed_into_db(
             items.append((name, vec))
     if not items:
         return 0
-    return vector_mod.upsert_skill_vectors(skills_conn, items, model=model)
+    # T-287：随写内容指纹——版本化判据的比对锚点
+    shas = {n: (rec_dicts[n].get("sha256") or "") for n in names}
+    return vector_mod.upsert_skill_vectors(
+        skills_conn, items, model=model, content_shas=shas
+    )
 
 
 def reindex_after_write(

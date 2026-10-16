@@ -597,6 +597,8 @@ def connect_skills(data_dir: str | Path | None = None) -> sqlite3.Connection:
     # 老库迁移（B156）：先补 name_seg 列并回填，再建 FTS/触发器
     # （外部内容表与触发器都引用 name_seg，顺序不能反）
     migrated = _migrate_skills_name_seg(conn)
+    # T-287：skill_vectors 补内容指纹列（存量行 NULL → 判待重嵌；不涉 FTS）
+    _migrate_skill_vectors_content_sha(conn)
     # FTS5 虚表 + 同步触发器（幂等；与 wiki 的 init_wiki_fts 同职责，
     # 但技能库体量小且无需历史重建，直接在连接时就绪，避免调用方漏调）
     conn.executescript(SKILLS_FTS_DDL)
@@ -649,7 +651,8 @@ CREATE TABLE IF NOT EXISTS skill_vectors (
   embedding BLOB NOT NULL,
   model TEXT NOT NULL,
   dims INTEGER NOT NULL,
-  embedded_at TEXT NOT NULL);
+  embedded_at TEXT NOT NULL,
+  content_sha256 TEXT);
 
 CREATE TABLE IF NOT EXISTS skill_uses (
   src TEXT NOT NULL,
@@ -751,6 +754,31 @@ def _migrate_skills_name_seg(conn: sqlite3.Connection) -> bool:
         )
     conn.commit()
     return added or bool(rows)
+
+
+def _migrate_skill_vectors_content_sha(conn: sqlite3.Connection) -> bool:
+    """老库迁移（T-287，2026-10-16）：skill_vectors 补 content_sha256 内容指纹列。
+
+    Returns:
+        True = 本次发生了补列；False = 无需迁移（新库或已迁移过）。
+
+    背景：旧判据「todo = 全表 − vector_covered」只查向量行存在性——已存在行的
+    技能内容更新后不重嵌（生产实测 190/541 技能 updated_at > embedded_at）。
+    修复本体在 operations.skills::sync_index 的版本化判据；本迁移只负责让
+    **存量行**补出该列（值为 NULL）——NULL ≠ 当前指纹 → 自然判「待重嵌」，
+    欠账随下次同步/启动预热逐轮补完。不触碰 FTS（不涉分词列，无需 rebuild）。
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_vectors'"
+    ).fetchone()
+    if not has_table:
+        return False
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(skill_vectors)").fetchall()]
+    if "content_sha256" not in cols:
+        conn.execute("ALTER TABLE skill_vectors ADD COLUMN content_sha256 TEXT")
+        conn.commit()
+        return True
+    return False
 
 
 def _migrate_wiki_page_columns(conn: sqlite3.Connection) -> None:

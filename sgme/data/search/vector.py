@@ -518,12 +518,15 @@ def upsert_skill_vectors(
     conn: sqlite3.Connection,
     items: list[tuple[str, list[float]]],
     model: str = _DEFAULT_EMBED_MODEL,
+    content_shas: dict[str, str] | None = None,
 ) -> int:
     """批量写入技能向量（单事务，分批嵌入场景用）。
 
     Args:
         items: [(name, vec), ...] 已算好的向量（由 skills.vectors.embed_texts 分批产出）。
         model: 模型名（换模型时旧向量维度不符会被检索跳过，待重嵌）。
+        content_shas: {name: 内容指纹}——写入向量对应内容的 sha256（T-287
+            版本化判据的比对锚点；缺省 None = 不写该列，旧调用行为）。
 
     Returns:
         写入条数。
@@ -531,14 +534,20 @@ def upsert_skill_vectors(
     if not items:
         return 0
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    rows = [(name, _serialize_vector(vec), model, len(vec), now) for name, vec in items if vec]
+    shas = content_shas or {}
+    rows = [
+        (name, _serialize_vector(vec), model, len(vec), now, shas.get(name))
+        for name, vec in items
+        if vec
+    ]
     conn.executemany(
         """
-        INSERT INTO skill_vectors (name, embedding, model, dims, embedded_at)
-        VALUES (?,?,?,?,?)
+        INSERT INTO skill_vectors (name, embedding, model, dims, embedded_at, content_sha256)
+        VALUES (?,?,?,?,?,?)
         ON CONFLICT(name) DO UPDATE SET
           embedding=excluded.embedding, model=excluded.model,
-          dims=excluded.dims, embedded_at=excluded.embedded_at
+          dims=excluded.dims, embedded_at=excluded.embedded_at,
+          content_sha256=excluded.content_sha256
         """,
         rows,
     )

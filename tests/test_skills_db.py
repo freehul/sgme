@@ -705,3 +705,125 @@ class TestDbPathRankingOrientation:
         assert hits[0]["name"] == "pdf-tools", (
             f"名称加权最优匹配应居首，实际: {[(h['name'], h['score']) for h in hits]}"
         )
+
+class TestVectorVersionedEmbedding:
+    """T-287（2026-10-16）：向量随内容/模型版本刷新——版本化重嵌判据。
+
+    背景：旧判据 todo = 全表技能 − vector_covered（只查向量行存在性），
+    已存在行的技能内容更新后不重嵌；生产实测 190/541 技能向量滞后。
+    修复：skill_vectors 记录嵌入时的内容指纹 content_sha256，
+    判据 = 无行 ‖ 指纹不符 ‖ 模型不符 → 重嵌。
+    """
+
+    @staticmethod
+    def _patch(monkeypatch, records):
+        from sgme.operations import skills as skills_ops
+        import sgme.skills.vectors as vectors_mod
+
+        monkeypatch.setattr(skills_ops, "_load_records", lambda cfg, wc: records)
+        monkeypatch.setattr(
+            vectors_mod,
+            "embed_texts",
+            lambda texts, cfg: {str(i): [float(i), 1.0] for i in range(len(texts))},
+        )
+
+    def test_content_update_triggers_reembed(self, conn, monkeypatch):
+        from sgme.operations import skills as skills_ops
+
+        cfg = {"skills": {"enabled": True, "source_dirs": []}}
+        records = [_rec("a", "aaa")]
+        self._patch(monkeypatch, records)
+
+        r1 = skills_ops.sync_index(cfg, conn, None, max_embed=None, embed=True)
+        assert r1.data["embedded"] == 1
+        # pending_embed = 本轮**开始前**的待补数（T-217 口径：截断前、嵌前统计）
+        assert r1.data["pending_embed"] == 1
+
+        # 内容更新（指纹变化）→ 判待重嵌并刷新
+        records[:] = [_rec("a", "aaa-v2", sha="sha-a-v2")]
+        r2 = skills_ops.sync_index(cfg, conn, None, max_embed=None, embed=True)
+        assert r2.data["updated"] == 1
+        assert r2.data["embedded"] == 1
+        assert r2.data["pending_embed"] == 1
+        row = conn.execute(
+            "SELECT content_sha256 FROM skill_vectors WHERE name='a'"
+        ).fetchone()
+        assert row["content_sha256"] == "sha-a-v2"
+
+        # 无变化再同步 → 不重嵌
+        r3 = skills_ops.sync_index(cfg, conn, None, max_embed=None, embed=True)
+        assert r3.data["embedded"] == 0
+        assert r3.data["pending_embed"] == 0
+
+    def test_model_change_triggers_full_reembed(self, conn, monkeypatch):
+        from sgme.operations import skills as skills_ops
+
+        cfg = {"skills": {"enabled": True, "source_dirs": []}}
+        records = [_rec("a", "aaa"), _rec("b", "bbb")]
+        self._patch(monkeypatch, records)
+
+        r1 = skills_ops.sync_index(cfg, conn, None, max_embed=None, embed=True)
+        assert r1.data["embedded"] == 2
+
+        cfg2 = {
+            "skills": {"enabled": True, "source_dirs": []},
+            "search": {"vector": {"model": "embeddinggemma-2"}},
+        }
+        r2 = skills_ops.sync_index(cfg2, conn, None, max_embed=None, embed=True)
+        assert r2.data["pending_embed"] == 2
+        assert r2.data["embedded"] == 2
+        models = {
+            r["name"]: r["model"]
+            for r in conn.execute(
+                "SELECT name, model FROM skill_vectors"
+            ).fetchall()
+        }
+        assert models == {"a": "embeddinggemma-2", "b": "embeddinggemma-2"}
+
+    def test_legacy_null_sha_judged_stale(self, conn, monkeypatch):
+        """存量行无内容指纹（NULL）→ 判需重嵌（清欠账机制的同款语义）。"""
+        from sgme.data.search.vector import _DEFAULT_EMBED_MODEL
+        from sgme.operations import skills as skills_ops
+
+        cfg = {"skills": {"enabled": True, "source_dirs": []}}
+        records = [_rec("a", "aaa")]
+        self._patch(monkeypatch, records)
+        conn.execute(
+            "INSERT INTO skill_vectors (name, embedding, model, dims, embedded_at)"
+            " VALUES ('a', X'00', ?, 1, '2026-08-29T00:00:00Z')",
+            (_DEFAULT_EMBED_MODEL,),
+        )
+        conn.commit()
+
+        r = skills_ops.sync_index(cfg, conn, None, max_embed=None, embed=True)
+        assert r.data["pending_embed"] == 1
+        assert r.data["embedded"] == 1
+        row = conn.execute(
+            "SELECT content_sha256 FROM skill_vectors WHERE name='a'"
+        ).fetchone()
+        assert row["content_sha256"] == "sha-a"
+
+    def test_migration_adds_content_sha_column(self, tmp_path):
+        """老库迁移：旧形态 skill_vectors（无 content_sha256）→ connect_skills 补列。"""
+        db = tmp_path / "skills.db"
+        c0 = sqlite3.connect(str(db))
+        c0.execute(
+            "CREATE TABLE skill_vectors ("
+            " name TEXT PRIMARY KEY, embedding BLOB NOT NULL,"
+            " model TEXT NOT NULL, dims INTEGER NOT NULL, embedded_at TEXT NOT NULL)"
+        )
+        c0.execute(
+            "INSERT INTO skill_vectors (name, embedding, model, dims, embedded_at)"
+            " VALUES ('old', X'00', 'bge-m3', 1, '2026-08-29T00:00:00Z')"
+        )
+        c0.commit()
+        c0.close()
+
+        c = db_mod.connect_skills(tmp_path)
+        cols = [r[1] for r in c.execute("PRAGMA table_info(skill_vectors)").fetchall()]
+        assert "content_sha256" in cols
+        row = c.execute(
+            "SELECT content_sha256 FROM skill_vectors WHERE name='old'"
+        ).fetchone()
+        assert row["content_sha256"] is None
+        c.close()

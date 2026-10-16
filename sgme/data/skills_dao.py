@@ -313,6 +313,21 @@ def vector_covered(conn: sqlite3.Connection) -> set[str]:
     return {r["name"] for r in conn.execute("SELECT name FROM skill_vectors")}
 
 
+def vector_state(conn: sqlite3.Connection) -> dict[str, tuple[str | None, str]]:
+    """已有向量的 {name: (content_sha256, model)} 状态（T-287 版本化判据用）。
+
+    与 vector_covered 的区别：带出向量对应的**内容指纹与模型**——
+    判「是否需重嵌」= 无行 ‖ 指纹 ≠ 当前内容指纹 ‖ 模型 ≠ 当前配置模型。
+    存量行 content_sha256 为 NULL（老库迁移后）→ 自然判待重嵌（清欠账）。
+    """
+    return {
+        r["name"]: (r["content_sha256"], r["model"])
+        for r in conn.execute(
+            "SELECT name, content_sha256, model FROM skill_vectors"
+        )
+    }
+
+
 # ---------- 依赖图 ----------
 
 
