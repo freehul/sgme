@@ -21,6 +21,12 @@ from sgme.data import memory_dao
 logger = logging.getLogger("sgme.data.search.vector")
 
 # sqlite-vec 加载状态（首次尝试后缓存）
+#
+# ST-58/T-290（2026-10-17）语义收窄：
+# - ``_VEC_EXTENSION_LOADED`` 只表示「**sqlite_vec 包是否可用**」（模块级，全局事实）；
+# - 「某条连接是否已加载扩展」是**连接级**事实，由 `try_load_vec_extension` 每次实测判定，
+#   不再用全局标志代偿（旧实现：一条连接加载失败就把全局置 False，污染其它健康连接 ——
+#   这正是 18,534 次降级却 60/60 独立复现成功的放大机制）。
 _VEC_EXTENSION_LOADED = False
 _VEC_LOADABLE_PATH: str | None = None
 _VEC_TRIED_INIT = False
@@ -58,11 +64,38 @@ def get_embed_cache() -> Any | None:
     return _EMBED_CACHE
 
 
-def try_load_vec_extension(conn: sqlite3.Connection) -> bool:
-    """尝试加载 sqlite-vec 扩展（Windows 二进制兼容风险）。
+def _vec_already_loaded(conn: sqlite3.Connection) -> bool:
+    """探测本连接是否已加载 sqlite-vec（连接级事实，不依赖任何外部簿记）。
 
-    成功返回 True，失败返回 False（降级 numpy 余弦）。
-    首次尝试后缓存 loadable_path；每条连接仍需各自 load_extension。
+    判据：sqlite-vec 注册了标量函数 ``vec_version()``，能调用即已加载。
+
+    为什么用探测而不是「给连接打标」（ST-58/T-290 实测否决两种打标方案）：
+    - ``conn._sgme_vec_ok = True`` → ``AttributeError``：`sqlite3.Connection` 是
+      C 扩展类型，**没有 `__dict__``**，不允许挂自定义属性；
+    - ``weakref.WeakSet()`` → ``TypeError: cannot create weak reference``：
+      同一类型**不支持弱引用**。
+
+    故改为「问连接本身」。代价是每次调用多一条微秒级的标量查询，相比原实现
+    **每次都 load_extension（加载 DLL）** 反而更省，且无泄漏、无 id 复用风险。
+    """
+    try:
+        conn.execute("SELECT vec_version()").fetchone()
+        return True
+    except Exception:  # noqa: BLE001——未加载即抛 no such function，属正常探测失败
+        return False
+
+
+def try_load_vec_extension(conn: sqlite3.Connection) -> bool:
+    """确保本连接已加载 sqlite-vec 扩展（Windows 二进制兼容风险）。
+
+    成功返回 True，失败返回 False（调用方降级 numpy 余弦）。
+    首次调用缓存 loadable_path；每条连接各自 load_extension 一次，
+    已加载的连接走 `_vec_already_loaded` 直接短路，不再重复加载。
+
+    ST-58/T-290：加载失败**不再**把 `_VEC_EXTENSION_LOADED` 置 False（该标志只
+    表示包是否可用），避免一条连接的失败污染其它健康连接；失败日志补齐诊断信息
+    与完整 traceback——生产 18,534 次失败的错误详情为空，是根因至今无法定位的
+    直接原因。
     """
     global _VEC_EXTENSION_LOADED, _VEC_LOADABLE_PATH, _VEC_TRIED_INIT
 
@@ -72,6 +105,7 @@ def try_load_vec_extension(conn: sqlite3.Connection) -> bool:
         try:
             import sqlite_vec  # noqa: F401
             _VEC_LOADABLE_PATH = sqlite_vec.loadable_path()
+            _VEC_EXTENSION_LOADED = True  # 包可用（与本连接是否加载解耦）
         except Exception as e:
             logger.warning("sqlite-vec 包不可用，降级 numpy 余弦: %s", e)
             _VEC_LOADABLE_PATH = None
@@ -81,15 +115,24 @@ def try_load_vec_extension(conn: sqlite3.Connection) -> bool:
     if _VEC_LOADABLE_PATH is None:
         return False
 
+    # 连接级短路：已加载则直接复用
+    if _vec_already_loaded(conn):
+        return True
+
     # 在该连接上加载扩展
     try:
         conn.enable_load_extension(True)
         conn.load_extension(_VEC_LOADABLE_PATH)
-        _VEC_EXTENSION_LOADED = True
         return True
     except Exception as e:
-        logger.warning("sqlite-vec 扩展加载失败，降级 numpy 余弦: %s", e)
-        _VEC_EXTENSION_LOADED = False
+        logger.warning(
+            "sqlite-vec 扩展加载失败，降级 numpy 余弦: %s | 诊断: sqlite_version=%s "
+            "loadable_path=%r path_exists=%s exc_type=%s",
+            e, sqlite3.sqlite_version, _VEC_LOADABLE_PATH,
+            os.path.exists(_VEC_LOADABLE_PATH) if _VEC_LOADABLE_PATH else None,
+            type(e).__name__,
+            exc_info=True,  # 补齐完整 traceback（原实现只有空消息）
+        )
         return False
 
 
@@ -266,10 +309,10 @@ def vector_search(
     返回 [{memory_id, content, priority, updated_at, score}]
     （score=相似度 0-1，越高越相似；按 score DESC 排序）
     """
-    # 每条连接都需各自加载扩展（全局 flag 仅表示包是否可用）
-    try_load_vec_extension(mem_conn)
+    # ST-58/T-290：连接级判定（读返回值，不再读全局 flag——全局只表示包是否可用）
+    vec_ok = try_load_vec_extension(mem_conn)
 
-    if _VEC_EXTENSION_LOADED:
+    if vec_ok:
         try:
             return _sqlite_vec_search(mem_conn, query_vec, limit)
         except Exception as e:
@@ -427,8 +470,8 @@ def scene_vector_search(
 
     返回 [{scene_id, title, content, heat, score}]（score=相似度 0-1，DESC）。
     """
-    try_load_vec_extension(mem_conn)
-    if _VEC_EXTENSION_LOADED:
+    vec_ok = try_load_vec_extension(mem_conn)  # ST-58/T-290：连接级判定
+    if vec_ok:
         try:
             return _sqlite_vec_scene_search(mem_conn, query_vec, limit)
         except Exception as e:
@@ -570,8 +613,8 @@ def skill_vector_search(
 
     返回 [{name, description, category, score}]（score=相似度 0-1，DESC）。
     """
-    try_load_vec_extension(conn)
-    if _VEC_EXTENSION_LOADED:
+    vec_ok = try_load_vec_extension(conn)  # ST-58/T-290：连接级判定
+    if vec_ok:
         try:
             return _sqlite_vec_skill_search(conn, query_vec, limit)
         except Exception as e:

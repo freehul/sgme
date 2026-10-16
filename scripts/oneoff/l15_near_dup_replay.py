@@ -302,7 +302,9 @@ def run_crosscheck(con, subset, mat, keep_index, ts_by_id, cand_id_set):
             "top_ids": top_ids,
         })
 
-    backend = "sqlite-vec" if getattr(vector_mod, "_VEC_EXTENSION_LOADED", False) else "numpy"
+    # ST-58/T-290：全局 `_VEC_EXTENSION_LOADED` 语义已收窄为「包是否可用」，
+    # 不再代表本连接的实际后端；改读连接级判定结果。
+    backend = "sqlite-vec" if vector_mod.try_load_vec_extension(con) else "numpy"
     diffs = [r["diff"] for r in records if r.get("diff") is not None]
     stats = {
         "n": len(records),
