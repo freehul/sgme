@@ -400,6 +400,12 @@ DEFAULT_L15_CONFIG = {
 # refine_on_append：append 写入后是否立即触发该文件提炼（默认关——高频写入场景每轮提炼浪费）
 # batch_scan.enabled：内部定时器扫 status=new 批量提炼（兜底，防会话异常退出导致记忆滞留）
 # batch_scan.interval_min：扫描间隔（分钟）
+#
+# ⚠️ 口径说明（ST-58/T-296 D1，2026-10-17）：**本机生产态的 `/data/config/sgme.yaml`
+#    显式覆盖为 `refine_on_append: true`，与仓库/包内默认 `false` 不同 —— 这不是漂移，
+#    是刻意的保底策略**（ST-23⑥「保底型」：不依赖 agent 自觉调 refine，append 即提炼，
+#    代价是高频写入场景每轮都触发一次提炼）。改这个默认值前请先确认生产策略是否需要同步；
+#    反之改生产值时也需回看此处注释。
 DEFAULT_REFINE_CONFIG = {
     "refine_on_append": False,
     "batch_scan": {

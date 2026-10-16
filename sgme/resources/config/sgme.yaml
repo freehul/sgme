@@ -18,6 +18,10 @@ l15:
     threshold: 0.92     # 首发保守示值（bigram 标定参照；向量口径首标定=观察期）
     gray_zone: 0.85
 refine:
+  # 默认 false（= 新增/克隆安装的起点）：高频写入场景「每次 append 都提炼」浪费 token。
+  # ⚠️ 口径说明（ST-58/T-296，2026-10-17）：**本机生产态覆盖为 true**（ST-23⑥ 保底型——
+  # 不依赖 agent 自觉调 refine/trigger，append 即提炼），两者差异是刻意取舍而非漂移；
+  # 改这里或改生产值前请两边一起看。代码默认见 sgme/config.py::DEFAULT_REFINE_CONFIG。
   refine_on_append: false
   # 用户指定专用提炼 LLM（2026-08-18，T-53 免费托底）：
   # 显式 override 优先于 agent 声明（resolve.py 策略规则 1）——dsh agent 曾注册
