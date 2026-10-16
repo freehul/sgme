@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sgme import config
-from sgme.engine import normalize
+from sgme.engine import json_repair, normalize
 from sgme.llm import chain as llm_chain
 from sgme.llm import provider as llm_provider
 from sgme.prompts import BucketCtx, PromptStore
@@ -225,6 +225,40 @@ def parse_l15_output(text: str) -> list[ConflictDecision]:
             relations=_parse_relations(item.get("relations")),
         ))
     return result
+
+
+def _parse_l15_with_repair(text: str, expected: int) -> list:
+    """解析 L1.5 输出；失败先**就地修复**再解，修复不成立才抛 L15Error。
+
+    ST-58/T-292（P8）：解析失败的原行为是**整批重发 LLM**（token 翻倍）。
+    近 30 天的失败**全部**是 `Invalid \\escape`（模型输出 Windows 路径
+    `D:\\Projects` 未转义），这类破损可就地修好，不必重发。
+
+    安全约束（宁可放弃修复，不可猜错语义）：
+    - 修复后必须能解析；
+    - 且 `0 < len(decisions) <= expected`（与批内新记忆数相容），否则视为
+      修复不可信，抛回原重试链路。
+    """
+    try:
+        return parse_l15_output(text)
+    except L15Error:
+        pass
+
+    fixed = json_repair.repair_json_text(text)
+    if fixed is None:
+        raise L15Error(f"JSON 解析失败且无法就地修复: {text[:200]}")
+    try:
+        decisions = parse_l15_output(fixed)
+    except L15Error as e:
+        raise L15Error(f"JSON 解析失败（就地修复后仍非法）: {e}") from e
+
+    if not decisions or len(decisions) > expected:
+        # 修复出空/超量裁决 = 语义不可信，交回重试链路
+        raise L15Error(
+            f"就地修复后裁决数与批内新记忆数不相容（{len(decisions)} vs {expected}）"
+        )
+    logger.info("L1.5 输出就地修复成功（免重发）: %d 条裁决", len(decisions))
+    return decisions
 
 
 # ---------- 候选池查询（铁律 #7：不截断全量召回，按新记忆分组） ----------
@@ -1212,7 +1246,7 @@ def resolve_conflicts(
                 _finish_run("error", str(e), [])
                 return result
             try:
-                decisions = parse_l15_output(text)
+                decisions = _parse_l15_with_repair(text, len(batch.new_memories))
                 for d in decisions:
                     d.new_memory_index += batch.start_index
                 all_decisions.extend(decisions)

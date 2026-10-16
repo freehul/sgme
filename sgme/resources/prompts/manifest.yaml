@@ -96,6 +96,16 @@ versions:
     created_at: '2026-09-24T19:54:42Z'
     note: T-202 B1 裁决放宽：update 门槛由「同一事实」放宽为「同一主体+信息增量」双条件；补主体判定正反示例（NAS 部署/ModelScope/双4K/skip
       模糊）；保守原则保留（宁 store 勿误合并）
+  - version: v004
+    file: versions/l1_conflict/v004.txt
+    sha256: e6d9a33fd21029b0a5031917697361eaea6f62a4a19f1405bafc6ac719a6dec3
+    created_at: '2026-10-16T21:23:10Z'
+    note: 改前快照：T-292（2026-10-17）提示词侧反斜杠约束之前的状态
+  - version: v005
+    file: versions/l1_conflict/v005.txt
+    sha256: 9c90fd18d621a3e2ca7326fdfecf92137803f1803934bf418336b61763ee8390
+    created_at: '2026-10-16T21:46:20Z'
+    note: T-292 提示词侧反斜杠约束（治本 P8）；示例路径用通用假值以符合数据卫生
   l2_scene:
   - version: v001
     file: versions/l2_scene/v001.txt

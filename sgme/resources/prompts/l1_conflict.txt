@@ -19,6 +19,7 @@
 
 # 输出要求
 - 只输出一个 JSON 数组，无其他文字。
+- **JSON 字符串里的反斜杠必须转义**：Windows 路径写 `C:\\work\\demo`，或直接用正斜杠 `C:/work/demo`。裸写 `C:\work\demo` 会让整个 JSON 非法（Invalid \escape），**本批全部裁决作废**。
 - 每条：{"new_memory_index": 新记忆在输入中的序号（0 起）, "candidate_ids": [命中候选的 memory_id], "action": "store|skip|update|merge", "merged_content": 仅 merge/update 时填写, "reason": 一句话理由, "relations": [关系判定数组]}
 - candidate_ids 填候选的 memory_id（即下方 # 输入：候选记忆 列表中 [候选#xxx] 的完整 xxx），不是序号；action=store 时可为空数组。
 - 判断口径（T-202 B1）：update/merge 门槛 = **同一主体 + 信息增量** 双条件；同主体无增量 → skip；有增量但主体不同 → store。仍拿不准时保守（宁 store 勿误合并）。
