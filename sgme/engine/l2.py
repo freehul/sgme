@@ -669,67 +669,80 @@ def aggregate(
         batch_memory_ids = [m.get("memory_id") for m in batch if m.get("memory_id")]
         pv = PromptStore().get("l2_scene", bucket_ctx)
         prompt = _render_l2_text(pv.text, batch, existing_scenes, cfg)
-        try:
-            text, provider_name, usage = llm_chain.call_with_fallback(
-                cfg["llm"], prompt, chain_name="refinement", client=client,
-            )
-        except llm_provider.LLMUnavailable as e:
-            result.error = str(e)
-            result.anomaly_warn = True
-            run_id = RefineRunRecorder.start(
-                mem_conn, file_id=bucket_key, stage="l2_scene",
-                version=pv.version, variant=pv.variant,
-                provider="unavailable", bucket_key=bucket_key,
-            )
-            RefineRunRecorder.finish(
-                mem_conn, run_id, memories_count=0, action_counts={},
-                status="error", error=str(e),
-            )
-            return result
-
-        try:
-            actions = parse_l2_output(text)
-            run_status = "ok"
-            run_error = None
-        except L2Error as e:
-            # 2026-08-18（T-53 免费托底）：zhipu 免费档偶发输出截断 → JSON 解析失败。
-            # 同模型重试 1 次（提示只输出纯 JSON 数组）——截断是偶发，重试大概率拿完整输出；
-            # 2 次仍失败才整批 error（原逻辑不重试直接跳过）。
-            logger.warning("L2 输出解析失败，重试 1 次: %s", e)
-            try:
-                retry_prompt = prompt + "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
-                text, provider_name, usage = llm_chain.call_with_fallback(
-                    cfg["llm"], retry_prompt, chain_name="refinement", client=client,
-                )
-                actions = parse_l2_output(text)
-                run_status = "ok"
-                run_error = None
-                logger.info("L2 解析重试成功 provider=%s", provider_name)
-            except (L2Error, llm_provider.LLMUnavailable) as e2:
-                # 坏 JSON：整批标记 error + anomaly_warn
-                result.error = str(e2)
-                result.anomaly_warn = True
-                logger.warning("L2 输出解析重试仍失败，整批跳过: %s", e2)
-                actions = []
-                run_status = "error"
-                run_error = str(e2)
-
-        # 记录 refine_run（每记忆批一条；L2 memories_count 记动作数 + action 分布）
-        action_counts = dict(Counter(a.get("action", "") for a in actions))
+        # ST-58/T-289：run 记账 `start()` 前移到 **LLM 调用之前**（原先在返回后才 start，
+        # 全表 `started_at == finished_at`，耗时不可度量）。provider 走完降级链才知，
+        # 起手置 "pending"，由 finish 回填。
+        provider_name: str | None = None
+        usage: dict | None = None
+        actions: list = []
         run_id = RefineRunRecorder.start(
             mem_conn, file_id=bucket_key, stage="l2_scene",
             version=pv.version, variant=pv.variant,
-            provider=provider_name, bucket_key=bucket_key,
+            provider="pending", bucket_key=bucket_key,
         )
-        RefineRunRecorder.finish(
-            mem_conn, run_id, memories_count=len(actions),
-            action_counts=action_counts, status=run_status, error=run_error,
-            usage=usage,
-        )
-        logger.info("L2 批完成: version=%s variant=%s provider=%s actions=%s",
-                    pv.version, pv.variant, provider_name, action_counts)
-        if result.prompt_meta is None:
-            result.prompt_meta = {"stage": "l2_scene", "version": pv.version, "variant": pv.variant}
+        _run_done = False
+
+        def _finish_run(status: str, error: str | None) -> None:
+            """收尾记账（幂等：一批只写一次）。"""
+            nonlocal _run_done
+            if _run_done:
+                return
+            RefineRunRecorder.finish(
+                mem_conn, run_id, memories_count=len(actions),
+                action_counts=dict(Counter(a.get("action", "") for a in actions)),
+                status=status, error=error, usage=usage, provider=provider_name,
+            )
+            _run_done = True
+
+        try:
+            try:
+                text, provider_name, usage = llm_chain.call_with_fallback(
+                    cfg["llm"], prompt, chain_name="refinement", client=client,
+                )
+            except llm_provider.LLMUnavailable as e:
+                result.error = str(e)
+                result.anomaly_warn = True
+                _finish_run("error", str(e))
+                return result
+
+            try:
+                actions = parse_l2_output(text)
+                run_status = "ok"
+                run_error = None
+            except L2Error as e:
+                # 2026-08-18（T-53 免费托底）：zhipu 免费档偶发输出截断 → JSON 解析失败。
+                # 同模型重试 1 次（提示只输出纯 JSON 数组）——截断是偶发，重试大概率拿完整输出；
+                # 2 次仍失败才整批 error（原逻辑不重试直接跳过）。
+                logger.warning("L2 输出解析失败，重试 1 次: %s", e)
+                try:
+                    retry_prompt = prompt + "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
+                    text, provider_name, usage = llm_chain.call_with_fallback(
+                        cfg["llm"], retry_prompt, chain_name="refinement", client=client,
+                    )
+                    actions = parse_l2_output(text)
+                    run_status = "ok"
+                    run_error = None
+                    logger.info("L2 解析重试成功 provider=%s", provider_name)
+                except (L2Error, llm_provider.LLMUnavailable) as e2:
+                    # 坏 JSON：整批标记 error + anomaly_warn
+                    result.error = str(e2)
+                    result.anomaly_warn = True
+                    logger.warning("L2 输出解析重试仍失败，整批跳过: %s", e2)
+                    actions = []
+                    run_status = "error"
+                    run_error = str(e2)
+
+            # 记录 refine_run（每记忆批一条；L2 memories_count 记动作数 + action 分布）
+            _finish_run(run_status, run_error)
+            logger.info("L2 批完成: version=%s variant=%s provider=%s actions=%s",
+                        pv.version, pv.variant, provider_name,
+                        dict(Counter(a.get("action", "") for a in actions)))
+            if result.prompt_meta is None:
+                result.prompt_meta = {"stage": "l2_scene", "version": pv.version, "variant": pv.variant}
+        finally:
+            # 兜底：正常/已记账路径由 `_run_done` 短路；仅异常逃逸时补记 error，
+            # 避免留下悬挂 running 行（T-289 把 start 前移后的主要风险面）。
+            _finish_run("error", "批次未正常收尾（finally 兜底）")
 
         # 落库
         for action in actions:

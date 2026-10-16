@@ -1173,78 +1173,91 @@ def resolve_conflicts(
     for batch in batches:
         pv = PromptStore().get("l1_conflict", bucket_ctx)
         prompt = _render_l15_text(pv.text, batch.new_memories, batch.candidates)
-        try:
-            text, provider_name, usage = llm_chain.call_with_fallback(
-                llm_cfg, prompt, chain_name="refinement", client=client,
-            )
-        except llm_provider.LLMUnavailable as e:
-            result.error = str(e)
-            result.anomaly_warn = True
-            err_run = RefineRunRecorder.start(
-                mem_conn, file_id=bucket_key, stage="l1_conflict",
-                version=pv.version, variant=pv.variant,
-                provider="unavailable", bucket_key=bucket_key,
-            )
+        # ST-58/T-289：run 记账 `start()` 前移到 **LLM 调用之前**——原先在 LLM 返回
+        # 后才 start，全表 `started_at == finished_at`，耗时不可度量。
+        # provider 要走完降级链才知道命中哪家，起手置 "pending"，由 finish 回填。
+        provider_name: str | None = None
+        usage: dict | None = None
+        decisions: list | None = None
+        run_id = RefineRunRecorder.start(
+            mem_conn, file_id=bucket_key, stage="l1_conflict",
+            version=pv.version, variant=pv.variant,
+            provider="pending", bucket_key=bucket_key,
+        )
+        _run_done = False
+
+        def _finish_run(status: str, error: str | None, decs: list | None) -> None:
+            """收尾记账（幂等：一批只写一次）。"""
+            nonlocal _run_done
+            if _run_done:
+                return
             RefineRunRecorder.finish(
-                mem_conn, err_run, memories_count=0, action_counts={},
-                status="error", error=str(e),
+                mem_conn, run_id, memories_count=len(batch.new_memories),
+                action_counts=dict(Counter(d.action for d in (decs or []))),
+                status=status, error=error, usage=usage, provider=provider_name,
+                # F2（T1.7）：批路径候选留痕（short_circuit_reason 仅短路记录承载，不传）
+                candidate_count=len(batch.candidates),
+                candidate_ids_hash=_candidate_ids_hash([c["memory_id"] for c in batch.candidates]),
             )
-            return result
+            _run_done = True
+
         try:
-            decisions = parse_l15_output(text)
-            for d in decisions:
-                d.new_memory_index += batch.start_index
-            all_decisions.extend(decisions)
-            run_status = "ok"
-            run_error = None
-        except L15Error as e:
-            # 2026-08-18（T-53 免费托底）：zhipu 免费档偶发输出截断 → JSON 解析失败。
-            # 同模型重试 1 次（提示只输出纯 JSON 数组）——截断是偶发，重试大概率拿完整输出；
-            # 2 次仍失败才降级默认 store（保守，不丢数据）。
-            logger.warning("L1.5 输出解析失败，重试 1 次: %s", e)
             try:
-                retry_prompt = prompt + "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
                 text, provider_name, usage = llm_chain.call_with_fallback(
-                    llm_cfg, retry_prompt, chain_name="refinement", client=client,
+                    llm_cfg, prompt, chain_name="refinement", client=client,
                 )
+            except llm_provider.LLMUnavailable as e:
+                result.error = str(e)
+                result.anomaly_warn = True
+                _finish_run("error", str(e), [])
+                return result
+            try:
                 decisions = parse_l15_output(text)
                 for d in decisions:
                     d.new_memory_index += batch.start_index
                 all_decisions.extend(decisions)
                 run_status = "ok"
                 run_error = None
-                logger.info("L1.5 解析重试成功 provider=%s", provider_name)
-            except (L15Error, llm_provider.LLMUnavailable) as e2:
-                logger.warning("L1.5 输出解析重试仍失败: %s", e2)
-                # 解析失败 → 默认 store（保守，不丢数据）
-                decisions = [
-                    ConflictDecision(
-                        i + batch.start_index, [], "store", reason="L1.5 解析失败默认 store",
+            except L15Error as e:
+                # 2026-08-18（T-53 免费托底）：zhipu 免费档偶发输出截断 → JSON 解析失败。
+                # 同模型重试 1 次（提示只输出纯 JSON 数组）——截断是偶发，重试大概率拿完整输出；
+                # 2 次仍失败才降级默认 store（保守，不丢数据）。
+                logger.warning("L1.5 输出解析失败，重试 1 次: %s", e)
+                try:
+                    retry_prompt = prompt + "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
+                    text, provider_name, usage = llm_chain.call_with_fallback(
+                        llm_cfg, retry_prompt, chain_name="refinement", client=client,
                     )
-                    for i in range(len(batch.new_memories))
-                ]
-                all_decisions.extend(decisions)
-                run_status = "error"
-                run_error = str(e2)
-        # 记录 refine_run（每候选批一条；action 分布 + 版本 + provider；memories_count=本批新记忆数）
-        action_counts = dict(Counter(d.action for d in decisions))
-        run_id = RefineRunRecorder.start(
-            mem_conn, file_id=bucket_key, stage="l1_conflict",
-            version=pv.version, variant=pv.variant,
-            provider=provider_name, bucket_key=bucket_key,
-        )
-        RefineRunRecorder.finish(
-            mem_conn, run_id, memories_count=len(batch.new_memories),
-            action_counts=action_counts, status=run_status, error=run_error,
-            usage=usage,
-            # F2（T1.7）：批路径候选留痕（short_circuit_reason 仅短路记录承载，此处不传）
-            candidate_count=len(batch.candidates),
-            candidate_ids_hash=_candidate_ids_hash([c["memory_id"] for c in batch.candidates]),
-        )
-        logger.info("L1.5 批完成: version=%s variant=%s provider=%s actions=%s",
-                    pv.version, pv.variant, provider_name, action_counts)
-        if result.prompt_meta is None:
-            result.prompt_meta = {"stage": "l1_conflict", "version": pv.version, "variant": pv.variant}
+                    decisions = parse_l15_output(text)
+                    for d in decisions:
+                        d.new_memory_index += batch.start_index
+                    all_decisions.extend(decisions)
+                    run_status = "ok"
+                    run_error = None
+                    logger.info("L1.5 解析重试成功 provider=%s", provider_name)
+                except (L15Error, llm_provider.LLMUnavailable) as e2:
+                    logger.warning("L1.5 输出解析重试仍失败: %s", e2)
+                    # 解析失败 → 默认 store（保守，不丢数据）
+                    decisions = [
+                        ConflictDecision(
+                            i + batch.start_index, [], "store", reason="L1.5 解析失败默认 store",
+                        )
+                        for i in range(len(batch.new_memories))
+                    ]
+                    all_decisions.extend(decisions)
+                    run_status = "error"
+                    run_error = str(e2)
+            # 记录 refine_run（每候选批一条；action 分布 + 版本 + provider；memories_count=本批新记忆数）
+            _finish_run(run_status, run_error, decisions)
+            logger.info("L1.5 批完成: version=%s variant=%s provider=%s actions=%s",
+                        pv.version, pv.variant, provider_name,
+                        dict(Counter(d.action for d in (decisions or []))))
+            if result.prompt_meta is None:
+                result.prompt_meta = {"stage": "l1_conflict", "version": pv.version, "variant": pv.variant}
+        finally:
+            # 兜底：正常/已记账路径由 `_run_done` 短路；仅异常逃逸时补记 error，
+            # 避免留下悬挂 running 行（T-289 把 start 前移后的主要风险面）。
+            _finish_run("error", "批次未正常收尾（finally 兜底）", decisions)
 
     # 3.5 T-132：若本批发生预筛降级（embed 不可达 + skip_conflict），独立记一条
     # refine_run 标记，避免与 LLM 判「无变化」(action_counts["skip"]) 同名混淆、事后不可识别

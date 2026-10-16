@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS refine_runs (
   error TEXT,
   candidate_count INTEGER,       -- L1.5 F2（2026-10-09）：批内候选数（仅批路径承载）
   candidate_ids_hash TEXT,       -- L1.5 F2：候选 id 集 sha256[:16]（同候选集反查，仅批路径）
-  short_circuit_reason TEXT);    -- L1.5 F2：短路记录原因（仅非批路径独立记录承载）
+  short_circuit_reason TEXT,     -- L1.5 F2：短路记录原因（仅非批路径独立记录承载）
+  elapsed_ms INTEGER);           -- ST-58/T-289（2026-10-17）：批次真实耗时（finish 依 started_at 计算）
 CREATE INDEX IF NOT EXISTS idx_refine_runs_stage ON refine_runs(stage, version, started_at);
 CREATE INDEX IF NOT EXISTS idx_refine_runs_file ON refine_runs(file_id, started_at);
 
@@ -540,6 +541,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_memory_edges_table(conn)
     _migrate_mem_facts_json(conn)
     _migrate_mem_valid_period(conn)
+    _migrate_refine_runs_elapsed_ms(conn)
     return conn
 
 
@@ -965,6 +967,28 @@ def _migrate_refine_runs_candidate_cols(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_refine_runs_elapsed_ms(conn: sqlite3.Connection) -> None:
+    """老库迁移：refine_runs 补 `elapsed_ms` 列（ST-58/T-289，2026-10-17）。幂等。
+
+    背景：三处 run 记账原先都在 LLM 调用**之后**才 `start()`，导致全表
+    `started_at == finished_at`（21,857 行无一例外），效率完全不可度量。
+    T-289 把 `start()` 前移到 LLM 调用之前，本列为随之新增的耗时承载列。
+
+    口径：``elapsed_ms`` = 批次真实墙钟耗时，由 ``RefineRunRecorder.finish``
+    依 ``started_at`` 计算写入（调用点不传值，防各处口径漂移）。**可空**——
+    老行无值不影响旧代码读取。
+
+    新库走 MEMORY_DDL 建全列，本函数只为老库补列（照
+    `_migrate_refine_runs_candidate_cols` 先例：PRAGMA 检查 + 条件 ALTER + commit）。
+    不更新 SCHEMA_VERSION——`_migrate_*` 序列本就是启动时无条件串行执行的幂等
+    函数，与版本号无依赖（版本号仅由 `_ensure_schema` 用于 MEMORY_DDL 登记）。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(refine_runs)").fetchall()]
+    if "elapsed_ms" not in cols:
+        conn.execute("ALTER TABLE refine_runs ADD COLUMN elapsed_ms INTEGER")
+    conn.commit()
+
+
 def _migrate_mem_idea_columns(conn: sqlite3.Connection) -> None:
     """老库迁移：memories 补 notes / custom_flag 列（创意池 ST-14，2026-08-08）。
 
@@ -1253,6 +1277,14 @@ def init_databases(
     mem = connect_memory(data_dir)
     session = connect_session(data_dir)
     wiki = connect_wiki(data_dir)
+    # ST-58/T-289：收敛超期悬挂的 running 行（幂等；无残留时零开销、零日志）。
+    # 失败不阻断初始化——收敛是旁路，主流程不得因它起不来。
+    try:
+        from sgme.data.refine_dao import RefineRunRecorder
+
+        RefineRunRecorder.reap_stale_running(mem)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[SGME refine_runs] 超期 running 收敛失败（不影响启动）: {exc}")
     return mem, session, wiki
 
 

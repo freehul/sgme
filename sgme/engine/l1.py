@@ -571,7 +571,15 @@ def _extract_l1_chunk(
     bucket_ctx: BucketCtx | None = None,
     mem_conn: sqlite3.Connection | None = None,
 ) -> tuple[list[dict], str, dict]:
-    """单块 L1 提取（PromptStore 版本 + refine_run 逐块记录）。"""
+    """单块 L1 提取（PromptStore 版本 + refine_run 逐块记录）。
+
+    ST-58/T-289：run 记账 `start()` 前移到 **LLM 调用之前**——原先在 LLM 返回后才
+    start，全表 `started_at == finished_at`，耗时完全不可度量。现 start 承载批次
+    真实开始时刻，`elapsed_ms` 由 `RefineRunRecorder.finish` 依 started_at 计算。
+    `provider` 在 start 时尚未知（要走完降级链才知道命中哪家），故起手写
+    `"pending"`，由 finish 的 provider 形参回填（COALESCE 语义，老调用点零影响）。
+    异常路径由 try/finally 兜底，不留悬挂 running 行。
+    """
     from sgme.data.refine_dao import RefineRunRecorder
 
     pv = PromptStore().get("l1_extraction", bucket_ctx)
@@ -581,96 +589,101 @@ def _extract_l1_chunk(
     lang_retries = 0
     max_lang_retries = 1  # 语言漂移：额外允许 1 次（2026-09-12）
     last_error: Exception | None = None
-    for attempt in range(1, max_attempts + max_lang_retries + 1):
-        try:
-            text, provider_name, usage = llm_chain.call_with_fallback(
-                llm_cfg, prompt, chain_name="refinement", client=client,
-            )
-        except llm_provider.LLMUnavailable as e:
-            if mem_conn is not None:
-                err_run = RefineRunRecorder.start(
-                    mem_conn, file_id=bucket_key, stage="l1_extraction",
-                    version=pv.version, variant=pv.variant,
-                    provider="unavailable", bucket_key=bucket_key,
-                )
-                RefineRunRecorder.finish(
-                    mem_conn, err_run, memories_count=0, action_counts={},
-                    status="error", error=str(e),
-                )
-            raise RefineError(f"LLM 全链失败: {e}") from e
+    provider_name: str | None = None
+    usage: dict | None = None
 
-        try:
-            memories = parse_l1_output(text, dimensions)
-        except RefineError as e:
-            last_error = e
-            logger.warning("L1 输出解析失败 (attempt=%s): %s", attempt, e)
-            # 重试时 prompt 加提示
-            if attempt < max_attempts:
-                prompt = _render_l1_text(pv.text, conversation, dimensions) + \
-                    "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
-            continue
-
-        # 空结果视为可疑：模型可能漏抽整块内容（2026-09-11 实测本地模型 12.6% 的块
-        # 静默空产出，其中含答案所在块 → longmemeval recall@8 归零）。
-        # 加提示重试一次；仍空则正常返回（空块合法，不抛错）。
-        # T-201：短会话（寒暄/单轮播报）的空结果是「有意空」，不再重试（省一次调用）
-        conv_chars = len(conversation) if isinstance(conversation, str) else sum(
-            len(c) for c in conversation
+    # T-289：批次开始（LLM 调用之前）
+    run_id: str | None = None
+    if mem_conn is not None:
+        run_id = RefineRunRecorder.start(
+            mem_conn, file_id=bucket_key, stage="l1_extraction",
+            version=pv.version, variant=pv.variant,
+            provider="pending", bucket_key=bucket_key,
         )
-        if not memories and attempt < max_attempts and conv_chars >= EMPTY_RETRY_MIN_CONV_CHARS:
-            logger.warning("L1 空结果 (attempt=%s)，加提示重试", attempt)
-            prompt = _render_l1_text(pv.text, conversation, dimensions) + \
-                "\n\n# 注意\n上次输出为空数组 []，但对话中可能仍有值得长期保存的记忆。" \
-                "请逐条复查对话内容，确保不遗漏任何用户事实（尤其数字、时长、地点、偏好等细节）。" \
-                "若确实没有可提炼的记忆，再输出 []。"
-            continue
+    _run_done = False
 
-        if attempt > 1:
-            logger.info("L1 重试 %s 次成功", attempt)
+    def _finish_run(
+        status: str, memories: int, counts: dict, error: str | None = None
+    ) -> None:
+        """收尾记账（幂等：一批只写一次；finally 兜底路径不会重复写）。"""
+        nonlocal _run_done
+        if run_id is None or _run_done:
+            return
+        RefineRunRecorder.finish(
+            mem_conn, run_id, memories_count=memories, action_counts=counts,
+            status=status, error=error, usage=usage, provider=provider_name,
+        )
+        _run_done = True
 
-        # 语言漂移守门（2026-09-12）：英文会话被提炼成中文记忆 → 带语言提示重试（独立预算）
-        if lang_retries < max_lang_retries and _lang_mismatch(conversation, memories):
-            lang_retries += 1
-            logger.warning("L1 语言漂移（英文会话→中文记忆，attempt=%s），加语言提示重试", attempt)
-            prompt = _render_l1_text(pv.text, conversation, dimensions) + \
-                "\n\n# 注意\n上次输出把会话内容翻译成了中文，这会破坏检索。必须使用**与会话原文相同的语言**输出：" \
-                "英文会话 → 英文记忆（逐条改写为英文，专名/数字/术语保持原样，不要意译）；中文会话 → 中文记忆。"
-            continue
+    try:
+        for attempt in range(1, max_attempts + max_lang_retries + 1):
+            try:
+                text, provider_name, usage = llm_chain.call_with_fallback(
+                    llm_cfg, prompt, chain_name="refinement", client=client,
+                )
+            except llm_provider.LLMUnavailable as e:
+                last_error = e
+                _finish_run("error", 0, {}, str(e))
+                raise RefineError(f"LLM 全链失败: {e}") from e
 
-        if mem_conn is not None:
-            run_id = RefineRunRecorder.start(
-                mem_conn, file_id=bucket_key, stage="l1_extraction",
-                version=pv.version, variant=pv.variant,
-                provider=provider_name, bucket_key=bucket_key,
+            try:
+                memories = parse_l1_output(text, dimensions)
+            except RefineError as e:
+                last_error = e
+                logger.warning("L1 输出解析失败 (attempt=%s): %s", attempt, e)
+                # 重试时 prompt 加提示
+                if attempt < max_attempts:
+                    prompt = _render_l1_text(pv.text, conversation, dimensions) + \
+                        "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
+                continue
+
+            # 空结果视为可疑：模型可能漏抽整块内容（2026-09-11 实测本地模型 12.6% 的块
+            # 静默空产出，其中含答案所在块 → longmemeval recall@8 归零）。
+            # 加提示重试一次；仍空则正常返回（空块合法，不抛错）。
+            # T-201：短会话（寒暄/单轮播报）的空结果是「有意空」，不再重试（省一次调用）
+            conv_chars = len(conversation) if isinstance(conversation, str) else sum(
+                len(c) for c in conversation
             )
+            if not memories and attempt < max_attempts and conv_chars >= EMPTY_RETRY_MIN_CONV_CHARS:
+                logger.warning("L1 空结果 (attempt=%s)，加提示重试", attempt)
+                prompt = _render_l1_text(pv.text, conversation, dimensions) + \
+                    "\n\n# 注意\n上次输出为空数组 []，但对话中可能仍有值得长期保存的记忆。" \
+                    "请逐条复查对话内容，确保不遗漏任何用户事实（尤其数字、时长、地点、偏好等细节）。" \
+                    "若确实没有可提炼的记忆，再输出 []。"
+                continue
+
+            if attempt > 1:
+                logger.info("L1 重试 %s 次成功", attempt)
+
+            # 语言漂移守门（2026-09-12）：英文会话被提炼成中文记忆 → 带语言提示重试（独立预算）
+            if lang_retries < max_lang_retries and _lang_mismatch(conversation, memories):
+                lang_retries += 1
+                logger.warning("L1 语言漂移（英文会话→中文记忆，attempt=%s），加语言提示重试", attempt)
+                prompt = _render_l1_text(pv.text, conversation, dimensions) + \
+                    "\n\n# 注意\n上次输出把会话内容翻译成了中文，这会破坏检索。必须使用**与会话原文相同的语言**输出：" \
+                    "英文会话 → 英文记忆（逐条改写为英文，专名/数字/术语保持原样，不要意译）；中文会话 → 中文记忆。"
+                continue
+
             # T-202 B3：L1 run 补 action 计数采样（衔接提示词分析 P2-2）——
             # extracted/empty 反映提取产出形态；violation_* 为进程内累计口径
             # （_VIOLATION_COUNTER 不写库的设计约束不变，这里只是计数快照），
             # 随时间增长的趋势即可定位 v007 规约的遵守情况。
             vc = violation_counts()
-            RefineRunRecorder.finish(
-                mem_conn, run_id, memories_count=len(memories),
-                action_counts={
-                    "extracted": len(memories),
-                    "empty": 1 if not memories else 0,
-                    "violation_dim_overflow_cum": vc.get("dim_overflow", 0),
-                    "violation_episodic_degraded_cum": vc.get("episodic_degraded", 0),
-                },
-                status="ok", usage=usage,
-            )
-        meta = {"stage": "l1_extraction", "version": pv.version, "variant": pv.variant}
-        logger.info("L1 块完成: version=%s variant=%s memories=%d",
-                    pv.version, pv.variant, len(memories))
-        return memories, provider_name, meta
+            _finish_run("ok", len(memories), {
+                "extracted": len(memories),
+                "empty": 1 if not memories else 0,
+                "violation_dim_overflow_cum": vc.get("dim_overflow", 0),
+                "violation_episodic_degraded_cum": vc.get("episodic_degraded", 0),
+            })
+            meta = {"stage": "l1_extraction", "version": pv.version, "variant": pv.variant}
+            logger.info("L1 块完成: version=%s variant=%s memories=%d",
+                        pv.version, pv.variant, len(memories))
+            return memories, provider_name, meta
 
-    if mem_conn is not None:
-        err_run = RefineRunRecorder.start(
-            mem_conn, file_id=bucket_key, stage="l1_extraction",
-            version=pv.version, variant=pv.variant,
-            provider="unavailable", bucket_key=bucket_key,
-        )
-        RefineRunRecorder.finish(
-            mem_conn, err_run, memories_count=0, action_counts={},
-            status="error", error=str(last_error),
-        )
-    raise RefineError(f"L1 提取失败（重试 {max_attempts - 1} 次仍失败）: {last_error}")
+        # 重试预算耗尽
+        _finish_run("error", 0, {}, str(last_error))
+        raise RefineError(f"L1 提取失败（重试 {max_attempts - 1} 次仍失败）: {last_error}")
+    finally:
+        # 兜底：正常/已记账路径由 `_run_done` 短路；仅异常逃逸时补记 error，
+        # 避免留下悬挂 running 行（T-289 把 start 前移后的主要风险面）。
+        _finish_run("error", 0, {}, "批次未正常收尾（finally 兜底）")

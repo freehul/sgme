@@ -5,6 +5,7 @@
 - finish：批次结束（ok/error）+ 计数 + action 分布
 - summarize：按 (version, variant) 分组汇总（A/B 观测 / metrics 端点用）
 - list_by_stage：明细（排障用）
+- reap_stale_running：启动收敛超期 running 行（T-289 配套）
 
 逐批记录语义（设计 §7）：L1 分块每块一条 run；L1.5 每候选批一条；
 L2 每记忆批一条；Tier0 每次生成一条。
@@ -13,9 +14,12 @@ L2 每记忆批一条；Tier0 每次生成一条。
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+
+logger = logging.getLogger("sgme.data.refine_dao")
 
 
 def _now_iso() -> str:
@@ -24,6 +28,25 @@ def _now_iso() -> str:
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+# 悬挂 running 行的收敛阈值（秒）：started_at 早于该时长且仍为 running → 收敛为 error
+# 取值依据：单批 LLM 调用实测 P95 远低于此；2× 批预算时长，宁可放宽不可误伤在途批次
+STALE_RUNNING_SECONDS = 30 * 60
+
+
+def _parse_iso(ts: str | None) -> datetime | None:
+    """解析 `_now_iso()` 产出的 UTC 时间戳（宽松：兼容带小数秒与 +00:00 后缀）。"""
+    if not ts:
+        return None
+    s = ts.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 class RefineRunRecorder:
@@ -67,6 +90,7 @@ class RefineRunRecorder:
         candidate_count: int | None = None,
         candidate_ids_hash: str | None = None,
         short_circuit_reason: str | None = None,
+        provider: str | None = None,
     ) -> None:
         """结束批次：写计数 / action 分布 / 状态（ok|error）。
 
@@ -77,23 +101,105 @@ class RefineRunRecorder:
           候选 memory_id 集排序拼接哈希 sha256[:16]，供「同候选集反查批次」）；
         - ``short_circuit_reason`` **仅非批路径独立短路记录承载**（如 rule_low_sim）；
           语义区分不依赖脆弱组合约定（v4 §二.4）。
+
+        ``elapsed_ms``（ST-58/T-289）：批次真实墙钟耗时，由本函数依 ``started_at``
+        计算写入——**调用点不传值**，防各处口径漂移。解析失败或 started_at 缺失时
+        写 NULL（不影响 status 等主字段，也不因此抛错）。
+
+        ``provider``（ST-58/T-289）：可选回填。T-289 把 `start()` 前移到 LLM 调用
+        **之前**后，命中哪家提供商要跑完降级链才知道，故 start 时先写 ``"pending"``，
+        由本形参在收尾时回填。用 ``COALESCE(?, provider)`` 语义——不传（None）即
+        保持 start 时的值，老调用点零影响。
         """
         u = usage or {}
+        elapsed_ms = None
+        try:
+            row = conn.execute(
+                "SELECT started_at FROM refine_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            started = _parse_iso(row[0] if row else None)
+            if started is not None:
+                delta = datetime.now(timezone.utc) - started
+                elapsed_ms = max(0, int(delta.total_seconds() * 1000))
+        except Exception as exc:  # noqa: BLE001——耗时是旁路，不得影响主记账
+            logger.warning("refine_runs.elapsed_ms 计算失败（run_id=%s）: %s", run_id, exc)
         conn.execute(
             """
             UPDATE refine_runs
             SET finished_at=?, memories_count=?, action_counts=?, status=?, error=?,
                 prompt_tokens=?, completion_tokens=?, total_tokens=?,
-                candidate_count=?, candidate_ids_hash=?, short_circuit_reason=?
+                candidate_count=?, candidate_ids_hash=?, short_circuit_reason=?,
+                elapsed_ms=?, provider=COALESCE(?, provider)
             WHERE run_id=?
             """,
             (_now_iso(), int(memories_count), json.dumps(action_counts or {}, ensure_ascii=False),
              status, error,
              u.get("prompt_tokens"), u.get("completion_tokens"), u.get("total_tokens"),
              candidate_count, candidate_ids_hash, short_circuit_reason,
+             elapsed_ms, provider,
              run_id),
         )
         conn.commit()
+
+    @staticmethod
+    def reap_stale_running(
+        conn: sqlite3.Connection,
+        max_age_seconds: int = STALE_RUNNING_SECONDS,
+        publish_anomaly: bool = True,
+    ) -> int:
+        """启动收敛：把超期仍为 `running` 的行置为 `error`。幂等，返回收敛行数。
+
+        T-289 把 `start()` 前移到 LLM 调用之前后，未捕获异常会留下悬挂 running 行
+        （调用点已用 `try/finally` 兜住绝大多数路径，本函数是**兜底的兜底**——
+        覆盖进程被 kill / 容器重启等 finally 也来不及执行的场景）。
+
+        语义：只改 status 并写 error 说明，**不补 finished_at**（保留「批次未正常
+        收尾」的可辨识痕迹），elapsed_ms 保持 NULL（真实耗时不可知，不编造）。
+
+        `publish_anomaly`：收敛到 >0 行时发 `anomaly_warn`（照 `edge_dao.py:285`
+        先例，函数内延迟导入 `sgme.signal.engine`，避免 data → 上层静态依赖）。
+        失败不影响收敛结果。
+        """
+        cutoff = _now_iso()
+        try:
+            cur = conn.execute(
+                "SELECT run_id, started_at, stage FROM refine_runs WHERE status='running'"
+            ).fetchall()
+            stale: list[str] = []
+            now = datetime.now(timezone.utc)
+            for row in cur:
+                started = _parse_iso(row[1])
+                if started is None:
+                    continue
+                if (now - started).total_seconds() >= max_age_seconds:
+                    stale.append(row[0])
+            if not stale:
+                return 0
+            conn.executemany(
+                "UPDATE refine_runs SET status='error', error=? WHERE run_id=?",
+                [("批次未正常收尾（启动收敛，超期 running）", rid) for rid in stale],
+            )
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001——收敛失败不影响启动
+            logger.warning("refine_runs 超期 running 收敛失败: %s", exc)
+            return 0
+
+        logger.warning(
+            "refine_runs 启动收敛：%d 条超期 running 行置为 error（阈值 %ds，检查时刻 %s）",
+            len(stale), max_age_seconds, cutoff,
+        )
+        if publish_anomaly:
+            try:
+                from sgme.signal import engine as signal_engine
+                signal_engine.publish(
+                    "anomaly_warn", "refine_stale_running",
+                    {"count": len(stale), "max_age_seconds": max_age_seconds,
+                     "checked_at": cutoff},
+                    conn,
+                )
+            except Exception as exc:  # noqa: BLE001——告警发布失败不影响收敛结果
+                logger.warning("refine_runs 超期收敛告警发布失败: %s", exc)
+        return len(stale)
 
     # ---------- 读 ----------
 
