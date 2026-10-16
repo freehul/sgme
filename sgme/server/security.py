@@ -41,7 +41,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sgme import net_guard
-from sgme.security_log import SecurityLog
+from sgme.security_log import SecurityLog, mask_key
 from sgme.security_state import SecurityState
 
 logger = logging.getLogger("sgme.server.security")
@@ -273,7 +273,7 @@ class SecurityGate:
                 self._safe_log(
                     "rate_limited",
                     lambda: self._get_log().record_rate_limited(
-                        net_guard.mask_key(presented),
+                        mask_key(presented),
                         scope="key",
                         limit=self._int_opt(server, "rate_limit_per_min", 120),
                         user_agent=ua,
@@ -289,7 +289,7 @@ class SecurityGate:
                     self._safe_log(
                         "llm_route_limited",
                         lambda: self._get_log().record_rate_limited(
-                            net_guard.mask_key(presented),
+                            mask_key(presented),
                             scope="llm_route",
                             limit=route_retry[1],
                             user_agent=ua,

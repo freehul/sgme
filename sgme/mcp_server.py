@@ -39,6 +39,7 @@ from mcp.server.fastmcp import Context
 
 from sgme import config as sgme_config
 from sgme.net_guard import const_eq, is_default_key_from_remote
+from sgme.security_log import mask_key
 
 logger = logging.getLogger("sgme.mcp")
 
