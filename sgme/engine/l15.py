@@ -93,6 +93,12 @@ class L15Result:
     near_dup_quarantined: int = 0                           # L1.5 F1（T1.6）：本批因近似重复被拦截（写隔离表）的新记忆数
     near_dup_gray: int = 0                                  # L1.5 F1（T1.6）：本批灰区命中数（放行落库 + 聚合计数）
     semantic_edges_written: int = 0                         # T-135：本次落库写入的语义边数（source='l1_conflict'）
+    #: ST-58/T-296（G3-c）：**逐条**裁决留痕，与 `new_memories` 下标对齐。
+    #: 每项 ``{new_memory_index, action, candidate_ids, reason, idempotent_skip}``。
+    #: 用途：A/B 两臂「L1.5 决策一致率」对照（批次 2/3 的放行门禁）——
+    #: 此前只有批次级 action_counts 聚合，无法逐条定位是「哪条新记忆被判成了别的动作」。
+    #: ⚠️ 仅进程内返回，**不落库**（无新表/新列，零迁移）。
+    decisions: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -1177,20 +1183,32 @@ def resolve_conflicts(
         if prescreen_skipped > 0:
             _record_prescreen_skip_run(mem_conn, bucket_key, prescreen_skipped, bucket_ctx)
         stored_n = 0  # T1.7：本路径实际 store 条数（empty_pool 独立记录承载）
+        # ST-58/T-296：短路路径同样要有逐条留痕 —— 否则 A/B 对照会**静默丢样本**
+        # （首轮实跑实测：该批 decisions 为空，一致率分母少一项）。
+        def _rec(idx: int, action: str, reason: str, *, idem: bool = False) -> None:
+            result.decisions.append({
+                "new_memory_index": idx, "action": action, "candidate_ids": [],
+                "reason": reason, "idempotent_skip": idem,
+            })
+
         for i, new_mem in enumerate(new_memories):
             if i in idem_skip:
                 result.skipped.append(i)
+                _rec(i, "skip", "幂等跳过（同源同内容已存在）", idem=True)
                 continue
             if _exact_dup_check(mem_conn, new_mem.get("content")):  # T-167 全池查重短路
                 result.skipped.append(i)
+                _rec(i, "skip", "全池查重命中（内容完全相同）")
                 continue
             if _quarantine_if_near_dup(mem_conn, new_mem, cfg, result, source_ref):  # L1.5 F1（T1.6）
                 result.skipped.append(i)
+                _rec(i, "skip", "近似重复隔离")
                 continue
             new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
             new_mem["memory_id"] = new_id
             result.stored.append(new_id)
             stored_n += 1
+            _rec(i, "store", "候选池为空（无冲突可能，短路不调 LLM）")
         # T1.7：全空短路独立记录（无条件写——本分支执行即写，n≥0，承载零候选事实）
         _record_empty_pool_run(mem_conn, bucket_key, stored_n, bucket_ctx)
         # T1.6：F1 独立计数记录（拦截/灰区有信号才写；与上条可共存，写入顺序无关）
@@ -1322,9 +1340,20 @@ def resolve_conflicts(
         # 幂等跳过：同源同内容已存在 → 不落库（确定性守卫，覆盖 LLM 漏判 skip 的场景）
         if i in idem_skip:
             result.skipped.append(i)
+            result.decisions.append({
+                "new_memory_index": i, "action": "skip", "candidate_ids": [],
+                "reason": "幂等跳过（同源同内容已存在）", "idempotent_skip": True,
+            })
             continue
         decision = by_index.get(i, ConflictDecision(i, [], "store", reason="无裁决默认 store"))
         action = decision.action
+        # ST-58/T-296：逐条决策留痕（G3-c「L1.5 决策一致率」门禁的必要使能——
+        # 此前只有批次级 action_counts 聚合，无法逐条比对 A/B 两臂的裁决差异）。
+        result.decisions.append({
+            "new_memory_index": i, "action": action,
+            "candidate_ids": list(decision.candidate_ids or []),
+            "reason": decision.reason, "idempotent_skip": False,
+        })
         if action == "store":
             if _exact_dup_check(mem_conn, new_mem.get("content")):  # T-167 全池查重短路
                 result.skipped.append(i)
