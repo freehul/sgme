@@ -30,18 +30,35 @@
     python scripts/check_adapter_freshness.py            # 人类可读
     python scripts/check_adapter_freshness.py --json     # 机器可读
 
-退出码：0 = 全部新鲜；1 = 存在漂移（逐项列出）。
+退出码：0 = 全部新鲜（部署缺口只警告）；1 = 存在漂移或部署缺口（--strict-deploy）。
+
+3. 部署态契约（防线 3，2026-10-17 加，T-292）
+   前两道防线只管「仓库内的派生产物」——部署到宿主 profile 里的那份**没有人看**。
+   2026-10-17 实锤：T-277 重建了 lib 与分发副本，但没有 bump package.json 版本，
+   于是 npm latest 与 profile 部署副本都停在旧内容——本机 DSH 运行版少
+   `credential_list` / `credential_get` 两个工具，两道防线全绿，无人察觉。
+   防线 3 把「部署副本缺基准工具」变成机器可见：
+   - 部署目录解析顺序：`--deploy <dir>` > `SGME_DSH_DEPLOY_DIR` > `~/.dsh/profiles/desktop/node_modules/dsh-sgme`
+     （零配置解析到本机 profile；目录不存在 = 跳过并提示，不影响 CI 与无部署的机器）；
+   - 判据 = **契约级**：MCP 基准工具集（`scripts/adapter_parity.py` 的 baseline）
+     去掉 dsh 的架构豁免（`append` / `agent_onboarding`）后，必须全部出现在部署产物里；
+     再多一层「部署 vs 仓库产物逐文件哈希」——不一致即提示重刷（副本漂移）。
+   部署落后于仓库是**正常开发时序**（先合仓库、再发布、再刷新宿主），因此默认只警告、
+   不算漂移；发布门禁用 `--strict-deploy` 让缺口同样失败。
 
 修复方式：① 分发副本漂移 → ``python scripts/publish_adapter_skills.py``；
-② dsh 产物漂移 → ``pnpm -C adapters/dsh/sgme-bridge run build`` 后提交 lib。
+② dsh 产物漂移 → ``pnpm -C adapters/dsh/sgme-bridge run build`` 后提交 lib；
+③ 部署缺口 → bump 版本 + 发布（npm）/ 刷宿主 profile 后重启宿主。
 注意顺序：先 build 再 publish（publish 从真源打包，产物新了副本才会跟着新）。
 """
+from __future__ import annotations
 from __future__ import annotations
 
 import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import sys
@@ -56,6 +73,19 @@ BRIDGE_REL = Path("adapters/dsh/sgme-bridge")
 # 两端必须用同一个正则，保证「集合相等」判定对称。
 NAME_RE = re.compile(r"name:\s*['\"]([a-z][a-z0-9_]*)['\"]")
 REGION_PREFIX = "//#region "
+
+# 防线 3：部署态契约（见模块 docstring）。三条口径写死在这里，避免各处漂移：
+# - 部署目录默认候选（~ 展开在运行时做，便于测试注入）；
+# - dsh 的架构豁免工具（`adapter_parity.py` exemptions.dsh 同口径）；
+# - 部署产物相对部署目录的路径（npm 包内固定布局）。
+DEPLOY_DIR_ENV = "SGME_DSH_DEPLOY_DIR"
+DEFAULT_DEPLOY_REL = Path(".dsh") / "profiles" / "desktop" / "node_modules" / "dsh-sgme"
+DEPLOY_ENTRY_REL = Path("lib") / "index.js"
+DSH_EXEMPT_TOOLS = ("append", "agent_onboarding")
+
+# 名称不同但语义等价的映射：唯一真源 = scripts/adapter_parity_map.yaml 的 aliases 段
+# （`search` ↔ dsh 的 `memory_search`）——在这里再抄一份就会漂移，故运行时读。
+PARITY_MAP_REL = Path("scripts") / "adapter_parity_map.yaml"
 
 
 def _load_publish_module(repo_root: Path):
@@ -138,6 +168,13 @@ def check_skill_copies(repo_root: Path = ROOT, hosts=None) -> list[str]:
     return findings
 
 
+def tool_names_in_file(path: Path) -> set[str]:
+    """从一个产物文件里提取 name 字面量（工具/命令注册名）。解析不到返回空集。"""
+    if not path.is_file():
+        return set()
+    return set(NAME_RE.findall(path.read_text(encoding="utf-8")))
+
+
 def check_dsh_bundle(repo_root: Path = ROOT) -> list[str]:
     """防线 2：dsh 桥接 lib 产物与 src 的同步性。返回漂移清单。"""
     bridge = repo_root / BRIDGE_REL
@@ -159,7 +196,7 @@ def check_dsh_bundle(repo_root: Path = ROOT) -> list[str]:
     src_text = "\n".join(p.read_text(encoding="utf-8") for p in src_files)
     lib_text = lib_js.read_text(encoding="utf-8")
     src_names = set(NAME_RE.findall(src_text))
-    lib_names = set(NAME_RE.findall(lib_text))
+    lib_names = tool_names_in_file(lib_js)
 
     # fail-closed：解析到 0 个说明提取口径失效，必须失败而不是静默通过
     if not src_names:
@@ -188,28 +225,170 @@ def check_dsh_bundle(repo_root: Path = ROOT) -> list[str]:
     return findings
 
 
-def check(repo_root: Path = ROOT) -> dict:
-    """执行两道防线，返回 {"ok": bool, "findings": [...]}（供 CLI 与 pytest 共用）。"""
+# ---------------- 防线 3：部署态契约（T-292） ----------------
+
+def mcp_baseline_tools(repo_root: Path = ROOT) -> set[str]:
+    """从 `sgme/mcp_server.py` 解析 MCP 工具面（与 adapter_parity.py 同口径）。
+
+    解析不到 = 提取口径失效，返回空集由调用方 fail-closed 处理。
+    """
+    server = repo_root / "sgme" / "mcp_server.py"
+    if not server.is_file():
+        return set()
+    return set(re.findall(r'\{"name":\s*"([a-z_]+)"', server.read_text(encoding="utf-8")))
+
+
+def dsh_alias_map(repo_root: Path = ROOT) -> dict[str, str]:
+    """解析 adapter_parity_map.yaml 的 aliases 段里 dsh 的等价名映射。
+
+    手工微解析（只取 `  <基准名>:` 下一行里的 `    dsh: <名>`），避免为一个映射
+    引入 YAML 依赖；解析不到返回空映射（退化为「按名字严格比对」）。
+    """
+    path = repo_root / PARITY_MAP_REL
+    if not path.is_file():
+        return {}
+    out: dict[str, str] = {}
+    current: str | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == 2 and line.rstrip().endswith(":"):
+            current = line.strip().rstrip(":")
+        elif indent == 4 and current and line.strip().startswith("dsh:"):
+            out[current] = line.split(":", 1)[1].strip()
+    return out
+
+
+def resolve_deploy_dir(explicit=None) -> Path | None:
+    """解析部署目录：参数 > 环境变量 > 本机默认 profile。都不存在返回 None（跳过）。
+
+    None ≠ 失败：CI、以及没装 dsh 插件的机器上本来就没有部署副本，跳过即可；
+    只有「目录存在但契约不满足」才产生缺口。
+    """
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+    env = os.environ.get(DEPLOY_DIR_ENV)
+    if env:
+        candidates.append(Path(env))
+    candidates.append(Path.home() / DEFAULT_DEPLOY_REL)
+    for c in candidates:
+        if (c / DEPLOY_ENTRY_REL).is_file():
+            return c
+    return None
+
+
+def check_deploy_contract(repo_root: Path = ROOT, deploy_dir=None) -> list[str]:
+    """防线 3：部署副本是否满足能力面契约。返回缺口清单（空 = 无缺口）。
+
+    两类判据：
+    - 契约级：MCP 基准工具（去 dsh 架构豁免）必须全部在部署产物里——缺 = 部署落后；
+    - 哈希级：部署产物与仓库产物逐文件一致——不一致 = 部署副本内容漂移。
+    """
+    if deploy_dir is None:
+        return []
+    entry = deploy_dir / DEPLOY_ENTRY_REL
+    if not entry.is_file():
+        return [f"[deploy] 部署目录无产物 {entry} → 检查部署路径"]
+
+    baseline = mcp_baseline_tools(repo_root)
+    if not baseline:
+        return ["[deploy] MCP 基线解析到 0 个工具（提取规则失效？）→ fail-closed"]
+    aliases = dsh_alias_map(repo_root)
+    contract = sorted(baseline - set(DSH_EXEMPT_TOOLS))
+
+    deployed = tool_names_in_file(entry)
+    if not deployed:
+        return ["[deploy] %s 解析到 0 个 name 字面量（提取规则失效？）→ fail-closed" % entry]
+
+    gaps = []
+    for name in contract:
+        expect = aliases.get(name, name)
+        if expect in deployed:
+            continue
+        gaps.append(
+            "[deploy] 部署副本缺工具 %r（MCP 基准 %r 有、%s 无）"
+            " → bump 版本 + 发布后刷新宿主 profile 并重启"
+            % (expect, name, deploy_dir.name)
+        )
+
+    repo_entry = repo_root / BRIDGE_REL / DEPLOY_ENTRY_REL
+    if repo_entry.is_file():
+        a = _normalized_digest(entry.read_bytes())
+        b = _normalized_digest(repo_entry.read_bytes())
+        if a != b:
+            gaps.append(
+                f"[deploy] 部署产物与仓库产物内容不一致（{deploy_dir.name} 与 "
+                f"{BRIDGE_REL.as_posix()}/lib/index.js 哈希不同）→ 重新安装宿主插件"
+            )
+    return gaps
+
+
+def check(repo_root: Path = ROOT, deploy_dir=None) -> dict:
+    """执行三道防线，返回 {"ok": bool, "findings": [...], "gaps": [...], "deploy": str|None}。
+
+    - findings：仓库内派生产物漂移（分发副本 / dsh lib）——必须修，ok=False；
+    - gaps：部署态缺口（部署落后于仓库）——正常开发时序里允许存在，默认只警告；
+      发布门禁用 `--strict-deploy` 把它也算失败（与 adapter_parity 的 pending 口径一致）。
+    """
     findings = check_skill_copies(repo_root) + check_dsh_bundle(repo_root)
-    return {"ok": not findings, "findings": findings}
+    deploy = resolve_deploy_dir() if deploy_dir is None else deploy_dir
+    gaps = check_deploy_contract(repo_root, deploy)
+    return {
+        "ok": not findings,
+        "findings": findings,
+        "gaps": gaps,
+        "deploy": str(deploy) if deploy else None,
+    }
 
 
 def main(argv=None) -> int:
+    # Windows 控制台默认 GBK，emoji/中文输出会 UnicodeEncodeError 把门禁自己弄红
+    # （2026-10-17 实锤：数据面 ok=True 却 exit 1）——输出统一走 UTF-8，降级不报错。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser(description="SGME 适配器分发新鲜度门禁")
     ap.add_argument("--json", action="store_true", help="机器可读输出")
     ap.add_argument("--root", default=str(ROOT), help="仓库根（默认本文件所在仓库）")
+    ap.add_argument(
+        "--deploy",
+        default=None,
+        help="宿主部署目录（默认取 SGME_DSH_DEPLOY_DIR 环境变量，再回落 ~/.dsh/profiles/desktop/node_modules/dsh-sgme）",
+    )
+    ap.add_argument(
+        "--strict-deploy",
+        action="store_true",
+        help="部署态缺口也算失败（发布门禁用；默认只警告）",
+    )
     args = ap.parse_args(argv)
 
-    res = check(Path(args.root))
+    res = check(Path(args.root), resolve_deploy_dir(args.deploy))
+    failed = bool(res["findings"]) or (args.strict_deploy and bool(res["gaps"]))
     if args.json:
+        res["failed"] = failed
         print(json.dumps(res, ensure_ascii=False, indent=2))
-    elif res["ok"]:
-        print("✅ 适配器分发新鲜：八副本与真源一致；dsh lib 与 src 同步")
     else:
-        print(f"❌ 适配器分发漂移 {len(res['findings'])} 项：")
-        for f in res["findings"]:
-            print(f"  · {f}")
-    return 0 if res["ok"] else 1
+        if res["findings"]:
+            print("❌ 适配器分发漂移 %d 项：" % len(res["findings"]))
+            for f in res["findings"]:
+                print("  · %s" % f)
+        else:
+            print("✅ 适配器分发新鲜：八副本与真源一致；dsh lib 与 src 同步")
+        if res["gaps"]:
+            mark = "❌" if args.strict_deploy else "⚠️"
+            print("%s 部署态缺口 %d 项（部署 %s）：" % (mark, len(res["gaps"]), res["deploy"]))
+            for g in res["gaps"]:
+                print("  · %s" % g)
+        elif res["deploy"]:
+            print("✅ 部署态契约满足：%s" % res["deploy"])
+        else:
+            print("⏭  部署态检查跳过：未找到宿主部署目录（CI / 未装插件）")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

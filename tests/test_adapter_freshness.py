@@ -12,6 +12,14 @@ A. 门禁机制测试（夹具驱动，永远可跑）——证明「陈旧派�
 
 B. 仓库现状测试（真实仓库）——两条防线当前必须全绿：
    八副本与真源重新打包结果逐文件一致；dsh lib 与 src 完全同步。
+
+C. 部署态契约测试（T-292）——部署副本落后于仓库必须机器可见：
+   - 部署副本缺基准工具（T-292 同款事故形态）→ 缺口项
+   - 部署产物与仓库产物哈希不一致 → 缺口项
+   - 契约齐 + 内容一致 → 零缺口
+   - 无部署目录（CI / 未装插件）→ 跳过，不是失败
+   - 基线解析失效 → fail-closed
+   - 默认只警告、--strict-deploy 升级为失败（发布门禁口径）
 """
 from __future__ import annotations
 
@@ -222,6 +230,121 @@ def test_repo_dsh_bundle_fresh():
     assert findings == [], "dsh 产物漂移：\n" + "\n".join(findings)
 
 
-def test_repo_cli_passes():
-    """CLI 入口接线正确（门禁可当命令独立跑）。"""
+def test_repo_cli_passes(tmp_path, monkeypatch):
+    """CLI 入口接线正确（门禁可当命令独立跑）。
+
+    把 home 与部署目录环境变量都指向不存在的路径：仓库侧判定必须与
+    「本机是否装了插件」彻底解耦——否则同一份代码在不同机器上红绿不同
+    （门禁可信度归零）。
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setenv(cf.DEPLOY_DIR_ENV, str(tmp_path / "_no_such_deploy"))
     assert cf.main(["--root", str(BASE)]) == 0
+
+# ---------------- C. 部署态契约（防线 3，T-292） ----------------
+
+BASELINE_TOOLS = ["append", "search", "health", "credential_list"]
+CONTRACT_TOOLS = ["search", "health", "credential_list"]  # 去掉架构豁免 append
+
+
+def _make_deploy(repo: Path, tools: list[str], *, repo_tools=None, dup: bool = False) -> Path:
+    """造一个假仓库基线（MCP 工具面）+ 假部署副本。
+
+    repo_tools=None 时基线 = BASELINE_TOOLS；dup=True 让部署产物同时存在于 src 侧，
+    便于构造「部署与仓库产物哈希一致」的场景。
+    """
+    server = repo / "sgme"
+    server.mkdir(parents=True, exist_ok=True)
+    (server / "mcp_server.py").write_text(
+        "\n".join('{"name": "%s", "description": "x"},' % t for t in (repo_tools or BASELINE_TOOLS)),
+        encoding="utf-8",
+    )
+    deploy = repo / "deployed" / "dsh-sgme"
+    (deploy / "lib").mkdir(parents=True, exist_ok=True)
+    text = "\n".join('const d%d = { name: "%s" };' % (i, t) for i, t in enumerate(tools)) + "\n"
+    (deploy / "lib" / "index.js").write_text(text, encoding="utf-8")
+    return deploy
+
+
+def test_deploy_dir_missing_is_skipped(tmp_path, monkeypatch):
+    """没有部署目录 = 跳过（CI / 未装插件的机器），不是失败。
+
+    home 也指向空目录：默认候选是 ~/.dsh/...，不隔离 home 的话本机会命中
+    真实 profile，用例就变成「测本机装没装插件」。
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    assert cf.resolve_deploy_dir(str(tmp_path / "nope")) is None
+    assert cf.check_deploy_contract(tmp_path, None) == []
+
+
+def test_deploy_contract_stale_tool_detected(tmp_path):
+    """T-292 同款：部署副本缺基准工具 → 缺口项（而不是静默全绿）。"""
+    deploy = _make_deploy(tmp_path, ["search", "health"])  # 缺 credential_list
+    gaps = cf.check_deploy_contract(tmp_path, deploy)
+    assert any("credential_list" in g for g in gaps), gaps
+
+
+def test_deploy_contract_fresh_is_clean(tmp_path):
+    """部署产物含全部契约工具且与仓库产物一致 → 零缺口。"""
+    deploy = _make_deploy(tmp_path, CONTRACT_TOOLS)
+    # 让「仓库产物」与部署产物逐字节一致（含相同注释头也无妨，比对的是整体哈希）
+    repo_bridge = tmp_path / cf.BRIDGE_REL / "lib"
+    repo_bridge.mkdir(parents=True)
+    (repo_bridge / "index.js").write_bytes((deploy / "lib" / "index.js").read_bytes())
+    assert cf.check_deploy_contract(tmp_path, deploy) == []
+
+
+def test_deploy_digest_drift_detected(tmp_path):
+    """契约齐但内容与仓库产物不一致（部署副本内容漂移）→ 检出。"""
+    deploy = _make_deploy(tmp_path, CONTRACT_TOOLS)
+    repo_bridge = tmp_path / cf.BRIDGE_REL / "lib"
+    repo_bridge.mkdir(parents=True)
+    (repo_bridge / "index.js").write_text("// stale\n", encoding="utf-8")
+    gaps = cf.check_deploy_contract(tmp_path, deploy)
+    assert any("内容不一致" in g for g in gaps), gaps
+
+
+def test_deploy_baseline_unparsable_fails_closed(tmp_path):
+    """基线解析到 0 个工具（提取口径失效）→ fail-closed，不静默通过。"""
+    deploy = tmp_path / "deployed" / "dsh-sgme"
+    (deploy / "lib").mkdir(parents=True)
+    (deploy / "lib" / "index.js").write_text('const a = { name: "x" };\n', encoding="utf-8")
+    gaps = cf.check_deploy_contract(tmp_path, deploy)
+    assert any("fail-closed" in g for g in gaps), gaps
+
+
+def test_deploy_alias_map_read_from_parity_map(tmp_path):
+    """别名（基准 search ↔ dsh memory_search）从 parity map 读，不重复声明。"""
+    parity = tmp_path / cf.PARITY_MAP_REL
+    parity.parent.mkdir(parents=True, exist_ok=True)
+    parity.write_text(
+        "aliases:\n  search:\n    hermes: sgme_memory_search\n    dsh: memory_search\n",
+        encoding="utf-8",
+    )
+    assert cf.dsh_alias_map(tmp_path) == {"search": "memory_search"}
+    deploy = _make_deploy(tmp_path, ["memory_search", "health", "credential_list"])
+    assert not any("search" in g for g in cf.check_deploy_contract(tmp_path, deploy))
+
+
+def test_deploy_strict_flag_escalates(fake_repo, tmp_path, monkeypatch):
+    """默认只警告（exit 0）；--strict-deploy 让部署缺口失败（发布门禁）。
+
+    两道仓库防线打桩为「零漂移」，让用例只考察「部署缺口是否升级为失败」
+    这一件事（其余噪声由 A/B 区用例各自负责）。
+    """
+    monkeypatch.setattr(cf, "check_skill_copies", lambda *a, **k: [])
+    monkeypatch.setattr(cf, "check_dsh_bundle", lambda *a, **k: [])
+    _make_deploy(fake_repo, ["search", "health"])  # 缺 credential_list
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setenv(cf.DEPLOY_DIR_ENV, str(fake_repo / "deployed" / "dsh-sgme"))
+    assert cf.main(["--root", str(fake_repo)]) == 0
+    assert cf.main(["--root", str(fake_repo), "--strict-deploy"]) == 1
+
+
+def test_deploy_check_skipped_without_dir(fake_repo, monkeypatch):
+    """部署候选都不存在 → 跳过部署检查（env 优先，回落默认目录）。"""
+    monkeypatch.setattr(Path, "home", lambda: fake_repo / "nohome")
+    monkeypatch.setenv(cf.DEPLOY_DIR_ENV, str(fake_repo / "absent"))
+    res = cf.check(fake_repo)
+    assert res["deploy"] is None
+    assert res["gaps"] == []
