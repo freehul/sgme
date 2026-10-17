@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -98,8 +99,33 @@ def write_agents_md(project_dir: Path) -> Path:
         elif "历史会话补导入" not in text or "demand_create" not in text:
             # 旧版模板（规则不全 / T-86 前缺三池工具清单）：整体升级
             target.write_text(generate_agents_md(), encoding="utf-8")
-        return target
-    target.write_text(generate_agents_md(), encoding="utf-8")
+    else:
+        target.write_text(generate_agents_md(), encoding="utf-8")
+
+    # 故障自救卡：本地副本 + 指令文件指针（SGME 离线时 dsh 也能自救）
+    try:
+        _res_src = next((p for p in (
+            Path(__file__).resolve().parents[2] / "AI-INSTALL" / "resilience.md",
+            Path(__file__).resolve().parent / "resilience.md",
+        ) if p.is_file()), None)
+        if _res_src:
+            _res_dir = Path(project_dir) / ".sgme"
+            _res_dir.mkdir(parents=True, exist_ok=True)
+            _res_dst = _res_dir / "sgme-resilience.md"
+            shutil.copy2(_res_src, _res_dst)
+            print(f"  ✅ sgme-resilience.md → {_res_dst}")
+            if target.is_file() and "SGME 故障自救" not in target.read_text(encoding="utf-8"):
+                target.write_text(
+                    target.read_text(encoding="utf-8").rstrip()
+                    + "\n\n<!-- SGME-RESILIENCE -->\n## SGME 故障自救（离线可用）\n"
+                    f"SGME 离线 / 工具报错 / 首轮无记忆注入时，先读 `{_res_dst}` 按清单处理："
+                    "分级判断 → 修复 → 降级 → 技能补位。\n",
+                    encoding="utf-8")
+                print(f"  ✅ 自救指针 → {target}")
+        else:
+            print("  ⚠️ 自救卡源缺失（AI-INSTALL/resilience.md）")
+    except Exception as exc:  # 自救卡失败不应阻断安装
+        print(f"  ⚠️ 自救卡未落地: {exc}")
     return target
 
 
