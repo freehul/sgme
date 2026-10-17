@@ -180,6 +180,28 @@ def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
                 },
             })
 
+        # 每批实际 provider（诚实性 + **混杂诊断**）：两臂若由不同模型服务，
+        # 准确率差就不可归因给配置变更。按 file_id（= 批 id）取。
+        prov = {
+            r["file_id"]: r["provider"]
+            for r in mem_conn.execute(
+                "SELECT file_id, provider FROM refine_runs WHERE stage='l1_conflict'"
+            ).fetchall()
+        }
+        for b in results:
+            b["provider"] = prov.get(b["batch_id"])
+
+        # 每批实际 provider（诚实性 + **混杂诊断**）：两臂若由不同模型服务，
+        # 准确率差就不可归因给配置变更。按 file_id（= 批 id）取。
+        prov = {
+            r["file_id"]: r["provider"]
+            for r in mem_conn.execute(
+                "SELECT file_id, provider FROM refine_runs WHERE stage='l1_conflict'"
+            ).fetchall()
+        }
+        for b in results:
+            b["provider"] = prov.get(b["batch_id"])
+
         # 成本/候选规模（自诊断：判断 prescreen 上限是否真的卡住）
         runs = mem_conn.execute(
             "SELECT stage, provider, candidate_count, prompt_tokens, elapsed_ms, status "
@@ -198,6 +220,74 @@ def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
                 c.close()
             except Exception:
                 pass
+
+
+def probe_ranks(*, work_dir: Path, pool: list[dict], batches: list[dict],
+                base_cfg: dict, caps: tuple[int, ...] = (30, 50)) -> dict:
+    """**排名探针**（不调 LLM）：报告每批「目标池条目」在候选池里的排名与入选情况。
+
+    为什么需要它（T-298）：
+    - 候选池 = 向量 Top-K ∪ 维度 Top-N，两路并集后**排名无法凭手写推演**；
+    - 于是无法判断 (a) 某批的 `expect` 在物理上可否达成（目标候选是否真进了池），
+      (b) B2 真正的风险面「相关候选恰好落在 30 与 50 之间」是否被覆盖。
+    → 先探针实测排名，再据此标定语料（而不是盲配 `updated_at`）。
+
+    Returns:
+        ``{"caps": [...], "batches": [{batch_id, target, per_cap: {cap: {rank, included,
+        candidates_total, pool_entries_in}}}], "boundary_candidates": [...]}``
+    """
+    probe_dir = work_dir / "_rank_probe"
+    if probe_dir.exists():
+        shutil.rmtree(probe_dir)
+    data_dir = probe_dir / "data"
+    data_dir.mkdir(parents=True)
+
+    mem_conn, session_conn, wiki_conn = db_mod.init_databases(data_dir)
+    rows: list[dict] = []
+    try:
+        memory_dao.import_registry(mem_conn, base_cfg["dimensions"], base_cfg["aliases"])
+        seed_pool(mem_conn, pool)
+
+        for b in batches:
+            per_cap: dict[str, dict] = {}
+            for cap in caps:
+                cfg = json.loads(json.dumps(base_cfg))
+                cfg.setdefault("l15", {})["prescreen"] = {
+                    "enabled": True, "vector_top_k": cap, "dimension_top_n": cap,
+                    "fallback": "skip_conflict",
+                }
+                groups, _warn = l15_mod.build_candidate_groups(
+                    mem_conn, [dict(x) for x in b["new_memories"]],
+                    top_k=cap, cfg=cfg,
+                    prescreen=cfg["l15"]["prescreen"], stats={},
+                )
+                cands = groups[0].candidates if groups else []
+                ids = [c["memory_id"] for c in cands]
+                tgt = b.get("target")
+                rank = (ids.index(tgt) + 1) if (tgt and tgt in ids) else None
+                per_cap[str(cap)] = {
+                    "candidates_total": len(ids),
+                    "rank": rank,
+                    "included": rank is not None if tgt else None,
+                    "pool_entries_in": [i for i in ids if i.startswith("pool-")],
+                }
+            rows.append({"batch_id": b["id"], "expect": b["expect"],
+                         "target": b.get("target"), "per_cap": per_cap})
+
+        # 边界扫描：哪些目标条目「在大 cap 里、在小 cap 外」——B2 的真正风险面
+        small, large = str(min(caps)), str(max(caps))
+        boundary = [
+            r for r in rows
+            if r["per_cap"][large]["included"] and not r["per_cap"][small]["included"]
+        ]
+    finally:
+        for c in (mem_conn, session_conn, wiki_conn):
+            try:
+                c.close()
+            except Exception:
+                pass
+
+    return {"caps": list(caps), "batches": rows, "boundary_candidates": boundary}
 
 
 def _decision_map(arm_result: dict) -> dict[tuple[str, int], str]:
@@ -351,12 +441,17 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="L1.5 决策级 A/B 对照（G3-c 门禁）")
     ap.add_argument("--fillers", type=int, default=60,
                     help="同维度填充记忆条数（使 prescreen 上限真的卡住；默认 60）")
+    ap.add_argument("--boundary-fillers", type=int, default=45,
+                    help="边界填充条数（把边界目标挤到 31..50 之间；默认 45 → 排名 ≈46）")
     ap.add_argument("--out", default="eval/results/l15_ab",
                     help="输出目录（报告 JSON + Markdown + 各臂独立库）")
     ap.add_argument("--arms", default="baseline,b2_30_30",
                     help="要跑的臂（逗号分隔，键见 ARMS）")
     ap.add_argument("--no-vector", action="store_true",
                     help="关闭向量预筛（只看维度 Top-N，调试用）")
+    ap.add_argument("--probe-ranks", action="store_true",
+                    help="只跑排名探针（不调 LLM）：报告目标池条目在候选池里的排名，"
+                         "用于标定「相关候选落在 30/50 之间」的边界场景")
     ap.add_argument("--refine-backend", choices=("local", "cloud"), default="local",
                     help="提炼后端：local=本地 LM Studio（默认，零云依赖）；"
                          "cloud=基线生产链 agnes→siliconflow→rule（答案能否外推生产）")
@@ -377,10 +472,38 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pool = corpus.build_pool(args.fillers)
+    pool = corpus.build_pool(args.fillers, args.boundary_fillers)
 
-    print(f"语料：池 {len(pool)} 条（手写 {len(corpus.POOL)} + 填充 {args.fillers}）"
-          f"／新记忆批 {len(corpus.BATCHES)}")
+    if args.probe_ranks:
+        base = build_cfg({"prescreen": {}}, embed_base_url=args.embed_base_url,
+                         embed_model=args.embed_model,
+                         refine_base_url=args.refine_base_url,
+                         refine_model=args.refine_model, use_vector=not args.no_vector)
+        probe = probe_ranks(work_dir=out_dir, pool=pool, batches=corpus.BATCHES,
+                            base_cfg=base)
+        (out_dir / "rank_probe.json").write_text(
+            json.dumps(probe, ensure_ascii=False, indent=2), encoding="utf-8")
+        caps = probe["caps"]
+        print(f"排名探针（caps={caps}）——目标池条目的排名：")
+        for r in probe["batches"]:
+            if not r["target"]:
+                continue
+            cells = " ".join(
+                f"cap{c}:{'#' + str(r['per_cap'][str(c)]['rank']) if r['per_cap'][str(c)]['rank'] else '剔除'}"
+                for c in caps
+            )
+            print(f"  {r['batch_id']:<24} target={r['target']:<26} {cells}")
+        b = probe["boundary_candidates"]
+        print("")
+        print(f"边界场景（大 cap 在内 / 小 cap 在外）命中 {len(b)} 条:")
+        for r in b:
+            print(f"  {r['batch_id']} target={r['target']}")
+        print("")
+        print(f"报告：{out_dir / 'rank_probe.json'}")
+        return 0
+
+    print(f"语料：池 {len(pool)} 条（手写 {len(corpus.POOL)} + 环境填充 {args.fillers}"
+          f" + 边界填充 {args.boundary_fillers}）／新记忆批 {len(corpus.BATCHES)}")
     print(f"臂：{names}｜向量预筛：{'关' if args.no_vector else '开'}"
           f"（{args.embed_base_url} / {args.embed_model}）")
     if args.refine_backend == "cloud":
@@ -414,8 +537,23 @@ def main(argv: list[str] | None = None) -> int:
     report = {
         "generated_at": _now(),
         "corpus": "eval/l15_decision_corpus.py",
-        "pool_base": len(corpus.POOL), "fillers": args.fillers, "pool_size": len(pool),
+        "pool_base": len(corpus.POOL), "fillers": args.fillers,
+        "boundary_fillers": args.boundary_fillers, "pool_size": len(pool),
         "batches": len(corpus.BATCHES), "use_vector": not args.no_vector,
+        "provider_confound": {
+            "note": "两臂若由不同 provider 服务，准确率差**不可归因**给配置变更；"
+                    "逐批 provider 见 arms[].batches[].provider",
+            "baseline": base["cost"]["providers"],
+            "arms": {a["arm"]: a["cost"]["providers"] for a in arms_out
+                     if a["arm"] != base["arm"]},
+        },
+        "provider_confound": {
+            "note": "两臂若由不同 provider 服务，准确率差**不可归因**给配置变更；"
+                    "逐批 provider 见 arms[].batches[].provider",
+            "baseline": base["cost"]["providers"],
+            "arms": {a["arm"]: a["cost"]["providers"] for a in arms_out
+                     if a["arm"] != base["arm"]},
+        },
         "embed": {"base_url": args.embed_base_url, "model": args.embed_model},
         "refine": {"backend": args.refine_backend,
                    "base_url": args.refine_base_url, "model": args.refine_model},

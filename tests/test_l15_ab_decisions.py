@@ -86,8 +86,53 @@ def test_all_fixture_timestamps_parse_as_iso():
 
 
 def test_build_pool_composition():
-    pool = C.build_pool(7)
-    assert len(pool) == len(C.POOL) + 7
+    assert len(C.build_pool(7)) == len(C.POOL) + 7
+    assert len(C.build_pool(7, 5)) == len(C.POOL) + 7 + 5
+
+
+def test_each_action_family_has_min_samples():
+    """T-298：每类动作 ≥10 条，否则一致率/准确率没有统计意义。"""
+    from collections import Counter
+
+    dist = Counter(b["expect"] for b in C.BATCHES)
+    for action in ("store", "skip", "update", "merge"):
+        assert dist[action] >= 10, f"{action} 仅 {dist.get(action)} 条"
+
+
+def test_targets_unique_and_exist():
+    """每个非 store 批必须有**独占**的目标池条目。
+
+    独占是硬约束：L1.5 会落库改池（update/merge 归档目标候选），若两条批共用同一
+    池条目，批序就会互相破坏（先跑的归档掉，后跑的找不到目标）。
+    """
+    ids = {m["memory_id"] for m in C.POOL}
+    targets = [b["target"] for b in C.BATCHES if b.get("target")]
+    assert len(targets) == len(set(targets)), "目标池条目被多条批共用"
+    for t in targets:
+        assert t in ids, t
+    # store 族不应有目标（主体全新）
+    for b in C.BATCHES:
+        if b["expect"] == "store":
+            assert b.get("target") is None, b["id"]
+
+
+def test_pool_contents_unique():
+    """池内容必须唯一——重复内容会让「两条批共享同一主体」，expect 互相干扰。"""
+    conts = [m["content"] for m in C.POOL]
+    assert len(conts) == len(set(conts))
+
+
+def test_boundary_scenario_declared():
+    """B2 的风险面必须有语料覆盖：目标候选落在 30/50 之间的边界批。"""
+    b = [x for x in C.BATCHES if x["id"] == C.BOUNDARY_BATCH_ID]
+    assert len(b) == 1, "缺少边界批"
+    assert b[0]["target"] == C.BOUNDARY_TARGET_ID
+    assert b[0]["expect"] == "update"
+    bf = C.make_boundary_fillers(5)
+    # 边界填充必须比目标新（才能把它挤下去），且主体不同（否则模型对它判 update，风险演示不出来）
+    target = [m for m in C.POOL if m["memory_id"] == C.BOUNDARY_TARGET_ID][0]
+    assert min(x["updated_day"] for x in bf) > target["updated_day"]
+    assert all("非用户自有设备" in x["content"] for x in bf)
 
 
 # ---------- 对照逻辑（错了会出假绿灯） ----------
@@ -240,6 +285,39 @@ def test_summarize_costs_reports_providers():
         {"provider": "rule", "candidate_count": None, "prompt_tokens": None, "status": "ok"},
     ])
     assert H.summarize_costs(arm)["providers"] == {"agnes": 2, "rule": 1}
+
+
+def test_probe_ranks_output_shape(monkeypatch, tmp_path):
+    """排名探针的输出结构（不真连向量/LLM：桩掉 build_candidate_groups）。"""
+    from sgme.engine import l15 as l15_mod
+
+    class _G:
+        def __init__(self, ids):
+            self.candidates = [{"memory_id": i} for i in ids]
+
+    def _fake_build(mem_conn, new_memories, top_k=50, **kw):
+        # 模拟：cap>=40 时目标在内（#3），cap<40 时被剔除
+        ids = ["filler-a", "filler-b"] + (["pool-x"] if top_k >= 40 else [])
+        return [_G(ids)], False
+
+    monkeypatch.setattr(l15_mod, "build_candidate_groups", _fake_build)
+    monkeypatch.setattr(H, "seed_pool", lambda conn, pool: None)
+    monkeypatch.setattr(H, "db_mod",
+                        type("m", (), {"init_databases": staticmethod(
+                            lambda d: (object(), object(), object()))}))
+    monkeypatch.setattr(H, "memory_dao", type("m", (), {"import_registry": staticmethod(
+        lambda *a, **k: None)}))
+
+    out = H.probe_ranks(
+        work_dir=tmp_path, pool=[], batches=[{"id": "b1", "expect": "update", "target": "pool-x",
+                                             "new_memories": [{"content": "x"}]}],
+        base_cfg={"dimensions": [], "aliases": []}, caps=(30, 50))
+    assert out["caps"] == [30, 50]
+    row = out["batches"][0]
+    assert row["per_cap"]["30"]["included"] is False
+    assert row["per_cap"]["50"]["included"] is True
+    assert row["per_cap"]["50"]["rank"] == 3
+    assert len(out["boundary_candidates"]) == 1
 
 
 def test_arms_registry_shape():
