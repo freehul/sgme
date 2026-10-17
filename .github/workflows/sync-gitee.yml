@@ -56,3 +56,68 @@ jobs:
           fi
 
           push_with_retry "tag 推送" git push gitee --tags --force
+
+      # Release 不随 git 走：Gitee 只镜像分支/标签/提交，Release 页面（标题、正文）
+      # 必须单独调 API 建。原先只推 git，导致 Gitee 侧 Release 停在 v1.1.0，
+      # 2026-08 之后的版本说明在 Gitee 完全不可见（用户 2026-10-18 发现）。
+      - name: Sync release to Gitee
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, urllib.error, urllib.request
+
+          tag = os.environ["TAG"].strip()
+          repo = os.environ["REPO"]
+          tok = os.environ["GITEE_TOKEN"]
+
+          info = subprocess.run(
+              ["gh", "release", "view", tag, "--repo", repo, "--json", "name,body"],
+              capture_output=True, text=True)
+          if info.returncode != 0:
+              print(f"[release] GitHub 上没有 {tag} 的 Release，跳过（只有 tag 不算 Release）")
+              raise SystemExit(0)
+          data = json.loads(info.stdout)
+          name = data.get("name") or tag
+          body = data.get("body") or ""
+
+          api = "https://gitee.com/api/v5/repos/freehul/sgme/releases"
+
+          def call(method, url, payload=None):
+              req = urllib.request.Request(
+                  url,
+                  data=json.dumps(payload).encode() if payload is not None else None,
+                  method=method,
+                  headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return json.loads(r.read().decode() or "{}")
+              except urllib.error.HTTPError as e:
+                  print(f"[release] {method} -> HTTP {e.code}: {e.read().decode()[:300]}")
+                  return None
+
+          listing = call("GET", f"{api}?access_token={tok}") or []
+          existing = next((x for x in listing if x.get("tag_name") == tag), None)
+
+          if existing:
+              # Gitee 的 PATCH 对必填字段做校验（漏 tag_name 会 400），与 POST 保持同形
+              payload = {"access_token": tok, "tag_name": tag, "name": name,
+                         "body": body, "prerelease": False}
+              ok = call("PATCH", f"{api}/{existing['id']}", payload)
+              if not ok:
+                  print(f"[release] {tag} 更新失败")
+                  raise SystemExit(1)
+              print(f"[release] Gitee Release {tag} 已更新（id {existing['id']}）")
+          else:
+              payload = {"access_token": tok, "tag_name": tag, "name": name, "body": body,
+                         "prerelease": False, "target_commitish": "main"}
+              ok = call("POST", api, payload)
+              if not ok:
+                  print(f"[release] {tag} 创建失败")
+                  raise SystemExit(1)
+              print(f"[release] Gitee Release {tag} 已创建")
+          PY
