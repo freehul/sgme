@@ -87,6 +87,41 @@ def generate_agents_md() -> str:
     )
 
 
+def install_resilience(project_dir: Path, agents_path: Path) -> Path | None:
+    """落地故障自救卡：`<dir>/.sgme/sgme-resilience.md` + 指令文件指针段（幂等）。
+
+    ⚠️ 安全约束：**只追加指针段，绝不注入 AGENTS.md 模板**。
+    用户级指令文件（如 `~/.dsh/AGENTS.md`）是手写纪律，灌模板会覆盖用户内容；
+    这也是 `--resilience-only` 存在的理由（对用户级文件安装时必须用它）。
+    """
+    try:
+        src = next((p for p in (
+            Path(__file__).resolve().parents[2] / "AI-INSTALL" / "resilience.md",
+            Path(__file__).resolve().parent / "resilience.md",
+        ) if p.is_file()), None)
+        if not src:
+            print("  ⚠️ 自救卡源缺失（AI-INSTALL/resilience.md）")
+            return None
+        dst_dir = Path(project_dir) / ".sgme"
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / "sgme-resilience.md"
+        shutil.copy2(src, dst)
+        print(f"  ✅ sgme-resilience.md → {dst}")
+        ap = Path(agents_path)
+        if ap.is_file() and "SGME 故障自救" not in ap.read_text(encoding="utf-8"):
+            ap.write_text(
+                ap.read_text(encoding="utf-8").rstrip()
+                + "\n\n<!-- SGME-RESILIENCE -->\n## SGME 故障自救（离线可用）\n"
+                f"SGME 离线 / 工具报错 / 首轮无记忆注入时，先读 `{dst}` 按清单处理："
+                "分级判断 → 修复 → 降级 → 技能补位。\n",
+                encoding="utf-8")
+            print(f"  ✅ 自救指针 → {ap}")
+        return dst
+    except Exception as exc:  # 自救卡失败不应阻断安装
+        print(f"  ⚠️ 自救卡未落地: {exc}")
+        return None
+
+
 def write_agents_md(project_dir: Path) -> Path:
     """写入项目 AGENTS.md（已存在时保留用户内容并追加/升级 SGME 段）。"""
     target = Path(project_dir) / "AGENTS.md"
@@ -102,30 +137,7 @@ def write_agents_md(project_dir: Path) -> Path:
     else:
         target.write_text(generate_agents_md(), encoding="utf-8")
 
-    # 故障自救卡：本地副本 + 指令文件指针（SGME 离线时 dsh 也能自救）
-    try:
-        _res_src = next((p for p in (
-            Path(__file__).resolve().parents[2] / "AI-INSTALL" / "resilience.md",
-            Path(__file__).resolve().parent / "resilience.md",
-        ) if p.is_file()), None)
-        if _res_src:
-            _res_dir = Path(project_dir) / ".sgme"
-            _res_dir.mkdir(parents=True, exist_ok=True)
-            _res_dst = _res_dir / "sgme-resilience.md"
-            shutil.copy2(_res_src, _res_dst)
-            print(f"  ✅ sgme-resilience.md → {_res_dst}")
-            if target.is_file() and "SGME 故障自救" not in target.read_text(encoding="utf-8"):
-                target.write_text(
-                    target.read_text(encoding="utf-8").rstrip()
-                    + "\n\n<!-- SGME-RESILIENCE -->\n## SGME 故障自救（离线可用）\n"
-                    f"SGME 离线 / 工具报错 / 首轮无记忆注入时，先读 `{_res_dst}` 按清单处理："
-                    "分级判断 → 修复 → 降级 → 技能补位。\n",
-                    encoding="utf-8")
-                print(f"  ✅ 自救指针 → {target}")
-        else:
-            print("  ⚠️ 自救卡源缺失（AI-INSTALL/resilience.md）")
-    except Exception as exc:  # 自救卡失败不应阻断安装
-        print(f"  ⚠️ 自救卡未落地: {exc}")
+    install_resilience(project_dir, target)
     return target
 
 
@@ -267,12 +279,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="DeepSeek Harness × SGME 适配器安装")
     parser.add_argument("--dir", required=True, help="目标项目目录（生成其 AGENTS.md）")
     parser.add_argument("--no-register", action="store_true", help="跳过 agent 注册")
+    parser.add_argument("--resilience-only", action="store_true",
+                        help="只落地故障自救卡与指令指针（不写 AGENTS.md 模板、不注册、不部署索引 skill）；"
+                             "对用户级指令文件（如 ~/.dsh/）必须用它，否则会灌入项目模板")
     parser.add_argument("--skills-dir", default=str(default_skills_dir()),
                         help="消费端 skills 目录（部署索引 skill，默认 ~/.agents/skills）")
     parser.add_argument("--dsh-env", default=str(DSH_ENV_FILE),
                         help="dsh 可加载的 .env 路径（dsh 从启动目录 <cwd>/.env 或 $DSH_HOME/.env 读取），"
                              "默认 SGME 项目根 .env")
     args = parser.parse_args(argv)
+
+    if args.resilience_only:
+        print("[resilience-only] 只落地故障自救卡（不改 AGENTS.md 模板）")
+        dst = install_resilience(Path(args.dir), Path(args.dir) / "AGENTS.md")
+        return 0 if dst else 1
 
     print("[1/3] 注册 agent + 写入 .env")
     key = None
