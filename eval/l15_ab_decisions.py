@@ -58,9 +58,39 @@ ARMS: dict[str, dict] = {
         "note": "基线：prescreen 50/50（生产现值）",
         "prescreen": {"vector_top_k": 50, "dimension_top_n": 50},
     },
+    "b1_minimal": {
+        # B1'（ST-58/T-300）：**候选集不变**（仍 50/50），只裁候选元数据呈现行。
+        # 与 b2 的区别是根本性的：b2 让相关候选**掉出输入**（有漏判风险），
+        # b1 只让输入**变短**（模型仍能看到全部候选的正文与 id）。
+        "note": "批次 3（B1'）：候选元数据行裁剪 = minimal（不动候选集）",
+        "prescreen": {"vector_top_k": 50, "dimension_top_n": 50},
+        "l15_extra": {"candidate_fields": {"preset": "minimal"}},
+    },
+    "b1_no_type_priority": {
+        # B1' 变体：**保留 dimensions**（实测发现它才是主体判定的关键线索），
+        # 只裁 memory_type + priority（方案估 −11.5%）。
+        # 依据：`b1_minimal` 的 9 条新增误判**全部是 merge↔store 混淆**，
+        # 说明「共享了哪些维度」被模型用于判「同一主体」——方案原论证
+        # 「dimensions 冗余（预过滤已保证共享维度）」**不成立**。
+        "note": "B1' 变体：只裁 memory_type+priority，保留 dimensions",
+        "prescreen": {"vector_top_k": 50, "dimension_top_n": 50},
+        "l15_extra": {"candidate_fields": {
+            "preset": "full", "show_memory_type": False, "show_priority": False,
+        }},
+    },
+    "b1_short_date_only": {
+        "note": "B1' 变体：只把 updated_at 缩为日期（方案估 −3.7%，最保守）",
+        "prescreen": {"vector_top_k": 50, "dimension_top_n": 50},
+        "l15_extra": {"candidate_fields": {"preset": "full", "updated_at_format": "date"}},
+    },
     "b2_30_30": {
-        "note": "批次 2：候选数收紧 30/30",
+        "note": "批次 2：候选数收紧 30/30（门禁已判定不通过，保留作对照）",
         "prescreen": {"vector_top_k": 30, "dimension_top_n": 30},
+    },
+    "b1_minimal_b2_30_30": {
+        "note": "组合对照：B1' + B2（用于观察两因子叠加效果，不作为放行依据）",
+        "prescreen": {"vector_top_k": 30, "dimension_top_n": 30},
+        "l15_extra": {"candidate_fields": {"preset": "minimal"}},
     },
 }
 
@@ -82,9 +112,18 @@ def _local_refine_node(base_url: str, model: str) -> dict:
     }
 
 
+#: 评测固定采样：默认模板是 temperature=0.6/top_p=0.95（**非确定**）——实测同一配置、
+#: 同一语料三次跑出的 baseline 准确率是 28/41、30/41、24/41（±6 条 ≈ ±15pp），
+#: **噪声与要测的效应同量级**，据此做的 A/B 结论不可靠（B256）。故评测时固定 greedy，
+#: 这本身也更符合实验目的：要测「输入格式的影响」，不是「采样运气」。
+#: 需要「忠实生产采样」的对照时用 `--sampling-temperature 0.6` 显式恢复。
+_EVAL_SAMPLING_DEFAULT = {"temperature": 0.0, "top_p": 1.0}
+
+
 def build_cfg(arm: dict, *, embed_base_url: str, embed_model: str,
               refine_base_url: str, refine_model: str, use_vector: bool,
-              refine_backend: str = "local") -> dict:
+              refine_backend: str = "local",
+              sampling: dict | None = None) -> dict:
     """基线 cfg + 臂覆盖（单变量：只有臂声明的字段被改）。
 
     ``refine_backend``：
@@ -105,6 +144,11 @@ def build_cfg(arm: dict, *, embed_base_url: str, embed_model: str,
         }
         cfg["llm"]["rules"] = {"timeout_s": 1800, "max_retries": 2,
                                "throttle": {"enabled": False}}
+    # 评测固定采样（两个后端都注入，保证评测内一致）
+    smp = dict(sampling if sampling is not None else _EVAL_SAMPLING_DEFAULT)
+    for node in cfg.get("llm", {}).get("chains", {}).get("refinement", []) or []:
+        node["sampling"] = dict(smp)
+
     cfg.setdefault("search", {})["vector"] = {
         "enabled": bool(use_vector),
         "provider": "local",
@@ -139,7 +183,7 @@ def seed_pool(conn, pool: list[dict]) -> None:
 def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
             batches: list[dict], embed_base_url: str, embed_model: str,
             refine_base_url: str, refine_model: str, use_vector: bool,
-            refine_backend: str = "local") -> dict:
+            refine_backend: str = "local", sampling: dict | None = None) -> dict:
     """跑一个臂：独立库 + 固定池 + 逐批 L1.5 裁决。"""
     arm_dir = work_dir / f"arm_{name}"
     if arm_dir.exists():
@@ -149,7 +193,8 @@ def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
 
     cfg = build_cfg(arm, embed_base_url=embed_base_url, embed_model=embed_model,
                     refine_base_url=refine_base_url, refine_model=refine_model,
-                    use_vector=use_vector, refine_backend=refine_backend)
+                    use_vector=use_vector, refine_backend=refine_backend,
+                    sampling=sampling)
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(data_dir)
     try:
         # 全新库的 dimensions 表是空的 → 必须先灌注册表（YAML 为种子，DB 为运行时真相），
@@ -445,10 +490,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="边界填充条数（把边界目标挤到 31..50 之间；默认 45 → 排名 ≈46）")
     ap.add_argument("--out", default="eval/results/l15_ab",
                     help="输出目录（报告 JSON + Markdown + 各臂独立库）")
-    ap.add_argument("--arms", default="baseline,b2_30_30",
-                    help="要跑的臂（逗号分隔，键见 ARMS）")
+    ap.add_argument("--arms", default="baseline,b1_minimal",
+                    help="要跑的臂（逗号分隔，键见 ARMS）。默认比较 B1'（候选元数据裁剪）："
+                         "候选集不变、只压缩呈现体积")
     ap.add_argument("--no-vector", action="store_true",
                     help="关闭向量预筛（只看维度 Top-N，调试用）")
+    ap.add_argument("--sampling-temperature", type=float, default=0.0,
+                    help="评测固定采样温度（默认 0.0=greedy，消除采样噪声；"
+                         "填 0.6 可恢复生产采样做忠实对照）")
     ap.add_argument("--probe-ranks", action="store_true",
                     help="只跑排名探针（不调 LLM）：报告目标池条目在候选池里的排名，"
                          "用于标定「相关候选落在 30/50 之间」的边界场景")
@@ -517,7 +566,9 @@ def main(argv: list[str] | None = None) -> int:
         r = run_arm(n, ARMS[n], work_dir=out_dir, pool=pool, batches=corpus.BATCHES,
                     embed_base_url=args.embed_base_url, embed_model=args.embed_model,
                     refine_base_url=args.refine_base_url, refine_model=args.refine_model,
-                    use_vector=not args.no_vector, refine_backend=args.refine_backend)
+                    use_vector=not args.no_vector, refine_backend=args.refine_backend,
+                    sampling=({"temperature": args.sampling_temperature, "top_p": 1.0}
+                              if args.sampling_temperature else None))
         arms_raw.append(r)
         for b in r["batches"]:
             print(f"  [{b['batch_id']}] expect={b['expect']} "
@@ -540,23 +591,17 @@ def main(argv: list[str] | None = None) -> int:
         "pool_base": len(corpus.POOL), "fillers": args.fillers,
         "boundary_fillers": args.boundary_fillers, "pool_size": len(pool),
         "batches": len(corpus.BATCHES), "use_vector": not args.no_vector,
+        # ⚠️ 必须取 arms_out（已算好 cost 的产物），不能用 base（原始 run_arm 结果，无 cost 键）
         "provider_confound": {
             "note": "两臂若由不同 provider 服务，准确率差**不可归因**给配置变更；"
                     "逐批 provider 见 arms[].batches[].provider",
-            "baseline": base["cost"]["providers"],
-            "arms": {a["arm"]: a["cost"]["providers"] for a in arms_out
-                     if a["arm"] != base["arm"]},
-        },
-        "provider_confound": {
-            "note": "两臂若由不同 provider 服务，准确率差**不可归因**给配置变更；"
-                    "逐批 provider 见 arms[].batches[].provider",
-            "baseline": base["cost"]["providers"],
-            "arms": {a["arm"]: a["cost"]["providers"] for a in arms_out
-                     if a["arm"] != base["arm"]},
+            "baseline": arms_out[0]["cost"]["providers"],
+            "arms": {a["arm"]: a["cost"]["providers"] for a in arms_out[1:]},
         },
         "embed": {"base_url": args.embed_base_url, "model": args.embed_model},
         "refine": {"backend": args.refine_backend,
-                   "base_url": args.refine_base_url, "model": args.refine_model},
+                   "base_url": args.refine_base_url, "model": args.refine_model,
+                   "sampling_temperature": args.sampling_temperature},
         "arms": arms_out,
     }
     (out_dir / "report.json").write_text(

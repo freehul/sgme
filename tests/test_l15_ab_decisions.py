@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from eval import l15_ab_decisions as H
@@ -318,6 +320,33 @@ def test_probe_ranks_output_shape(monkeypatch, tmp_path):
     assert row["per_cap"]["50"]["included"] is True
     assert row["per_cap"]["50"]["rank"] == 3
     assert len(out["boundary_candidates"]) == 1
+
+
+def test_main_report_assembly_end_to_end(monkeypatch, tmp_path):
+    """回归：`main()` 拼报告必须能跑通（曾因 provider_confound 误用未计算的键而 KeyError，
+    两个臂各跑 40 分钟才在最后一步崩掉——这种「跑完才炸」的 bug 必须有低成本用例守住）。"""
+    def _fake_run_arm(name, arm, **kw):  # noqa: ANN001
+        return {
+            "arm": name, "note": arm.get("note", ""), "prescreen": arm.get("prescreen", {}),
+            "batches": [{"batch_id": "b1", "expect": "store", "note": "",
+                         "error": None, "provider": "fake",
+                         "decisions": [{"new_memory_index": 0, "action": "store",
+                                        "candidate_ids": [], "reason": "",
+                                        "idempotent_skip": False}],
+                         "counts": {"stored": 1, "skipped": 0, "updated": 0,
+                                    "merged": 0, "archived": 0}}],
+            "runs": [{"provider": "fake", "candidate_count": 3, "prompt_tokens": 10,
+                      "status": "ok"}],
+        }
+
+    monkeypatch.setattr(H, "run_arm", _fake_run_arm)
+    rc = H.main(["--arms", "baseline,b1_minimal", "--out", str(tmp_path / "rep")])
+    assert rc == 0
+    report = json.loads((tmp_path / "rep" / "report.json").read_text(encoding="utf-8"))
+    assert "provider_confound" in report
+    assert report["provider_confound"]["baseline"] == {"fake": 1}
+    assert report["provider_confound"]["arms"]["b1_minimal"] == {"fake": 1}
+    assert (tmp_path / "rep" / "report.md").exists()
 
 
 def test_arms_registry_shape():
