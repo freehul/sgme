@@ -174,6 +174,12 @@ def publish_host(host: str, *, check_only: bool = False) -> dict:
         copies.append((s, dest_root / name))
         planned.append(name if s.is_file() else f"{name}/")
 
+    # 故障自救卡：随分发包一起走（源码树取 AI-INSTALL/，装到包里后 install.py 能从同目录读到）
+    resilience_doc = ROOT / "AI-INSTALL" / "resilience.md"
+    if resilience_doc.is_file():
+        copies.append((resilience_doc, dest_root / "resilience.md"))
+        planned.append("resilience.md")
+
     # 插件/桥接真源目录 → package/
     for pkg_name in PACKAGE_DIRS.get(host, ()):
         s = src_root / pkg_name

@@ -54,6 +54,19 @@ def install(home: Path) -> Path:
             raise FileNotFoundError(f"源文件缺失: {src}")
         shutil.copy2(src, dest / f)
         print(f"  ✅ {f} → {dest / f}")
+    # 故障自救卡：随安装落到本地（源码树读 AI-INSTALL/，分发包读同目录 resilience.md）
+    try:
+        _res_src = next((p for p in (
+            Path(__file__).resolve().parents[2] / "AI-INSTALL" / "resilience.md",
+            Path(__file__).resolve().parent / "resilience.md",
+        ) if p.is_file()), None)
+        if _res_src:
+            shutil.copy2(_res_src, dest / "resilience.md")
+            print(f"  ✅ resilience.md → {dest / 'resilience.md'}")
+        else:
+            print("  ⚠️ 自救卡源缺失（AI-INSTALL/resilience.md）")
+    except Exception as exc:  # 自救卡失败不应阻断安装
+        print(f"  ⚠️ 自救卡未落地: {exc}")
     return dest
 
 

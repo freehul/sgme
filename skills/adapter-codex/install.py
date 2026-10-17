@@ -135,6 +135,32 @@ def main() -> int:
             mcp_url=settings.mcp_url,
         )
         print("registered sgme MCP server")
+    # 故障自救卡：本地副本 + 指令文件指针（SGME 离线时仍可自救）
+    try:
+        _res_src = next((p for p in (
+            Path(__file__).resolve().parents[2] / "AI-INSTALL" / "resilience.md",
+            Path(__file__).resolve().parent / "resilience.md",
+        ) if p.is_file()), None)
+        if _res_src:
+            _res_dir = codex_home
+            _res_dir.mkdir(parents=True, exist_ok=True)
+            _res_dst = _res_dir / "sgme-resilience.md"
+            shutil.copy2(_res_src, _res_dst)
+            print(f"  ✅ sgme-resilience.md → {_res_dst}")
+            _instr = codex_home / "AGENTS.md"
+            if _instr.is_file():
+                _itxt = _instr.read_text(encoding="utf-8")
+                if "SGME 故障自救" not in _itxt:
+                    _instr.write_text(
+                        _itxt.rstrip() + "\n\n<!-- SGME-RESILIENCE -->\n## SGME 故障自救（离线可用）\n"
+                        f"SGME 离线 / 工具报错 / 首轮无记忆注入时，先读 `{_res_dst}` 按清单处理："
+                        "分级判断 → 修复 → 降级 → 技能补位。\n",
+                        encoding="utf-8")
+                    print(f"  ✅ 自救指针 → {_instr}")
+        else:
+            print("  ⚠️ 自救卡源缺失（AI-INSTALL/resilience.md）")
+    except Exception as exc:  # 自救卡失败不应阻断安装
+        print(f"  ⚠️ 自救卡未落地: {exc}")
     return 0
 
 
