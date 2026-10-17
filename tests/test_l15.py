@@ -709,14 +709,20 @@ def test_resolve_conflicts_records_refine_run_and_prompt_version(mem_conn, cfg):
         new_memories, mem_conn, cfg, client=cli, prompt_version="l1_extraction:v002",
     )
     # prompt_meta 透传
+    # ⚠️ 不要硬编码 "working-"：manifest 的 active 可能是钉版（如 v004）。
+    # 2026-10-17 发布前把 l1_conflict 回退钉到 v004（见 B257），此处改为
+    # 「与实际生效版本一致」的断言——它校验的是**透传正确性**，不是版本形态。
+    from sgme.prompts import PromptStore
+
+    effective = PromptStore().get("l1_conflict").version
     assert result.prompt_meta is not None
     assert result.prompt_meta["stage"] == "l1_conflict"
-    assert result.prompt_meta["version"].startswith("working-")
+    assert result.prompt_meta["version"] == effective
     # refine_run 已记录
     runs = RefineRunRecorder.list_by_stage(mem_conn, "l1_conflict")
     assert len(runs) == 1
     assert runs[0]["status"] == "ok"
-    assert runs[0]["version"].startswith("working-")
+    assert runs[0]["version"] == effective
     import json as _json
     assert _json.loads(runs[0]["action_counts"]) == {"store": 1}
     # prompt_version 写入 memories

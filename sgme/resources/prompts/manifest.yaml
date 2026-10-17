@@ -20,7 +20,7 @@ stages:
     ab:
       enabled: false
   l1_conflict:
-    active: '@working'
+    active: v004
     ab:
       enabled: false
   l2_scene:

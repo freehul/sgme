@@ -55,7 +55,8 @@ from sgme.prompts import BucketCtx  # noqa: E402
 #: 臂定义：名字 → 覆盖项（只写与基线不同的部分，保证「单变量」可读）
 ARMS: dict[str, dict] = {
     "baseline": {
-        "note": "基线：prescreen 50/50（生产现值）",
+        "note": "基线：prescreen 50/50（生产现值）；提示词**跟随 manifest active**"
+                "（2026-10-17 起为 v004 钉版，要测 v005 请用 baseline_v005）",
         "prescreen": {"vector_top_k": 50, "dimension_top_n": 50},
     },
     "b1_minimal": {
@@ -82,6 +83,23 @@ ARMS: dict[str, dict] = {
         "note": "B1' 变体：只把 updated_at 缩为日期（方案估 −3.7%，最保守）",
         "prescreen": {"vector_top_k": 50, "dimension_top_n": 50},
         "l15_extra": {"candidate_fields": {"preset": "full", "updated_at_format": "date"}},
+    },
+    "baseline_v005": {
+        # 与 baseline 唯一的区别：把 l1_conflict 钉到 v005（反斜杠转义约束版）。
+        # 为什么需要它：`baseline` 跟随 manifest 的 active——2026-10-17 部署前已把
+        # l1_conflict 回退钉版到 v004，故现在 `baseline` = v004。要复现「v005 版本」的
+        # 历史结论，必须显式钉 v005，不能指望 @working。
+        "note": "对照：l1_conflict 钉版 v005（含反斜杠转义约束）",
+        "prescreen": {"vector_top_k": 50, "dimension_top_n": 50},
+        "prompt_pin": {"l1_conflict": "v005"},
+    },
+    "baseline_v004": {
+        # 提示词改版的**对照臂**：把 l1_conflict 钉回改动前快照 v004，
+        # 其余与 baseline 完全相同。用途：量化「v005 加了一行转义约束」对裁决的影响
+        # ——这是唯一会在部署后**自动生效**的行为变更（manifest active=@working）。
+        "note": "对照：l1_conflict 钉版 v004（改前），用于 v004→v005 决策一致率",
+        "prescreen": {"vector_top_k": 50, "dimension_top_n": 50},
+        "prompt_pin": {"l1_conflict": "v004"},
     },
     "b2_30_30": {
         "note": "批次 2：候选数收紧 30/30（门禁已判定不通过，保留作对照）",
@@ -183,7 +201,8 @@ def seed_pool(conn, pool: list[dict]) -> None:
 def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
             batches: list[dict], embed_base_url: str, embed_model: str,
             refine_base_url: str, refine_model: str, use_vector: bool,
-            refine_backend: str = "local", sampling: dict | None = None) -> dict:
+            refine_backend: str = "local", sampling: dict | None = None,
+            prompt_pin: dict | None = None) -> dict:
     """跑一个臂：独立库 + 固定池 + 逐批 L1.5 裁决。"""
     arm_dir = work_dir / f"arm_{name}"
     if arm_dir.exists():
@@ -209,7 +228,8 @@ def run_arm(name: str, arm: dict, *, work_dir: Path, pool: list[dict],
             res = l15_mod.resolve_conflicts(
                 new_mems, mem_conn, cfg, top_k=50,
                 source_ref=f"fixture:{b['id']}",
-                bucket_ctx=BucketCtx(bucket_key=b["id"]),
+                # prompt_pin：钉版到指定版本（A/B 对照用；bucket_key 仍为批 id 以保留分桶语义）
+                bucket_ctx=BucketCtx(bucket_key=b["id"], overrides=dict(prompt_pin or {})),
             )
             results.append({
                 "batch_id": b["id"],
@@ -568,7 +588,8 @@ def main(argv: list[str] | None = None) -> int:
                     refine_base_url=args.refine_base_url, refine_model=args.refine_model,
                     use_vector=not args.no_vector, refine_backend=args.refine_backend,
                     sampling=({"temperature": args.sampling_temperature, "top_p": 1.0}
-                              if args.sampling_temperature else None))
+                              if args.sampling_temperature else None),
+                    prompt_pin=ARMS[n].get("prompt_pin"))
         arms_raw.append(r)
         for b in r["batches"]:
             print(f"  [{b['batch_id']}] expect={b['expect']} "
