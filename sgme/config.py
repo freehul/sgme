@@ -394,6 +394,14 @@ DEFAULT_L15_CONFIG = {
         "threshold": 0.92,
         "gray_zone": 0.85,
     },
+    # ST-58/T-300（B1'）：候选元数据行裁剪 —— 只压缩**呈现体积**，不动候选集、
+    # 不动正文（与「截断候选正文」路线相反，后者实测收益仅 4.4% 且会丢长记忆尾部差异）。
+    # preset：full（现状）/ minimal（砍 dimensions + memory_type + priority，updated_at 缩为日期）
+    # 单字段开关可显式覆盖 preset（用于三因子单变量对照）。
+    "candidate_fields": {
+        "preset": "full",
+        "updated_at_format": "iso",   # iso（完整时间戳）| date（YYYY-MM-DD）
+    },
 }
 
 # 提炼调度默认兜底（2026-08-04 新增：文件到达联动 + Batch 兜底扫描）
@@ -986,15 +994,30 @@ def _merge_l1_config(user_cfg: dict | None) -> dict:
 
 
 def _merge_l15_config(user_cfg: dict | None) -> dict:
-    """合并 l15 段默认值与用户配置（候选池向量预筛 T-25；语义边 T-135；近似查重 F1）。"""
+    """合并 l15 段默认值与用户配置（候选池预筛 T-25；语义边 T-135；近似查重 F1；候选字段裁剪 B1'）。
+
+    校验原则：**非法值一律退回默认**（不静默放行错配置）——preset 只认 `full`/`minimal`，
+    开关只认 bool，`updated_at_format` 只认 `iso`/`date`。
+    """
     base = {
         "prescreen": dict(DEFAULT_L15_CONFIG["prescreen"]),
         "semantic_edges": dict(DEFAULT_L15_CONFIG["semantic_edges"]),
         # dict() 浅拷贝防可变默认共享（near_dup 内层暂为标量，与 prescreen 同款）
         "near_dup": dict(DEFAULT_L15_CONFIG["near_dup"]),
+        "candidate_fields": dict(DEFAULT_L15_CONFIG["candidate_fields"]),
     }
     if not isinstance(user_cfg, dict):
         return base
+    cf = user_cfg.get("candidate_fields")
+    if isinstance(cf, dict):
+        tgt = base["candidate_fields"]
+        if cf.get("preset") in ("full", "minimal"):
+            tgt["preset"] = cf["preset"]
+        for k in ("show_dimensions", "show_memory_type", "show_priority"):
+            if isinstance(cf.get(k), bool):
+                tgt[k] = cf[k]
+        if cf.get("updated_at_format") in ("iso", "date"):
+            tgt["updated_at_format"] = cf["updated_at_format"]
     ps = user_cfg.get("prescreen")
     if isinstance(ps, dict):
         for k in ("enabled", "vector_top_k", "dimension_top_n", "fallback"):

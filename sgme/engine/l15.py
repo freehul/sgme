@@ -112,20 +112,22 @@ class NearDupResult:
 
 # ---------- prompt 渲染 ----------
 
-def render_l15(new_memories: list[dict], candidates: list[dict], ctx: BucketCtx | None = None) -> str:
+def render_l15(new_memories: list[dict], candidates: list[dict], ctx: BucketCtx | None = None,
+               candidate_fields: dict | None = None) -> str:
     """渲染 L1.5 冲突提炼 prompt（模板经 PromptStore 读取，支持 A/B 与钉版）。
 
     - {{new_memories}}: 新记忆列表（带 index）
     - {{candidates}}: 候选记忆列表（带 id）
     """
     template = PromptStore().get("l1_conflict", ctx).text
-    return _render_l15_text(template, new_memories, candidates)
+    return _render_l15_text(template, new_memories, candidates, candidate_fields)
 
 
-def _render_l15_text(template: str, new_memories: list[dict], candidates: list[dict]) -> str:
+def _render_l15_text(template: str, new_memories: list[dict], candidates: list[dict],
+                     candidate_fields: dict | None = None) -> str:
     """渲染已读出的模板文本（{{new_memories}} + {{candidates}}）。"""
     nm_text = _format_new_memories(new_memories)
-    cand_text = _format_candidates(candidates)
+    cand_text = _format_candidates(candidates, candidate_fields)
     return template.replace("{{new_memories}}", nm_text).replace("{{candidates}}", cand_text)
 
 
@@ -141,14 +143,68 @@ def _format_new_memories(new_memories: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _format_candidates(candidates: list[dict]) -> str:
+#: B1'（ST-58/T-300）：`l15.candidate_fields` 的预设 → 有效字段开关。
+#: `full` = 现状（零回归默认）；`minimal` = 砍 dimensions + memory_type + priority，
+#: `updated_at` 缩为 `YYYY-MM-DD`（保留短日期作模板第 6 条「更新」判定的平局线索）。
+#: 实测（单批候均 434.6、prompt 58,502）：dimensions −14.0% / type+priority −11.5% /
+#: 日期缩短 −3.7% → 组合约 **−31.4%**。**不动正文**，故不触发「长记忆尾部差异被截」风险。
+_CANDIDATE_FIELDS_PRESETS: dict[str, dict] = {
+    "full": {
+        "show_dimensions": True,
+        "show_memory_type": True,
+        "show_priority": True,
+        "updated_at_format": "iso",
+    },
+    "minimal": {
+        "show_dimensions": False,
+        "show_memory_type": False,
+        "show_priority": False,
+        "updated_at_format": "date",
+    },
+}
+
+
+def resolve_candidate_fields(l15_cfg: dict | None) -> dict:
+    """解析 `l15.candidate_fields` → 有效字段开关（preset 打底，显式项覆盖）。
+
+    Args:
+        l15_cfg: `cfg["l15"]` 段（**不是**全量 cfg）。None / 缺键 → 返回 `full` 预设。
+
+    Returns:
+        ``{show_dimensions, show_memory_type, show_priority, updated_at_format}``
+
+    ⚠️ 非法值退回默认（与 `config._merge_l15_config` 同口径，双保险）——配置层已过滤，
+    但本函数也允许被直接调用（评测/脚本），不能依赖调用方先做校验。
+    """
+    raw = (l15_cfg or {}).get("candidate_fields")
+    if not isinstance(raw, dict):
+        return dict(_CANDIDATE_FIELDS_PRESETS["full"])
+    preset = raw.get("preset")
+    out = dict(_CANDIDATE_FIELDS_PRESETS.get(preset) or _CANDIDATE_FIELDS_PRESETS["full"])
+    for k in ("show_dimensions", "show_memory_type", "show_priority"):
+        if isinstance(raw.get(k), bool):
+            out[k] = raw[k]
+    if raw.get("updated_at_format") in ("iso", "date"):
+        out["updated_at_format"] = raw["updated_at_format"]
+    return out
+
+
+def _format_candidates(candidates: list[dict], fields: dict | None = None) -> str:
+    """渲染候选块；``fields`` 为 None 时按 `full`（现状，零回归）。"""
+    f = fields or _CANDIDATE_FIELDS_PRESETS["full"]
     lines = []
     for c in candidates:
         lines.append(f"[候选#{c['memory_id']}] content: {c['content']}")
-        lines.append(f"  dimensions: {c.get('tags', [])}")
-        lines.append(f"  memory_type: {c.get('memory_type', 'persona')}")
-        lines.append(f"  priority: {c.get('priority', 50)}")
-        lines.append(f"  updated_at: {c.get('updated_at', '')}")
+        if f.get("show_dimensions"):
+            lines.append(f"  dimensions: {c.get('tags', [])}")
+        if f.get("show_memory_type"):
+            lines.append(f"  memory_type: {c.get('memory_type', 'persona')}")
+        if f.get("show_priority"):
+            lines.append(f"  priority: {c.get('priority', 50)}")
+        ts = c.get("updated_at", "") or ""
+        if f.get("updated_at_format") == "date":
+            ts = ts[:10]  # ISO 前 10 字符即 YYYY-MM-DD
+        lines.append(f"  updated_at: {ts}")
         lines.append("")
     return "\n".join(lines)
 
@@ -1161,6 +1217,8 @@ def resolve_conflicts(
 
     # 1. 上下文预算（tokens，链首节点 context_window 折算；失败回退默认）
     budget = _resolve_batch_budget(llm_cfg)
+    # B1'（ST-58/T-300）：候选元数据行裁剪开关——只压缩呈现体积，候选集与正文均不动
+    candidate_fields = resolve_candidate_fields(cfg.get("l15"))
 
     # 1.5 候选池（铁律 #7：按新记忆分组全量召回；
     #     仅单记忆候选超上下文预算 → top-k 截断 + anomaly_warn；
@@ -1237,7 +1295,8 @@ def resolve_conflicts(
     all_decisions: list[ConflictDecision] = []
     for batch in batches:
         pv = PromptStore().get("l1_conflict", bucket_ctx)
-        prompt = _render_l15_text(pv.text, batch.new_memories, batch.candidates)
+        prompt = _render_l15_text(pv.text, batch.new_memories, batch.candidates,
+                                  candidate_fields)
         # ST-58/T-289：run 记账 `start()` 前移到 **LLM 调用之前**——原先在 LLM 返回
         # 后才 start，全表 `started_at == finished_at`，耗时不可度量。
         # provider 要走完降级链才知道命中哪家，起手置 "pending"，由 finish 回填。
