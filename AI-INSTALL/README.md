@@ -20,6 +20,7 @@
 | ② | `prompts/02-connect.md` | 接入与验证（通用 / Hermes / DSH 三路；含专属 Key 签发与 admin key 同步） | 专属 Key 已签发 + 4 项联通自检全绿 |
 | ③ | `prompts/03-init-agent-files.md` | 初始化本地身份文件（SOUL / USER / MEMORY / AGENTS 等） | 文件生成 + 一轮读写回环 |
 | ④ | `prompts/04-daily-loop.md` | 日常使用循环（检索 / 写入 / 提炼 / 技能） | 行为清单逐项勾选 |
+| ⑤ | `resilience.md` | **故障自救**（SGME 离线/超时/注入缺失时：分级修复 + 降级 + 技能补位，纯命令清单，任何 agent 可用） | 按第 1 节判定出状态并完成第 2 节对应动作 |
 | ✔ | `selfcheck.md` | 接入后自检 | **8 项**全绿（含自我配置 + 适配器） |
 
 ## 本目录文件
