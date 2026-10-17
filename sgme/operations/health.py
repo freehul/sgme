@@ -86,7 +86,10 @@ _watermark_age_sec = watermark_age_sec
 
 # ---------- 向量模型连通性（T-53 2026-08-18：health 加模型探测 + 失效信号） ----------
 
-_VECTOR_PROBE_TIMEOUT_S = 5.0
+# 2026-10-18：5.0 → 15.0。NAS 纯 CPU 上 bge-m3 单次推理常态就在 5s 边缘，
+# 冷载/并发排队时可达 40-80s；5s 预算导致正常态也报「向量模型不可用」，
+# 且每次探测失败都要吃满预算（health 响应 5s+），下游桥接层更短超时随之误报。
+_VECTOR_PROBE_TIMEOUT_S = 15.0
 # 健康探测用极短输入（免费模型零费用；仅连通性验证，不产生语义向量用途）
 _VECTOR_PROBE_INPUT = "."
 

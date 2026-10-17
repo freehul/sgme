@@ -93,7 +93,10 @@ _DEFAULT_AGENT_KEY = os.environ.get("SGME_AGENT_KEY", _DEV_AGENT_KEY)
 _DEFAULT_ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", _DEV_ADMIN_KEY)
 _DEFAULT_MODE = os.environ.get("SGME_INJECT_MODE", "daily")
 _DEFAULT_MAX_TOKENS = int(os.environ.get("SGME_INJECT_MAX_TOKENS", "800"))
-_DEFAULT_TIMEOUT = float(os.environ.get("SGME_HTTP_TIMEOUT", "5.0"))
+_DEFAULT_TIMEOUT = float(os.environ.get("SGME_HTTP_TIMEOUT", "30.0"))
+# 2026-10-18：默认值 5.0 → 30.0。NAS 本地向量模型（bge-m3，纯 CPU）单次推理
+# 常态 0.3-1s、冷载或排队时 40-80s，5s 会让 /v1/search 与 /v1/health 在
+# 正常态也报「Gateway 不可达」。可用环境变量 SGME_HTTP_TIMEOUT 覆盖。
 # T-211/T-214（2026-09-27）：行为偏好环境变量（桌面设置面板值落 $HERMES_HOME/sgme/config.json）
 _DEFAULT_CAPTURE_ENABLED = _env_bool("SGME_CAPTURE_ENABLED", True)
 _DEFAULT_REFINE_ON_END = _env_bool("SGME_REFINE_ON_END", True)
@@ -1822,7 +1825,9 @@ class SGMEProvider(MemoryProvider):
 
     def _t_health(self, args: Dict[str, Any]) -> str:
         """sgme_health：健康自检（/v1/health 免鉴权）。"""
-        data, err = self._request("GET", "/v1/health", key=None, timeout=min(self.timeout, 3.0))
+        # 2026-10-18：上限 3.0 → 10.0。服务端 health 内含向量探针（预算 15s，
+        # 命中缓存时毫秒级），3s 会让工具在探针未命中缓存的每一轮都超时。
+        data, err = self._request("GET", "/v1/health", key=None, timeout=min(self.timeout, 10.0))
         if err:
             return self._err(f"SGME Gateway 不可达（本插件是桥接插件，请确认 SGME 本体在运行）: {err}")
         if not isinstance(data, dict):
