@@ -1,5 +1,5 @@
 name: sgme
-version: "1.10.2"  # 版本口径跟随 SGME 版本（1.10.2 = 运维超时口径对齐 ST-59；1.10.1 = 技能向量版本化重嵌判据 T-287），见 README
+version: "1.10.4"  # 版本口径跟随 SGME 版本（1.10.4 = 离线自救卡 + 八适配器平级落地；1.10.2 = 运维超时口径对齐 ST-59），见 README
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理+沟通角色（42 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"
 license: MIT
