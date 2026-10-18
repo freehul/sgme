@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
     tags: ["**"] # T-154：tag 推送也要同步 Gitee（releases/latest 依赖 Gitee tag 源）
+  # Release 发布事件也要触发：tag push 与 Release 创建是两个独立事件，
+  # 若先推 tag、后建 Release（gh release create 的常见姿势），tag 那次运行里
+  # GitHub Release 还不存在，Release 搬运步骤会被跳过。加这条后两种顺序都能同步。
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
