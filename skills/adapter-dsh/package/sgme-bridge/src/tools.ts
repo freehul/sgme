@@ -1332,10 +1332,19 @@ export function createStatsTool(client: SgmeClient) {
       if (!s) {
         return '[stats 失败：SGME Gateway 不可达或未配置 Admin Key，稍后重试]'
       }
-      const dims = Object.entries(s.dimension_distribution ?? {})
-        .sort((a, b) => Number(b[1]) - Number(a[1]))
+      // 1.10.x 起服务端 dimension_distribution 是 [{id, display_name, count}] 数组
+      // （sgme/data/stats_dao.py → list[dict]）；旧服务端仍是 Record<string, number>，两种形态归一后再渲染。
+      const dimsRaw = s.dimension_distribution as
+        | Array<{ id?: string; display_name?: string | null; count?: number }>
+        | Record<string, number>
+        | undefined
+      const dimsList = Array.isArray(dimsRaw)
+        ? dimsRaw.map((d) => ({ name: String(d.display_name ?? d.id ?? '?'), count: Number(d.count ?? 0) }))
+        : Object.entries(dimsRaw ?? {}).map(([k, v]) => ({ name: k, count: Number(v) || 0 }))
+      const dims = dimsList
+        .sort((a, b) => b.count - a.count)
         .slice(0, 10)
-        .map(([k, v]) => `${k}=${v}`)
+        .map((d) => `${d.name}=${d.count}`)
         .join(', ')
       return [
         `记忆: ${s.memories?.total ?? '?'} 条（归档 ${s.memories?.archived ?? '?'}）`,
@@ -1563,11 +1572,31 @@ export function createRefineStatusTool(client: SgmeClient) {
         return '[refine_status 失败：SGME Gateway 不可达或未配置 Admin Key，稍后重试]'
       }
       const lines = (runs.items ?? []).map((r, i) => {
-        const fileId = String((r as { file_id?: unknown }).file_id ?? '?')
-        const status = String((r as { status?: unknown }).status ?? '?')
-        const stage = String((r as { stage?: unknown }).stage ?? '-')
-        const started = String((r as { started_at?: unknown }).started_at ?? '?')
-        return `${i + 1}. [${status}] ${stage} ${fileId}（${started}）`
+        const run = r as {
+          file_id?: unknown
+          status?: unknown
+          stage?: unknown
+          started_at?: unknown
+          finished_at?: unknown
+          total_tokens?: unknown
+          memories_count?: unknown
+          error?: unknown
+        }
+        const fileId = String(run.file_id ?? '?')
+        const status = String(run.status ?? '?')
+        const stage = String(run.stage ?? '-')
+        const started = String(run.started_at ?? '?')
+        // 1.10.2（P4）起 refine_runs 条目补 finished_at / total_tokens / memories_count / error：
+        // 运维要能一眼看到耗时与用量，否则只能回服务端查库。
+        const startedMs = Date.parse(String(run.started_at ?? ''))
+        const finishedMs = Date.parse(String(run.finished_at ?? ''))
+        const dur = Number.isFinite(startedMs) && Number.isFinite(finishedMs) && finishedMs >= startedMs
+          ? `，耗时 ${((finishedMs - startedMs) / 1000).toFixed(1)}s`
+          : ''
+        const tokens = typeof run.total_tokens === 'number' ? `，tokens ${run.total_tokens}` : ''
+        const mems = typeof run.memories_count === 'number' ? `，记忆 ${run.memories_count} 条` : ''
+        const err = run.error ? `｜错误：${String(run.error).slice(0, 120)}` : ''
+        return `${i + 1}. [${status}] ${stage} ${fileId}（${started}${dur}${tokens}${mems}）${err}`
       })
       const head = `提炼记录：共 ${runs.total} 条，本次返回 ${runs.count} 条`
       return head + (lines.length > 0 ? '\n' + lines.join('\n') : '\n（无记录）')

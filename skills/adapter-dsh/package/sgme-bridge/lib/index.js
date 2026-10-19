@@ -4471,7 +4471,14 @@ function createStatsTool(client) {
 		async execute(_args, _exec) {
 			const s = await client.stats();
 			if (!s) return "[stats 失败：SGME Gateway 不可达或未配置 Admin Key，稍后重试]";
-			const dims = Object.entries(s.dimension_distribution ?? {}).sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 10).map(([k, v]) => `${k}=${v}`).join(", ");
+			const dimsRaw = s.dimension_distribution;
+			const dims = (Array.isArray(dimsRaw) ? dimsRaw.map((d) => ({
+				name: String(d.display_name ?? d.id ?? "?"),
+				count: Number(d.count ?? 0)
+			})) : Object.entries(dimsRaw ?? {}).map(([k, v]) => ({
+				name: k,
+				count: Number(v) || 0
+			}))).sort((a, b) => b.count - a.count).slice(0, 10).map((d) => `${d.name}=${d.count}`).join(", ");
 			return [
 				`记忆: ${s.memories?.total ?? "?"} 条（归档 ${s.memories?.archived ?? "?"}）`,
 				`原始文件: 共 ${s.raw_files?.total ?? "?"}（new ${s.raw_files?.new ?? "?"} / refined ${s.raw_files?.refined ?? "?"} / error ${s.raw_files?.error ?? "?"}）`,
@@ -4688,11 +4695,18 @@ function createRefineStatusTool(client) {
 			});
 			if (!runs) return "[refine_status 失败：SGME Gateway 不可达或未配置 Admin Key，稍后重试]";
 			const lines = (runs.items ?? []).map((r, i) => {
-				const fileId = String(r.file_id ?? "?");
-				const status = String(r.status ?? "?");
-				const stage = String(r.stage ?? "-");
-				const started = String(r.started_at ?? "?");
-				return `${i + 1}. [${status}] ${stage} ${fileId}（${started}）`;
+				const run = r;
+				const fileId = String(run.file_id ?? "?");
+				const status = String(run.status ?? "?");
+				const stage = String(run.stage ?? "-");
+				const started = String(run.started_at ?? "?");
+				const startedMs = Date.parse(String(run.started_at ?? ""));
+				const finishedMs = Date.parse(String(run.finished_at ?? ""));
+				const dur = Number.isFinite(startedMs) && Number.isFinite(finishedMs) && finishedMs >= startedMs ? `，耗时 ${((finishedMs - startedMs) / 1e3).toFixed(1)}s` : "";
+				const tokens = typeof run.total_tokens === "number" ? `，tokens ${run.total_tokens}` : "";
+				const mems = typeof run.memories_count === "number" ? `，记忆 ${run.memories_count} 条` : "";
+				const err = run.error ? `｜错误：${String(run.error).slice(0, 120)}` : "";
+				return `${i + 1}. [${status}] ${stage} ${fileId}（${started}${dur}${tokens}${mems}）${err}`;
 			});
 			return `提炼记录：共 ${runs.total} 条，本次返回 ${runs.count} 条` + (lines.length > 0 ? "\n" + lines.join("\n") : "\n（无记录）");
 		}

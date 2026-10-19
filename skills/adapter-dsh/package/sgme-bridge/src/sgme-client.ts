@@ -442,11 +442,19 @@ export interface AnswerResponse {
 
 // ---------- 统计 / 配置（运维读侧，Admin Key） ----------
 
+/** 维度分布项（SGME 1.10.x 起 stats_dao 直接返回注册表维度列表）。 */
+export interface StatsDimensionItem {
+  id: string
+  display_name?: string | null
+  count: number
+}
+
 /** GET /v1/admin/stats 响应体（http_payload 投影后的历史契约形态）。 */
 export interface StatsResponse {
   memories: { total: number; archived: number }
   raw_files: { total: number; new: number; refined: number; error: number; archived: number }
-  dimension_distribution: Record<string, number>
+  /** 1.10.x 起为 [{id, display_name, count}] 数组；旧服务端为 Record<string, number>，渲染层归一两种形态。 */
+  dimension_distribution: StatsDimensionItem[] | Record<string, number>
   refinement: {
     watermark_age_sec: number | null
     last_refined_at: string | null
