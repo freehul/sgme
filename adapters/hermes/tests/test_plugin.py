@@ -313,6 +313,100 @@ def test_client_rebuilt_after_close(monkeypatch):
 # ---------- install.py ----------
 
 
+# ---------- 规则11（catalog 准入 2026-10）：密钥读取走 Hermes secret_scope ----------
+# 官方准入规则11（2026-10-10 起）：插件密钥只走 agent.secret_scope.get_secret（尊重多
+# profile 隔离），禁止裸读 os.environ。先例：supermemory / hindsight 同款写法。
+
+
+def _install_fake_secret_scope(monkeypatch, mapping):
+    """注入假 agent.secret_scope（SGME venv 通常无 agent 包，需连同父包一起注入）。"""
+    import sys as _sys
+    import types as _types
+
+    agent_pkg = _types.ModuleType("agent")
+    scope_mod = _types.ModuleType("agent.secret_scope")
+    calls = []
+
+    def _get_secret(name, default=None):
+        calls.append(name)
+        return mapping.get(name, default)
+
+    scope_mod.get_secret = _get_secret
+    agent_pkg.secret_scope = scope_mod
+    monkeypatch.setitem(_sys.modules, "agent", agent_pkg)
+    monkeypatch.setitem(_sys.modules, "agent.secret_scope", scope_mod)
+    return calls
+
+
+def test_keys_prefer_secret_scope_over_os_environ(monkeypatch):
+    """scope 有值时优先于进程环境变量（多 profile 隔离语义）。"""
+    import adapters.hermes as hermes_mod
+
+    monkeypatch.setenv("SGME_AGENT_KEY", "env-level-key")
+    _install_fake_secret_scope(monkeypatch, {"SGME_AGENT_KEY": "scoped-key"})
+    p = hermes_mod.SGMEProvider()
+    assert p.agent_key == "scoped-key"
+
+
+def test_keys_fall_back_to_os_environ_without_agent_runtime(monkeypatch):
+    """无 agent 运行时（独立测试/裸 pip 安装）：回落 os.environ（旧行为保持）。"""
+    import sys as _sys
+    import adapters.hermes as hermes_mod
+
+    monkeypatch.delitem(_sys.modules, "agent", raising=False)
+    monkeypatch.delitem(_sys.modules, "agent.secret_scope", raising=False)
+    monkeypatch.setenv("SGME_AGENT_KEY", "env-level-key")
+    p = hermes_mod.SGMEProvider()
+    assert p.agent_key == "env-level-key"
+
+
+def test_unscoped_secret_error_propagates_fail_closed(monkeypatch):
+    """multiplex 激活但无 scope：get_secret 报错必须向上传播（fail closed），
+    禁止回落 os.environ（会读到别的 profile 的 key，规则11 底线）。"""
+    import sys as _sys
+    import types as _types
+    import adapters.hermes as hermes_mod
+
+    agent_pkg = _types.ModuleType("agent")
+    scope_mod = _types.ModuleType("agent.secret_scope")
+
+    class _Unscoped(RuntimeError):
+        pass
+
+    def _boom(name, default=None):
+        raise _Unscoped(name)
+
+    scope_mod.get_secret = _boom
+    agent_pkg.secret_scope = scope_mod
+    monkeypatch.setitem(_sys.modules, "agent", agent_pkg)
+    monkeypatch.setitem(_sys.modules, "agent.secret_scope", scope_mod)
+    monkeypatch.setenv("SGME_AGENT_KEY", "env-level-key")
+    with pytest.raises(_Unscoped):
+        hermes_mod.SGMEProvider()
+
+
+def test_behavior_flags_and_base_url_via_scope(monkeypatch):
+    """行为开关与服务地址同样走 scope 解析。"""
+    import adapters.hermes as hermes_mod
+
+    _install_fake_secret_scope(
+        monkeypatch,
+        {"SGME_BASE_URL": "http://10.0.0.5:9910", "SGME_CAPTURE_ENABLED": "false"},
+    )
+    p = hermes_mod.SGMEProvider()
+    assert p.base_url == "http://10.0.0.5:9910"
+    assert p.capture_enabled is False
+
+
+def test_register_applies_scope_env_overrides(monkeypatch):
+    """register() 的环境变量覆盖分支同样走 scope（无 ctx 路径）。"""
+    import adapters.hermes as hermes_mod
+
+    _install_fake_secret_scope(monkeypatch, {"SGME_BASE_URL": "http://10.0.0.7:9910"})
+    provider = hermes_mod.register(None)
+    assert provider.base_url == "http://10.0.0.7:9910"
+
+
 def test_install_deploys_plugin_files_idempotently(tmp_path):
     """插件幂等部署到 $HERMES_HOME/plugins/sgme/（不触碰真实 HERMES_HOME）。"""
     dest = hermes_install.install(tmp_path)

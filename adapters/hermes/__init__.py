@@ -78,31 +78,39 @@ logger = logging.getLogger("sgme.provider")
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    """环境变量布尔解析（容忍 1/true/yes/on；缺失/非法 → 默认值）。"""
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
+    """布尔环境配置解析（容忍 1/true/yes/on；缺失/非法 → 默认值），经规则11解析层。"""
+    raw = (_resolve_setting(name, "") or "").strip()
+    if not raw:
         return default
-    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    return raw.lower() in ("1", "true", "yes", "on")
 
 
 # 默认 SGME 端点与 Key 环境变量（可经 plugin.yaml config 段覆盖）
 _DEV_AGENT_KEY = "dev-agent-key-change-me"  # 兜底 key：回环开发默认；远端接入必须换真 key
 _DEV_ADMIN_KEY = "dev-admin-key-change-me"
-_DEFAULT_BASE_URL = os.environ.get("SGME_BASE_URL", "http://127.0.0.1:9910")
-_DEFAULT_AGENT_KEY = os.environ.get("SGME_AGENT_KEY", _DEV_AGENT_KEY)
-_DEFAULT_ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", _DEV_ADMIN_KEY)
-_DEFAULT_MODE = os.environ.get("SGME_INJECT_MODE", "daily")
-_DEFAULT_MAX_TOKENS = int(os.environ.get("SGME_INJECT_MAX_TOKENS", "800"))
-_DEFAULT_TIMEOUT = float(os.environ.get("SGME_HTTP_TIMEOUT", "30.0"))
+# 规则11（catalog 准入 2026-10-10）：密钥与环境覆盖只经 agent.secret_scope.get_secret
+# 解析（尊重多 profile 隔离；supermemory/hindsight 同款写法）。单 profile 时框架自身
+# 回落 os.environ；无 agent 运行时（独立测试/裸 pip 安装）由 _resolve_setting 兜底。
+# 解析发生在构造/register 调用时（非模块导入时），避免进程环境在导入瞬间被冻死。
+def _resolve_setting(name: str, default: str) -> str:
+    """按准入规则11解析环境配置：优先 agent.secret_scope.get_secret，缺失回落 os.environ。"""
+    try:
+        from agent.secret_scope import get_secret
+    except ImportError:
+        return os.environ.get(name, default)
+    return get_secret(name, default) or default
+
+
+_DEFAULT_BASE_URL = "http://127.0.0.1:9910"  # 静态默认（回环）；环境覆盖构造时解析
+_DEFAULT_MODE = "daily"
+_DEFAULT_MAX_TOKENS = "800"
+_DEFAULT_TIMEOUT = "30.0"
 # 2026-10-18：默认值 5.0 → 30.0。NAS 本地向量模型（bge-m3，纯 CPU）单次推理
 # 常态 0.3-1s、冷载或排队时 40-80s，5s 会让 /v1/search 与 /v1/health 在
 # 正常态也报「Gateway 不可达」。可用环境变量 SGME_HTTP_TIMEOUT 覆盖。
 # T-211/T-214（2026-09-27）：行为偏好环境变量（桌面设置面板值落 $HERMES_HOME/sgme/config.json）
-_DEFAULT_CAPTURE_ENABLED = _env_bool("SGME_CAPTURE_ENABLED", True)
-_DEFAULT_REFINE_ON_END = _env_bool("SGME_REFINE_ON_END", True)
 # 溯源 agent_id（B35 自报，2026-08-11）：append body 带唯一标识，
 # 与共享鉴权 key 解耦——Hermes 写入的记忆可正确溯源到 hermes
-_DEFAULT_AGENT_ID = os.environ.get("SGME_HERMES_AGENT_ID", "hermes")
 
 # _probe 探测结果缓存 TTL（秒）：失败短缓存允许 Gateway 事后启动恢复；成功长缓存避免每轮重复探测
 _PROBE_FAIL_TTL = 3.0
@@ -279,8 +287,9 @@ class SGMEProvider(MemoryProvider):
     """SGME 记忆引擎 Hermes 桥接 provider。
 
     配置优先级：$HERMES_HOME/sgme/config.json（桌面面板值，T-214）> $HERMES_HOME/sgme.json
-    （旧向导写入，兼容）> plugin.yaml config 段 > 环境变量 > 默认值；密钥只从环境变量读
-    （框架 .env），不进本地 json。角色：本机面板值优先于服务端「当前角色」（T-214）。
+    （旧向导写入，兼容）> plugin.yaml config 段 > 环境配置 > 默认值；密钥经
+    agent.secret_scope.get_secret 解析（准入规则11，尊重多 profile 隔离；无 agent
+    运行时回落进程环境变量），不进本地 json。角色：本机面板值优先于服务端「当前角色」（T-214）。
     """
 
     def __init__(
@@ -296,16 +305,23 @@ class SGMEProvider(MemoryProvider):
         agent_id: Optional[str] = None,
         **kwargs,
     ) -> None:
-        self.base_url = (base_url or _DEFAULT_BASE_URL).rstrip("/")
-        self.agent_key = agent_key or _DEFAULT_AGENT_KEY
-        self.admin_key = admin_key or _DEFAULT_ADMIN_KEY
-        self.inject_mode = inject_mode or _DEFAULT_MODE
-        self.inject_max_tokens = inject_max_tokens or _DEFAULT_MAX_TOKENS
-        self.timeout = timeout or _DEFAULT_TIMEOUT
-        self.capture_enabled = _DEFAULT_CAPTURE_ENABLED if capture_enabled is None else bool(capture_enabled)
-        self.refine_on_end = _DEFAULT_REFINE_ON_END if refine_on_end is None else bool(refine_on_end)
+        self.base_url = (base_url or _resolve_setting("SGME_BASE_URL", _DEFAULT_BASE_URL)).rstrip("/")
+        # 密钥只走规则11解析层（scope 优先，无框架回落进程环境）；显式传参最优先
+        self.agent_key = agent_key or _resolve_setting("SGME_AGENT_KEY", _DEV_AGENT_KEY)
+        self.admin_key = admin_key or _resolve_setting("SGME_ADMIN_KEY", _DEV_ADMIN_KEY)
+        self.inject_mode = inject_mode or _resolve_setting("SGME_INJECT_MODE", _DEFAULT_MODE)
+        try:
+            self.inject_max_tokens = int(inject_max_tokens or _resolve_setting("SGME_INJECT_MAX_TOKENS", _DEFAULT_MAX_TOKENS))
+        except (TypeError, ValueError):
+            self.inject_max_tokens = int(_DEFAULT_MAX_TOKENS)
+        try:
+            self.timeout = float(timeout or _resolve_setting("SGME_HTTP_TIMEOUT", _DEFAULT_TIMEOUT))
+        except (TypeError, ValueError):
+            self.timeout = float(_DEFAULT_TIMEOUT)
+        self.capture_enabled = _env_bool("SGME_CAPTURE_ENABLED", True) if capture_enabled is None else bool(capture_enabled)
+        self.refine_on_end = _env_bool("SGME_REFINE_ON_END", True) if refine_on_end is None else bool(refine_on_end)
         # 溯源标识（B35）：append body 自报，可经 plugin.yaml config 段覆盖
-        self.agent_id = agent_id or _DEFAULT_AGENT_ID
+        self.agent_id = agent_id or _resolve_setting("SGME_HERMES_AGENT_ID", "hermes")
 
         self._session_id: str = ""
         self._hermes_home: str = ""
@@ -2394,10 +2410,10 @@ def register(ctx=None) -> "SGMEProvider":
         except Exception:
             pass
 
-    # ③ 环境变量优先（用户显式覆盖；密钥只从环境变量读，不落 config）
-    base_url = os.environ.get("SGME_BASE_URL") or base_url
-    agent_key = os.environ.get("SGME_AGENT_KEY") or None
-    admin_key = os.environ.get("SGME_ADMIN_KEY") or None
+    # ③ 环境覆盖优先（经规则11解析层；密钥只从环境读，不落 config）
+    base_url = _resolve_setting("SGME_BASE_URL", "") or base_url
+    agent_key = _resolve_setting("SGME_AGENT_KEY", "") or None
+    admin_key = _resolve_setting("SGME_ADMIN_KEY", "") or None
 
     provider = SGMEProvider(
         base_url=base_url,
