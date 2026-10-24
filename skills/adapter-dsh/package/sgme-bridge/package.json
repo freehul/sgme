@@ -1,6 +1,6 @@
 {
   "name": "dsh-sgme",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "SGME memory engine bridge for DeepSeek Harness — multi-agent shared long-term memory via HTTP.",
   "keywords": [
     "deepseek-harness",
@@ -14,6 +14,15 @@
     "plugin"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/freehul/sgme.git",
+    "directory": "adapters/dsh/sgme-bridge"
+  },
+  "homepage": "https://github.com/freehul/sgme/tree/main/adapters/dsh/sgme-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/freehul/sgme/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
