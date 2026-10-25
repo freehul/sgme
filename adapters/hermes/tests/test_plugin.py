@@ -506,8 +506,8 @@ def test_config_schema_shape_and_role_choices():
     schema = p.get_config_schema()
     assert [f["key"] for f in schema] == [
         "base_url", "agent_key", "admin_key", "inject_mode", "inject_max_tokens",
-        "capture_enabled", "refine_on_end", "agent_id", "role_id",
-        "custom_role_name", "custom_role_prompt",
+        "capture_enabled", "refine_on_end", "agent_id", "credential_get_enabled",
+        "role_id", "custom_role_name", "custom_role_prompt",
     ]
     by = {f["key"]: f for f in schema}
     assert by["agent_key"]["secret"] is True and by["agent_key"]["env_var"] == "SGME_AGENT_KEY"
@@ -815,14 +815,14 @@ def _load_declared_schema():
 
 
 def test_declared_schema_shape():
-    """T-214：config_schema.py 的 CONFIG_SCHEMA——11 字段 / 密钥声明 / 角色选项 / inline 子集。"""
+    """T-214：config_schema.py 的 CONFIG_SCHEMA——12 字段 / 密钥声明 / 角色选项 / inline 子集。"""
     schema = _load_declared_schema()
     assert schema.name == "sgme"
     keys = [f.key for f in schema.fields]
     assert keys == [
         "base_url", "agent_key", "admin_key", "inject_mode", "inject_max_tokens",
-        "capture_enabled", "refine_on_end", "agent_id", "role_id",
-        "custom_role_name", "custom_role_prompt",
+        "capture_enabled", "refine_on_end", "agent_id", "credential_get_enabled",
+        "role_id", "custom_role_name", "custom_role_prompt",
     ]
     by = {f.key: f for f in schema.fields}
     assert by["agent_key"].is_secret and by["agent_key"].env_key == "SGME_AGENT_KEY"

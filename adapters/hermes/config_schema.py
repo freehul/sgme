@@ -85,6 +85,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             description="写入溯源标识（append 自报的 agent_id）",
             env_fallbacks=("SGME_HERMES_AGENT_ID",), inline=True, group="行为偏好",
         ),
+        ProviderField(
+            key="credential_get_enabled", label="允许读取凭据值", kind=KIND_BOOL, default="false",
+            description="默认关闭（catalog 审核整改 2026-10）：凭据值进入对话会被随会话日志记录",
+            env_fallbacks=("SGME_ENABLE_CREDENTIAL_GET",), inline=True, group="行为偏好",
+        ),
         # —— 角色（换皮不换芯；本机值优先于服务端当前角色） ——
         ProviderField(
             key="role_id", label="会话角色", kind=KIND_SELECT, default=_NO_ROLE,

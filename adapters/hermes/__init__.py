@@ -303,6 +303,7 @@ class SGMEProvider(MemoryProvider):
         capture_enabled: Optional[bool] = None,
         refine_on_end: Optional[bool] = None,
         agent_id: Optional[str] = None,
+        credential_get_enabled: Optional[bool] = None,
         **kwargs,
     ) -> None:
         self.base_url = (base_url or _resolve_setting("SGME_BASE_URL", _DEFAULT_BASE_URL)).rstrip("/")
@@ -320,6 +321,12 @@ class SGMEProvider(MemoryProvider):
             self.timeout = float(_DEFAULT_TIMEOUT)
         self.capture_enabled = _env_bool("SGME_CAPTURE_ENABLED", True) if capture_enabled is None else bool(capture_enabled)
         self.refine_on_end = _env_bool("SGME_REFINE_ON_END", True) if refine_on_end is None else bool(refine_on_end)
+        # 凭据值读取门禁（catalog 审核整改 2026-10）：默认关闭；显式传参/面板/环境变量可开
+        self.credential_get_enabled = (
+            _env_bool("SGME_ENABLE_CREDENTIAL_GET", False)
+            if credential_get_enabled is None
+            else bool(credential_get_enabled)
+        )
         # 溯源标识（B35）：append body 自报，可经 plugin.yaml config 段覆盖
         self.agent_id = agent_id or _resolve_setting("SGME_HERMES_AGENT_ID", "hermes")
 
@@ -381,7 +388,7 @@ class SGMEProvider(MemoryProvider):
         return list(cache.get("choices") or [_NO_ROLE_LABEL]), str(cache.get("active") or "")
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
-        """桌面设置面板 / ``hermes memory setup`` 字段（11 项：连接·鉴权·行为·角色）。
+        """桌面设置面板 / ``hermes memory setup`` 字段（12 项：连接·鉴权·行为·角色）。
 
         角色下拉实时拉取服务端角色（含自建；失败优雅回退「不使用角色」）；
         role_id 默认值 = 服务端当前角色——打开面板所见即所得。
@@ -414,6 +421,9 @@ class SGMEProvider(MemoryProvider):
             {"key": "agent_id",
              "description": "写入溯源标识（append 自报的 agent_id）", "default": "hermes",
              "env_var": "SGME_HERMES_AGENT_ID"},
+            {"key": "credential_get_enabled",
+             "description": "允许读取凭据值（默认关闭：凭据值进入对话会被随会话日志记录）",
+             "default": False, "type": "boolean", "env_var": "SGME_ENABLE_CREDENTIAL_GET"},
             {"key": "role_id",
              "description": "会话角色（换皮不换芯）：选择即设为服务端当前角色；「不使用角色」= 取消",
              "choices": choices, "default": active or _NO_ROLE_LABEL},
@@ -694,6 +704,8 @@ class SGMEProvider(MemoryProvider):
             self.refine_on_end = _bool_arg(cfg["refine_on_end"], True)
         if cfg.get("agent_id"):
             self.agent_id = str(cfg["agent_id"])
+        if "credential_get_enabled" in cfg:
+            self.credential_get_enabled = _bool_arg(cfg["credential_get_enabled"], False)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """每轮 LLM 前召回相关记忆 + 匹配场景（/v1/search，双 scope）。
@@ -823,6 +835,10 @@ class SGMEProvider(MemoryProvider):
                 content = str(msg.get("content") or "")
                 if role not in ("user", "assistant", "tool") or not content:
                     continue
+                # 凭据值永不入 L0（catalog 审核整改 2026-10）：sgme_credential_get 的
+                # 返回值含凭据明文——进对话即随会话日志落盘。跳过其 tool 消息。
+                if role == "tool" and str(msg.get("name") or "") == "sgme_credential_get":
+                    continue
                 key = self._msg_key(msg)
                 if key in self._exported_keys:
                     continue
@@ -924,8 +940,12 @@ class SGMEProvider(MemoryProvider):
 
         对齐唯一基准 = SGME MCP 工具面（sgme/mcp_server.py，43 个）；
         hermes 侧 2 项永久豁免（agent_onboarding / append）理由见 README。
+        ``sgme_credential_get`` 默认不下发（catalog 审核整改：凭据值默认不进对话），
+        开启（面板 / SGME_ENABLE_CREDENTIAL_GET=1 / 显式传参）后恢复下发。
         """
-        return self._TOOL_SCHEMAS
+        if self.credential_get_enabled:
+            return self._TOOL_SCHEMAS
+        return [s for s in self._TOOL_SCHEMAS if s.get("name") != "sgme_credential_get"]
 
     _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         {
@@ -2114,20 +2134,43 @@ class SGMEProvider(MemoryProvider):
         return self._ok(data)
 
     def _t_skill_materialize(self, args: Dict[str, Any]) -> str:
-        """sgme_skill_materialize：技能 L3 物化落盘（服务端路径），返回 path + sha256。"""
+        """sgme_skill_materialize：技能 L3 物化落盘（固定根；catalog 审核整改，禁模型自选路径）。
+
+        落盘根固定 = ``$HERMES_HOME/plugin-data/sgme/skills/``（resolve + 白名单校验
+        在服务端 ``materialize`` 兜底执行）：模型自选 dest_dir 可绕过 Hermes 写保护
+        （如把技能包写进 Hermes 技能目录而不过技能扫描器），审核意见 1 必改项。
+        ``sgme_skill_get`` 覆盖「取正文自行写盘」场景；本工具保留服务端整包落盘。
+        """
         name = _arg_str(args, "name")
-        dest_dir = _arg_str(args, "dest_dir", 1000)
-        if not name or not dest_dir:
-            return self._err("缺少 name 或 dest_dir")
+        requested = _arg_str(args, "dest_dir", 1000)
+        if not name:
+            return self._err("缺少 name")
+        if requested:
+            return self._err(
+                "dest_dir 已停用（catalog 审核整改 2026-10）：落盘根固定为 "
+                "$HERMES_HOME/plugin-data/sgme/skills/，只传 name 即可；"
+                "需要写到别的位置请用 sgme_skill_get 取正文自行写盘"
+            )
+        root = self._materialize_root()
+        if not root:
+            return self._err("无法确定 HERMES_HOME（物化落盘根），请经 Hermes 正常启动本插件")
         data, err = self._request(
             "POST", f"/v1/skills/{_path_seg(name)}/materialize",
-            json_body={"dest_dir": dest_dir},
+            json_body={"dest_dir": root, "allowed_roots": [root]},
         )
         if err:
             return self._err(f"技能物化失败（name={name}）: {err}")
         if not isinstance(data, dict):
             return self._err("技能物化响应异常")
         return self._ok(data)
+
+    def _materialize_root(self) -> str:
+        """L3 物化固定落盘根（绝对路径）：$HERMES_HOME/plugin-data/sgme/skills/。"""
+        home = self._hermes_home or _resolve_setting("HERMES_HOME", "") \
+            or os.path.join(os.path.expanduser("~"), ".hermes")
+        if not str(home).strip():
+            return ""
+        return os.path.abspath(os.path.join(str(home), "plugin-data", "sgme", "skills"))
 
     def _t_skill_put(self, args: Dict[str, Any]) -> str:
         """sgme_skill_put：写入/覆盖技能（lint 门禁 + 查重后落盘提交）。需管理员 Key。"""
@@ -2187,7 +2230,16 @@ class SGMEProvider(MemoryProvider):
         return self._ok(data)
 
     def _t_credential_get(self, args: Dict[str, Any]) -> str:
-        """sgme_credential_get：取凭据单值（⚠️ 值不得进入对话正文——仅限必须显式查看场景）。"""
+        """sgme_credential_get：取凭据单值（默认关闭；catalog 审核整改——值入对话即入 L0）。
+
+        纵深防御第二层（第一层 = 工具面不下发 schema）：即便被直接调用也拒绝。
+        """
+        if not self.credential_get_enabled:
+            return self._err(
+                "sgme_credential_get 默认关闭（凭据值进入对话会被随会话日志记录）。"
+                "确需开启：桌面「设置 → 记忆与上下文 → SGME」开启「允许读取凭据值」，"
+                "或设环境变量 SGME_ENABLE_CREDENTIAL_GET=1"
+            )
         name = _arg_str(args, "name")
         if not name:
             return self._err("缺少 name（凭据键名，sgme_credential_list 可见）")
@@ -2284,7 +2336,7 @@ class SGMEProvider(MemoryProvider):
             return json.dumps({"error": "缺少 event_id"}, ensure_ascii=False)
         try:
             r = cli.post(
-                f"{self.base_url}/v1/admin/care/signals/{event_id}/consume",
+                f"{self.base_url}/v1/admin/care/signals/{_path_seg(event_id)}/consume",
                 headers={"X-API-Key": self.agent_key},
             )
             if r.status_code == 409:
@@ -2320,7 +2372,7 @@ class SGMEProvider(MemoryProvider):
         result = str(args.get("result", "")).strip()
         try:
             r = cli.post(
-                f"{self.base_url}/v1/admin/care/signals/{event_id}/ack",
+                f"{self.base_url}/v1/admin/care/signals/{_path_seg(event_id)}/ack",
                 json={"status": status, "result": result},
                 headers={"X-API-Key": self.agent_key},
             )

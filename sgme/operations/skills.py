@@ -476,6 +476,7 @@ def materialize(
     *,
     name: str,
     dest_dir: str,
+    allowed_roots: list[str] | tuple[str, ...] | None = None,
 ) -> OperationResult:
     """L3 物化：SKILL.md **原文件字节**写盘 dest_dir/<name>/SKILL.md（不走 LLM 转写）。
 
@@ -505,6 +506,22 @@ def materialize(
             "跨机取完整包请用 HTTP 包通道 GET /v1/skills/{name}/package（tar.gz + MANIFEST.sha256），"
             "或 skill_get 取技能正文，在本地自行写盘。"
         )
+    if allowed_roots is not None:
+        # 白名单防线（catalog 审核整改 2026-10，PR #143917）：调用方声明允许落盘的
+        # 根集合时，dest_dir 必须落在其一之内（resolve 归一后再判前缀，防 .. 与
+        # 符号链接逃逸）。不传 = 兼容既有调用方（各适配器自有落盘根）。
+        if not isinstance(allowed_roots, (list, tuple)) or not allowed_roots:
+            raise InvalidArgs("allowed_roots 必须是非空路径列表（或省略以关闭白名单校验）")
+        resolved_dest = Path(dest_dir.strip()).resolve()
+        allowed_resolved = [Path(str(r)).resolve() for r in allowed_roots]
+        if not any(
+            resolved_dest == root or root in resolved_dest.parents
+            for root in allowed_resolved
+        ):
+            raise InvalidArgs(
+                "dest_dir 不在允许落盘的白名单内（allowed_roots 由调用方声明；"
+                "Hermes 适配器固定为 $HERMES_HOME/plugin-data/sgme/skills/）"
+            )
     records = _load_records(cfg, wiki_conn)
     rec = _find_record(records, name)
     if rec is None:

@@ -44,9 +44,15 @@ router = APIRouter()
 class MaterializeRequest(BaseModel):
     """L3 物化请求体：目标目录（**服务端视角**路径——物化落盘在服务端文件系统；
     跨机调用（agent 在本地、SGME 在远端）改用 GET /v1/skills/{name}/package
-    下载完整包，或 skill_get 取正文自行写盘）。"""
+    下载完整包，或 skill_get 取正文自行写盘）。
+
+    ``allowed_roots``（可选，catalog 审核整改 2026-10）：调用方声明的落盘白名单，
+    提供时 dest_dir 必须落在其一之内（resolve 后判前缀，防 .. 与符号链接逃逸）；
+    缺省保持既有行为（各适配器自有落盘根）。
+    """
 
     dest_dir: str
+    allowed_roots: list[str] | None = None
 
 
 def _ensure_index(request: Request):
@@ -231,7 +237,7 @@ def materialize_skill(
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
     return run_operation(
         materialize_operation, cfg, wiki_conn,
-        name=name, dest_dir=payload.dest_dir,
+        name=name, dest_dir=payload.dest_dir, allowed_roots=payload.allowed_roots,
     )
 
 

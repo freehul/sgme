@@ -54,6 +54,16 @@ hermes plugins enable sgme
 
 ### From source
 
+`install.py` is for **source installs only**. If you installed from the Plugin
+Catalog, never re-run it — it would overwrite the catalog install outside the
+reviewed pin. Catalog installs update with:
+
+```bash
+hermes plugins update sgme
+```
+
+Source install (you cloned the repo and want a live copy in your Hermes home):
+
 ```bash
 python adapters/hermes/install.py            # deploys to <HERMES_HOME>/plugins/sgme/
 python adapters/hermes/install.py --home <HERMES_HOME> --install-json <path>
@@ -161,7 +171,7 @@ Admin tools state their requirement in their description.
 | `sgme_skill_get` | L2 full text (optionally a single section to save tokens) | agent |
 | `sgme_skill_list` | L0 index (paginated) | agent |
 | `sgme_skill_coldstart` | Cold-start pack (retrieval protocol + operations manual) | agent |
-| `sgme_skill_materialize` | L3: write SKILL.md to a path — **on the SGME host** | agent |
+| `sgme_skill_materialize` | L3: write the skill package to `$HERMES_HOME/plugin-data/sgme/skills/` — **on the SGME host** (fixed root, catalog security review; `dest_dir` no longer accepted) | agent |
 | `sgme_skill_put` | Write a skill (lint gate + 3-layer dedup) | admin |
 | `sgme_skill_delete` | Soft-delete (deprecated) or hard-delete | admin |
 | `sgme_skill_rename` | Rename with a tombstone at the old location | admin |
@@ -251,7 +261,7 @@ Admin tools state their requirement in their description.
 
 1. **`plugins.enabled` stored as a string** — `hermes config set` can write it as a string instead of a YAML list; the loader then treats it as “no plugins”. Edit `config.yaml` so it is a list (`- sgme`).
 2. **Wrong plugin directory** — a user-level provider lives at `<HERMES_HOME>/plugins/sgme/` (no `memory/` subdirectory). `install.py` puts it in the right place; don't hand-move it.
-3. **Edited the bridge but nothing changed** — after editing `adapters/hermes/`, re-run `install.py` to sync `<HERMES_HOME>/plugins/sgme/`; Hermes loads the deployed copy.
+3. **Edited the bridge but nothing changed** — that section applies to **source installs** only: after editing `adapters/hermes/`, re-run `install.py` to sync `<HERMES_HOME>/plugins/sgme/`; Hermes loads the deployed copy. For a catalog install, updates come from the reviewed pin via `hermes plugins update sgme` instead.
 4. **Skills / wiki endpoints return 404** — those server modules may be disabled (`skills.enabled`, wiki extension). Memory features are unaffected.
 5. **Admin tools return 403** — `SGME_ADMIN_KEY` is not set (or lacks rights). Read tools keep working; this is “can read, can't write”, by design.
 6. **`sgme_skill_materialize` “writes the file but I can't find it”** — `path` is on the **SGME host**. When Hermes and SGME are on different machines, use the **package channel** instead: `GET /v1/skills/{name}/package` (or `skill_fetch.py --name <name> --dest <dir>`, which downloads → verifies against `MANIFEST.sha256` → unpacks safely, leaving no residue on failure).

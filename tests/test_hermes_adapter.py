@@ -477,7 +477,7 @@ _CALL_ARGS = {
     "sgme_skill_search": {"query": "docker 部署"},
     "sgme_skill_digest": {"name": "demo-skill"},
     "sgme_skill_get": {"name": "demo-skill"},
-    "sgme_skill_materialize": {"name": "demo-skill", "dest_dir": "/tmp/skills"},
+    "sgme_skill_materialize": {"name": "demo-skill"},
     "sgme_skill_list": {},
     "sgme_skill_coldstart": {},
     "sgme_skill_put": {"name": "demo-skill", "content": "---\nname: demo\n---\n正文"},
@@ -556,12 +556,16 @@ class _RecordingClient:
 
 
 def _tool_provider(response: _RecordingResponse | None = None, raise_error: bool = False):
-    """构造注入了记录客户端的 provider（不触网）。"""
+    """构造注入了记录客户端的 provider（不触网）。
+
+    catalog 审核整改后 materialize 落盘根依赖 _hermes_home，矩阵测试统一注入假值。
+    """
     fake = _RecordingClient(response=response, raise_error=raise_error)
     p = SGMEProvider(base_url="http://127.0.0.1:9910", agent_key="agent-key-x", admin_key="admin-key-x")
     p._client = fake  # type: ignore[assignment]
     p._available = True
     p._probe_at = time.monotonic()  # 探活命中缓存（避免测试里多打一次 /v1/health）
+    p._hermes_home = "/tmp/fake-hermes-home"
     return p, fake
 
 
@@ -575,18 +579,21 @@ def _baseline_tools() -> set:
 
 
 def test_tool_count_and_names():
-    """注册 44 个工具：41 个基准覆盖 + 3 个自有工具（conversation_search / role_save / role_delete）。"""
+    """注册 43 个工具（默认面）：41 个基准覆盖 + 3 个自有工具（conversation_search /
+    role_save / role_delete）− sgme_credential_get（catalog 审核整改 2026-10 默认隐藏；
+    开启后恢复 44，见 test_catalog_remediation）。"""
     p, _ = _tool_provider()
     names = [s["name"] for s in p.get_tool_schemas()]
-    assert len(names) == 44, f"工具数应为 44，实际 {len(names)}"
-    assert len(set(names)) == 44, "工具名重复"
+    assert len(names) == 43, f"工具数应为 43（credential_get 默认隐藏），实际 {len(names)}"
+    assert len(set(names)) == 43, "工具名重复"
+    assert "sgme_credential_get" not in names, "credential_get 默认不应在工具面"
     assert set(EXEMPT_TOOLS).isdisjoint({n[len("sgme_"):] for n in names}), "豁免工具不应被实现"
     expected = (
-        {f"sgme_{t}" for t in _baseline_tools() - EXEMPT_TOOLS - set(ALIASED)}
+        {f"sgme_{t}" for t in _baseline_tools() - EXEMPT_TOOLS - set(ALIASED) - {"credential_get"}}
         | set(ALIASED.values())
         | HERMES_EXTRA_TOOLS
     )
-    assert set(names) == expected, f"工具名单与基准不一致：缺 {sorted(expected - set(names))}，多 {sorted(set(names) - expected)}"
+    assert set(names) == expected, f"工具名单与基准不一致：缺 {sorted(expected - set(names))}，多 {sorted(set(names) - set(expected))}"
 
 
 def test_tool_schemas_shape():
@@ -615,8 +622,12 @@ def test_every_tool_resolves_to_handler():
 
 
 def test_endpoint_matrix():
-    """44 个工具各自的 HTTP 方法与端点正确（契约矩阵；值为 (方法, 路径) 或调用序列）。"""
+    """44 个工具各自的 HTTP 方法与端点正确（契约矩阵；值为 (方法, 路径) 或调用序列）。
+
+    credential_get 默认关闭（catalog 审核整改），矩阵测试显式开启以覆盖其端点契约。
+    """
     p, fake = _tool_provider()
+    p.credential_get_enabled = True
     assert set(_ENDPOINTS) == set(_CALL_ARGS), "端点矩阵与参数矩阵工具集不一致"
     for tool, spec in _ENDPOINTS.items():
         expected = spec if isinstance(spec, list) else [spec]
@@ -644,8 +655,9 @@ def test_write_side_tools_use_admin_key():
 
 
 def test_read_side_tools_use_agent_key():
-    """读侧工具走 Agent Key。"""
+    """读侧工具走 Agent Key（credential_get 默认关闭，此处显式开启以覆盖其 key 契约）。"""
     p, fake = _tool_provider()
+    p.credential_get_enabled = True
     read_tools = sorted(set(_CALL_ARGS) - _ADMIN_TOOLS - {"sgme_health"})
     assert read_tools, "读侧工具集不应为空"
     for tool in read_tools:
@@ -724,15 +736,18 @@ def test_skill_get_normalizes_section():
     assert "params" not in fake.calls[0], "无 section 时不应传 params"
 
 
-def test_skill_materialize_requires_dest_dir_and_passes_it():
-    """skill_materialize 需要 dest_dir，返回服务端 path + sha256。"""
+def test_skill_materialize_fixed_root_and_rejects_dest_dir():
+    """catalog 审核整改（2026-10）：materialize 落盘根固定（plugin-data）；
+    dest_dir 停用（模型自选路径被拒绝且不触网）。"""
     p, fake = _tool_provider()
-    err = json.loads(p.handle_tool_call("sgme_skill_materialize", {"name": "demo-skill"}))
-    assert "error" in err and not fake.calls, "缺 dest_dir 应结构化报错且不发请求"
+    p._hermes_home = "/tmp/fake-hermes-home"
+    err = json.loads(p.handle_tool_call("sgme_skill_materialize", {"name": "demo-skill", "dest_dir": "/srv/skills"}))
+    assert "error" in err and not fake.calls, "dest_dir 已停用：应结构化报错且不发请求"
 
-    p2, fake2 = _tool_provider(_RecordingResponse(200, {"path": "/srv/skills/demo-skill/SKILL.md", "sha256": "ab" * 32}))
-    out = json.loads(p2.handle_tool_call("sgme_skill_materialize", {"name": "demo-skill", "dest_dir": "/srv/skills"}))
-    assert fake2.calls[0]["json"] == {"dest_dir": "/srv/skills"}
+    p2, fake2 = _tool_provider(_RecordingResponse(200, {"path": "/srv/plugin-data/sgme/skills/demo-skill/SKILL.md", "sha256": "ab" * 32}))
+    out = json.loads(p2.handle_tool_call("sgme_skill_materialize", {"name": "demo-skill"}))
+    expected_root = str(Path("/tmp/fake-hermes-home/plugin-data/sgme/skills").resolve())
+    assert fake2.calls[0]["json"] == {"dest_dir": expected_root, "allowed_roots": [expected_root]}
     assert out["path"].endswith("SKILL.md") and len(out["sha256"]) == 64
 
 
@@ -750,15 +765,25 @@ def test_hard_delete_and_flags_pass_as_query():
 
 
 def test_credential_tools_use_agent_key_and_path():
-    """credential_list/credential_get 走 Agent Key 平级读侧；get 的 name 做路径段编码。"""
+    """credential_list 走 Agent Key；credential_get 默认关闭（catalog 审核整改），
+    开启后 name 走路径段编码（EP-11 原契约保留）。"""
     p, fake = _tool_provider()
     p.handle_tool_call("sgme_credential_list", {})
     assert fake.calls[0]["method"] == "GET"
     assert fake.calls[0]["url"] == "http://127.0.0.1:9910/v1/credentials"
     assert fake.calls[0]["headers"]["X-API-Key"] == "agent-key-x"
-    fake.calls.clear()
-    p.handle_tool_call("sgme_credential_get", {"name": "db/password"})
-    assert fake.calls[0]["url"] == "http://127.0.0.1:9910/v1/credentials/db%2Fpassword"
+
+    # 默认关闭：工具面不含 get，直接调用返回结构化错误且不触网
+    p2, fake2 = _tool_provider()
+    assert "sgme_credential_get" not in [s["name"] for s in p2.get_tool_schemas()]
+    assert "默认关闭" in json.loads(p2.handle_tool_call("sgme_credential_get", {"name": "k"}))["error"]
+    assert not fake2.calls
+
+    # 开启后恢复调用 + 路径编码（原 EP-11 契约）
+    p3, fake3 = _tool_provider()
+    p3.credential_get_enabled = True
+    p3.handle_tool_call("sgme_credential_get", {"name": "db/password"})
+    assert fake3.calls[0]["url"] == "http://127.0.0.1:9910/v1/credentials/db%2Fpassword"
 
 
 def test_credential_get_requires_name():
@@ -769,9 +794,15 @@ def test_credential_get_requires_name():
 
 
 def test_credential_get_description_warns_no_value_in_conversation():
-    """credential_get 描述必须带「值不得进入对话正文」纪律（EP-11 值扩散不可回收）。"""
+    """credential_get 默认从工具面移除（catalog 审核整改 2026-10）；
+    开启后描述保留「值不得进入对话正文」纪律（EP-11 值扩散不可回收）。"""
     p, _ = _tool_provider()
-    desc = [s for s in p.get_tool_schemas() if s["name"] == "sgme_credential_get"][0]["description"]
+    names = [s["name"] for s in p.get_tool_schemas()]
+    assert "sgme_credential_get" not in names, "默认关闭：工具面不应下发"
+
+    p2, _ = _tool_provider()
+    p2.credential_get_enabled = True
+    desc = [s for s in p2.get_tool_schemas() if s["name"] == "sgme_credential_get"][0]["description"]
     assert "值不得进入对话正文" in desc and "sgme-cred run" in desc
 
 

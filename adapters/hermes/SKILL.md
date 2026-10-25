@@ -20,6 +20,8 @@ description: Hermes 的 SGME（拾光记忆）官方适配器（memory.provider 
 
 无 skill 通道时：从仓库 `adapters/hermes/` 运行 `install.py`（详见 `references/README.md`）。
 
+⚠️ **已从 Plugin Catalog 安装的用户不要跑 `install.py`**——会覆盖目录安装、脱离审核锁定的版本；目录安装的更新走 `hermes plugins update sgme`。`install.py` 仅用于源码安装。
+
 ## 服务发现（找不到 SGME 时按序）
 
 1. 环境变量 `SGME_HTTP_URL` / `SGME_BASE_URL`、`SGME_MCP_URL`

@@ -17,7 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from sgme.operations.errors import ERR_NOT_FOUND, OperationResult
+from sgme.operations.errors import ERR_INVALID_ARGS, ERR_NOT_FOUND, InvalidArgs, OperationResult
+from sgme.operations.skills import materialize
 from sgme.skills.indexer import SkillRecord
 
 # ---------- fixtures ----------
@@ -1033,3 +1034,61 @@ class TestMaterializePackageEquivalence:
         assert "emptydir" not in landed and not any(p.startswith("emptydir") for p in landed)
         # companions 形状：顶层条目、目录带 /、junk/空目录不入列
         assert mat.data["companions"] == ["corpus/", "install.py", "scripts/"]
+
+
+class TestMaterializeAllowedRoots:
+    """catalog 审核整改（PR #143917）：materialize 增 allowed_roots 白名单（可选）。
+
+    Hermes 适配器已把 dest_dir 锁死到 plugin-data 根并携带白名单；服务端白名单是
+    兜底防线。不传白名单 = 兼容既有调用方（各适配器自有落盘根，行为不变）。
+    """
+
+    def test_outside_allowed_root_rejected(self, skills_cfg, wiki_conn, tmp_path):
+        """dest_dir 解析后不在白名单内 → InvalidArgs（路由层转 400），零落盘。"""
+        outside = tmp_path / "outside"
+        with pytest.raises(InvalidArgs):
+            materialize(
+                skills_cfg, wiki_conn, name="alpha",
+                dest_dir=str(outside), allowed_roots=[str(tmp_path / "allowed")],
+            )
+        assert not outside.exists()
+
+    def test_inside_allowed_root_passes(self, skills_cfg, wiki_conn, tmp_path):
+        """dest_dir 在白名单内 → 正常物化（子目录自动创建）。"""
+        root = tmp_path / "allowed"
+        res = materialize(
+            skills_cfg, wiki_conn, name="alpha",
+            dest_dir=str(root / "ws"), allowed_roots=[str(root)],
+        )
+        assert res.ok is True
+        out = Path(res.data["path"])
+        assert out.parent.name == "alpha" and out.name == "SKILL.md"
+
+    def test_traversal_via_dotdot_and_symlink_rejected(self, skills_cfg, wiki_conn, tmp_path):
+        """.. / 符号链接逃逸白名单 → 拒绝。"""
+        root = tmp_path / "allowed"
+        evil = tmp_path / "allowed" / ".." / "escaped"
+        with pytest.raises(InvalidArgs):
+            materialize(
+                skills_cfg, wiki_conn, name="alpha",
+                dest_dir=str(evil), allowed_roots=[str(root)],
+            )
+        # symlink 指向白名单外
+        outside = tmp_path / "outside-real"
+        outside.mkdir()
+        root.mkdir()
+        link = root / "link"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("无符号链接权限（Windows 未开开发者模式）")
+        with pytest.raises(InvalidArgs):
+            materialize(
+                skills_cfg, wiki_conn, name="alpha",
+                dest_dir=str(link), allowed_roots=[str(root)],
+            )
+
+    def test_no_whitelist_keeps_legacy_behavior(self, skills_cfg, wiki_conn, tmp_path):
+        """不传 allowed_roots → 兼容既有调用方（各适配器自有落盘根）。"""
+        res = materialize(skills_cfg, wiki_conn, name="alpha", dest_dir=str(tmp_path / "legacy"))
+        assert res.ok is True

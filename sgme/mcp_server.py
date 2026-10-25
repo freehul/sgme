@@ -1610,7 +1610,7 @@ def build_mcp_server():
 
     @mcp.tool()
     @tool
-    def skill_materialize(name: str, dest_dir: str) -> str:
+    def skill_materialize(name: str, dest_dir: str, allowed_roots: list[str] | None = None) -> str:
         """技能物化 L3（ST-36 M2）：字节保真落盘 dest_dir/<name>/SKILL.md，返回 path+sha256。
 
         脚本执行用——不走 LLM 转写；dest_dir 为你的工作区目录（必填）。
@@ -1619,6 +1619,8 @@ def build_mcp_server():
         GET /v1/skills/{name}/package（agent key）下载完整 tar.gz 包（含 scripts/、
         install.py 等随附文件）在本地解包，或 skill_get 取正文自行写盘；
         非 Windows 服务端收到盘符路径会明确报错（不再假成功）。
+        allowed_roots（可选，catalog 审核整改 2026-10）：声明落盘白名单，提供时
+        dest_dir 必须落在其一之内（防 .. 与符号链接逃逸）；缺省保持既有行为。
         """
         import json
         import sqlite3
@@ -1631,7 +1633,7 @@ def build_mcp_server():
         wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
         data = _op_json(
             materialize_operation, cfg, wiki_conn,
-            name=name, dest_dir=dest_dir,
+            name=name, dest_dir=dest_dir, allowed_roots=allowed_roots,
         )
         return json.dumps(data, ensure_ascii=False)
 
