@@ -1,0 +1,22 @@
+{
+  "name": "adapter-workbuddy",
+  "version": "1.0.0",
+  "description": "WorkBuddy 的 SGME（拾光记忆引擎）官方适配器：接入长期记忆引擎，提供 43 项记忆/知识/技能/关怀能力",
+  "author": {
+    "name": "freehul"
+  },
+  "homepage": "https://github.com/freehul/sgme",
+  "repository": "https://github.com/freehul/sgme",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "sgme",
+    "mcp",
+    "knowledge",
+    "productivity"
+  ],
+  "category": "productivity",
+  "skills": [
+    "./SKILL.md"
+  ]
+}
