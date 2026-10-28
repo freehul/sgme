@@ -79,6 +79,15 @@ versions:
     created_at: '2026-09-24T17:01:45Z'
     note: T-201 维度治理：①类型↔维度映射硬规则（episodic 仅限动态维度 focus/goals/status；fact 保留原维度）②收窄提取：助手单方面操作流水不提取
       ③允许空数组 ④content 禁写结构化字段（priority/source_ref）⑤≥3 组正反示例锚定（免费模型执行率）
+  - version: v008
+    file: versions/l1_extraction/v008.txt
+    sha256: 9c3878c21ac79a43b79f6cb4447094c21c4201e224ff812eb67a213c0b90fb7e
+    created_at: '2026-10-28T20:28:13Z'
+    note: 'SGME2.0 候选（未激活，active 仍为 @working）：D-66 七值 type + certainty + subject 必填（含三组正反对照）；D-67 route 按来源硬分流（助手科普不进记忆池、
+      用户改写草稿按 memory、他人引文按 others）；D-68 软遗忘 forget 字段（正文不复述被忘内容，解析层重写兜底）。persona13 实测（本文件自身跑 27 块）：
+      88 条记忆、误存 0%（知识类全部 discard）、软遗忘 23/23=100%、偏好召回 13/22=59.1%、语言漂移 1 条、3 次解析/语言重试全部重试成功。
+      已知缺口（启用前必须落解析层强制）：①forget 正文仍含主题关键词（22/23）→ 用 forget.topic 重写正文 ②他人事实 others 一条未抽到（需补判据）
+      ③1 条非法 type「计划」→ enum 白名单校验 ④语言逐条判。启用方式：prompts_cli activate l1_extraction v008'
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt
