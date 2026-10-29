@@ -1489,12 +1489,19 @@ def build_mcp_server():
 
     @mcp.tool()
     @tool
-    def role_assemble(role_id: str, inject_mode: str | None = None) -> str:
+    def role_assemble(
+        role_id: str,
+        inject_mode: str | None = None,
+        render: bool = False,
+        user_name: str | None = None,
+    ) -> str:
         """装配角色沟通提示词（ST-29）：角色卡 system_prompt + care_policy + 画像。
 
         - 角色不存在 → {"error": "..."}（先 role_list 确认 role_id）
         - inject_mode 可选（daily/full 等模板名）：带上则附加用户画像块（零物化）
-        - 产物供 agent 直接注入 system prompt 使用（{{char}}/{{user}} 宏保留）
+        - render=True：替换 {{char}}/{{user}} 宏（user_name 缺省「你」）；
+          **默认 False 保留宏**（老消费方兼容）。新接入请传 render=True，
+          否则宏会原样进模型，用户可能看到「早安，{{user}}。」
         """
         import json
         import sqlite3
@@ -1504,7 +1511,8 @@ def build_mcp_server():
         mem_conn: sqlite3.Connection = _app_state["mem_conn"]
         cfg = _app_state["cfg"]
         data = _op_json(
-            assemble_operation, role_id, mem_conn, cfg, inject_mode=inject_mode,
+            assemble_operation, role_id, mem_conn, cfg,
+            inject_mode=inject_mode, render=render, user_name=user_name,
         )
         if "error" in data:
             return json.dumps(data, ensure_ascii=False)

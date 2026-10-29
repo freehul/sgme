@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -264,18 +265,39 @@ def ack_signal(
 
 # ---------- 角色注入装配（T-37） ----------
 
+_MACRO_RE = re.compile(r"\{\{\s*([^{}\s]+)\s*\}\}")
+
+
+def _render_macros(text: str, char_name: str, user_name: str | None = None) -> str:
+    """替换角色卡 CC V2 宏：``{{char}}`` → 角色名、``{{user}}`` → 用户显示名。
+
+    ``user_name`` 缺省回落「你」——不猜真实姓名（数据卫生）。
+    未知宏**保留原文并告警**，不静默吞掉：便于发现新宏漏网。
+    """
+    s = (text or "").replace("{{char}}", char_name)
+    s = s.replace("{{user}}", user_name or "你")
+    left = sorted(set(_MACRO_RE.findall(s)))
+    if left:
+        logger.warning("角色装配渲染后仍残留未知宏（未替换）：%s", left)
+    return s
+
+
 def assemble(
     role_id: str,
     mem_conn: sqlite3.Connection,
     cfg: dict[str, Any],
     *,
     inject_mode: str | None = None,
+    render: bool = False,
+    user_name: str | None = None,
 ) -> OperationResult:
     """角色沟通提示词装配：角色卡 + persona 物化 + 用户画像（零物化）。
 
     装配产物（消费方 agent 直接注入 system prompt 使用）：
-    - system_prompt：角色卡 CC V2 system_prompt（含 {{char}}/{{user}} 宏占位，
-      {{original}} 已替换为角色职责默认文案，供消费方拼接）
+    - system_prompt：角色卡 CC V2 system_prompt（``{{original}}`` 已替换为角色职责
+      默认文案）。``{{char}}``/``{{user}}`` 宏**默认保留**（供消费方拼接）；
+      ``render=True`` 时就地替换为角色名与 ``user_name``（缺省「你」）——
+      8 个适配器历史上都没拼接，导致用户可见「早安，{{user}}。」，故提供服务端渲染。
     - persona：物化文件全文（若已生成；唯一物化例外）
     - profile_blocks：用户画像（inject 模板查询，零物化——可选项，
       inject_mode 指定模板如 daily/full；None = 不带画像）
@@ -297,6 +319,10 @@ def assemble(
                 "主动关怀、尊重边界、避免打扰。"
             )
             sys_prompt = sys_prompt.replace("{{original}}", default)
+        if render:
+            sys_prompt = _render_macros(
+                sys_prompt, str(data.get("name") or role_id), user_name
+            )
         persona = roles_mod.load_persona(role_id, _persona_dir())
         care_policy = (data.get("extensions") or {}).get("sgme_care")
         profile_blocks: list[dict] = []

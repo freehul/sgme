@@ -116,17 +116,21 @@ def assemble_role(
     role_id: str,
     request: Request,
     inject_mode: str | None = None,
+    render: bool = False,
+    user_name: str | None = None,
     _: str = Depends(require_agent_key),
 ):
     """角色沟通提示词装配（换皮不换芯）：system_prompt + persona + 画像 + 关怀策略。
 
     inject_mode 可选（daily/full 等模板名）：带上则附加用户画像块（零物化）。
+    render=true 时替换 ``{{char}}``/``{{user}}`` 宏（user_name 缺省「你」）——
+    适配器历史上都没做这层拼接，导致宏直接进模型、用户可见「早安，{{user}}。」。
     """
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     cfg = request.app.state.cfg
     return run_operation(
         care_operation.assemble, role_id, mem_conn, cfg,
-        inject_mode=inject_mode,
+        inject_mode=inject_mode, render=render, user_name=user_name,
     )
 
 

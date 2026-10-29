@@ -61,6 +61,88 @@ def conns(tmp_path):
     db_mod.close(wiki_conn)
 
 
+# ---------- 装配渲染（render）：修 {{char}}/{{user}} 宏泄漏 ----------
+#
+# 背景：契约原写「宏保留、消费方拼接」，但 8 个适配器无一拼接 → 宏直接进模型，
+# 实测出现用户可见的「早安，{{user}}。」。改为装配侧可选渲染（默认关，保持兼容）。
+
+def test_assemble_render_replaces_macros(conns, cfg, roles_dir):
+    """render=True：{{char}}→卡内角色名、{{user}}→指定用户名。"""
+    from sgme.operations.care import assemble
+
+    roles_mod.save_role(roles_dir, "butler", _butler_card_with_sysprompt())
+    mem_conn, _, _ = conns
+
+    res = assemble("butler", mem_conn, cfg, render=True, user_name="小明")
+
+    assert res.ok is True
+    p = res.data["system_prompt"]
+    assert "{{char}}" not in p
+    assert "{{user}}" not in p
+    assert "你是管家" in p
+    assert "小明的专属沟通角色" in p
+
+
+def test_assemble_render_user_defaults_to_you(conns, cfg, roles_dir):
+    """render=True 未给 user_name → {{user}} 回落「你」（不猜真实姓名）。"""
+    from sgme.operations.care import assemble
+
+    roles_mod.save_role(roles_dir, "butler", _butler_card_with_sysprompt())
+    mem_conn, _, _ = conns
+
+    p = assemble("butler", mem_conn, cfg, render=True).data["system_prompt"]
+
+    assert "{{user}}" not in p
+    assert "你的专属沟通角色" in p
+
+
+def test_assemble_render_off_keeps_macros(conns, cfg, roles_dir):
+    """默认不渲染：保持 1.x 契约（宏保留，消费方自行拼接）。"""
+    from sgme.operations.care import assemble
+
+    roles_mod.save_role(roles_dir, "butler", _butler_card_with_sysprompt())
+    mem_conn, _, _ = conns
+
+    p = assemble("butler", mem_conn, cfg).data["system_prompt"]
+
+    assert "{{char}}" in p
+    assert "{{user}}" in p
+
+
+def test_assemble_render_warns_on_unknown_macro(conns, cfg, roles_dir, caplog):
+    """未知宏不静默吞掉：渲染后仍残留 → 记 warning（便于发现新宏漏网）。"""
+    import logging as _logging
+
+    from sgme.operations.care import assemble
+
+    card = _butler_card_with_sysprompt()
+    card["data"]["system_prompt"] = "你是{{char}}，{{unknown_macro}}在这里。"
+    roles_mod.save_role(roles_dir, "butler", card)
+    mem_conn, _, _ = conns
+
+    with caplog.at_level(_logging.WARNING, logger="sgme.operations.care"):
+        p = assemble("butler", mem_conn, cfg, render=True).data["system_prompt"]
+
+    assert "{{unknown_macro}}" in p  # 保留原文，不吞
+    assert "unknown_macro" in caplog.text
+
+
+def test_http_assemble_render_query(client, roles_dir):
+    """HTTP ``?render=1&user_name=``：路由透传渲染参数（防只改操作层不改路由）。"""
+    roles_mod.save_role(roles_dir, "butler", _butler_card_with_sysprompt())
+
+    r = client.get(
+        "/v1/admin/roles/butler/assemble?render=true&user_name=%E5%B0%8F%E6%98%8E",
+        headers=AGENT_HEADERS,
+    )
+
+    assert r.status_code == 200, r.text
+    p = r.json()["system_prompt"]
+    assert "{{char}}" not in p
+    assert "{{user}}" not in p
+    assert "小明" in p
+
+
 @pytest.fixture
 def app(conns, cfg, tmp_path, monkeypatch):
     """隔离 FastAPI 应用（roles/persona 目录随 tmp_path 隔离）。"""
