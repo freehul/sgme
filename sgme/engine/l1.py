@@ -25,6 +25,38 @@ logger = logging.getLogger("sgme.engine.l1")
 VALID_MEMORY_TYPES = {"persona", "episodic", "instruction", "fact"}
 VALID_TIME_VELOCITY = {"static", "dynamic"}
 
+# ---------- 2.0 schema 护栏（D-66/67/68 落地前置，2026-10-29 实测驱动） ----------
+# 实测依据：v009/v010 提示词输出 `dimensions: {primary, secondary}`（2.0 schema），
+# 而 1.x 校验只认 list → 拿 v009 真实产物实测 0/20 通过，直接启用会让提炼静默归零。
+
+# facts.type 七值白名单（D-66）
+DOMAIN_TYPES = ("约束", "习惯", "偏好", "状态", "事实", "经验", "想法")
+# 英文/近义别名 → 七值（英文会话里模型可能直接输出英文 type）
+DOMAIN_TYPE_ALIASES = {
+    "constraint": "约束", "rule": "约束", "requirement": "约束",
+    "habit": "习惯", "routine": "习惯",
+    "preference": "偏好", "liking": "偏好", "interest": "偏好",
+    "status": "状态", "state": "状态", "mood": "状态", "emotion": "状态",
+    "fact": "事实", "identity": "事实", "info": "事实",
+    "experience": "经验", "event": "经验", "episodic": "经验",
+    "idea": "想法", "thought": "想法", "plan": "想法", "consideration": "想法",
+}
+VALID_CERTAINTY = {"confirmed", "tentative", "discussing"}
+VALID_DERIVATION = {"fact", "reconstructed", "inferred"}
+VALID_MODALITY = {"done", "planned", "wished", "quoted", "unknown"}
+VALID_ROUTES = {"memory", "skill_candidate", "wiki_candidate", "discard"}
+
+# 敏感标识符正则（D-65 数据卫生：正文不写原值；样例实测 v009 曾存原始邮箱）
+_SENSITIVE_PATTERNS = (
+    ("email", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")),
+    ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+    ("doc", re.compile(r"\b(?:DL|SSN|ID|PASSPORT|PASSEPORT)[-:\s]?[A-Z0-9-]{4,}\b", re.IGNORECASE)),
+    ("card", re.compile(r"\b(?:\d{4}[ -]){3}\d{4}\b")),
+)
+_PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{7,}\d")
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
 # ---------- T-201：类型 ↔ 维度映射硬约束（l1_extraction v007 提示词的校验兜底） ----------
 
 # 单条记忆维度标签上限（提示词要求 1-3 个；实测出现过 4 个，属免费模型执行不稳）
@@ -49,6 +81,12 @@ EMPTY_RETRY_MIN_CONV_CHARS = 200
 _VIOLATION_COUNTER: dict[str, int] = {
     "dim_overflow": 0,       # 维度数超上限被截断
     "episodic_degraded": 0,  # episodic 打静态维度被降级
+    # ---- 2.0 护栏（2026-10-29）----
+    "dim_unknown": 0,        # 维度 id 不在注册表被剔除
+    "invalid_type": 0,       # type 不在七值白名单 → 归一兜底
+    "lang_drift_dropped": 0,  # 逐条判语言漂移被丢弃
+    "sensitive_redacted": 0,  # 敏感标识符被脱敏
+    "subject_missing": 0,    # subject 缺失归 unknown
 }
 
 
@@ -184,6 +222,163 @@ def _extract_json_array(text: str) -> list[dict]:
     return items
 
 
+def _redact_sensitive(text: str) -> tuple[str, bool]:
+    """把邮箱/电话/证件号/银行卡替换为 `<REDACTED>`，返回 (新文本, 是否命中)。"""
+    if not text:
+        return text, False
+    out, hit = text, False
+    for _label, pat in _SENSITIVE_PATTERNS:
+        new = pat.sub("<REDACTED>", out)
+        if new != out:
+            out, hit = new, True
+
+    def _phone_sub(m: re.Match) -> str:
+        raw = m.group(0)
+        if _ISO_DATE_RE.match(raw):  # 2026-10-29 这类日期不是电话号码
+            return raw
+        return "<REDACTED>" if len(re.sub(r"\D", "", raw)) >= 9 else raw
+
+    new = _PHONE_RE.sub(_phone_sub, out)
+    if new != out:
+        out, hit = new, True
+    return out, hit
+
+
+def _is_only_placeholder(text: str) -> bool:
+    """脱敏后只剩占位符（如 `ssn: <REDACTED>`）→ 整条没有记忆价值。"""
+    stripped = text.replace("<REDACTED>", " ")
+    return len([ch for ch in stripped if ch.isalpha()]) < 4
+
+
+def _normalize_dimensions(raw: Any, dimensions: list[dict]) -> tuple[list[str], int]:
+    """维度双形态归一：list / `{primary, secondary}` / str → 合法 id 列表。
+
+    P0 修复（2026-10-29）：2.0 提示词输出 dict 形态，1.x 原先只认 list，
+    实测 v009 产物 0/20 通过 → 启用即静默归零。返回 (合法维度, 剔除的未知 id 数)。
+    """
+    if isinstance(raw, dict):
+        candidates: list[Any] = []
+        primary = raw.get("primary")
+        if isinstance(primary, str) and primary.strip():
+            candidates.append(primary)
+        secondary = raw.get("secondary")
+        if isinstance(secondary, list):
+            candidates.extend(secondary)
+        elif isinstance(secondary, str):
+            candidates.append(secondary)
+    elif isinstance(raw, list):
+        candidates = list(raw)
+    elif isinstance(raw, str):
+        candidates = [raw]
+    else:
+        candidates = []
+
+    known = {d["id"] for d in dimensions if isinstance(d, dict) and "id" in d}
+    # 模型有时输出中文展示名（"- identity：身份" 里的「身份」）→ 认可但**原样保留**
+    # （归一化仍由 refine 侧别名表做，解析层只负责别把垃圾放进来）
+    display_names = {
+        str(d.get("display_name")).strip()
+        for d in dimensions
+        if isinstance(d, dict) and d.get("display_name")
+    }
+    out: list[str] = []
+    dropped = 0
+    for c in candidates:
+        cid = str(c).strip()
+        if not cid:
+            continue
+        # 未知维度**不在这里剔除**（归一化与丢弃由 refine 侧别名表负责，那里有完整注册表
+        # 与别名；解析层剔除会让整条记忆因为一个错标签被丢掉）——只计数供观测
+        if known and cid not in known and cid not in display_names:
+            dropped += 1
+        if cid not in out:
+            out.append(cid)
+    return out, dropped
+
+
+def _normalize_fact_type(raw: Any, memory_type: str, modality: Any) -> str:
+    """七值 type 归一（D-66）：非法值按 memory_type/modality 兜底，不留原值。"""
+    t = str(raw or "").strip()
+    if t in DOMAIN_TYPES:
+        return t
+    alias = DOMAIN_TYPE_ALIASES.get(t.lower())
+    if alias:
+        return alias
+    _VIOLATION_COUNTER["invalid_type"] += 1
+    if str(modality or "").lower() == "planned":
+        return "想法"
+    if memory_type == "episodic":
+        return "经验"
+    if memory_type == "instruction":
+        return "约束"
+    return "事实"
+
+
+def _normalize_subject(raw: Any) -> str:
+    """subject 归一（D-66）：缺失归 unknown 并计数，不丢弃整条。"""
+    s = str(raw or "").strip()
+    if not s:
+        _VIOLATION_COUNTER["subject_missing"] += 1
+        return "unknown"
+    low = s.lower()
+    if low in {"self", "unknown"}:
+        return low
+    if low.startswith("others"):
+        return s if ":" in s else "others:unknown"
+    return "unknown"
+
+
+def _normalize_enum(raw: Any, valid: set[str], default: str) -> str:
+    v = str(raw or "").strip().lower()
+    return v if v in valid else default
+
+
+def _enforce_forget_content(
+    content: str, memory_type: str, forget_raw: Any
+) -> tuple[str, dict | None]:
+    """软遗忘正文强制重写（D-68）：正文只留固定句式 + topic，原文只存 sha256。
+
+    实测依据：A/B 实测模型把被忘内容原样写进正文 22/22 违反，提示词治不住。
+    """
+    if not (memory_type == "instruction" or isinstance(forget_raw, dict)):
+        return content, None
+    import hashlib
+
+    topic, kind = "", "detail"
+    if isinstance(forget_raw, dict):
+        topic = str(forget_raw.get("topic") or "").strip()[:40]
+        k = str(forget_raw.get("kind") or "").strip()
+        if k in {"preference", "event", "detail"}:
+            kind = k
+    cjk = sum(1 for ch in content if "\u4e00" <= ch <= "\u9fff")
+    zh = cjk * 2 >= max(1, sum(1 for ch in content if ch.isalnum()))
+    # 正文只留固定句式，**不带 topic**——topic 若写进正文，检索/注入时会重新浮现被忘的内容
+    if zh:
+        new_content = "用户要求不再主动提及某主题（内容已按遗忘请求处理）"
+    else:
+        new_content = (
+            "User asked that a certain preference/topic no longer be actively mentioned "
+            "(content redacted)."
+        )
+    return new_content, {
+        "topic": topic,
+        "kind": kind,
+        "redacted_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    }
+
+
+def _item_lang_drift(item: dict, english_session: bool) -> bool:
+    """逐条语言漂移：块级守门会放过混合块里的个别中文条目。"""
+    if not english_session:
+        return False
+    text = str((item or {}).get("content") or "")
+    if not text.strip():
+        return False
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    latin = sum(1 for ch in text if ch.isascii() and ch.isalpha())
+    return cjk >= 4 and cjk > latin
+
+
 def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
     """校验单条记忆，返回规整后的 dict 或 None（无效则跳过）。
 
@@ -199,10 +394,20 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
     content = item.get("content")
     if not content or not isinstance(content, str):
         return None
-    dims = item.get("dimensions")
-    if not isinstance(dims, list) or not dims:
+    # 敏感标识符脱敏（D-65 数据卫生）：正文不写原值
+    content, _redacted = _redact_sensitive(content)
+    if _redacted:
+        _VIOLATION_COUNTER["sensitive_redacted"] += 1
+        # 只在「确实脱敏过」时判空壳：整条只剩 ssn: <REDACTED> 这种就没记忆价值
+        if _is_only_placeholder(content):
+            return None
+    # 维度双形态归一（2.0 dict / 1.x list）
+    dims, _dropped_dims = _normalize_dimensions(item.get("dimensions"), dimensions)
+    if _dropped_dims:
+        _VIOLATION_COUNTER["dim_unknown"] += 1
+        logger.warning("L1 维度 id 不在注册表，已剔除 %d 个: %r", _dropped_dims, item.get("dimensions"))
+    if not dims:
         return None
-    dims = [str(x) for x in dims]
     memory_type = item.get("memory_type")
     if memory_type not in VALID_MEMORY_TYPES:
         # 不合法类型 → 默认 persona
@@ -262,6 +467,11 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
             o = str(f.get("object") or "").strip()
             if s and p and o:
                 facts.append({"subject": s, "predicate": p, "object": o})
+    content, forget = _enforce_forget_content(
+        content=content,
+        memory_type=memory_type,
+        forget_raw=item.get("forget"),
+    )
     return {
         "content": content,
         "dimensions": [str(x) for x in dims],  # 归一化前的原始标签
@@ -271,13 +481,28 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
         "source_message_ids": source_ids,
         "supersedes": supersedes,
         "facts": facts,
+        # ---- 2.0 schema（D-66）：缺省一律归一，不因字段缺失丢整条 ----
+        "type": _normalize_fact_type(item.get("type"), memory_type, item.get("modality")),
+        "subject": _normalize_subject(item.get("subject")),
+        "certainty": _normalize_enum(item.get("certainty"), VALID_CERTAINTY, "confirmed"),
+        "derivation": _normalize_enum(item.get("derivation"), VALID_DERIVATION, "fact"),
+        "modality": _normalize_enum(item.get("modality"), VALID_MODALITY, "unknown"),
+        "route": item.get("route") if item.get("route") in VALID_ROUTES else None,
+        "occurred_at": item.get("occurred_at") if isinstance(item.get("occurred_at"), str) else None,
+        "forget": forget,
     }
+
+
+# 对外统一名（2.0 护栏流水线；_validate_item 保留给旧调用点）
+_parse_item = _validate_item
 
 
 def parse_l1_output(text: str, dimensions: list[dict]) -> list[dict]:
     """解析 L1 输出为记忆列表。
 
     严格 JSON 数组 + 字段校验。失败抛 RefineError。
+    语言判定不在这里做：块级守门（`_lang_mismatch`）与逐条剔除
+    （`_drop_lang_drift_items`）都在提取链里、按「重试优先」的顺序执行。
     """
     try:
         data = _extract_json_array(text)
@@ -285,10 +510,37 @@ def parse_l1_output(text: str, dimensions: list[dict]) -> list[dict]:
         raise RefineError(f"JSON 解析失败: {e}") from e
     result = []
     for item in data:
-        v = _validate_item(item, dimensions)
+        v = _parse_item(item, dimensions)
         if v is not None:
             result.append(v)
     return result
+
+
+def _is_english_session(text: str) -> bool:
+    """会话是否「英文为主」（与 `_lang_mismatch` 判定同口径）。"""
+    latin = sum(1 for ch in (text or "") if ch.isascii() and ch.isalpha())
+    cjk = sum(1 for ch in (text or "") if "\u4e00" <= ch <= "\u9fff")
+    return latin >= 200 and latin >= cjk * 2
+
+
+def _drop_lang_drift_items(memories: list[dict], session_text: str) -> list[dict]:
+    """逐条剔除语言漂移（英文会话里的中文条目），并计数。
+
+    放在块级重试**之后**执行：先给整块一次「按原文语言重写」的机会，重试也没救回来
+    才逐条丢——否则会白白丢掉那些重试本可救回的记忆。
+    """
+    if not memories or not _is_english_session(session_text):
+        return memories
+    kept: list[dict] = []
+    for m in memories:
+        if _item_lang_drift(m, True):
+            _VIOLATION_COUNTER["lang_drift_dropped"] += 1
+            logger.warning(
+                "L1 语言漂移逐条丢弃（英文会话）：%r", str((m or {}).get("content"))[:60]
+            )
+            continue
+        kept.append(m)
+    return kept
 
 
 # ---------- 完整 L1 提取 ----------
@@ -663,6 +915,10 @@ def _extract_l1_chunk(
                     "\n\n# 注意\n上次输出把会话内容翻译成了中文，这会破坏检索。必须使用**与会话原文相同的语言**输出：" \
                     "英文会话 → 英文记忆（逐条改写为英文，专名/数字/术语保持原样，不要意译）；中文会话 → 中文记忆。"
                 continue
+
+            # 逐条语言兜底（2026-10-29）：块级守门只能整块重试，混合块里的个别中文条目
+            # 会被放过（实测 A/B 曾出现英文块里 1 条中文）。整块重试机会用尽后再逐条剔除。
+            memories = _drop_lang_drift_items(memories, conversation)
 
             # T-202 B3：L1 run 补 action 计数采样（衔接提示词分析 P2-2）——
             # extracted/empty 反映提取产出形态；violation_* 为进程内累计口径
