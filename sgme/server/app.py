@@ -751,6 +751,55 @@ def _start_raw_fts_background_rebuild(app) -> None:
     threading.Thread(target=_rebuild, name="raw-fts-rebuild", daemon=True).start()
 
 
+def _vector_warmup(
+    skills_ops,
+    cfg: dict,
+    skills_conn: sqlite3.Connection,
+    wiki_conn: sqlite3.Connection | None,
+    *,
+    sleep=None,
+) -> int:
+    """向量预热循环（T-112；2026-10-29 修：连续 3 轮零嵌入即停）。
+
+    每轮嵌 10 条，直到 pending_embed 归零。⚠️ 嵌入后端不可用（如 Ollama
+    未启动）时 sync_index 静默返回 embedded=0——原实现无「无进展」退出，
+    会空转到 499 轮上限、每秒刷一行 stdout（约 8 分钟），串扰其它输出；
+    现连续 3 轮零嵌入即停，剩余条目待下次启动续补。返回实际轮数。
+    """
+    import time
+
+    if sleep is None:
+        sleep = time.sleep
+    stall = 0
+    round_no = 0
+    for round_no in range(1, 500):  # 上限防死循环：403 条约需 41 轮
+        try:
+            r = skills_ops.sync_index(cfg, skills_conn, wiki_conn, max_embed=10)
+            data = (r.data if hasattr(r, "data") else None) or {}
+            pending = int(data.get("pending_embed") or 0)
+            embedded = int(data.get("embedded") or 0)
+        except Exception as e:
+            print(f"[SGME skills] 向量预热中断（第 {round_no} 轮）: {e}")
+            return round_no
+        if embedded == 0 and pending == 0:
+            return round_no  # 已归零，静默结束
+        if embedded == 0:
+            stall += 1
+            if stall >= 3:
+                print(
+                    f"[SGME skills] 向量预热暂停（第 {round_no} 轮）："
+                    f"连续 3 轮零嵌入（嵌入后端不可用？），剩余 {pending} 条待下次启动续补"
+                )
+                return round_no
+        else:
+            stall = 0
+            print(f"[SGME skills] 向量预热第 {round_no} 轮：嵌入 {embedded} 条，剩余 {pending} 条")
+        if pending <= 0:
+            return round_no
+        sleep(1)
+    return round_no
+
+
 def create_app(
     cfg: dict | None = None,
     mem_conn: sqlite3.Connection | None = None,
@@ -898,8 +947,6 @@ def create_app(
 
         ⚠️ 全程 try/except：技能索引是增强能力，任何失败都不能影响主服务。
         """
-        import time
-
         from sgme.operations import skills as skills_ops
 
         try:
@@ -920,21 +967,7 @@ def create_app(
             print(f"[SGME skills] 结构化同步失败（技能模块降级）: {e}")
             return
 
-        for round_no in range(1, 500):  # 上限防死循环：403 条约需 41 轮
-            try:
-                r = skills_ops.sync_index(cfg, skills_conn, wiki_conn, max_embed=10)
-                data = (r.data if hasattr(r, "data") else None) or {}
-                pending = int(data.get("pending_embed") or 0)
-                embedded = int(data.get("embedded") or 0)
-                if embedded == 0 and pending == 0:
-                    break
-                print(f"[SGME skills] 向量预热第 {round_no} 轮：嵌入 {embedded} 条，剩余 {pending} 条")
-                if pending <= 0:
-                    break
-            except Exception as e:
-                print(f"[SGME skills] 向量预热中断（第 {round_no} 轮）: {e}")
-                break
-            time.sleep(1)
+        _vector_warmup(skills_ops, cfg, skills_conn, wiki_conn)
         print("[SGME skills] 向量预热结束")
 
     async def lifespan(app: FastAPI):
