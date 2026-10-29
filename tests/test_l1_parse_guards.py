@@ -218,6 +218,18 @@ def test_item_lang_drift_only_drops_the_bad_item():
     assert _item_lang_drift({"content": "User has collected vintage cameras."}, english_session=False) is False
 
 
+def test_chinese_item_with_email_is_still_detected_as_drift():
+    """实测漏判样本：中文句子嵌邮箱 → 拉丁字母数 > 汉字数，旧判据当英文放过了。
+
+    这段来自 v010 的真实产物（p911），必须判为漂移。
+    """
+    from sgme.engine.l1 import _item_lang_drift
+
+    text = ("用户收到来自 Daniel Price（daniel.price@communitysports.org.uk）的邮件，"
+            "Daniel 询问用户今年是否仍愿意为下月青年锦标赛提供赞助")
+    assert _item_lang_drift({"content": text}, english_session=True) is True
+
+
 def test_parse_output_drops_only_the_chinese_item_in_english_session():
     """混合块：英文会话里夹一条中文记忆 → 只丢那一条，其余照留（并计数）。"""
     from sgme.engine.l1 import _drop_lang_drift_items

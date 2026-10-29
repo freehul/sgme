@@ -368,15 +368,20 @@ def _enforce_forget_content(
 
 
 def _item_lang_drift(item: dict, english_session: bool) -> bool:
-    """逐条语言漂移：块级守门会放过混合块里的个别中文条目。"""
+    """逐条语言漂移：块级守门会放过混合块里的个别中文条目。
+
+    判据修正（2026-10-29 实测）：不能用「中文字符数 vs 拉丁字母数」直接比——中文一字
+    约等于英文一个词，一句中文里嵌个邮箱/人名，拉丁字母数会超过汉字数，导致漏判
+    （真实样本：中文句子 + 1 个邮箱 → 拉丁 49 > 汉字 30 → 旧判据放行）。改按**词数**比。
+    """
     if not english_session:
         return False
     text = str((item or {}).get("content") or "")
     if not text.strip():
         return False
     cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
-    latin = sum(1 for ch in text if ch.isascii() and ch.isalpha())
-    return cjk >= 4 and cjk > latin
+    latin_words = len(re.findall(r"[A-Za-z]+", text))
+    return cjk >= 4 and cjk > latin_words * 2 + 3
 
 
 def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
