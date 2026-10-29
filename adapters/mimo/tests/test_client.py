@@ -4,7 +4,7 @@
 覆盖：
 - 地址三级解析（环境变量 → 部署配置 client.env → 回环默认）与 MCP 端点推导
 - HTTP 层请求构造（append 首行格式 / 查询参数 / 头部 / 错误包装）
-- 44 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
+- 45 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
 - fetch 技能完整包（T-283）：下载 → MANIFEST 校验 → 安全解包 → 原子落盘；失败不留残件
 - 新增/修正方法与 CLI 命令的参数转译（含管理员 Key 范围）
 - 测试样例全部使用假值：私网语义用 10.0.0.x，密钥用低熵占位
@@ -473,7 +473,7 @@ class TestSkillFetchPackage(NoDeployConfig):
             self.assertNotIn(KEY, json.dumps(r, ensure_ascii=False))
 
     def test_fetch_is_extension_with_method_and_cli(self):
-        """fetch 是适配器自有扩展（包通道），不入 44 基准；方法 + CLI 双面必须齐。"""
+        """fetch 是适配器自有扩展（包通道），不入 45 基准；方法 + CLI 双面必须齐。"""
         self.assertIn("fetch", CLI_NAMES)
         self.assertTrue(hasattr(SGME, "fetch"))
         self.assertNotIn("fetch", BASELINE_TOOLS)
@@ -678,6 +678,20 @@ class TestMcpMethodSignatures(NoDeployConfig):
         self.assertEqual(mo.call_args.args,
                          ("persona_fill", {"role_id": "role-1", "question": "你中学在哪上的？"}))
 
+    def test_guard_reply(self):
+        """D-77 / T-307：越界自检走 MCP 通道，参数含 role_id/reply（session_id 可选）。"""
+        c, mo = self._client()
+        c.guard_reply("role-1", "这句是待发送的回复")
+        self.assertEqual(mo.call_args.args,
+                         ("guard_reply", {"role_id": "role-1", "reply": "这句是待发送的回复"}))
+        self.assertNotIn("session_id", mo.call_args.args[1])
+
+    def test_guard_reply_with_session_id(self):
+        """显式 session_id 才进参数（同类计数按会话聚合）。"""
+        c, mo = self._client()
+        c.guard_reply("role-1", "这句是待发送的回复", session_id="s-1")
+        self.assertEqual(mo.call_args.args[1]["session_id"], "s-1")
+
     def test_idea_add_matches_baseline_signature(self):
         c, mo = self._client()
         c.idea_add("一个创意", priority=2, source_ref="ref-1")
@@ -747,11 +761,11 @@ class TestMcpMethodSignatures(NoDeployConfig):
 
 
 class TestCapabilityMatrix(unittest.TestCase):
-    """44 个基准能力：方法层 + CLI 层缺一不可。"""
+    """45 个基准能力：方法层 + CLI 层缺一不可。"""
 
     def test_baseline_count(self):
-        self.assertEqual(len(BASELINE_TOOLS), 44)
-        self.assertEqual(len(set(BASELINE_TOOLS)), 44)
+        self.assertEqual(len(BASELINE_TOOLS), 45)
+        self.assertEqual(len(set(BASELINE_TOOLS)), 45)
         self.assertEqual(set(BASELINE_SPEC), set(BASELINE_TOOLS))
 
     def test_every_baseline_has_method(self):
@@ -775,7 +789,7 @@ class TestCapabilityMatrix(unittest.TestCase):
 
     def test_capability_report_all_covered(self):
         rows = sc.capability_report()
-        self.assertEqual(len(rows), 44)
+        self.assertEqual(len(rows), 45)
         bad = [r["tool"] for r in rows if not (r["method_ok"] and r["cli_ok"])]
         self.assertEqual(bad, [])
 
@@ -804,10 +818,10 @@ class TestCLI(NoDeployConfig):
                 code = sc.main(argv)
         return code, buf.getvalue()
 
-    def test_offline_capabilities_lists_44(self):
+    def test_offline_capabilities_lists_45(self):
         code, out = self._run(["capabilities"])
         self.assertEqual(code, 0)
-        self.assertIn("44/44", out)
+        self.assertIn("45/45", out)
         for tool in BASELINE_TOOLS:
             self.assertIn(tool, out)
 
@@ -868,6 +882,10 @@ class TestCLI(NoDeployConfig):
             (["role-active-set", "role-1"], "role_active_set", ("role-1",)),
             (["persona-fill", "role-1", "你中学在哪上的？"],
              "persona_fill", ("role-1", "你中学在哪上的？")),
+            (["guard-reply", "role-1", "这句是待发送的回复"],
+             "guard_reply", ("role-1", "这句是待发送的回复", None)),
+            (["guard-reply", "role-1", "这句是待发送的回复", "--session-id", "s-1"],
+             "guard_reply", ("role-1", "这句是待发送的回复", "s-1")),
             (["signal-pull", "--signal-type", "care_daily", "--limit", "5"],
              "signal_pull", ("care_daily", 5)),
             (["signal-clear", "--subscriber", "mimo"],

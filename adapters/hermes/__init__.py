@@ -12,7 +12,7 @@
   - prefetch(query): 每轮 LLM 前召回相关记忆（/v1/search，<100ms 预算）
   - sync_turn(): 每轮对话后写原始层（/v1/append，后台线程异步）
   - on_session_end(): 会话结束触发提炼（/v1/admin/refine/trigger）
-  - get_tool_schemas()/handle_tool_call(): 45 个 sgme_* 工具（对齐 MCP 44 工具基准；
+  - get_tool_schemas()/handle_tool_call(): 46 个 sgme_* 工具（对齐 MCP 45 工具基准；
     agent_onboarding / append 两项永久豁免 + role_save/role_delete 适配器自有工具，
     详见 adapters/hermes/README.md）
 
@@ -116,7 +116,7 @@ _DEFAULT_TIMEOUT = "30.0"
 _PROBE_FAIL_TTL = 3.0
 _PROBE_OK_TTL = 30.0
 
-# ---------- 工具面常量与参数辅助（能力面对齐 MCP 44 工具基准） ----------
+# ---------- 工具面常量与参数辅助（能力面对齐 MCP 45 工具基准） ----------
 
 # 检索层白名单（取值见 sgme/operations/search.py）
 _SEARCH_SCOPES = ("memory", "wiki", "wiki_pages", "sessions", "skills")
@@ -937,7 +937,7 @@ class SGMEProvider(MemoryProvider):
         except Exception as e:
             logger.warning("sgme refine trigger 异常: %s", e)
 
-    # ---------- 工具（Agent 主动检索 / 治理：对齐 MCP 44 工具基准） ----------
+    # ---------- 工具（Agent 主动检索 / 治理：对齐 MCP 45 工具基准） ----------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """暴露 SGME 能力面工具。
@@ -1375,6 +1375,22 @@ class SGMEProvider(MemoryProvider):
                     "question": {"type": "string", "description": "用户的追问原文"},
                 },
                 "required": ["role_id", "question"],
+            },
+        },
+        {
+            "name": "sgme_guard_reply",
+            "description": "越界三级后果（D-77）：角色回复发送前调用，自检并改写越界表述。"
+                           "命中禁用项（身份自曝/客服腔/愧疚挽留/编造专名）→ 记录角色卡并改写一次；"
+                           "status=clean 原样发送，status=rewritten 用返回的 reply 发送（不要发 original）。"
+                           "constraint 非空时把该约束附加到本会话后续回复上下文。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string", "description": "角色 id（sgme_role_list 返回）"},
+                    "reply": {"type": "string", "description": "角色待发送的回复原文"},
+                    "session_id": {"type": "string", "description": "会话标识（可选；用于同会话越界阈值）"},
+                },
+                "required": ["role_id", "reply"],
             },
         },
         {
@@ -2056,6 +2072,28 @@ class SGMEProvider(MemoryProvider):
             return self._err(f"人设补全失败（role_id={role_id}）: {err}")
         if not isinstance(data, dict):
             return self._err("人设补全响应异常")
+        return self._ok(data)
+
+    def _t_guard_reply(self, args: Dict[str, Any]) -> str:
+        """sgme_guard_reply：越界三级后果（D-77，软拦截/记录/硬后果在服务端）。"""
+        role_id = _arg_str(args, "role_id")
+        if not role_id:
+            return self._err("缺少 role_id")
+        reply = _arg_str(args, "reply", 2000)
+        if not reply:
+            return self._err("缺少 reply")
+        session_id = _arg_str(args, "session_id", 100)
+        body: Dict[str, Any] = {"reply": reply}
+        if session_id:
+            body["session_id"] = session_id
+        data, err = self._request(
+            "POST", f"/v1/admin/roles/{_path_seg(role_id)}/guard-reply",
+            json_body=body,
+        )
+        if err:
+            return self._err(f"越界自检失败（role_id={role_id}）: {err}")
+        if not isinstance(data, dict):
+            return self._err("越界自检响应异常")
         return self._ok(data)
 
     def _t_role_save(self, args: Dict[str, Any]) -> str:

@@ -11,6 +11,8 @@
 - DELETE /v1/admin/roles/{role_id}       归档（移入 .archive/，原件永不删）
 - GET    /v1/admin/roles/{role_id}/persona       读取 persona 物化文件
 - POST   /v1/admin/roles/{role_id}/persona       生成 persona（LLM 四层扫描）
+- POST   /v1/admin/roles/{role_id}/persona-fill  人设懒补全与写回（D-76）
+- POST   /v1/admin/roles/{role_id}/guard-reply   越界三级后果（D-77）
 
 v0.1：业务逻辑全部下沉 ``sgme.operations.care``，本函数只做协议翻译。
 """
@@ -158,6 +160,36 @@ def persona_fill(
     """
     cfg = request.app.state.cfg
     return run_operation(care_operation.persona_fill, role_id, payload.question, cfg)
+
+
+# ---------- POST /v1/admin/roles/{role_id}/guard-reply（D-77 / T-307） ----------
+
+class GuardReplyRequest(BaseModel):
+    """越界自检请求体：agent 待发的回复原文 + 会话标识（用于同会话阈值）。"""
+
+    reply: str
+    session_id: str = ""
+
+
+@router.post("/v1/admin/roles/{role_id}/guard-reply")
+def guard_reply(
+    role_id: str,
+    payload: GuardReplyRequest,
+    request: Request,
+    _: str = Depends(require_agent_key),
+):
+    """越界三级后果（D-77）：软拦截改写一次 → 记录角色卡 → 阈值约束/告警。
+
+    status：clean（未命中，原样返回）/ rewritten（命中并已改写）。
+    constraint 非空时，agent 应把该约束附加到本会话后续回复的上下文。
+    越界只写角色卡 extensions.sgme_violations，**不进记忆池**。
+    """
+    cfg = request.app.state.cfg
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    return run_operation(
+        care_operation.guard_reply, role_id, payload.reply, cfg,
+        session_id=payload.session_id, mem_conn=mem_conn,
+    )
 
 
 # ---------- 关怀信号（T-36） ----------

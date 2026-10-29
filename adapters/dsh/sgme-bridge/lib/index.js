@@ -479,6 +479,17 @@ var SgmeClient = class {
 		}
 		return data;
 	}
+	/** 越界三级后果（POST /v1/admin/roles/{role_id}/guard-reply，Agent Key，D-77 / T-307）。失败返回 null。 */
+	async guardReply(roleId, reply, sessionId) {
+		const body = { reply };
+		if (sessionId) body.session_id = sessionId;
+		const [data, err] = await this.post(`/v1/admin/roles/${encodeURIComponent(roleId)}/guard-reply`, body, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] guardReply failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
 	/** 单条记忆详情（GET /v1/memory/{id}，Agent Key；含溯源 + 归档链）。失败返回 null。 */
 	async memoryGet(memoryId) {
 		const [data, err] = await this.get(`/v1/memory/${encodeURIComponent(memoryId)}`, "agent");
@@ -3733,6 +3744,7 @@ function registerTools(ctx, client, defaultLimit, eventSubscriber) {
 	ctx.tools.register(createRoleActiveGetTool(client));
 	ctx.tools.register(createRoleActiveSetTool(client));
 	ctx.tools.register(createPersonaFillTool(client));
+	ctx.tools.register(createGuardReplyTool(client));
 	ctx.tools.register(createMemoryGetTool(client));
 	ctx.tools.register(createMemoryRejectTool(client));
 	ctx.tools.register(createSkillSearchTool(client, defaultLimit));
@@ -4359,6 +4371,46 @@ function createPersonaFillTool(client) {
 			const a = args;
 			const resp = await client.personaFill(a.role_id, a.question);
 			if (!resp) return `[persona_fill 失败：角色不存在或 Gateway 不可达（role_id="${a.role_id}"，先 role_list 确认）]`;
+			return JSON.stringify(resp, null, 2);
+		}
+	});
+}
+/** 创建 guard_reply 工具（越界三级后果，D-77 / T-307）。 */
+function createGuardReplyTool(client) {
+	return defineTool({
+		name: "guard_reply",
+		description: [
+			"越界三级后果（D-77）：角色回复发送前调用，自检并改写越界表述（身份自曝/客服腔/愧疚挽留/编造专名）。",
+			"未命中 → status=clean 原样发 reply；命中 → status=rewritten，用返回的 reply 发送（不要发 original）。",
+			"constraint 非空时把该约束附加到本会话后续回复上下文；越界只记角色卡，不进记忆池。"
+		].join(" "),
+		parameters: {
+			role_id: {
+				type: "string",
+				required: true,
+				description: "角色 id（role_list 返回）"
+			},
+			reply: {
+				type: "string",
+				required: true,
+				description: "角色待发送的回复原文"
+			},
+			session_id: {
+				type: "string",
+				description: "会话标识（可选；用于同会话越界阈值）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.guardReply(a.role_id, a.reply, a.session_id);
+			if (!resp) return `[guard_reply 失败：角色不存在或 Gateway 不可达（role_id="${a.role_id}"，先 role_list 确认）]`;
 			return JSON.stringify(resp, null, 2);
 		}
 	});

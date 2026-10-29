@@ -102,7 +102,7 @@ syncOnTurnEnd: true
 
 ## 用法
 
-接入后，DSH 自动拥有 42 个工具（v0.6.1 起与 SGME 1.10.2 能力面对齐，适配器平级对账零漂移）：
+接入后，DSH 自动拥有 43 个工具（v0.6.1 起与 SGME 1.10.2 能力面对齐，适配器平级对账零漂移）：
 
 **检索与知识库（7）**
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
@@ -132,10 +132,11 @@ syncOnTurnEnd: true
 - `demand_create(title, content, priority, project_id)` — 待办池（跨项目统一，会话中遇到要办的事主动登记）；
 - `project_register(project_id, path, name, git_repo, milestone)` — 项目池（用户立项时登记）。
 
-**角色与记忆纠错（9）**
+**角色与记忆纠错（10）**
 - `inject(mode)` — 按场景模式拉画像；
 - `role_list()` / `role_assemble(role_id, inject_mode)` / `role_active_get()` / `role_active_set(role_id)` — 角色模板（换皮不换芯）；
 - `persona_fill(role_id, question)` — 人设懒补全（D-76 / T-306）：追问没写过的人生细节，命中直接用 / 生成类型级背景写回角色卡；
+- `guard_reply(role_id, reply, session_id?)` — 越界三级后果（D-77 / T-307）：回复发送前自检，命中禁用项则记录角色卡并改写一次；
 - `memory_get(memory_id)` / `memory_reject(memory_id, reason)` / `memory_unreject(memory_id)` — 记忆详情、纠错与撤销纠错。
 
 **聚合答案（1，v0.5.0 对齐 T-149）**

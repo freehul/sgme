@@ -127,9 +127,9 @@ Three ways to manage roles:
 2. **Ask your agent** — `sgme_role_save` / `sgme_role_delete` / `sgme_role_active_set` let the agent write or switch roles for you.
 3. **SGME WebUI → Roles** — full visual card editor (best for long prompts; desktop text fields are brief by nature).
 
-## Tools (44)
+## Tools (46)
 
-45 = 44 MCP-baseline tools − 2 intentional exemptions + 3 adapter-specific.
+46 = 45 MCP-baseline tools − 2 intentional exemptions + 3 adapter-specific.
 Key column: **agent** = `SGME_AGENT_KEY`; **admin** = `SGME_ADMIN_KEY`.
 Admin tools state their requirement in their description.
 
@@ -194,6 +194,7 @@ Admin tools state their requirement in their description.
 | `sgme_role_active_get` | Read the current role | agent |
 | `sgme_role_active_set` | Set the current role | agent |
 | `sgme_persona_fill` | Lazy persona backfill (D-76): hit the archive / generate a type-level fact and write it back to the role card | agent |
+| `sgme_guard_reply` | Boundary guard (D-77): check a reply before sending — record the violation, rewrite once, escalate on repeats | agent |
 | `sgme_role_save` | Create / update a role card — adapter-specific | agent |
 | `sgme_role_delete` | Archive a role card (moved to `.archive/`, never erased) — adapter-specific | agent |
 

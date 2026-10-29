@@ -150,7 +150,7 @@ def resolve_addresses(http_url: str | None = None, mcp_url: str | None = None,
     return http.rstrip("/"), mcp.rstrip("/"), src
 
 
-# ---------- MCP 基准工具清单（权威基准：sgme/mcp_server.py，44 个） ----------
+# ---------- MCP 基准工具清单（权威基准：sgme/mcp_server.py，45 个） ----------
 
 BASELINE_TOOLS: tuple[str, ...] = (
     "agent_onboarding", "append", "inject", "search", "answer",
@@ -160,6 +160,7 @@ BASELINE_TOOLS: tuple[str, ...] = (
     "config_get", "config_update", "idea_add", "demand_create", "project_register",
     "signal_pull", "signal_claim", "signal_ack", "signal_clear",
     "role_list", "role_assemble", "role_active_get", "role_active_set", "persona_fill",
+    "guard_reply",
     "skill_search", "skill_digest", "skill_get", "skill_materialize", "skill_list",
     "skill_coldstart", "skill_put", "skill_delete", "skill_rename",
     "credential_list", "credential_get",
@@ -200,6 +201,7 @@ BASELINE_SPEC: dict[str, tuple[str, str, str, str]] = {
     "role_active_get": ("role_active_get", "role-active-get", "mcp", "agent"),
     "role_active_set": ("role_active_set", "role-active-set", "mcp", "agent"),
     "persona_fill": ("persona_fill", "persona-fill", "mcp", "agent"),
+    "guard_reply": ("guard_reply", "guard-reply", "mcp", "agent"),
     "skill_search": ("skill_search", "skill-search", "http", "agent"),
     "skill_digest": ("skill_digest", "skill-digest", "http", "agent"),
     "skill_get": ("skill_get", "skill-get", "http", "agent"),
@@ -576,6 +578,18 @@ class SGME:
         """
         return self._mcp("persona_fill", {"role_id": role_id, "question": question})
 
+    def guard_reply(self, role_id: str, reply: str, session_id: str = ""):
+        """越界三级后果（D-77 / T-307）：角色回复发出前自检并改写越界表述。
+
+        status=clean 原样返回；rewritten 时须用返回的 reply 发送（不要发 original）；
+        同类同会话 ≥2 返回 constraint（后续须更正/收回），同类当日 ≥3 发 anomaly_warn。
+        越界只写角色卡，不进记忆池。
+        """
+        args: dict = {"role_id": role_id, "reply": reply}
+        if session_id:
+            args["session_id"] = session_id
+        return self._mcp("guard_reply", args)
+
     # ---------- MCP 层：自进化 / 技能写侧 ----------
     def wiki_evolve_trigger(self, session_key: str | None = None, min_rounds: int = 5,
                             limit: int = 5):
@@ -756,7 +770,7 @@ def _fetch_skill_package(client, name: str, dest_dir: str) -> dict:
 # ================= 能力矩阵 =================
 
 def capability_report() -> list[dict]:
-    """逐条核对 44 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
+    """逐条核对 45 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
     rows = []
     for tool in BASELINE_TOOLS:
         method, cli, layer, scope = BASELINE_SPEC[tool]
@@ -1160,6 +1174,17 @@ CMD_SPECS: list[dict] = [
             {"dest": "question", "help": "用户追问的人生细节问题"},
         ],
         "run": lambda c, a: c.persona_fill(a.role_id, a.question),
+    },
+    {
+        "cli": "guard-reply", "help": "越界三级后果（D-77）：回复发送前自检，命中则改写/记角色卡",
+        "positionals": [
+            {"dest": "role_id", "help": "角色 ID"},
+            {"dest": "reply", "help": "待发送的角色回复原文"},
+        ],
+        "options": [
+            {"dest": "session_id", "flag": "session-id", "help": "会话 ID（同类计数按会话聚合，可选）"},
+        ],
+        "run": lambda c, a: c.guard_reply(a.role_id, a.reply, a.session_id),
     },
     # ---- MCP 层：自进化 / 技能写侧 ----
     {

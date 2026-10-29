@@ -404,6 +404,19 @@ export interface PersonaFillResponse {
   provider?: string
 }
 
+/** POST /v1/admin/roles/{role_id}/guard-reply 响应体（D-77 / T-307）。 */
+export interface GuardReplyResponse {
+  role_id: string
+  status: 'clean' | 'rewritten'
+  reply: string
+  original?: string
+  kinds: string[]
+  rewritten: boolean
+  constraint?: string | null
+  warned?: boolean
+  provider?: string
+}
+
 // ---------- 记忆纠错类型（T-86：Agent Key） ----------
 
 /** GET /v1/memory/{id} 响应体（http_payload 投影：memory + 溯源 + 归档链）。 */
@@ -1141,6 +1154,26 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] personaFill failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 越界三级后果（POST /v1/admin/roles/{role_id}/guard-reply，Agent Key，D-77 / T-307）。失败返回 null。 */
+  async guardReply(
+    roleId: string,
+    reply: string,
+    sessionId?: string,
+  ): Promise<GuardReplyResponse | null> {
+    const body: Record<string, unknown> = { reply }
+    if (sessionId) body.session_id = sessionId
+    const [data, err] = await this.post<GuardReplyResponse>(
+      `/v1/admin/roles/${encodeURIComponent(roleId)}/guard-reply`,
+      body,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] guardReply failed: ${err}`)
       return null
     }
     return data

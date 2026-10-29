@@ -368,8 +368,8 @@ def test_shutdown_is_idempotent_and_concurrent_safe(monkeypatch):
 
 
 # ==========================================================================
-# T-171 / T-211：能力面对齐 MCP 44 工具基准
-# 45 工具 = 42 基准覆盖 + 2 项永久豁免（agent_onboarding / append，理由见 README）
+# T-171 / T-211：能力面对齐 MCP 45 工具基准
+# 46 工具 = 43 基准覆盖 + 2 项永久豁免（agent_onboarding / append，理由见 README）
 #           + 3 项适配器自有（conversation_search / role_save / role_delete，登记 parity extra）。
 # 基准唯一真源 = sgme/mcp_server.py 的工具面。
 # ==========================================================================
@@ -390,7 +390,7 @@ HERMES_EXTRA_TOOLS = {"sgme_conversation_search", "sgme_role_save", "sgme_role_d
 # 基准名 → 适配器名的别名（parity map 的 aliases.search.hermes）
 ALIASED = {"search": "sgme_memory_search"}
 
-# 工具 → 期望 HTTP 端点（方法, 路径）或调用序列；覆盖全部 45 个工具
+# 工具 → 期望 HTTP 端点（方法, 路径）或调用序列；覆盖全部 46 个工具
 # role_save 为双调用序列：[GET 既有卡, POST upsert]
 _ENDPOINTS = {
     "sgme_memory_search": ("POST", "/v1/search"),
@@ -425,6 +425,7 @@ _ENDPOINTS = {
     "sgme_role_active_get": ("GET", "/v1/admin/care/active-role"),
     "sgme_role_active_set": ("PUT", "/v1/admin/care/active-role"),
     "sgme_persona_fill": ("POST", "/v1/admin/roles/steward/persona-fill"),
+    "sgme_guard_reply": ("POST", "/v1/admin/roles/steward/guard-reply"),
     "sgme_role_save": [("GET", "/v1/admin/roles/coach"), ("POST", "/v1/admin/roles/coach")],
     "sgme_role_delete": ("DELETE", "/v1/admin/roles/coach"),
     "sgme_skill_search": ("POST", "/v1/search"),
@@ -474,6 +475,7 @@ _CALL_ARGS = {
     "sgme_role_active_get": {},
     "sgme_role_active_set": {"role_id": "steward"},
     "sgme_persona_fill": {"role_id": "steward", "question": "你中学在哪上的？"},
+    "sgme_guard_reply": {"role_id": "steward", "reply": "我是 Agnes，很高兴为您服务。", "session_id": "s1"},
     "sgme_role_save": {"role_id": "coach", "system_prompt": "你是教练。"},
     "sgme_role_delete": {"role_id": "coach"},
     "sgme_skill_search": {"query": "docker 部署"},
@@ -581,13 +583,13 @@ def _baseline_tools() -> set:
 
 
 def test_tool_count_and_names():
-    """注册 44 个工具（默认面）：42 个基准覆盖 + 3 个自有工具（conversation_search /
+    """注册 45 个工具（默认面）：43 个基准覆盖 + 3 个自有工具（conversation_search /
     role_save / role_delete）− sgme_credential_get（catalog 审核整改 2026-10 默认隐藏；
-    开启后恢复 45，见 test_catalog_remediation）。"""
+    开启后恢复 46，见 test_catalog_remediation）。"""
     p, _ = _tool_provider()
     names = [s["name"] for s in p.get_tool_schemas()]
-    assert len(names) == 44, f"工具数应为 44（credential_get 默认隐藏），实际 {len(names)}"
-    assert len(set(names)) == 44, "工具名重复"
+    assert len(names) == 45, f"工具数应为 45（credential_get 默认隐藏），实际 {len(names)}"
+    assert len(set(names)) == 45, "工具名重复"
     assert "sgme_credential_get" not in names, "credential_get 默认不应在工具面"
     assert set(EXEMPT_TOOLS).isdisjoint({n[len("sgme_"):] for n in names}), "豁免工具不应被实现"
     expected = (
@@ -624,7 +626,7 @@ def test_every_tool_resolves_to_handler():
 
 
 def test_endpoint_matrix():
-    """45 个工具各自的 HTTP 方法与端点正确（契约矩阵；值为 (方法, 路径) 或调用序列）。
+    """46 个工具各自的 HTTP 方法与端点正确（契约矩阵；值为 (方法, 路径) 或调用序列）。
 
     credential_get 默认关闭（catalog 审核整改），矩阵测试显式开启以覆盖其端点契约。
     """
@@ -857,7 +859,7 @@ def test_signal_clear_query_params():
 
 
 def test_gateway_unreachable_returns_structured_error_for_all_tools():
-    """全部 45 个工具在 Gateway 不可达时都返回 {"error": ...}，不抛异常。"""
+    """全部 46 个工具在 Gateway 不可达时都返回 {"error": ...}，不抛异常。"""
     p, _ = _tool_provider(raise_error=True)
     for tool in sorted(_CALL_ARGS):
         try:

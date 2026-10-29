@@ -260,6 +260,89 @@ def append_book_entry(
     return entry
 
 
+# ---------- 越界记录（D-77 / T-307） ----------
+
+# extensions 命名空间键：越界事件只记在角色卡，永不进 memory.db（与 D-76 同一隔离铁律）
+VIOLATION_EXT_KEY = "sgme_violations"
+# 原句摘要截断长度（任务清单硬要求：原句截断 60 字）
+VIOLATION_SNIPPET_MAX = 60
+# 单卡保留上限：越界事件是运行期日志，只留最近 N 条（避免角色卡无限膨胀）
+VIOLATION_KEEP_MAX = 100
+
+
+def load_violations(card: dict[str, Any]) -> list[dict[str, Any]]:
+    """读角色卡 extensions.sgme_violations 事件列表（无则空列表）。"""
+    ext = (card.get("data") or {}).get("extensions") or {}
+    if not isinstance(ext, dict):
+        return []
+    box = ext.get(VIOLATION_EXT_KEY) or {}
+    entries = box.get("entries") if isinstance(box, dict) else None
+    return entries if isinstance(entries, list) else []
+
+
+def append_violation(
+    roles_dir: Path,
+    role_id: str,
+    kind: str,
+    snippet: str,
+    session_id: str = "",
+    now: str | None = None,
+) -> dict[str, Any] | None:
+    """D-77 第二级「记录」：向角色卡 extensions.sgme_violations 追加一条并落盘。
+
+    条目结构 ``{at, kind, snippet, session_id}``；snippet 截断到 60 字（记摘要
+    不记全文）。只写角色卡文件，**绝不写 memory.db**——越界是角色档案事件，
+    不是用户事实。角色不存在返回 None。
+    """
+    card = get_role(roles_dir, role_id)
+    if card is None:
+        return None
+    entries = load_violations(card)
+    entry: dict[str, Any] = {
+        "at": now or _now_iso(),
+        "kind": str(kind),
+        "snippet": str(snippet or "")[:VIOLATION_SNIPPET_MAX],
+        "session_id": str(session_id or ""),
+    }
+    entries.append(entry)
+    if len(entries) > VIOLATION_KEEP_MAX:
+        entries = entries[-VIOLATION_KEEP_MAX:]
+    data = dict(card.get("data") or {})
+    ext = dict(data.get("extensions") or {})
+    ext[VIOLATION_EXT_KEY] = {"entries": entries}
+    data["extensions"] = ext
+    save_role(roles_dir, role_id, {
+        "spec": card.get("spec", CC_SPEC),
+        "spec_version": card.get("spec_version", CC_SPEC_VERSION),
+        "data": data,
+    })
+    logger.info("越界记录已写回: %s（kind=%s）", role_id, kind)
+    return entry
+
+
+def count_violations(
+    card: dict[str, Any],
+    kind: str,
+    session_id: str | None = None,
+    since_iso: str | None = None,
+) -> int:
+    """D-77 第三级「硬后果」阈值判定：统计同类型越界次数。
+
+    - session_id 给定 → 只数该会话（≥2 → 附加更正约束）
+    - since_iso 给定 → 只数该时间点之后（≥3/天 → 告警）
+    """
+    n = 0
+    for e in load_violations(card):
+        if e.get("kind") != kind:
+            continue
+        if session_id is not None and e.get("session_id") != session_id:
+            continue
+        if since_iso is not None and str(e.get("at") or "") < since_iso:
+            continue
+        n += 1
+    return n
+
+
 # ---------- persona 物化（唯一物化例外） ----------
 
 PERSONA_PROMPT = """你是 Persona Architect（人格架构师）。请基于给定的用户画像素材，

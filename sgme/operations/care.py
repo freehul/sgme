@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -279,6 +280,183 @@ def persona_fill(
         "keys": entry["keys"], "insertion_order": entry["insertion_order"],
         "generated": True, "provider": provider_name,
     })
+
+
+# ---------- 越界三级后果（D-77 / T-307） ----------
+
+# 越界类型（kind → 中文名）。检测纯正则零 LLM：可单测、零费用、可复现。
+VIOLATION_KINDS: dict[str, str] = {
+    "identity_self_exposure": "身份自曝",
+    "service_tone": "客服腔",
+    "guilt_retention": "愧疚挽留",
+    "fabricated_proper_noun": "编造专名",
+}
+
+VIOLATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # 身份自曝：自称 AI/助手/模型，或直报模型名（实测「问你是谁」四卡全答「我是 Agnes」）
+    ("identity_self_exposure", re.compile(
+        r"(?:我是|俺是)\s*(?:一个)?\s*(?:AI|人工智能|智能助手|助手|机器人|语言模型|大模型)"
+        r"|作为(?:一个)?\s*(?:AI|人工智能|语言模型|大模型)"
+        r"|(?:我是|我叫)\s*(?:Agnes|Claude|GPT|ChatGPT|DeepSeek|Qwen)",
+        re.IGNORECASE,
+    )),
+    # 客服腔：服务话术（角色对话不该出现工单式用语）
+    ("service_tone", re.compile(
+        r"很高兴(?:为您|为你)服务|有什么(?:可以|能)(?:帮|为)您"
+        r"|感谢(?:您的|你的)(?:咨询|来电|反馈)|为您解答|请问还有(?:什么|其他)"
+    )),
+    # 愧疚挽留：表演式道歉与挽留（D-72 已禁）
+    ("guilt_retention", re.compile(
+        r"别(?:离开|走)我|求你(?:别|不要)走|都是我的错|我不配|你(?:不要|别)走"
+    )),
+    # 编造专名：可核查专名与数字断言（与 D-76 三条硬规则同源）
+    ("fabricated_proper_noun", re.compile(
+        r"(?:19|20)\d{2}\s*年.*(?:中学|小学|大学|公司|工厂)"
+        r"|(?:月薪|工资|薪水)\s*\d+"
+        r"|第[一二三四五六七八九十百]+(?:中学|小学)"
+    )),
+)
+
+REWRITE_PROMPT = """你是角色「{role_name}」的对话质检员。下面这句回复越界了：{kinds}。
+请只改写这一句，要求：
+- 保持第一人称、口语、原意与情绪，长度不超过原句
+- 去掉越界表述：不自称 AI/助手/模型，不报模型名；不用客服话术；不做愧疚式道歉与挽留；不新增可核查专名与数字断言
+- 不新增任何原句没有的事实
+只输出改写后的这一句，不要解释。
+原句：{reply}
+"""
+
+# 第三级：同类越界同会话 ≥2 后，附加给该会话后续回复的约束（供 agent 拼进上下文）
+SESSION_CORRECTION_CONSTRAINT = (
+    "本会话已出现同类越界。后续回复若涉及该内容，必须先作更正或收回，"
+    "不得重复同一表述，也不要为此反复道歉。"
+)
+
+
+def detect_violations(text: str) -> list[str]:
+    """软拦截第一步：自检回复是否命中禁用项，返回命中的 kind 列表（去重保序）。
+
+    纯正则零 LLM——判定可复现、零费用；漏检由「改写后再自检」与实测轮次迭代补。
+    """
+    hits: list[str] = []
+    for kind, pat in VIOLATION_PATTERNS:
+        if kind in hits:
+            continue
+        if pat.search(text or ""):
+            hits.append(kind)
+    return hits
+
+
+def guard_reply(
+    role_id: str,
+    reply: str,
+    cfg: dict[str, Any],
+    session_id: str = "",
+    mem_conn: sqlite3.Connection | None = None,
+    client: Any = None,
+    now: str | None = None,
+) -> OperationResult:
+    """D-77 越界三级后果：软拦截（改写一次）→ 记录（角色卡）→ 硬后果（约束/告警）。
+
+    - 未命中任何禁用项 → 原样返回（不记录、不写盘、零 LLM）
+    - 命中 → ①记录到 ``extensions.sgme_violations``（原句截断 60 字）→
+      ②LLM 改写一次并返回改写后的回复
+    - 同类同会话累计 ≥2 → 返回 ``constraint``（该会话后续回复须更正/收回）
+    - 同类当日累计 ≥3 → 发布 ``anomaly_warn``（``mem_conn`` 为空则只记日志）
+    - **隔离铁律**：越界只写角色卡；``mem_conn`` 仅用于告警信号通道，
+      不触碰 memories/raw/edges（角色越界不是用户事实）
+    - 角色不存在 → ERR_NOT_FOUND；reply 为空 → ERR_INVALID_ARGS；
+      LLM 不可用 → ERR_INTERNAL（不降级直发越界原句）
+    """
+    card = roles_mod.get_role(_roles_dir(), role_id)
+    if card is None:
+        return OperationResult.fail(ERR_NOT_FOUND, f"角色不存在: {role_id}")
+    text = (reply or "").strip()
+    if not text:
+        return OperationResult.fail(ERR_INVALID_ARGS, "reply 不能为空")
+    kinds = detect_violations(text)
+    if not kinds:
+        return OperationResult.succeed({
+            "role_id": role_id, "status": "clean",
+            "reply": text, "kinds": [], "rewritten": False, "constraint": None,
+        })
+    # ②记录（每个命中类型各一条，便于阈值按类型统计）
+    for kind in kinds:
+        roles_mod.append_violation(
+            _roles_dir(), role_id, kind, text, session_id=session_id, now=now,
+        )
+    # ①改写一次（只改一次，不做循环重试——失败可见，不降级直发越界原句）
+    try:
+        from sgme.llm import chain as llm_chain
+
+        role_name = card["data"].get("name", role_id)
+        prompt = REWRITE_PROMPT.format(
+            role_name=role_name,
+            kinds="、".join(VIOLATION_KINDS[k] for k in kinds),
+            reply=text,
+        )
+        out, provider_name, _usage = llm_chain.call_with_fallback(
+            cfg["llm"], prompt, chain_name="refinement", client=client,
+        )
+        rewritten = (out or "").strip().strip('"「」\'')
+        if not rewritten:
+            raise ValueError("LLM 改写返回空")
+    except Exception as e:
+        if isinstance(e, llm_provider.LLMUnavailable):
+            return OperationResult.fail(ERR_INTERNAL, f"LLM 不可用: {e}")
+        return OperationResult.fail(ERR_INTERNAL, f"越界改写失败: {e}")
+    # ③硬后果：阈值判定（读回最新卡，含刚落盘的记录）
+    fresh = roles_mod.get_role(_roles_dir(), role_id) or card
+    day_start = (now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))[:10] + "T00:00:00Z"
+    constraint = None
+    warned = False
+    worst_kind = None
+    for kind in kinds:
+        if session_id and roles_mod.count_violations(
+            fresh, kind, session_id=session_id,
+        ) >= 2:
+            constraint = SESSION_CORRECTION_CONSTRAINT
+        day_count = roles_mod.count_violations(fresh, kind, since_iso=day_start)
+        if day_count >= 3:
+            worst_kind, warned = kind, True
+            break
+    if warned:
+        _publish_violation_anomaly(mem_conn, role_id, worst_kind, day_count)
+    logger.info(
+        "越界拦截: %s（kinds=%s，%s%s）", role_id, kinds,
+        "附带更正约束" if constraint else "仅改写", "，已告警" if warned else "",
+    )
+    return OperationResult.succeed({
+        "role_id": role_id, "status": "rewritten",
+        "reply": rewritten, "original": text, "kinds": kinds,
+        "rewritten": True, "constraint": constraint,
+        "warned": warned, "provider": provider_name,
+    })
+
+
+def _publish_violation_anomaly(
+    mem_conn: sqlite3.Connection | None,
+    role_id: str,
+    kind: str | None,
+    count: int,
+) -> None:
+    """同类越界当日 ≥3 → anomaly_warn（复用信号通道；无 conn 时只记日志）。"""
+    if mem_conn is None:
+        logger.warning("越界告警未发布（无信号连接）: %s（kind=%s，%d 次/日）",
+                       role_id, kind, count)
+        return
+    try:
+        from sgme.signal import engine as signal_engine
+
+        signal_engine.publish(
+            event_type="anomaly_warn",
+            source="role_guard",
+            payload={"component": "role_violation", "role_id": role_id,
+                     "kind": kind, "count_today": count},
+            mem_conn=mem_conn,
+        )
+    except Exception as e:  # noqa: BLE001——告警失败不影响主流程
+        logger.warning("越界 anomaly_warn 发布失败（不阻塞）: %s", e)
 
 
 # ---------- 关怀信号（T-36） ----------
