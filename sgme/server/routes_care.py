@@ -134,6 +134,32 @@ def assemble_role(
     )
 
 
+# ---------- POST /v1/admin/roles/{role_id}/persona-fill（D-76 / T-306） ----------
+
+class PersonaFillRequest(BaseModel):
+    """人设懒补全请求体：用户的追问原文。"""
+
+    question: str
+
+
+@router.post("/v1/admin/roles/{role_id}/persona-fill")
+def persona_fill(
+    role_id: str,
+    payload: PersonaFillRequest,
+    request: Request,
+    _: str = Depends(require_agent_key),
+):
+    """人设懒补全与写回（D-76）：查档案 → 命中直接用 → 未命中生成+冲突检查+落盘。
+
+    status：hit（档案命中）/ filled（已生成并写回 character_book）/
+    unset（冲突补不了 → 「这个我没提过」，不写回）。
+    角色人生事实**只写角色卡，永不写记忆池**（隔离铁律）。
+    角色不存在 → ERR_NOT_FOUND；LLM 不可用 → ERR_INTERNAL。
+    """
+    cfg = request.app.state.cfg
+    return run_operation(care_operation.persona_fill, role_id, payload.question, cfg)
+
+
 # ---------- 关怀信号（T-36） ----------
 
 class ActiveRoleRequest(BaseModel):

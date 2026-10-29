@@ -129,7 +129,7 @@ Three ways to manage roles:
 
 ## Tools (44)
 
-44 = 43 MCP-baseline tools − 2 intentional exemptions + 3 adapter-specific.
+45 = 44 MCP-baseline tools − 2 intentional exemptions + 3 adapter-specific.
 Key column: **agent** = `SGME_AGENT_KEY`; **admin** = `SGME_ADMIN_KEY`.
 Admin tools state their requirement in their description.
 
@@ -193,6 +193,7 @@ Admin tools state their requirement in their description.
 | `sgme_role_assemble` | Assemble the role prompt (+ optional profile) | agent |
 | `sgme_role_active_get` | Read the current role | agent |
 | `sgme_role_active_set` | Set the current role | agent |
+| `sgme_persona_fill` | Lazy persona backfill (D-76): hit the archive / generate a type-level fact and write it back to the role card | agent |
 | `sgme_role_save` | Create / update a role card — adapter-specific | agent |
 | `sgme_role_delete` | Archive a role card (moved to `.archive/`, never erased) — adapter-specific | agent |
 
@@ -281,7 +282,7 @@ Your memories stay on the SGME server, untouched.
 ## Version & compatibility
 
 - The plugin version tracks the SGME engine version (currently `1.10.6`) — keep bridge and engine on the same minor line.
-- Capability baseline = SGME's MCP tool surface (43 tools); this adapter implements 41 of them, declares 2 exemptions, and adds 3 of its own → **44 tools**. Drift is checked by `python scripts/adapter_parity.py`.
+- Capability baseline = SGME's MCP tool surface (44 tools); this adapter implements 42 of them, declares 2 exemptions, and adds 3 of its own → **45 tools**. Drift is checked by `python scripts/adapter_parity.py`.
 
 ## Links
 

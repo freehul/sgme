@@ -37,6 +37,8 @@ OPTIONAL_FIELDS = (
 )
 # 合法顶层键（spec/spec_version/data）
 TOP_LEVEL_KEYS = ("spec", "spec_version", "data")
+# save_role 维护的时间戳键（读回再保存时必须合法，否则既有卡 upsert 必失败）
+TIMESTAMP_FIELDS = ("created_at", "updated_at")
 # 关怀策略扩展键（extensions.sgme_care，供消费方读取）
 CARE_EXT_KEYS = ("greeting_templates", "trigger_rules", "frequency")
 
@@ -85,7 +87,7 @@ def validate_role_card(data: dict[str, Any]) -> list[str]:
         if not isinstance(v, str) or not v.strip():
             errors.append(f"必填字段缺失或为空: {f}")
     for k, v in d.items():
-        if k in REQUIRED_FIELDS or k in OPTIONAL_FIELDS:
+        if k in REQUIRED_FIELDS or k in OPTIONAL_FIELDS or k in TIMESTAMP_FIELDS:
             if not isinstance(v, (str, dict, list)) and v is not None:
                 errors.append(f"字段类型非法: {k}")
         else:
@@ -195,6 +197,67 @@ def archive_role(roles_dir: Path, role_id: str) -> bool:
     fp.rename(dst)
     logger.info("角色卡已归档: %s → %s", role_id, dst)
     return True
+
+
+# ---------- character_book 懒补全读写（D-76 / T-306） ----------
+
+def find_book_entry(card: dict[str, Any], question: str) -> dict[str, Any] | None:
+    """D-76 命中判定：character_book 条目的任一 keys 出现在问题里即命中。
+
+    constant 条目不算懒补全命中——它们是恒注入设定（习惯细节），不是被追问的
+    人生事实；懒补全只针对「被问才讲」的条目。命中后措辞可变、事实不变（②）。
+    """
+    data = card.get("data") or {}
+    book = data.get("character_book") or {}
+    for e in book.get("entries") or []:
+        if e.get("constant"):
+            continue
+        for k in e.get("keys") or []:
+            if k and k in question:
+                return e
+    return None
+
+
+def append_book_entry(
+    roles_dir: Path,
+    role_id: str,
+    keys: list[str],
+    content: str,
+    generated: bool = True,
+) -> dict[str, Any] | None:
+    """D-76 写回：向角色卡 character_book 追加条目并落盘。
+
+    角色不存在返回 None；正常返回新条目。落盘走 save_role（校验+刷新
+    updated_at），**只写角色卡文件，绝不触碰 memory.db**——角色的人生事实
+    是角色档案，不是用户事实（隔离铁律）。
+    """
+    card = get_role(roles_dir, role_id)
+    if card is None:
+        return None
+    data = card.get("data") or {}
+    book = data.get("character_book")
+    if not isinstance(book, dict) or not isinstance(book.get("entries"), list):
+        book = {"name": f"{data.get('name', role_id)}的人生", "entries": []}
+    entries = book["entries"]
+    entry: dict[str, Any] = {
+        "keys": [str(k) for k in keys if str(k).strip()],
+        "constant": False,
+        "insertion_order": max(
+            (int(e.get("insertion_order") or 0) for e in entries), default=90,
+        ) + 10,
+        "content": content,
+    }
+    if generated:
+        entry["generated"] = True
+    entries.append(entry)
+    data["character_book"] = book
+    save_role(roles_dir, role_id, {
+        "spec": card.get("spec", CC_SPEC),
+        "spec_version": card.get("spec_version", CC_SPEC_VERSION),
+        "data": data,
+    })
+    logger.info("character_book 条目已写回: %s（keys=%s, generated=%s）", role_id, keys, generated)
+    return entry
 
 
 # ---------- persona 物化（唯一物化例外） ----------

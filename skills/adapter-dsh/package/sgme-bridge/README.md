@@ -132,9 +132,10 @@ syncOnTurnEnd: true
 - `demand_create(title, content, priority, project_id)` — 待办池（跨项目统一，会话中遇到要办的事主动登记）；
 - `project_register(project_id, path, name, git_repo, milestone)` — 项目池（用户立项时登记）。
 
-**角色与记忆纠错（8）**
+**角色与记忆纠错（9）**
 - `inject(mode)` — 按场景模式拉画像；
 - `role_list()` / `role_assemble(role_id, inject_mode)` / `role_active_get()` / `role_active_set(role_id)` — 角色模板（换皮不换芯）；
+- `persona_fill(role_id, question)` — 人设懒补全（D-76 / T-306）：追问没写过的人生细节，命中直接用 / 生成类型级背景写回角色卡；
 - `memory_get(memory_id)` / `memory_reject(memory_id, reason)` / `memory_unreject(memory_id)` — 记忆详情、纠错与撤销纠错。
 
 **聚合答案（1，v0.5.0 对齐 T-149）**

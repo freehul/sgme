@@ -477,6 +477,7 @@ export function registerTools(
   ctx.tools.register(createRoleAssembleTool(client))
   ctx.tools.register(createRoleActiveGetTool(client))
   ctx.tools.register(createRoleActiveSetTool(client))
+  ctx.tools.register(createPersonaFillTool(client))
   ctx.tools.register(createMemoryGetTool(client))
   ctx.tools.register(createMemoryRejectTool(client))
   // 技能层（ST-36 读侧：检索 → 摘要审核 → 全文注入 / 列表 / 冷启动包）
@@ -1151,6 +1152,41 @@ export function createRoleActiveSetTool(client: SgmeClient) {
         return `[role_active_set 失败：角色不存在或 Gateway 不可达（role_id="${a.role_id}"）]`
       }
       return `[已切换角色：${resp.role_id}]`
+    },
+  })
+}
+
+/** 创建 persona_fill 工具（人设懒补全与写回，D-76 / T-306）。 */
+export function createPersonaFillTool(client: SgmeClient) {
+  return defineTool({
+    name: 'persona_fill',
+    description: [
+      '人设懒补全（D-76）：用户追问角色人生中没写过的细节时调用——查档案命中直接用；未命中生成类型级背景+冲突检查+写回角色卡。',
+      '用 answer 回答用户；status=unset 表示冲突补不了（答「这个我没提过」）。角色人生事实只写角色卡，永不写记忆池。',
+    ].join(' '),
+    parameters: {
+      role_id: {
+        type: 'string',
+        required: true,
+        description: '角色 id（role_list 返回）',
+      },
+      question: {
+        type: 'string',
+        required: true,
+        description: '用户的追问原文',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { role_id: string; question: string }
+      const resp = await client.personaFill(a.role_id, a.question)
+      if (!resp) {
+        return `[persona_fill 失败：角色不存在或 Gateway 不可达（role_id="${a.role_id}"，先 role_list 确认）]`
+      }
+      return JSON.stringify(resp, null, 2)
     },
   })
 }

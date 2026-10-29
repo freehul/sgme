@@ -606,6 +606,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "role_assemble", "description": "装配角色沟通提示词（角色卡 system_prompt + care_policy + 画像，可选 inject_mode；ST-29）"},
     {"name": "role_active_get", "description": "读取当前沟通角色（未设置返回 role_id=null；ST-29）"},
     {"name": "role_active_set", "description": "设置当前沟通角色（换皮不换芯，只换角色不换记忆池；ST-29）"},
+    {"name": "persona_fill", "description": "人设懒补全（D-76）：用户追问角色人生没写过的细节时调用——查档案命中直接用；未命中生成类型级事实+冲突检查+写回角色卡；status=hit/filled/unset（unset 答「这个我没提过」）"},
     {"name": "skill_search", "description": "技能检索（ST-36 M2 四级披露）：BM25+向量融合，先搜后取——先 skill_digest 审核再 skill_get 全文"},
     {"name": "skill_digest", "description": "技能摘要 L1：frontmatter 字段+正文骨架+uses 依赖清单——审核媒介层"},
     {"name": "skill_get", "description": "技能全文 L2：显式注入上下文；section 参数只取该标题节省 token"},
@@ -1549,6 +1550,26 @@ def build_mcp_server():
         from sgme.operations.care import set_active_role as set_active_operation
 
         data = _op_json(set_active_operation, role_id)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def persona_fill(role_id: str, question: str) -> str:
+        """人设懒补全与写回（D-76）：用户追问角色人生中没写过的细节时调用。
+
+        四步闭环：查角色档案 → 命中直接用（status=hit，措辞可变事实不变）→
+        未命中生成类型级背景+冲突检查+立即写回角色卡 character_book
+        （status=filled，generated 标记）→ 用 answer 回答用户。
+        冲突补不了 → status=unset，answer=「这个我没提过。」，不写回。
+        角色人生事实只进角色卡，**永不写记忆池**（隔离铁律）。
+        角色不存在/LLM 不可用 → {"error": "..."}。
+        """
+        import json
+
+        from sgme.operations.care import persona_fill as persona_fill_operation
+
+        cfg = _app_state["cfg"]
+        data = _op_json(persona_fill_operation, role_id, question, cfg)
         return json.dumps(data, ensure_ascii=False)
 
     # ---------- 技能四级披露（ST-36 M2：L1/L2/L3 + 检索） ----------

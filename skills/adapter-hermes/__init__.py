@@ -12,7 +12,7 @@
   - prefetch(query): 每轮 LLM 前召回相关记忆（/v1/search，<100ms 预算）
   - sync_turn(): 每轮对话后写原始层（/v1/append，后台线程异步）
   - on_session_end(): 会话结束触发提炼（/v1/admin/refine/trigger）
-  - get_tool_schemas()/handle_tool_call(): 44 个 sgme_* 工具（对齐 MCP 43 工具基准；
+  - get_tool_schemas()/handle_tool_call(): 45 个 sgme_* 工具（对齐 MCP 44 工具基准；
     agent_onboarding / append 两项永久豁免 + role_save/role_delete 适配器自有工具，
     详见 adapters/hermes/README.md）
 
@@ -116,7 +116,7 @@ _DEFAULT_TIMEOUT = "30.0"
 _PROBE_FAIL_TTL = 3.0
 _PROBE_OK_TTL = 30.0
 
-# ---------- 工具面常量与参数辅助（能力面对齐 MCP 43 工具基准） ----------
+# ---------- 工具面常量与参数辅助（能力面对齐 MCP 44 工具基准） ----------
 
 # 检索层白名单（取值见 sgme/operations/search.py）
 _SEARCH_SCOPES = ("memory", "wiki", "wiki_pages", "sessions", "skills")
@@ -937,12 +937,12 @@ class SGMEProvider(MemoryProvider):
         except Exception as e:
             logger.warning("sgme refine trigger 异常: %s", e)
 
-    # ---------- 工具（Agent 主动检索 / 治理：对齐 MCP 43 工具基准） ----------
+    # ---------- 工具（Agent 主动检索 / 治理：对齐 MCP 44 工具基准） ----------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """暴露 SGME 能力面工具。
 
-        对齐唯一基准 = SGME MCP 工具面（sgme/mcp_server.py，43 个）；
+        对齐唯一基准 = SGME MCP 工具面（sgme/mcp_server.py，44 个）；
         hermes 侧 2 项永久豁免（agent_onboarding / append）理由见 README。
         ``sgme_credential_get`` 默认不下发（catalog 审核整改：凭据值默认不进对话），
         开启（面板 / SGME_ENABLE_CREDENTIAL_GET=1 / 显式传参）后恢复下发。
@@ -1360,6 +1360,21 @@ class SGMEProvider(MemoryProvider):
                     "role_id": {"type": "string", "description": "角色 id（sgme_role_list 返回）"},
                 },
                 "required": ["role_id"],
+            },
+        },
+        {
+            "name": "sgme_persona_fill",
+            "description": "人设懒补全（D-76）：用户追问角色人生中没写过的细节时调用——"
+                           "查档案命中直接用；未命中生成类型级背景+冲突检查+写回角色卡。"
+                           "用 answer 回答用户；status=unset 表示冲突补不了（答「这个我没提过」）。"
+                           "角色人生事实只写角色卡，永不写记忆池。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "string", "description": "角色 id（sgme_role_list 返回）"},
+                    "question": {"type": "string", "description": "用户的追问原文"},
+                },
+                "required": ["role_id", "question"],
             },
         },
         {
@@ -2024,6 +2039,24 @@ class SGMEProvider(MemoryProvider):
         if err:
             return self._err(f"设置角色失败（role_id={role_id}）: {err}")
         return self._ok(data if isinstance(data, dict) else {"role_id": role_id, "status": "ok"})
+
+    def _t_persona_fill(self, args: Dict[str, Any]) -> str:
+        """sgme_persona_fill：人设懒补全与写回（D-76，四步闭环在服务端）。"""
+        role_id = _arg_str(args, "role_id")
+        if not role_id:
+            return self._err("缺少 role_id")
+        question = _arg_str(args, "question", 200)
+        if not question:
+            return self._err("缺少 question")
+        data, err = self._request(
+            "POST", f"/v1/admin/roles/{_path_seg(role_id)}/persona-fill",
+            json_body={"question": question},
+        )
+        if err:
+            return self._err(f"人设补全失败（role_id={role_id}）: {err}")
+        if not isinstance(data, dict):
+            return self._err("人设补全响应异常")
+        return self._ok(data)
 
     def _t_role_save(self, args: Dict[str, Any]) -> str:
         """sgme_role_save：新建/更新角色卡（AI 帮用户设置角色提示词）。"""

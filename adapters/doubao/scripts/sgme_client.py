@@ -150,7 +150,7 @@ def resolve_addresses(http_url: str | None = None, mcp_url: str | None = None,
     return http.rstrip("/"), mcp.rstrip("/"), src
 
 
-# ---------- MCP 基准工具清单（权威基准：sgme/mcp_server.py，43 个） ----------
+# ---------- MCP 基准工具清单（权威基准：sgme/mcp_server.py，44 个） ----------
 
 BASELINE_TOOLS: tuple[str, ...] = (
     "agent_onboarding", "append", "inject", "search", "answer",
@@ -159,7 +159,7 @@ BASELINE_TOOLS: tuple[str, ...] = (
     "refine_trigger", "refine_batch", "refine_status", "stats", "health",
     "config_get", "config_update", "idea_add", "demand_create", "project_register",
     "signal_pull", "signal_claim", "signal_ack", "signal_clear",
-    "role_list", "role_assemble", "role_active_get", "role_active_set",
+    "role_list", "role_assemble", "role_active_get", "role_active_set", "persona_fill",
     "skill_search", "skill_digest", "skill_get", "skill_materialize", "skill_list",
     "skill_coldstart", "skill_put", "skill_delete", "skill_rename",
     "credential_list", "credential_get",
@@ -199,6 +199,7 @@ BASELINE_SPEC: dict[str, tuple[str, str, str, str]] = {
     "role_assemble": ("role_assemble", "role-assemble", "mcp", "agent"),
     "role_active_get": ("role_active_get", "role-active-get", "mcp", "agent"),
     "role_active_set": ("role_active_set", "role-active-set", "mcp", "agent"),
+    "persona_fill": ("persona_fill", "persona-fill", "mcp", "agent"),
     "skill_search": ("skill_search", "skill-search", "http", "agent"),
     "skill_digest": ("skill_digest", "skill-digest", "http", "agent"),
     "skill_get": ("skill_get", "skill-get", "http", "agent"),
@@ -567,6 +568,14 @@ class SGME:
     def role_active_set(self, role_id: str):
         return self._mcp("role_active_set", {"role_id": role_id})
 
+    def persona_fill(self, role_id: str, question: str):
+        """人设懒补全（D-76 / T-306）：查档案命中直接用；未命中生成类型级背景+冲突检查+写回角色卡。
+
+        status=hit/filled/unset；unset 表示冲突补不了（答「这个我没提过」）。
+        角色人生事实只写角色卡，永不写记忆池。
+        """
+        return self._mcp("persona_fill", {"role_id": role_id, "question": question})
+
     # ---------- MCP 层：自进化 / 技能写侧 ----------
     def wiki_evolve_trigger(self, session_key: str | None = None, min_rounds: int = 5,
                             limit: int = 5):
@@ -747,7 +756,7 @@ def _fetch_skill_package(client, name: str, dest_dir: str) -> dict:
 # ================= 能力矩阵 =================
 
 def capability_report() -> list[dict]:
-    """逐条核对 43 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
+    """逐条核对 44 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
     rows = []
     for tool in BASELINE_TOOLS:
         method, cli, layer, scope = BASELINE_SPEC[tool]
@@ -1143,6 +1152,14 @@ CMD_SPECS: list[dict] = [
         "cli": "role-active-set", "help": "设置当前沟通角色（只换角色不换记忆池）",
         "positionals": [{"dest": "role_id", "help": "角色 ID"}],
         "run": lambda c, a: c.role_active_set(a.role_id),
+    },
+    {
+        "cli": "persona-fill", "help": "人设懒补全（D-76）：追问没写过的人生细节，命中直接用/生成写回角色卡",
+        "positionals": [
+            {"dest": "role_id", "help": "角色 ID"},
+            {"dest": "question", "help": "用户追问的人生细节问题"},
+        ],
+        "run": lambda c, a: c.persona_fill(a.role_id, a.question),
     },
     # ---- MCP 层：自进化 / 技能写侧 ----
     {

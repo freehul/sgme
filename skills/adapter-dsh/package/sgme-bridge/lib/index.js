@@ -470,6 +470,15 @@ var SgmeClient = class {
 		}
 		return data;
 	}
+	/** 人设懒补全（POST /v1/admin/roles/{role_id}/persona-fill，Agent Key，D-76 / T-306）。失败返回 null。 */
+	async personaFill(roleId, question) {
+		const [data, err] = await this.post(`/v1/admin/roles/${encodeURIComponent(roleId)}/persona-fill`, { question }, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] personaFill failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
 	/** 单条记忆详情（GET /v1/memory/{id}，Agent Key；含溯源 + 归档链）。失败返回 null。 */
 	async memoryGet(memoryId) {
 		const [data, err] = await this.get(`/v1/memory/${encodeURIComponent(memoryId)}`, "agent");
@@ -3723,6 +3732,7 @@ function registerTools(ctx, client, defaultLimit, eventSubscriber) {
 	ctx.tools.register(createRoleAssembleTool(client));
 	ctx.tools.register(createRoleActiveGetTool(client));
 	ctx.tools.register(createRoleActiveSetTool(client));
+	ctx.tools.register(createPersonaFillTool(client));
 	ctx.tools.register(createMemoryGetTool(client));
 	ctx.tools.register(createMemoryRejectTool(client));
 	ctx.tools.register(createSkillSearchTool(client, defaultLimit));
@@ -4318,6 +4328,38 @@ function createRoleActiveSetTool(client) {
 			const resp = await client.roleActiveSet(a.role_id);
 			if (!resp) return `[role_active_set 失败：角色不存在或 Gateway 不可达（role_id="${a.role_id}"）]`;
 			return `[已切换角色：${resp.role_id}]`;
+		}
+	});
+}
+/** 创建 persona_fill 工具（人设懒补全与写回，D-76 / T-306）。 */
+function createPersonaFillTool(client) {
+	return defineTool({
+		name: "persona_fill",
+		description: ["人设懒补全（D-76）：用户追问角色人生中没写过的细节时调用——查档案命中直接用；未命中生成类型级背景+冲突检查+写回角色卡。", "用 answer 回答用户；status=unset 表示冲突补不了（答「这个我没提过」）。角色人生事实只写角色卡，永不写记忆池。"].join(" "),
+		parameters: {
+			role_id: {
+				type: "string",
+				required: true,
+				description: "角色 id（role_list 返回）"
+			},
+			question: {
+				type: "string",
+				required: true,
+				description: "用户的追问原文"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.personaFill(a.role_id, a.question);
+			if (!resp) return `[persona_fill 失败：角色不存在或 Gateway 不可达（role_id="${a.role_id}"，先 role_list 确认）]`;
+			return JSON.stringify(resp, null, 2);
 		}
 	});
 }

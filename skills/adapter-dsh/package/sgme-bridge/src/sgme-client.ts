@@ -393,6 +393,17 @@ export interface RoleActiveResponse {
   status?: string
 }
 
+/** POST /v1/admin/roles/{role_id}/persona-fill 响应体（D-76 / T-306）。 */
+export interface PersonaFillResponse {
+  role_id: string
+  status: 'hit' | 'filled' | 'unset'
+  answer: string
+  keys?: string[]
+  insertion_order?: number
+  generated?: boolean
+  provider?: string
+}
+
 // ---------- 记忆纠错类型（T-86：Agent Key） ----------
 
 /** GET /v1/memory/{id} 响应体（http_payload 投影：memory + 溯源 + 归档链）。 */
@@ -1116,6 +1127,20 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] roleActiveSet failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 人设懒补全（POST /v1/admin/roles/{role_id}/persona-fill，Agent Key，D-76 / T-306）。失败返回 null。 */
+  async personaFill(roleId: string, question: string): Promise<PersonaFillResponse | null> {
+    const [data, err] = await this.post<PersonaFillResponse>(
+      `/v1/admin/roles/${encodeURIComponent(roleId)}/persona-fill`,
+      { question },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] personaFill failed: ${err}`)
       return null
     }
     return data

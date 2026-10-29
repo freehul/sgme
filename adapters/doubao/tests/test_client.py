@@ -4,7 +4,7 @@
 覆盖：
 - 地址三级解析（环境变量 → 部署配置 client.env → 回环默认）与 MCP 端点推导
 - HTTP 层请求构造（append 首行格式 / 查询参数 / 头部 / 错误包装）
-- 43 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
+- 44 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
 - fetch 技能完整包（T-283）：下载 → MANIFEST 校验 → 安全解包 → 原子落盘；失败不留残件
 - 新增/修正方法与 CLI 命令的参数转译（含管理员 Key 范围）
 - 测试样例全部使用假值：私网语义用 10.0.0.x，密钥用低熵占位
@@ -419,7 +419,7 @@ class TestSkillFetchPackage(NoDeployConfig):
             self.assertNotIn(KEY, json.dumps(r, ensure_ascii=False))
 
     def test_fetch_is_extension_with_method_and_cli(self):
-        """fetch 是适配器自有扩展（包通道），不入 43 基准；方法 + CLI 双面必须齐。"""
+        """fetch 是适配器自有扩展（包通道），不入 44 基准；方法 + CLI 双面必须齐。"""
         self.assertIn("fetch", CLI_NAMES)
         self.assertTrue(hasattr(SGME, "fetch"))
         self.assertNotIn("fetch", BASELINE_TOOLS)
@@ -617,6 +617,13 @@ class TestMcpMethodSignatures(NoDeployConfig):
         self.assertIn("render", mo.call_args.args[1])
         self.assertIs(mo.call_args.args[1]["render"], True)
 
+    def test_persona_fill(self):
+        """D-76 / T-306：人设懒补全走 MCP 通道，参数含 role_id/question。"""
+        c, mo = self._client()
+        c.persona_fill("role-1", "你中学在哪上的？")
+        self.assertEqual(mo.call_args.args,
+                         ("persona_fill", {"role_id": "role-1", "question": "你中学在哪上的？"}))
+
     def test_idea_add_matches_baseline_signature(self):
         c, mo = self._client()
         c.idea_add("一个创意", priority=2, source_ref="ref-1")
@@ -686,11 +693,11 @@ class TestMcpMethodSignatures(NoDeployConfig):
 
 
 class TestCapabilityMatrix(unittest.TestCase):
-    """43 个基准能力：方法层 + CLI 层缺一不可。"""
+    """44 个基准能力：方法层 + CLI 层缺一不可。"""
 
     def test_baseline_count(self):
-        self.assertEqual(len(BASELINE_TOOLS), 43)
-        self.assertEqual(len(set(BASELINE_TOOLS)), 43)
+        self.assertEqual(len(BASELINE_TOOLS), 44)
+        self.assertEqual(len(set(BASELINE_TOOLS)), 44)
         self.assertEqual(set(BASELINE_SPEC), set(BASELINE_TOOLS))
 
     def test_every_baseline_has_method(self):
@@ -714,7 +721,7 @@ class TestCapabilityMatrix(unittest.TestCase):
 
     def test_capability_report_all_covered(self):
         rows = sc.capability_report()
-        self.assertEqual(len(rows), 43)
+        self.assertEqual(len(rows), 44)
         bad = [r["tool"] for r in rows if not (r["method_ok"] and r["cli_ok"])]
         self.assertEqual(bad, [])
 
@@ -743,10 +750,10 @@ class TestCLI(NoDeployConfig):
                 code = sc.main(argv)
         return code, buf.getvalue()
 
-    def test_offline_capabilities_lists_43(self):
+    def test_offline_capabilities_lists_44(self):
         code, out = self._run(["capabilities"])
         self.assertEqual(code, 0)
-        self.assertIn("43/43", out)
+        self.assertIn("44/44", out)
         for tool in BASELINE_TOOLS:
             self.assertIn(tool, out)
 
@@ -805,6 +812,8 @@ class TestCLI(NoDeployConfig):
             (["refine-status"], "refine_status", ()),
             (["role-active-get"], "role_active_get", ()),
             (["role-active-set", "role-1"], "role_active_set", ("role-1",)),
+            (["persona-fill", "role-1", "你中学在哪上的？"],
+             "persona_fill", ("role-1", "你中学在哪上的？")),
             (["signal-pull", "--signal-type", "care_daily", "--limit", "5"],
              "signal_pull", ("care_daily", 5)),
             (["signal-clear", "--subscriber", "doubao-work"],

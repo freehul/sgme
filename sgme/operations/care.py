@@ -165,6 +165,122 @@ def generate_persona(
     return OperationResult.succeed({"role_id": role_id, "path": str(fp), "provider": provider_name})
 
 
+# ---------- 人设懒补全与写回（D-76 / T-306） ----------
+
+PERSONA_FILL_PROMPT = """你是角色「{role_name}」的档案补全器。用户在追问角色人生中\
+没有写进档案的细节。按规则补一条背景，或判定补不了。
+硬性规则：
+- 允许类型级补充：「一所普通中学」「一家做外贸的小公司」「比我小三岁的表弟」
+- 允许感受与偏好：「那几年过得不轻松」
+- 必须与已有设定兼容
+- 禁止可核查专名：具体校名/公司名/地名+年份组合
+- 禁止数字断言：「2015 年、月薪 8000」
+- 若补一条必然与已有设定冲突 → 只输出 UNSET，不要硬编
+输出格式（两行，不要输出其他内容）：
+回答正文（第一人称、口语、不超过 40 字）
+KEYS: 与该回答相关的 2 到 4 个关键词，用逗号分隔
+已有档案条目：
+{entries}
+追问细节：{question}
+"""
+
+
+def _book_entries_text(card: dict[str, Any]) -> str:
+    """把 character_book 条目拼成提示词素材（无条目给占位说明）。"""
+    book = (card.get("data") or {}).get("character_book") or {}
+    lines = [f"- {e.get('content', '')}" for e in book.get("entries") or [] if e.get("content")]
+    return "\n".join(lines) if lines else "（档案暂无人生条目）"
+
+
+def _parse_fill_output(text: str, question: str) -> tuple[str | None, list[str]]:
+    """解析补全输出：UNSET/空 → (None, [])；否则 (正文, keys)。
+
+    LLM 没给 KEYS 时回退用追问原文做 key——保证写回条目必带可命中的 keys。
+    """
+    t = (text or "").strip()
+    if not t or t.upper().startswith("UNSET"):
+        return None, []
+    keys: list[str] = []
+    m = re.search(r"KEYS?\s*[:：]\s*(.+)", t)
+    if m:
+        keys = [k.strip() for k in re.split(r"[,，、]", m.group(1)) if k.strip()][:4]
+        t = t[:m.start()].strip()
+    answer = t.strip().strip('"「」\'')
+    if not answer:
+        return None, []
+    if not keys:
+        keys = [question.strip()[:8]]
+    return answer, keys
+
+
+def persona_fill(
+    role_id: str,
+    question: str,
+    cfg: dict[str, Any],
+    client: Any = None,
+) -> OperationResult:
+    """D-76 人设懒补全四步闭环（顺序不可反）：追问 → ①查角色档案 → ②命中直接用
+    → ③未命中：生成+冲突检查+立即落盘 → ④再回答。
+
+    - ①② 命中 character_book 条目：零 LLM，返回条目原文（措辞可变、事实不变）
+    - ③ 未命中走 LLM（三条硬规则写在提示词里：允许类型级/感受偏好、禁专名/
+      数字断言、冲突宁可不补）；LLM 判冲突输出 UNSET → 不写回，答「这个我没提过」
+    - ④ 正常补全立即写回角色卡 character_book（``generated: true`` + keys），
+      同一问题再问命中同一条目 → 事实不会每次变一个版本
+    - **隔离铁律**：角色人生事实只写角色卡（roles/<id>.json），永不写 memory.db
+      ——本函数不接收 mem_conn，没有触碰记忆池的代码路径
+    - 角色不存在 → ERR_NOT_FOUND；LLM 不可用 → ERR_INTERNAL（不降级硬编）
+    """
+    card = roles_mod.get_role(_roles_dir(), role_id)
+    if card is None:
+        return OperationResult.fail(ERR_NOT_FOUND, f"角色不存在: {role_id}")
+    if not (question or "").strip():
+        return OperationResult.fail(ERR_INVALID_ARGS, "question 不能为空")
+    # ①② 查档案：命中直接用（零 LLM、零写盘）
+    hit = roles_mod.find_book_entry(card, question)
+    if hit is not None:
+        return OperationResult.succeed({
+            "role_id": role_id, "status": "hit",
+            "answer": hit.get("content", ""),
+            "generated": bool(hit.get("generated")),
+        })
+    # ③ 未命中：LLM 生成 + 冲突检查
+    try:
+        from sgme.llm import chain as llm_chain
+
+        role_name = card["data"].get("name", role_id)
+        prompt = PERSONA_FILL_PROMPT.format(
+            role_name=role_name,
+            entries=_book_entries_text(card),
+            question=question.strip(),
+        )
+        text, provider_name, _usage = llm_chain.call_with_fallback(
+            cfg["llm"], prompt, chain_name="refinement", client=client,
+        )
+        answer, keys = _parse_fill_output(text or "", question)
+        if answer is None:
+            # 冲突/补不了 → 不写回，宁可说「没提过」
+            return OperationResult.succeed({
+                "role_id": role_id, "status": "unset",
+                "answer": "这个我没提过。",
+                "provider": provider_name,
+            })
+        # ④ 立即落盘（角色卡 character_book）
+        entry = roles_mod.append_book_entry(_roles_dir(), role_id, keys, answer)
+    except Exception as e:
+        if isinstance(e, llm_provider.LLMUnavailable):
+            return OperationResult.fail(ERR_INTERNAL, f"LLM 不可用: {e}")
+        return OperationResult.fail(ERR_INTERNAL, f"人设补全失败: {e}")
+    if entry is None:  # 并发下角色被归档（理论不可达，兜底可见失败）
+        return OperationResult.fail(ERR_NOT_FOUND, f"角色不存在: {role_id}")
+    logger.info("人设懒补全: %s（keys=%s，%s）", role_id, keys, provider_name)
+    return OperationResult.succeed({
+        "role_id": role_id, "status": "filled", "answer": answer,
+        "keys": entry["keys"], "insertion_order": entry["insertion_order"],
+        "generated": True, "provider": provider_name,
+    })
+
+
 # ---------- 关怀信号（T-36） ----------
 
 def scan_signals(mem_conn: sqlite3.Connection, cfg: dict[str, Any]) -> OperationResult:

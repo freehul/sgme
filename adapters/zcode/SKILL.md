@@ -8,7 +8,7 @@ description: ZCode 的 SGME（拾光记忆）官方适配器。当对话涉及�
 你（ZCode）已接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 > 本技能是 SGME 官方适配器（源码 `adapters/zcode/`；本目录为部署副本，由 `install.py` 同步，可随时重建）。
-> **能力面 = CLI 命令面**：下方矩阵 43 个基准能力一个不少。
+> **能力面 = CLI 命令面**：下方矩阵 44 个基准能力一个不少。
 > **优先用本会话已挂载的 MCP 工具**（`mcp__sgme__*`，由 `~/.zcode/cli/config.json` 的 `sgme` server 提供）；无 MCP 或要脚本化时再走 CLI。
 > 本机 agent_id = `zcode`（服务端已注册）——不要借用其它 agent 的 key。
 
@@ -125,17 +125,18 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 30 | role_assemble | MCP | `role-assemble` |
 | 31 | role_active_get | MCP | `role-active-get` |
 | 32 | role_active_set | MCP | `role-active-set` |
-| 33 | skill_search | HTTP | `skill-search` |
-| 34 | skill_digest | HTTP | `skill-digest` |
-| 35 | skill_get | HTTP | `skill-get` |
-| 36 | skill_materialize | HTTP | `skill-materialize`（返回 path + sha256；落盘在服务端文件系统，跨机改用包通道 `fetch <name> <dest_dir>`） |
-| 37 | skill_list | HTTP | `skill-list` |
-| 38 | skill_coldstart | HTTP | `skill-coldstart` |
-| 39 | skill_put | MCP | `skill-put` |
-| 40 | skill_delete | MCP | `skill-delete` |
-| 41 | skill_rename | MCP | `skill-rename` |
-| 42 | credential_list | HTTP | `credential-list` |
-| 43 | credential_get | HTTP | `credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
+| 33 | persona_fill | MCP | `persona-fill` |
+| 34 | skill_search | HTTP | `skill-search` |
+| 35 | skill_digest | HTTP | `skill-digest` |
+| 36 | skill_get | HTTP | `skill-get` |
+| 37 | skill_materialize | HTTP | `skill-materialize`（返回 path + sha256；落盘在服务端文件系统，跨机改用包通道 `fetch <name> <dest_dir>`） |
+| 38 | skill_list | HTTP | `skill-list` |
+| 39 | skill_coldstart | HTTP | `skill-coldstart` |
+| 40 | skill_put | MCP | `skill-put` |
+| 41 | skill_delete | MCP | `skill-delete` |
+| 42 | skill_rename | MCP | `skill-rename` |
+| 43 | credential_list | HTTP | `credential-list` |
+| 44 | credential_get | HTTP | `credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
 
 扩展命令：`fetch <name> <dest_dir>`（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包；失败不留残件） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
 
