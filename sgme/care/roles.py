@@ -343,6 +343,49 @@ def count_violations(
     return n
 
 
+# ---------- 真实感指标快照（D-74 / T-308） ----------
+
+# extensions 命名空间键：测量快照只记在角色卡，永不进 memory.db（同一隔离铁律）
+METRICS_EXT_KEY = "sgme_metrics"
+# latest 快照里回复原文的截断长度：区分度脚本按原文算相似度，300 字足够且不撑爆角色卡
+METRICS_REPLY_MAX = 300
+# 历史 runs 保留上限（只存聚合值不含回复原文，防角色卡无限膨胀）
+METRICS_RUNS_KEEP = 20
+
+
+def load_metrics(card: dict[str, Any]) -> dict[str, Any]:
+    """读角色卡 extensions.sgme_metrics（无则空对象）。
+
+    结构：``{baseline, latest, runs, updated_at}``，全部可选；解析权在 operations 层。
+    """
+    ext = (card.get("data") or {}).get("extensions") or {}
+    if not isinstance(ext, dict):
+        return {}
+    box = ext.get(METRICS_EXT_KEY)
+    return box if isinstance(box, dict) else {}
+
+
+def save_metrics(roles_dir: Path, role_id: str, metrics: dict[str, Any]) -> bool:
+    """写回 extensions.sgme_metrics（读-改-写角色卡）。角色不存在返回 False。
+
+    只写角色卡文件，**绝不写 memory.db**——测量快照是角色档案，不是用户事实。
+    """
+    card = get_role(roles_dir, role_id)
+    if card is None:
+        return False
+    data = dict(card.get("data") or {})
+    ext = dict(data.get("extensions") or {})
+    ext[METRICS_EXT_KEY] = metrics
+    data["extensions"] = ext
+    save_role(roles_dir, role_id, {
+        "spec": card.get("spec", CC_SPEC),
+        "spec_version": card.get("spec_version", CC_SPEC_VERSION),
+        "data": data,
+    })
+    logger.info("真实感指标已写回: %s", role_id)
+    return True
+
+
 # ---------- persona 物化（唯一物化例外） ----------
 
 PERSONA_PROMPT = """你是 Persona Architect（人格架构师）。请基于给定的用户画像素材，

@@ -13,6 +13,8 @@
 - POST   /v1/admin/roles/{role_id}/persona       生成 persona（LLM 四层扫描）
 - POST   /v1/admin/roles/{role_id}/persona-fill  人设懒补全与写回（D-76）
 - POST   /v1/admin/roles/{role_id}/guard-reply   越界三级后果（D-77）
+- GET    /v1/admin/roles/{role_id}/metrics       真实感指标快照读取（D-74）
+- POST   /v1/admin/roles/{role_id}/metrics       真实感指标记录（D-74，服务端重算）
 
 v0.1：业务逻辑全部下沉 ``sgme.operations.care``，本函数只做协议翻译。
 """
@@ -26,6 +28,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from sgme.operations import care as care_operation
+from sgme.operations import role_metrics as role_metrics_operation
 from sgme.server.app import require_agent_key, run_operation
 
 router = APIRouter()
@@ -189,6 +192,64 @@ def guard_reply(
     return run_operation(
         care_operation.guard_reply, role_id, payload.reply, cfg,
         session_id=payload.session_id, mem_conn=mem_conn,
+    )
+
+
+# ---------- GET/POST /v1/admin/roles/{role_id}/metrics（D-74 / T-308） ----------
+
+class MetricsItem(BaseModel):
+    """单题测量条目：问题 + 回复原文；like_human 为外部盲读裁判分（可选）。"""
+
+    q: str = ""
+    reply: str
+    like_human: int | None = None
+
+
+class MetricsRecordRequest(BaseModel):
+    """真实感指标记录请求体。
+
+    四项确定性指标（首句长度/感叹号率/复述率/AI 味句式率）由服务端重算，
+    不信任上传的派生数字；盲读类（like_human / blind_misjudge_rate）由外部写入。
+    """
+
+    items: list[MetricsItem]
+    label: str = ""                     # 快照标签（如 baseline-20261030 / v2）
+    blind_misjudge_rate: float | None = None  # 真人盲读误判率（0-1，外部写入）
+    set_as_baseline: bool = False       # 尚无 baseline 时固化为基线快照（已有不覆盖）
+    meta: dict[str, Any] | None = None  # 运行元信息（variant/provider/script 等）
+
+
+@router.get("/v1/admin/roles/{role_id}/metrics")
+def get_metrics(
+    role_id: str,
+    _: str = Depends(require_agent_key),
+):
+    """真实感指标快照读取（D-74）：baseline / latest（含逐题 items）/ runs 历史
+    + 越界只读聚合（total / 今日 / by_kind，与 D-77 同表看）。
+
+    快照落角色卡 extensions.sgme_metrics（不新增表）；角色不存在 → ERR_NOT_FOUND。
+    """
+    return run_operation(role_metrics_operation.metrics_get, role_id)
+
+
+@router.post("/v1/admin/roles/{role_id}/metrics")
+def record_metrics(
+    role_id: str,
+    payload: MetricsRecordRequest,
+    _: str = Depends(require_agent_key),
+):
+    """真实感指标记录（D-74）：服务端重算四项指标 → 聚合 → 写角色卡。
+
+    baseline 只设一次（``set_as_baseline=True`` 且尚无 baseline 才固化）；
+    latest 每次覆盖；runs 最多留 20 条。只写角色卡，**不进记忆池**。
+    """
+    return run_operation(
+        role_metrics_operation.metrics_record, role_id,
+        [it.model_dump() for it in payload.items],
+        label=payload.label,
+        blind_misjudge_rate=payload.blind_misjudge_rate,
+        set_as_baseline=payload.set_as_baseline,
+        meta=payload.meta,
     )
 
 
