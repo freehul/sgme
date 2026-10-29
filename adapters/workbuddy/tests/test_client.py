@@ -778,7 +778,15 @@ class TestMcpMethodSignatures(NoDeployConfig):
     def test_role_assemble_inject_mode(self):
         c, mo = self._client()
         c.role_assemble("role-1", inject_mode="work")
-        self.assertEqual(mo.call_args.args[1], {"role_id": "role-1", "inject_mode": "work"})
+        self.assertEqual(mo.call_args.args[1],
+                         {"role_id": "role-1", "render": True, "inject_mode": "work"})
+
+    def test_role_assemble_default_render(self):
+        """T-303：默认必须带 render，宏由服务端渲染，不再原样进模型。"""
+        c, mo = self._client()
+        c.role_assemble("role-1")
+        self.assertIn("render", mo.call_args.args[1])
+        self.assertIs(mo.call_args.args[1]["render"], True)
 
     def test_idea_add_matches_baseline_signature(self):
         c, mo = self._client()

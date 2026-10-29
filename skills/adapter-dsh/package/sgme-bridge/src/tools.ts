@@ -1075,6 +1075,7 @@ export function createRoleAssembleTool(client: SgmeClient) {
     description: [
       '装配角色沟通提示词（角色卡 system_prompt + persona + 关怀策略 + 可选画像）。',
       'role_id 来自 role_list；产物直接作为 system prompt 风格指引使用——按角色语气说话，但记忆与事实以记忆池为准。',
+      '产物已由服务端渲染 {{char}}/{{user}} 宏（恒带 render=true）。',
     ].join(' '),
     parameters: {
       role_id: {

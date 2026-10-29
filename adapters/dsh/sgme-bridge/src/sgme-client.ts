@@ -1080,10 +1080,12 @@ export class SgmeClient {
     return data
   }
 
-  /** 装配角色沟通提示词（GET /v1/admin/roles/{role_id}/assemble，Agent Key）。失败返回 null。 */
+  /** 装配角色沟通提示词（GET /v1/admin/roles/{role_id}/assemble，Agent Key）。失败返回 null。
+   *  T-303：恒带 render=true，{{char}}/{{user}} 宏由服务端渲染，不再原样进模型。 */
   async roleAssemble(roleId: string, injectMode?: string | null): Promise<RoleAssembleResponse | null> {
     const params = new URLSearchParams()
     if (injectMode) params.set('inject_mode', injectMode)
+    params.set('render', 'true')
     const qs = params.toString()
     const [data, err] = await this.get<RoleAssembleResponse>(
       `/v1/admin/roles/${encodeURIComponent(roleId)}/assemble${qs ? `?${qs}` : ''}`,

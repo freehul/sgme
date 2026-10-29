@@ -16,6 +16,8 @@ tags: [skill, adapter, sgme]
   `SGME_CODEX_KEY`，不落盘。
 - MCP 透传覆盖 memory / skills / wiki / care signals / roles / config /
   refine 全部工具；新增 SGME MCP 工具无需逐项改适配器。
+- **角色装配（T-303）**：调用 `role_assemble` 时默认传 `render=true`（服务端替换
+  `{{char}}/{{user}}` 宏）；`user_name` 只在已知用户显示名时传，未知省略（服务端回落「你」）。
 - `codex_sgme.cli` 提供会话生命周期 `start` / `turn` / `end`，用于每轮
   append 与会话结束异步提炼。
 - stdio 使用 UTF-8；Windows 默认 GBK 环境不会再因工具描述中的非 GBK

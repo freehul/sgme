@@ -267,6 +267,44 @@ describe('SgmeClient', () => {
 
     expect(capturedUrl).toBe('http://127.0.0.1:9910/v1/search')
   })
+
+  // ---------- roleAssemble render（T-303） ----------
+
+  it('roleAssemble URL 恒带 render=true（宏由服务端渲染）', async () => {
+    let capturedUrl: string | undefined
+    globalThis.fetch = vi.fn(async (url) => {
+      capturedUrl = url as string
+      return {
+        ok: true, status: 200,
+        json: async () => ({ role_id: 'butler', role_name: '管家', system_prompt: '早安，你。' }),
+        text: async () => '',
+      } as Response
+    }) as unknown as typeof globalThis.fetch
+
+    const resp = await makeClient().roleAssemble('butler', 'daily')
+
+    expect(resp?.role_id).toBe('butler')
+    expect(capturedUrl).toContain('/v1/admin/roles/butler/assemble')
+    expect(capturedUrl).toContain('render=true')
+    expect(capturedUrl).toContain('inject_mode=daily')
+  })
+
+  it('roleAssemble 无 inject_mode 时仍带 render=true', async () => {
+    let capturedUrl: string | undefined
+    globalThis.fetch = vi.fn(async (url) => {
+      capturedUrl = url as string
+      return {
+        ok: true, status: 200,
+        json: async () => ({ role_id: 'butler', role_name: '管家', system_prompt: '早安，你。' }),
+        text: async () => '',
+      } as Response
+    }) as unknown as typeof globalThis.fetch
+
+    await makeClient().roleAssemble('butler')
+
+    expect(capturedUrl).toContain('render=true')
+    expect(capturedUrl).not.toContain('inject_mode')
+  })
 })
 
 // ---------- toL0 格式化测试 ----------

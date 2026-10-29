@@ -438,10 +438,12 @@ var SgmeClient = class {
 		}
 		return data;
 	}
-	/** 装配角色沟通提示词（GET /v1/admin/roles/{role_id}/assemble，Agent Key）。失败返回 null。 */
+	/** 装配角色沟通提示词（GET /v1/admin/roles/{role_id}/assemble，Agent Key）。失败返回 null。
+	*  T-303：恒带 render=true，{{char}}/{{user}} 宏由服务端渲染，不再原样进模型。 */
 	async roleAssemble(roleId, injectMode) {
 		const params = new URLSearchParams();
 		if (injectMode) params.set("inject_mode", injectMode);
+		params.set("render", "true");
 		const qs = params.toString();
 		const [data, err] = await this.get(`/v1/admin/roles/${encodeURIComponent(roleId)}/assemble${qs ? `?${qs}` : ""}`, "agent");
 		if (err) {
@@ -4243,7 +4245,11 @@ function createRoleListTool(client) {
 function createRoleAssembleTool(client) {
 	return defineTool({
 		name: "role_assemble",
-		description: ["装配角色沟通提示词（角色卡 system_prompt + persona + 关怀策略 + 可选画像）。", "role_id 来自 role_list；产物直接作为 system prompt 风格指引使用——按角色语气说话，但记忆与事实以记忆池为准。"].join(" "),
+		description: [
+			"装配角色沟通提示词（角色卡 system_prompt + persona + 关怀策略 + 可选画像）。",
+			"role_id 来自 role_list；产物直接作为 system prompt 风格指引使用——按角色语气说话，但记忆与事实以记忆池为准。",
+			"产物已由服务端渲染 {{char}}/{{user}} 宏（恒带 render=true）。"
+		].join(" "),
 		parameters: {
 			role_id: {
 				type: "string",

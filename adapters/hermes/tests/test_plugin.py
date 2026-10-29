@@ -911,6 +911,25 @@ def test_role_block_local_role_wins_over_server(tmp_path):
     assert "沟通角色：伴侣" in block and "你是伴侣。" in block
     assert len(fake.calls) == 1
     assert fake.calls[0]["url"].endswith("/v1/admin/roles/companion/assemble")
+    # T-303：自动角色块必须带 render=true，宏由服务端渲染
+    assert fake.calls[0]["params"] == {"render": True}
+
+
+def test_role_assemble_tool_sends_render_true():
+    """T-303：sgme_role_assemble 工具请求恒带 render=true（宏不再原样进模型）。"""
+    p, fake = _provider(_Client(responses=[
+        _resp({"role_id": "butler", "role_name": "管家", "system_prompt": "早安，你。"}),
+    ]))
+    out = json.loads(p.handle_tool_call("sgme_role_assemble", {"role_id": "butler"}))
+    assert "error" not in out
+    call = fake.calls[0]
+    assert call["url"].endswith("/v1/admin/roles/butler/assemble")
+    assert call["params"]["render"] is True
+    # 带 inject_mode 时 render 不丢
+    fake2 = _Client(responses=[_resp({"role_id": "butler", "system_prompt": "早安。"})])
+    p2, _ = _provider(fake2)
+    p2.handle_tool_call("sgme_role_assemble", {"role_id": "butler", "inject_mode": "daily"})
+    assert fake2.calls[0]["params"] == {"render": True, "inject_mode": "daily"}
 
 
 def test_role_block_custom_prompt_lazy_upsert(tmp_path):

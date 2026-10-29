@@ -556,8 +556,9 @@ class SGME:
     def role_list(self):
         return self._mcp("role_list", {})
 
-    def role_assemble(self, role_id: str, inject_mode: str | None = None):
-        return self._mcp("role_assemble", {"role_id": role_id}
+    def role_assemble(self, role_id: str, inject_mode: str | None = None, render: bool = True):
+        """装配角色提示词；render=True（默认，T-303）由服务端替换 {{char}}/{{user}} 宏。"""
+        return self._mcp("role_assemble", {"role_id": role_id, "render": render}
                          | ({"inject_mode": inject_mode} if inject_mode else {}))
 
     def role_active_get(self):

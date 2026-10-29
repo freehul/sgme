@@ -669,7 +669,11 @@ class SGMEProvider(MemoryProvider):
                     if not err and isinstance(data, dict):
                         role_id = str(data.get("role_id") or "").strip()
             if role_id:
-                asm, err2 = self._request("GET", f"/v1/admin/roles/{_path_seg(role_id)}/assemble")
+                # T-303：render=true 让服务端替换 {{char}}/{{user}} 宏，宏不再原样进模型
+                asm, err2 = self._request(
+                    "GET", f"/v1/admin/roles/{_path_seg(role_id)}/assemble",
+                    params={"render": True},
+                )
                 if not err2 and isinstance(asm, dict):
                     prompt = str(asm.get("system_prompt") or "").strip()
                     if prompt:
@@ -1331,7 +1335,7 @@ class SGMEProvider(MemoryProvider):
             "name": "sgme_role_assemble",
             "description": "装配角色沟通提示词（角色卡 system_prompt + persona + 关怀策略 + 可选画像）。"
                            "role_id 来自 sgme_role_list；产物作为风格指引使用——按角色语气说话，"
-                           "但记忆与事实以记忆池为准。",
+                           "但记忆与事实以记忆池为准。服务端已渲染 {{char}}/{{user}} 宏（render=true）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1987,7 +1991,10 @@ class SGMEProvider(MemoryProvider):
         if not role_id:
             return self._err("缺少 role_id")
         inject_mode = _arg_str(args, "inject_mode")
-        params = {"inject_mode": inject_mode} if inject_mode else None
+        # T-303：始终 render=true，产物里的 {{char}}/{{user}} 宏由服务端渲染
+        params: Dict[str, Any] = {"render": True}
+        if inject_mode:
+            params["inject_mode"] = inject_mode
         data, err = self._request(
             "GET", f"/v1/admin/roles/{_path_seg(role_id)}/assemble", params=params,
         )

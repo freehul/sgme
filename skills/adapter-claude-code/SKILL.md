@@ -15,6 +15,8 @@ hooks 实现会话生命周期自动化。
 
 - MCP：`python -m claude_sgme.mcp_proxy`（stdio 动态透传；UTF-8 固定，Windows
   GBK 环境不崩 `tools/list`）；`install.py` 注册 `~/.claude.json` 的 MCP server `sgme`。
+- **角色装配（T-303）**：调用 `role_assemble` 时默认传 `render=true`（服务端替换
+  `{{char}}/{{user}}` 宏）；`user_name` 只在已知用户显示名时传，未知省略（服务端回落「你」）。
 - hooks（注册进 `~/.claude/settings.json`）：
   - `SessionStart` → `inject` 画像 + `signal_pull` 关怀信号 → additionalContext；
   - `Stop` → transcript JSONL 增量 append 到 L0（游标对账；转录重写时全量重放，
