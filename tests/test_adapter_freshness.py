@@ -20,6 +20,10 @@ C. 部署态契约测试（T-292）——部署副本落后于仓库必须机器
    - 无部署目录（CI / 未装插件）→ 跳过，不是失败
    - 基线解析失效 → fail-closed
    - 默认只警告、--strict-deploy 升级为失败（发布门禁口径）
+
+D. 钩子挂点测试（挂点防丢）——`.githooks/pre-push` 必须真的调用本门禁：
+   - 2026-10-29 补挂点：此前 pre-push 只查能力面对账，漂移可静默推上去，
+     连续 5 次靠 CI 才发现。删挂点 / 改名 / 摘逃生开关 → 用例红。
 """
 from __future__ import annotations
 
@@ -240,6 +244,26 @@ def test_repo_cli_passes(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
     monkeypatch.setenv(cf.DEPLOY_DIR_ENV, str(tmp_path / "_no_such_deploy"))
     assert cf.main(["--root", str(BASE)]) == 0
+
+
+# ---------------- D. 钩子挂点（T-227 挂点防丢，2026-10-29） ----------------
+
+HOOK = BASE / ".githooks" / "pre-push"
+
+
+def test_pre_push_mounts_freshness_gate():
+    """pre-push 必须挂新鲜度门禁，且带逃生开关。
+
+    事故形态（2026-10-26 dd5f9a6 → 2026-10-29 才发现）：真源 SKILL.md 改了、
+    分发副本没跟上，而 pre-push 当时只查能力面对账（T-170），连续 5 次 push
+    全都放行，靠 CI 每次跑 9 分钟才发现红。挂点被删 / 脚本改名 / 逃生开关被摘，
+    本用例必须红——否则同样的静默期会再来一次。
+    """
+    assert HOOK.is_file(), "缺 .githooks/pre-push（新克隆需 sh scripts/install_git_hooks.sh）"
+    text = HOOK.read_text(encoding="utf-8")
+    assert "scripts/check_adapter_freshness.py" in text, "pre-push 未调用新鲜度门禁"
+    assert "GIT_PUSH_SKIP_FRESHNESS" in text, "缺逃生开关 GIT_PUSH_SKIP_FRESHNESS（留痕）"
+    assert "exit 1" in text, "命中漂移必须阻断推送（缺 exit 1）"
 
 # ---------------- C. 部署态契约（防线 3，T-292） ----------------
 

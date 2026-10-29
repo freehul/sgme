@@ -151,6 +151,9 @@ gh api user/starred/freehul/sgme >/dev/null 2>&1 \
 ### 机器门禁（兜底）
 
 - `.githooks/pre-commit`（暂存区）+ `pre-push`（推送新增行）：命中真实标识即拦截；行内 `scan-allow` 注释豁免；逃生开关 `GIT_PUSH_SKIP_SECRET_SCAN=1`（留痕）；新克隆先跑 `sh scripts/install_git_hooks.sh` 启用。
+- `pre-push` 另挂两道**产物门禁**（拦截，不是警告）：
+  - **能力面对账（T-170）**：八官方适配器对 MCP 工具面无未声明漂移；逃生 `GIT_PUSH_SKIP_PARITY=1`。
+  - **分发新鲜度（T-227）**：`skills/adapter-<host>/` 必须与 `adapters/<host>/` 重打包结果一致、`adapters/dsh/sgme-bridge/lib/` 必须与 `src/` 同步（真源改了不重跑 publish / build 就拦住）；修复见报错提示，逃生 `GIT_PUSH_SKIP_FRESHNESS=1`（留痕）。部署态契约在此仍只警告——部署落后于仓库是正常时序。**教训**：2026-10-26 真源改了副本没跟上，当时 pre-push 只查 T-170，连续 5 次 push 静默放行，靠 CI 每次 9 分钟才发现。
 - 发布前：`publish-review` skill 全流程（Hermes 侧）。
 - **已知保留**（部署机制耦合，待 env 化改造）：`deploy.sh`、`deploy/nas-docker-compose.yml`、`scripts/nas_watchdog.sh`、`scripts/nas_backup.sh`、`scripts/sgme-host-updater.sh`。
 

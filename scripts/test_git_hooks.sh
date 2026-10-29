@@ -5,6 +5,8 @@
 # 用途：对 .githooks/lib_scan.sh 的规则做回归自测。起因（B182）：T-165
 #   重构丢失「低熵占位按 '-' 后 body 判定」修正，导致 sk-000…0 假串在
 #   推送预检中被误拦——改 lib_scan.sh 后必跑本脚本。
+#   另覆盖 pre-push 两个「拦截型」挂点的行为（假解释器驱动，不需真实漂移）：
+#   适配器能力面对账（T-170）、分发新鲜度（T-227）。
 #
 # 用法：sh scripts/test_git_hooks.sh   → 全部用例通过 exit 0；有失败 exit 1
 #
@@ -93,12 +95,49 @@ check_hook() {
 check_hook 1 "漂移（脚本 rc=1）必须拦截"            "$(make_fake_py drift 1)"   "未声明漂移"
 check_hook 0 "解释器不可用（rc=49）必须放行留痕"     "$(make_fake_py nostore 49)" "未能执行"
 check_hook 0 "解释器缺失（rc=127）必须放行留痕"      "$(make_fake_py noexec 127)" "未能执行"
-if [ -x "$ROOT/.venv/Scripts/python.exe" ] || [ -x "$ROOT/.venv/bin/python" ]; then
+VPY=""
+if [ -x "$ROOT/.venv/Scripts/python.exe" ]; then
     VPY="$ROOT/.venv/Scripts/python.exe"
-    [ -x "$VPY" ] || VPY="$ROOT/.venv/bin/python"
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+    VPY="$ROOT/.venv/bin/python"
+fi
+
+if [ -n "$VPY" ]; then
     check_hook 0 "正常解释器：对账真实通过" "$VPY" "对账通过"
 else
     printf '  [skip] 本机无项目 venv，跳过「正常解释器」用例\n'
+fi
+
+# ============================================================
+# 分发新鲜度门禁（T-227，2026-10-29 挂点）行为
+# 只考察新鲜度这一段：对账段钉死在真解释器上（否则假 rc=1 会先被对账拦下），
+# 新鲜度段换假解释器，考「漂移是否拦截 / 环境问题是否放行留痕 / 逃生是否留痕」。
+# ============================================================
+echo ""
+echo "=== 分发新鲜度钩子（pre-push）行为 ==="
+
+# check_fresh <期望退出码> <场景名> <新鲜度解释器> <期望输出子串> [逃生开关值]
+check_fresh() {
+    _want_rc="$1"; _name="$2"; _fpy="$3"; _want_out="$4"; _skip="${5:-}"
+    _out="$( cd "$ROOT" && env GIT_PUSH_SKIP_FRESHNESS="$_skip" \
+             SGME_PARITY_PY="$VPY" SGME_FRESHNESS_PY="$_fpy" \
+             sh "$ROOT/.githooks/pre-push" </dev/null 2>&1 )"
+    _rc=$?
+    if [ "$_rc" = "$_want_rc" ] && printf '%s' "$_out" | grep -q "$_want_out"; then
+        PASS=$((PASS + 1)); printf '  [ok]   %s\n' "$_name"
+    else
+        FAIL=$((FAIL + 1))
+        printf '  [FAIL] %s（期望 rc=%s 且输出含「%s」，实得 rc=%s）\n' "$_name" "$_want_rc" "$_want_out" "$_rc"
+    fi
+}
+
+if [ -n "$VPY" ]; then
+    check_fresh 1 "分发漂移（rc=1）必须拦截" "$(make_fake_py fdrift 1)" "分发新鲜度未通过"
+    check_fresh 0 "新鲜度解释器不可用（rc=127）放行留痕" "$(make_fake_py fnoexec 127)" "未能执行"
+    check_fresh 0 "真解释器：新鲜度真实通过" "$VPY" "分发新鲜度通过"
+    check_fresh 0 "逃生开关 GIT_PUSH_SKIP_FRESHNESS=1 留痕放行" "$(make_fake_py fskip 1)" "已跳过分发新鲜度检查" 1
+else
+    printf '  [skip] 本机无项目 venv，跳过新鲜度钩子用例\n'
 fi
 
 echo ""

@@ -20,6 +20,21 @@ fi
 ROOT="$(git rev-parse --show-toplevel)"
 
 # ============================================================
+# 解释器探测（T-170 / T-227 两段共用口径）
+# 必须是真能跑的 python——Windows 商店的 python3 占位程序会 exit 49，
+# 选它会把「环境缺失」误判成「漂移」，锁死新克隆的第一次推送。
+# ============================================================
+sgme_find_python() {
+    for cand in "$ROOT/.venv/Scripts/python.exe" "$ROOT/.venv/bin/python" \
+                "$(command -v python3 2>/dev/null)" "$(command -v python 2>/dev/null)"; do
+        if [ -n "$cand" ] && [ -e "$cand" ] && "$cand" -c "import sys" >/dev/null 2>&1; then
+            printf '%s\n' "$cand"; return 0
+        fi
+    done
+    return 1
+}
+
+# ============================================================
 # 适配器能力面对账（T-170 / ST-42）
 # 三个平级官方适配器（hermes / dsh / doubao）对 MCP 工具面（=SGME 能力全集）
 # 必须无未声明漂移。历史教训：SGME 一路加能力，Hermes 适配器停了 20 天无人发现。
@@ -63,6 +78,53 @@ else
             echo "[pre-push] ⚠ 适配器对账未能执行（退出码 $PARITY_RC，环境问题非漂移），放行并留痕：" >&2
             printf '%s\n' "$PARITY_OUT" | tail -2 >&2
             echo "    建环境：sh scripts/bootstrap_venv.bat（或 pip install -e .[dev]）；自查：python scripts/adapter_parity.py" >&2
+        fi
+    fi
+fi
+
+# ============================================================
+# 适配器分发新鲜度（T-227，2026-10-29 挂点）
+#
+# 判据：「真源改了，派生产物没跟上」→ 拒绝推送。覆盖两条派生产物链——
+#   ① 八个 skills/adapter-<host>/ 分发副本 vs adapters/<host>/ 真源重打包结果；
+#   ② adapters/dsh/sgme-bridge/lib/ vs src/*.ts（名字集合 + 模块 region 标记）。
+# 部署态契约仍只警告（部署落后于仓库是正常开发时序），故本钩子不加 --strict-deploy。
+#
+# 历史教训（2026-10-26 dd5f9a6 → 2026-10-29 才发现）：真源 SKILL.md 补了
+#   「插件市场/手动部署两种分发形态」一句，未重跑 publish，副本漂移一行；
+#   本钩子当时只查 T-170 能力面对账、不查新鲜度，于是连续 5 次 push 全推了上去，
+#   靠 CI 每次跑 9 分钟才发现（Tests 红在 test_repo_skill_copies_fresh）。
+#
+# 逃生：GIT_PUSH_SKIP_FRESHNESS=1 git push …（留痕）
+# 解释器覆盖：SGME_FRESHNESS_PY=<解释器路径>（测试注入用）
+# ============================================================
+if [ "${GIT_PUSH_SKIP_FRESHNESS:-}" = "1" ]; then
+    echo "[pre-push] GIT_PUSH_SKIP_FRESHNESS=1 —— 已跳过分发新鲜度检查（留痕）" >&2
+else
+    FRESH_PY="${SGME_FRESHNESS_PY:-}"
+    if [ -z "$FRESH_PY" ]; then
+        FRESH_PY="$(sgme_find_python || true)"
+    fi
+    if [ -z "$FRESH_PY" ]; then
+        echo "[pre-push] ⚠ 未找到可用 python，跳过分发新鲜度检查（留痕）；自查：python scripts/check_adapter_freshness.py" >&2
+    else
+        # ROOT 是 MSYS 风格路径，原生 python.exe 不认——先 cd 再用相对路径。
+        FRESH_OUT="$(cd "$ROOT" && "$FRESH_PY" scripts/check_adapter_freshness.py 2>&1)"
+        FRESH_RC=$?
+        if [ "$FRESH_RC" -eq 1 ]; then
+            echo "[pre-push] ❌ 适配器分发新鲜度未通过——真源改了但派生产物没跟上：" >&2
+            printf '%s\n' "$FRESH_OUT" | sed 's/^/    /' >&2
+            echo "    修复：① 分发副本漂移 → python scripts/publish_adapter_skills.py" >&2
+            echo "          ② dsh 产物漂移 → pnpm -C adapters/dsh/sgme-bridge run build 后提交 lib" >&2
+            echo "          顺序：先 build 再 publish（publish 从真源打包）" >&2
+            exit 1
+        elif [ "$FRESH_RC" -eq 0 ]; then
+            echo "[pre-push] 适配器分发新鲜度通过"
+        else
+            # 2=缺依赖 / 49,127=解释器不可用 / 脚本崩溃 = 环境问题，不是漂移，放行留痕。
+            echo "[pre-push] ⚠ 分发新鲜度检查未能执行（退出码 $FRESH_RC，环境问题非漂移），放行并留痕：" >&2
+            printf '%s\n' "$FRESH_OUT" | tail -2 >&2
+            echo "    自查：python scripts/check_adapter_freshness.py" >&2
         fi
     fi
 fi
