@@ -109,11 +109,18 @@ def _next_started_at() -> str:
 
     同一 session_key 下每个 L0 文件自带独立起时刻——夹具不得复用同值，
     否则与真实语义（同会话同起时刻 = 同一个文件）不符且会撞唯一索引。
+
+    ⚠️ 必须用相对时间：曾写死 "2026-08-01"，而 Dream 冷归档规则是
+    `started_at 距今 > archive_days(90) → archived`。固定日期会随日历推移
+    越过窗口，令「刚提炼的文件被立即归档」，断言 refined 全部变 archived
+    （2026-10-30 实测 5 例齐挂）。取「1 天前 + 递增秒」既互不相同又永在
+    归档窗口内；需要超期样本的用例显式传 started_at（如 test_run_dream_cold_archive）。
     """
     global _SEED_STARTED_AT_N
     _SEED_STARTED_AT_N += 1
     n = _SEED_STARTED_AT_N
-    return f"2026-08-01T{n // 3600:02d}:{(n % 3600) // 60:02d}:{n % 60:02d}Z"
+    base = datetime.now() - timedelta(days=1)
+    return (base + timedelta(seconds=n)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _seed_raw_file(
