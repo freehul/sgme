@@ -73,6 +73,8 @@ def query_section(
         mem_conn, dims, match=match, limit=limit,
         include_expired=include_expired, time_window_start=time_window_start,
         order_by=sort, priority_min=priority_min,
+        # 2.0 D-23：needs_review=1（解析降级/缺维度）不许进主注入块与人格证据
+        exclude_review=True,
     )
     # 记录注入统计（best-effort：失败不打断注入主流程）
     # T-203 G1：priority_min 已下推 SQL，此处 results 即最终注入集，统计不再虚高

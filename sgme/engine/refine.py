@@ -221,6 +221,13 @@ def refine_file(
             # T-136 facts 透传（2026-09-03 修复）：此前归一化白名单漏 facts →
             # L1 产出的三元组在落库前被丢弃，生产 facts_json 全 NULL（冒烟实证）
             "facts": rm.get("facts"),
+            # 2.0（2026-10-31）：同一个坑再犯一次——归一化的白名单同样会吃掉
+            # 三轴/路由/七值类型/feeling/trait/needs_review。此处显式透传，
+            # 否则解析层算得再对，落库前也会归零（实测：22 条落库后字段全 NULL）。
+            **{k: rm[k] for k in (
+                "type", "subject", "certainty", "derivation", "modality", "route",
+                "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
+            ) if rm.get(k) is not None},
         })
 
     result.memories = normalized_memories

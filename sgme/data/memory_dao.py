@@ -222,6 +222,27 @@ def delete_alias(conn: sqlite3.Connection, alias: str):
     return conn.execute("DELETE FROM dimension_alias WHERE alias=?", (alias,))
 
 
+# 2.0 元数据列（与 _migrate_memory_2_0_columns 保持一致；顺序即 INSERT 顺序）
+_EXTRA_COLUMNS: tuple[str, ...] = (
+    "type", "subject", "certainty", "derivation", "modality", "route",
+    "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
+)
+
+
+def _extra_values(extra: dict | None) -> tuple:
+    """把 2.0 元数据字典摊成 INSERT 参数元组（缺省按列默认值）。"""
+    data = extra or {}
+    vals: list = []
+    for col in _EXTRA_COLUMNS:
+        v = data.get(col)
+        if col == "needs_review":
+            v = int(v or 0)
+        elif col == "l2_facts_json" and isinstance(v, (dict, list)):
+            v = json.dumps(v, ensure_ascii=False)
+        vals.append(v)
+    return tuple(vals)
+
+
 # ---------- memories CRUD ----------
 
 def insert_memory(
@@ -242,6 +263,7 @@ def insert_memory(
     facts: Iterable[dict] | None = None,
     valid_from: str | None = None,
     valid_to: str | None = None,
+    extra: dict | None = None,
 ) -> str:
     """插入一条记忆 + 标签 + 溯源。
 
@@ -257,6 +279,10 @@ def insert_memory(
       [{"subject":..., "predicate":..., "object":...}, ...]，序列化为 JSON 写 facts_json 列
     - valid_from/valid_to（T-138，2026-08-31）：有效期间（事实何时开始/失效）；
       NULL=永久有效；检索侧过期过滤见 search/_filter_expired
+    - extra（2.0，2026-10-31）：2.0 元数据字典，键为 type/subject/certainty/
+      derivation/modality/route/feeling/trait/scene_key/needs_review/l2_facts_json。
+      1.x 解析层已算出这些字段但此前**落库时全部丢弃**，2.0 要按它们做注入过滤
+      与统计，故在此持久化；缺省 None 时按列默认值写入（向后兼容）
     - 返回 memory_id
     """
     mid = memory_id or _uuid()
@@ -271,12 +297,15 @@ def insert_memory(
                 INSERT INTO memories
                   (memory_id, content, content_seg, memory_type, priority, time_velocity,
                    ttl_days, created_at, updated_at, agent_tag, prompt_version, occurred_at,
-                   facts_json, valid_from, valid_to)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   facts_json, valid_from, valid_to,
+                   type, subject, certainty, derivation, modality, route,
+                   feeling, trait, scene_key, needs_review, l2_facts_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (mid, content, segment(content), memory_type, priority, time_velocity,
                  ttl_days, c_at, u_at, agent_tag, prompt_version, o_at,
-                 _facts_to_json(facts), valid_from, valid_to),
+                 _facts_to_json(facts), valid_from, valid_to,
+                 *_extra_values(extra)),
             )
             for dim_id in dimension_ids:
                 conn.execute(
@@ -416,21 +445,29 @@ def archive_memory(
             if not row:
                 conn.rollback()
                 return False
+            # 2.0（2026-10-31）：归档同样要保留 2.0 元数据——归档链是对账与回溯的
+            # 唯一依据，缺字段等于「归档后无法还原这条记忆是什么」。
+            _keys = set(row.keys())
+            base_cols = (
+                "memory_id", "content", "memory_type", "priority", "time_velocity", "ttl_days",
+                "created_at", "updated_at", "agent_tag", "prompt_version", "archived_at",
+                "superseded_by", "occurred_at", "facts_json", "valid_from", "valid_to",
+            )
+            base_vals = [
+                row["memory_id"], row["content"], row["memory_type"], row["priority"],
+                row["time_velocity"], row["ttl_days"], row["created_at"], row["updated_at"],
+                row["agent_tag"], row["prompt_version"], _now_iso(), superseded_by,
+                row["occurred_at"] if "occurred_at" in _keys else None,
+                row["facts_json"] if "facts_json" in _keys else None,
+                row["valid_from"] if "valid_from" in _keys else None,
+                row["valid_to"] if "valid_to" in _keys else None,
+            ]
+            all_cols = base_cols + _EXTRA_COLUMNS
+            all_vals = base_vals + [row[c] if c in _keys else None for c in _EXTRA_COLUMNS]
             conn.execute(
-                """
-                INSERT OR REPLACE INTO memory_archive
-                  (memory_id, content, memory_type, priority, time_velocity, ttl_days,
-                   created_at, updated_at, agent_tag, prompt_version, archived_at, superseded_by,
-                   occurred_at, facts_json, valid_from, valid_to)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (row["memory_id"], row["content"], row["memory_type"], row["priority"],
-                 row["time_velocity"], row["ttl_days"], row["created_at"], row["updated_at"],
-                 row["agent_tag"], row["prompt_version"], _now_iso(), superseded_by,
-                 row["occurred_at"] if "occurred_at" in row.keys() else None,
-                 row["facts_json"] if "facts_json" in row.keys() else None,
-                 row["valid_from"] if "valid_from" in row.keys() else None,
-                 row["valid_to"] if "valid_to" in row.keys() else None),
+                f"INSERT OR REPLACE INTO memory_archive ({','.join(all_cols)}) "
+                f"VALUES ({','.join('?' * len(all_cols))})",
+                tuple(all_vals),
             )
             # 标签、溯源与向量一并清除（归档行保留可溯源；archive 表无 FK 到 memories）
             conn.execute("DELETE FROM memory_tags WHERE memory_id=?", (memory_id,))
@@ -479,6 +516,7 @@ def list_memories_by_dimension(
     time_window_start: str | None = None,
     order_by: str = "updated_at DESC",
     priority_min: int = 0,
+    exclude_review: bool = False,
 ) -> list[dict]:
     """按维度过滤记忆（模板查询用，纯 SQL 零 LLM）。
 
@@ -488,7 +526,10 @@ def list_memories_by_dimension(
     - time_window_start：updated_at > 阈值
     - order_by：默认 updated_at DESC（T-203 F1：静态 section 亦按更新时间取新）
     - priority_min>0：**下推到 SQL**（T-203 G1）——修正前由注入侧在 LIMIT 之后
-      过滤，导致「先截断后滤」使 section 缩水；下推后才能保证满载率。
+      过滤，导致「先截断后滤」使 section 缩水；下推到 SQL 后才能保证满载率。
+    - exclude_review=True（2.0 D-23）：过滤 `needs_review=1` 的待审候选——
+      **不进主注入块、不进人格证据**，只在待审候选页可见。默认 False 保持
+      检索/统计等既有调用方行为不变。
     """
     dims = list(dimension_ids)
     if not dims:
@@ -512,6 +553,9 @@ def list_memories_by_dimension(
         # T-203 G1：priority_min 下推（LIMIT 之前过滤，防 section 缩水）
         sql += " AND m.priority >= ?"
         params.append(priority_min)
+    if exclude_review:
+        # 2.0 D-23：待审候选不进主注入块 / 人格证据（默认不过滤，检索仍可见）
+        sql += " AND COALESCE(m.needs_review, 0) = 0"
     if match == "all":
         sql += " GROUP BY m.memory_id HAVING COUNT(DISTINCT t.dimension_id)=?"
         params.append(len(dims))

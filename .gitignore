@@ -114,3 +114,6 @@ exports/skills-migration-preview/
 # ZCode 工具侧忽略清单（从 .gitignore 同步生成，可重建，不入 git）
 .zcodeignore
 
+
+# 2026-10-31：本地重建试点数据（原件快照 465MB，不入库）
+rebuild-*/

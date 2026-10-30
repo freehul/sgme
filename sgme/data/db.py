@@ -542,6 +542,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_mem_facts_json(conn)
     _migrate_mem_valid_period(conn)
     _migrate_refine_runs_elapsed_ms(conn)
+    _migrate_memory_2_0_columns(conn)
     return conn
 
 
@@ -1173,6 +1174,49 @@ def _migrate_mem_valid_period(conn: sqlite3.Connection) -> None:
         for col in ("valid_from", "valid_to"):
             if col not in cols:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+    conn.commit()
+
+
+def _migrate_memory_2_0_columns(conn: sqlite3.Connection) -> None:
+    """老库迁移：memories/memory_archive 补 2.0 L2 提取层新增列（2026-10-31）。
+
+    依据 `SGME2.0-设计方案-V1.0.md` D-23 / D-30 / D-53：
+
+    - ``feeling``：主事件的感受字段（D-23 main_event{content/occurred_at/feeling}）
+    - ``trait``：特质原文，≤50 字，只给原文不给域（D-23）
+    - ``scene_key``：场景标签单列，替代 1.x scenes 表（D-53 取消场景聚合）；
+      由 L2 落库钩子在同一事务内计算，不建场景表、不存场景正文
+    - ``needs_review``：待审闸门（D-23 二轮修订 P1-2）——1 = 不进主注入块、
+      不进人格证据，只在待审候选可见；默认 0 保证存量记忆零影响
+
+    幂等：列已存在则无操作；memory_archive 同步补，保证归档链能还原全字段。
+    """
+    new_cols = (
+        ("feeling", "TEXT"),
+        ("trait", "TEXT"),
+        ("scene_key", "TEXT"),
+        ("needs_review", "INTEGER NOT NULL DEFAULT 0"),
+        # 未拆事实 + 因果边（JSON）：2.0 字段落地前的过渡落点，
+        # 结构 {"facts": [...未拆事实...], "causes": [{"from","to"}...]}
+        ("l2_facts_json", "TEXT"),
+        # 三轴 + 路由 + 七值类型（D-66/D-67）：1.x 解析层已算出但**落库时被丢弃**，
+        # 2.0 要能按这些字段做注入过滤与统计，必须先持久化
+        ("type", "TEXT"),
+        ("subject", "TEXT"),
+        ("certainty", "TEXT"),
+        ("derivation", "TEXT"),
+        ("modality", "TEXT"),
+        ("route", "TEXT"),
+    )
+    for table in ("memories", "memory_archive"):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if not cols:  # 表不存在 → 交给 DDL 建表负责
+            continue
+        for col, ddl_type in new_cols:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl_type}")
+    # 场景标签索引（D-53：只有一个标签，但检索/聚合要按它过滤）
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_scene ON memories(scene_key, memory_id)")
     conn.commit()
 
 

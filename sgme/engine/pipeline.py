@@ -257,6 +257,9 @@ def _fallback_direct_store(
             dimension_ids=m.get("dimension_ids", m.get("dimensions", [])),
             sources=[(src_ref, "session")],
             prompt_version=prompt_version,
+            extra={k: m[k] for k in ("type", "subject", "certainty", "derivation",
+                                    "modality", "route", "feeling", "trait", "scene_key",
+                                    "needs_review", "l2_facts_json") if m.get(k) is not None},
         )
         m["memory_id"] = mid  # 写回，供 L2 场景关联
         stored += 1

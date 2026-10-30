@@ -905,6 +905,17 @@ def _record_empty_pool_run(
     )
 
 
+_EXTRA_KEYS = (
+    "type", "subject", "certainty", "derivation", "modality", "route",
+    "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
+)
+
+
+def _extra_of(mem: dict) -> dict:
+    """取出一条记忆里的 2.0 元数据（未出现的键不写，避免覆盖列默认值）。"""
+    return {k: mem[k] for k in _EXTRA_KEYS if mem.get(k) is not None}
+
+
 def _store_memory(
     mem_conn: sqlite3.Connection,
     new_mem: dict,
@@ -935,6 +946,9 @@ def _store_memory(
         prompt_version=prompt_version,
         occurred_at=new_mem.get("occurred_at"),
         facts=new_mem.get("facts"),
+        # 2.0（2026-10-31）：三轴/路由/七值类型/feeling/trait/needs_review 等
+        # 由解析层算出，落库必须一并写入——此前这些字段在 INSERT 时被整体丢弃
+        extra=_extra_of(new_mem),
     )
 
 
