@@ -63,15 +63,15 @@ get_json_field() { # $1=file $2=field
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" 2>/dev/null | head -1
 }
 
-# ---- 锁：已有锁则跳过（防止并发）----
-if [ -f "$LOCK" ]; then
-  # 锁超过 30 分钟视为陈旧，允许抢占
-  if [ -n "$(find "$LOCK" -mmin +30 2>/dev/null)" ]; then
-    log "锁文件陈旧（>30min），清除后继续"
-    rm -f "$LOCK"
-  else
-    exit 0
-  fi
+# ---- 原子自锁（T-309，2026-10-30 实测修订）----
+# 原实现是「[ -f "$LOCK" ] 检查 → touch」两步，检查与置锁之间存在竞态窗口：
+# 同一分钟两个实例会同时通过（实测 10:15/10:20 各出现双实例 —— 一方 compose up
+# 失败自动回滚、另一方成功，容器被重建两次）。改用 flock -n 原子锁，
+# 无论多少调用方（多处 cron 配置 / 手工执行）都只允许一个实例。
+exec 200>>"$LOCK"
+if ! flock -n 200; then
+  log "已有实例在运行（flock 未获取），跳过本轮"
+  exit 0
 fi
 
 # ---- 无请求则退出 ----
@@ -108,7 +108,6 @@ if echo "$CURRENT_IMAGE" | grep -qE ":${TARGET_NO_V}(-|:|$)" ; then
 fi
 
 # ============ 开始执行更新 ============
-touch "$LOCK"
 log "=== 开始自动更新 → ${TARGET_VERSION}（当前镜像 $CURRENT_IMAGE）==="
 OLD_IMAGE="$CURRENT_IMAGE"
 NEW_TAG="${TARGET_NO_V}-nas-autoupd"
@@ -130,7 +129,6 @@ mark_failed() { # $1=原因
   cat > "$REQUEST_FILE" <<EOF
 {"target_version": "$TARGET_VERSION", "requested_at": "$REQUESTED_AT", "status": "failed", "error": "$1"}
 EOF
-  rm -f "$LOCK"
   exit 1
 }
 
@@ -247,5 +245,4 @@ log "版本确认：$RUNNING_VERSION"
 # 6. 成功：标记 done + 清请求
 log "=== 更新成功 → ${TARGET_VERSION} ==="
 rm -f "$REQUEST_FILE"
-rm -f "$LOCK"
 exit 0

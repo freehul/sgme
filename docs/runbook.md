@@ -843,16 +843,18 @@ docker compose up -d --build
 - WebUI 检测到新版本（GitHub Releases API，`update_check` 配置段可调 enabled/interval_hours/source）→ 健康卡片显示提示条 → 用户确认「立即更新」→ 写意图文件 `$SGME_HOME/update/request.json`
 - 主机侧代理 `scripts/sgme-host-updater.sh`（NAS 主机 cron 每 5 分钟轮询）执行：git pull → docker build 新镜像 → 备份 compose → 换 tag → compose up → 健康验证 → 成功清请求 / 失败自动回滚旧镜像
 - 容器无特权（不挂 docker.sock），更新由主机脚本执行
-- **cron 挂载（T-309，2026-10-30 实测修订）**：`/etc/cron.d/` 下**只有 `sgme-watchdog`（root）**，没有 updater 条目（旧文档「root crontab 承担」与实机不符，是 10-29 实测「写意图文件 10 分钟无人处理」的根因）；LEO 无免密 sudo（`sudo -n` 报 password required），改挂 **LEO 用户 crontab**（已实测生效：probe 条目 1 分钟内执行），也符合脚本「必须以 src 属主 LEO 运行、不可用 root」的前置：
+- **cron 挂载（T-309，2026-10-30 实测修订）**：`/etc/cron.d/` 下**只有 `sgme-watchdog`（root）**，没有 updater 条目（旧文档「root crontab 承担」与实机不符，是 10-29 实测「写意图文件 10 分钟无人处理」的根因）；LEO 无免密 sudo（`sudo -n` 报 password required）。**实测存在 root 侧触发源**（`crontab -r` 清空 LEO crontab 后，10:25:01 仍自动触发更新），故正确做法是**只保留一处挂载**，不要再加第二条：
   ```bash
-  # 先把 <NAS_ROOT> 替换为 NAS 上的项目根（共享文件夹下的 Docker/sgme 目录）
-  crontab -l   # 现状
-  printf '%s\n' '*/5 * * * * flock -n <NAS_ROOT>/logs/updater.flock <NAS_ROOT>/scripts/sgme-host-updater.sh >> <NAS_ROOT>/logs/updater.log 2>&1' | crontab -
-  crontab -l   # 校验（应回显该行）
+  # 先确认没有重复挂载（重复 = 双实例，见下条）
+  crontab -l                                   # LEO 侧（应为空或仅一条）
+  ls /etc/cron.d/                              # root 侧（只有 sgme-watchdog 时说明触发源在 root crontab）
+  # 如需在 LEO 侧单独挂（root 触发源已移除时）：
+  printf '%s\n' '*/5 * * * * <NAS_ROOT>/scripts/sgme-host-updater.sh >> <NAS_ROOT>/logs/updater.log 2>&1' | crontab -
   ```
-- **必须用 `flock -n` 包装**（2026-10-30 实测）：脚本自身「`[ -f LOCK ]` 检查 → `touch LOCK`」存在竞态窗口，同一分钟两个实例会同时通过检查；无 flock 时实测出现双实例并发（一个 `compose up 失败` → 自动回滚 v1.10.8，另一个更新成功 v1.10.9，容器被重建两次）。加 `flock -n` 后同分钟只允许一个实例，另一个直接退出
+- **并发防护**：脚本已内置 `flock -n` 原子自锁（2026-10-30 修订；原实现「`[ -f LOCK ]` 检查 → `touch`」两步有竞态窗口）。**但仍必须只保留一处 cron 挂载**——实测：LEO 用户 crontab 与既有 root 侧触发源重复时，同一分钟起两个实例，`git pull` 并发撞 ref 锁（`cannot lock ref 'refs/remotes/origin/main'` / `Need to specify how to reconcile divergent branches`）→ 一方 `compose up` 失败自动回滚、另一方成功，容器被重建两次
+- **NAS 上 `scripts/` 属 root**（`drwx------ root root`），LEO 无法覆盖脚本副本；内置自锁随下一次 root 侧刷新生效，当前以「只留一处挂载」为准
 - 前置：`data/update` 属主 LEO；意图文件必须带 `"status": "pending"`（缺该字段或其它值 → 脚本静默 exit 0）
-- 验收口径（2026-10-30 实测）：写 pending 意图文件后 ≤10 分钟，`logs/updater.log` 出现「=== 开始自动更新 → vX ===」与「=== 更新成功 → vX ===」，`docker ps` 镜像 tag 同步变化
+- 验收口径（2026-10-30 实测）：写 pending 意图文件后 ≤10 分钟，`logs/updater.log` 仅出现**一条**「=== 开始自动更新 → vX ===」与「=== 更新成功 → vX ===」，`docker ps` 镜像 tag 同步变化
 
 ### 16.5 NAS（群晖）部署
 
