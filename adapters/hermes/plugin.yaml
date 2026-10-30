@@ -1,5 +1,5 @@
 name: sgme
-version: "1.10.9"  # 版本口径跟随 SGME 版本（1.10.9 = NAS 自动更新挂 LEO 用户 crontab 并端到端验证（T-309）；1.10.8 = D-74 真实感指标埋点 /metrics），见 README
+version: "1.10.10"  # 版本口径跟随 SGME 版本（1.10.10 = 自动更新 cron 加 flock 防并发双实例（T-309 实测）；1.10.9 = LEO 用户 crontab 挂载；1.10.8 = D-74 真实感指标埋点）
 requires_hermes: ">=0.22.0"  # catalog 规则14：与 plugin-catalog/sgme.yaml 同步声明；旧版 Hermes 只认 manifest 这份
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理+沟通角色（44 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"
