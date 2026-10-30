@@ -89,6 +89,13 @@ Restart Hermes. Verify with `hermes plugins list` (the sgme row should read
 `enabled`) and by asking a question about a past session — you should see
 `sgme_memory_search` fire.
 
+> **⚠️ 升级插件后必须重启的是 gateway 进程，不是 dashboard / 桌面壳**（2026-10-30 实测踩坑）：
+> 会话实际由 `python -m hermes_cli.main gateway run` 常驻进程处理（`gateway.run: inbound message`
+> 日志即出自它）。只重启 dashboard 或桌面窗口时，gateway 仍持有旧插件字节码，日志会一直写
+> `Memory provider 'sgme' registered (44 tools)`——即使磁盘上的 `__init__.py` 已是新版（46 定义）
+> 且 md5 与仓库一致。判定方法：`Get-CimInstance Win32_Process -Filter "Name='python.exe'"` 找
+> `gateway run` 的 PID 与启动时间；重启该进程后再看日志里的工具数是否变化。
+
 ## Configuration
 
 Desktop → **Settings → Memory & Context → Persistent memory** shows every option (the SGME
