@@ -855,6 +855,7 @@ docker compose up -d --build
 - **NAS 上 `scripts/` 属 root**（`drwx------ root root`），LEO 无法覆盖脚本副本；内置自锁随下一次 root 侧刷新生效，当前以「只留一处挂载」为准
 - 前置：`data/update` 属主 LEO；意图文件必须带 `"status": "pending"`（缺该字段或其它值 → 脚本静默 exit 0）
 - 验收口径（2026-10-30 实测）：写 pending 意图文件后 ≤10 分钟，`logs/updater.log` 仅出现**一条**「=== 开始自动更新 → vX ===」与「=== 更新成功 → vX ===」，`docker ps` 镜像 tag 同步变化
+- **构建耗时与缓存纪律（2026-10-30 实测）**：`Dockerfile` 的 pip 层**之前不得 COPY 版本号会变的文件**（`pyproject.toml` / `README.md` / 源码）——改前每次版本 bump 都会让依赖层失效并全量重装，实测 **31 分 58 秒**（NAS 到 pypi.org 4.5–50 KB/s）。改后（依赖清单固化在 RUN 指令内 + 阿里云 pip 镜像兜底 pypi）实测：首次重装 **13 分 19 秒**、仅 bump 版本 **15 秒**（依赖层 `#8–#15` 全 CACHED）。**只有真正改依赖时才需要重装**
 
 ### 16.5 NAS（群晖）部署
 
