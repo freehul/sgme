@@ -30,8 +30,15 @@ RUN apt-get update \
     && git config --global --add safe.directory /git/skills-hub.git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+# ---- 依赖层（缓存友好，2026-10-30 T-309 修订）----
+# ⚠️ pip 层之前**不要** COPY 版本号会变的文件（pyproject.toml / README.md / 源码）：
+#    否则每次版本 bump 都会让本层缓存失效并全量重装依赖——实测 NAS 到 pypi.org 仅
+#    4.5–50 KB/s，一次失效重装耗时 32 分钟。依赖清单固化在本 RUN 指令里，代码变更不触发本层。
+# 国内镜像：NAS 出网到 pypi.org 极慢（实测 4.5 KB/s），阿里云约 25 KB/s；pypi 作兜底。
 RUN pip install --no-cache-dir \
+    --index-url https://mirrors.aliyun.com/pypi/simple/ \
+    --extra-index-url https://pypi.org/simple \
+    --trusted-host mirrors.aliyun.com \
     "fastapi>=0.110" \
     "uvicorn[standard]>=0.27" \
     "pyyaml>=6.0" \
