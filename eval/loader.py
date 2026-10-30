@@ -30,7 +30,7 @@ logger = logging.getLogger("eval.loader")
 # 合法枚举值
 VALID_SOURCES = {"real", "synthetic", "edge"}
 VALID_DIFFICULTIES = {"easy", "medium", "hard"}
-VALID_MEMORY_TYPES = {"persona", "episodic", "instruction"}
+VALID_MEMORY_TYPES = {"persona", "episodic", "instruction", "fact"}
 VALID_TIME_VELOCITIES = {"static", "dynamic"}
 VALID_MODES = {"daily", "coding", "work", "full"}
 
