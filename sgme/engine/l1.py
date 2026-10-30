@@ -339,8 +339,19 @@ def _enforce_forget_content(
     """软遗忘正文强制重写（D-68）：正文只留固定句式 + topic，原文只存 sha256。
 
     实测依据：A/B 实测模型把被忘内容原样写进正文 22/22 违反，提示词治不住。
+
+    2026-10-30 修正：模型普遍习惯给 forget 填 `{"topic": null, "kind": null}` 占位，
+    旧判据 `isinstance(dict)` 把这种空占位当成遗忘请求，导致**每条记忆正文都被改写成
+    固定句式**（NuExtract3 实测 10/10 触发，模型原话"我叫张明"被换成"用户要求不再
+    主动提及某主题"）。现改为：空占位不算遗忘请求；无 forget 字段时仅 instruction
+    保留兜底重写（既有测试约定）。
     """
-    if not (memory_type == "instruction" or isinstance(forget_raw, dict)):
+    if isinstance(forget_raw, dict):
+        _topic = str(forget_raw.get("topic") or "").strip()
+        _kind = str(forget_raw.get("kind") or "").strip()
+        if not _topic and not _kind:
+            return content, None  # 空占位（模型习惯性填写）不是遗忘请求
+    elif memory_type != "instruction":
         return content, None
     import hashlib
 
