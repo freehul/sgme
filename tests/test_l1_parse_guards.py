@@ -110,14 +110,31 @@ def test_forget_content_is_rewritten_and_original_not_kept():
     assert "ankle" not in str(it["forget"].get("redacted_sha256", "")).lower()
 
 
-def test_forget_without_topic_falls_back_to_generic_phrase():
+def test_instruction_without_forget_field_keeps_content():
+    """instruction ≠ 遗忘请求：没有 forget 结构化信号时正文原样保留。
+
+    实据（2026-10-31 T-310 三版对照 + 生产库）：v007/v008/v012 产出里分别有
+    32/20/19 条 instruction 类条目不带 forget 字段，旧判据会把正文整体替换成
+    固定句式；生产库 35,810 条里已有 47 条变成该句式，**全部是 instruction 类型**。
+    """
+    content = "用户要求：删除操作一律走回收站，绝不物理删除。"
+    it = _parse_item(_item(content=content, memory_type="instruction"), DIMS)
+    assert it is not None
+    assert it["content"] == content
+    assert it["forget"] is None
+    assert it["memory_type"] == "instruction"
+
+
+def test_empty_forget_placeholder_does_not_rewrite():
+    """模型习惯给 forget 填 {topic: null, kind: null} 占位——不算遗忘请求（回归）。"""
+    content = "用户要求：摄像头必须与屏幕同一个面。"
     it = _parse_item(
-        _item(content="用户不想再提脚踝受伤的事", memory_type="instruction"),
+        _item(content=content, memory_type="instruction", forget={"topic": None, "kind": None}),
         DIMS,
     )
     assert it is not None
-    assert "脚踝" not in it["content"]
-    assert it["memory_type"] == "instruction"
+    assert it["content"] == content
+    assert it["forget"] is None
 
 
 def test_normal_item_content_untouched():

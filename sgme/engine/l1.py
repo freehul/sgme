@@ -340,27 +340,29 @@ def _enforce_forget_content(
 
     实测依据：A/B 实测模型把被忘内容原样写进正文 22/22 违反，提示词治不住。
 
-    2026-10-30 修正：模型普遍习惯给 forget 填 `{"topic": null, "kind": null}` 占位，
-    旧判据 `isinstance(dict)` 把这种空占位当成遗忘请求，导致**每条记忆正文都被改写成
-    固定句式**（NuExtract3 实测 10/10 触发，模型原话"我叫张明"被换成"用户要求不再
-    主动提及某主题"）。现改为：空占位不算遗忘请求；无 forget 字段时仅 instruction
-    保留兜底重写（既有测试约定）。
+    判据演进（两次都是实测驱动）：
+    - 2026-10-30：模型习惯给 forget 填 `{"topic": null, "kind": null}` 占位，旧判据
+      `isinstance(dict)` 把空占位当遗忘请求 → **每条**正文都被改写（NuExtract3 实测 10/10）。
+      改为空占位不算遗忘请求。
+    - 2026-10-31：旧代码在「无 forget 字段」时只放过非 instruction 类型，于是**用户指令类
+      记忆的正文被整体替换**——模型把普通指令（「删除操作走回收站」）判成 instruction 是
+      正常行为，与遗忘无关。实据：v007/v008/v012 三代提示词产出里分别 32/20/19 条
+      instruction 条目不带 forget 字段被改写（占 19%–27%）；生产库 35,810 条里 47 条正文
+      已是该固定句式，**全部 instruction 类型**，原文只剩哈希不可恢复。
+
+    现行判据：**只有 forget.topic / forget.kind 非空才算遗忘请求**，类型不再是信号。
+    `memory_type` 参数保留仅为兼容既有调用点，不再参与判定。
     """
-    if isinstance(forget_raw, dict):
-        _topic = str(forget_raw.get("topic") or "").strip()
-        _kind = str(forget_raw.get("kind") or "").strip()
-        if not _topic and not _kind:
-            return content, None  # 空占位（模型习惯性填写）不是遗忘请求
-    elif memory_type != "instruction":
-        return content, None
+    if not isinstance(forget_raw, dict):
+        return content, None  # 无结构化遗忘信号：不是遗忘请求（instruction 类型同理）
+    topic_raw = str(forget_raw.get("topic") or "").strip()
+    kind_raw = str(forget_raw.get("kind") or "").strip()
+    if not topic_raw and not kind_raw:
+        return content, None  # 空占位（模型习惯性填写）不是遗忘请求
     import hashlib
 
-    topic, kind = "", "detail"
-    if isinstance(forget_raw, dict):
-        topic = str(forget_raw.get("topic") or "").strip()[:40]
-        k = str(forget_raw.get("kind") or "").strip()
-        if k in {"preference", "event", "detail"}:
-            kind = k
+    topic = topic_raw[:40]
+    kind = kind_raw if kind_raw in {"preference", "event", "detail"} else "detail"
     cjk = sum(1 for ch in content if "\u4e00" <= ch <= "\u9fff")
     zh = cjk * 2 >= max(1, sum(1 for ch in content if ch.isalnum()))
     # 正文只留固定句式，**不带 topic**——topic 若写进正文，检索/注入时会重新浮现被忘的内容
