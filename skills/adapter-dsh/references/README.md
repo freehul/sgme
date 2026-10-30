@@ -58,6 +58,30 @@ dsh plugin --profile web add "link:<project-root>/adapters/dsh/sgme-bridge"
 dsh --profile web
 ```
 
+## 桌面版 profile 升级（本地构建优先，2026-10-30 实测）
+
+dsh 桌面版的适配器以 npm 包 `dsh-sgme` 落在 `<dsh-home>/profiles/<profile>/node_modules`，
+要升到「刚构建的仓库产物」用本地 tgz（与 `dsh-nanomuse` 同形态）：
+
+```bash
+# 1. 打包（产物不入库，打完即删）
+cd <project-root>/adapters/dsh/sgme-bridge && pnpm pack     # → dsh-sgme-<ver>.tgz
+
+# 2. 放到 artifact 目录，profile 依赖改成 file: 路径
+cp dsh-sgme-0.6.3.tgz <dsh-home>/plugin-artifacts/
+# <dsh-home>/profiles/<profile>/package.json:
+#   "dsh-sgme": "file:<dsh-home>/plugin-artifacts/dsh-sgme-0.6.3.tgz"
+
+# 3. 安装（两条参数都必带）
+cd <dsh-home>/profiles/<profile> && pnpm install --no-frozen-lockfile --ignore-scripts
+```
+
+- **`--ignore-scripts` 必带**：profile 依赖树含 `inotify@1.4.6`，Windows 上会触发 node-gyp 并要
+  ClangCL 工具链，缺则整单失败（`error MSB8020`）；该包是 Linux 文件监视，Windows 用不上
+- **不要裸跑 `pnpm install`**：若 profile lockfile 与 pnpm 默认 `auto-install-peers` 不一致，会报
+  `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`；在 profile 目录放 `.npmrc`（`auto-install-peers=false`）对齐
+- 装完**必须重启 dsh**（`dsh` 无 reload 子命令）；验证方式是 `adapter_parity --strict`（工具面无漂移）+ 会话内 `/sgme`
+
 ## 验证
 
 ```bash
