@@ -847,9 +847,10 @@ docker compose up -d --build
   ```bash
   # 先把 <NAS_ROOT> 替换为 NAS 上的项目根（共享文件夹下的 Docker/sgme 目录）
   crontab -l   # 现状
-  printf '%s\n' '*/5 * * * * <NAS_ROOT>/scripts/sgme-host-updater.sh >> <NAS_ROOT>/logs/updater.log 2>&1' | crontab -
+  printf '%s\n' '*/5 * * * * flock -n <NAS_ROOT>/logs/updater.flock <NAS_ROOT>/scripts/sgme-host-updater.sh >> <NAS_ROOT>/logs/updater.log 2>&1' | crontab -
   crontab -l   # 校验（应回显该行）
   ```
+- **必须用 `flock -n` 包装**（2026-10-30 实测）：脚本自身「`[ -f LOCK ]` 检查 → `touch LOCK`」存在竞态窗口，同一分钟两个实例会同时通过检查；无 flock 时实测出现双实例并发（一个 `compose up 失败` → 自动回滚 v1.10.8，另一个更新成功 v1.10.9，容器被重建两次）。加 `flock -n` 后同分钟只允许一个实例，另一个直接退出
 - 前置：`data/update` 属主 LEO；意图文件必须带 `"status": "pending"`（缺该字段或其它值 → 脚本静默 exit 0）
 - 验收口径（2026-10-30 实测）：写 pending 意图文件后 ≤10 分钟，`logs/updater.log` 出现「=== 开始自动更新 → vX ===」与「=== 更新成功 → vX ===」，`docker ps` 镜像 tag 同步变化
 
