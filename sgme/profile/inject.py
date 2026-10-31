@@ -75,6 +75,9 @@ def query_section(
         order_by=sort, priority_min=priority_min,
         # 2.0 D-23：needs_review=1（解析降级/缺维度）不许进主注入块与人格证据
         exclude_review=True,
+        # 2.0 D-67：技能/知识候选不进画像——skill_candidate 是可复用经验（该进技能库），
+        # wiki_candidate 该进知识库；1.x 存量 route 为 NULL，COALESCE 后按 memory 对待。
+        routes=("memory",),
     )
     # 记录注入统计（best-effort：失败不打断注入主流程）
     # T-203 G1：priority_min 已下推 SQL，此处 results 即最终注入集，统计不再虚高

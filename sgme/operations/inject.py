@@ -191,6 +191,8 @@ def inject(
             results = memory_dao.list_memories_by_dimension(
                 mem_conn, dims, match=match, limit=limit,
                 include_expired=False,
+                # 2.0 D-67：技能/知识候选不进画像（与 profile/inject 口径一致）
+                routes=("memory",),
             )
             # 记录注入统计（best-effort）
             from sgme.data.memory_stats_dao import record_inject

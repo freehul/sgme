@@ -51,6 +51,8 @@ def generate_summary(mem_conn, cfg, client=None) -> str | None:
         memories = memory_dao.list_memories_by_dimension(
             mem_conn, STATIC_DIMENSIONS, match="any", limit=RECALL_LIMIT,
             include_expired=False,
+            # 2.0 D-67：人格摘要只用 route=memory 的记忆，技能/知识候选不进
+            routes=("memory",),
         )
         # priority 过滤
         memories = [m for m in memories if m.get("priority", 0) >= RECALL_PRIORITY_MIN]
@@ -151,6 +153,8 @@ def fallback_static(mem_conn, cfg) -> list[dict]:
     memories = memory_dao.list_memories_by_dimension(
         mem_conn, STATIC_DIMENSIONS, match="any", limit=FALLBACK_LIMIT,
         include_expired=False,
+        # 2.0 D-67：降级直出同样只取 route=memory
+        routes=("memory",),
     )
     return [m for m in memories if m.get("priority", 0) >= FALLBACK_PRIORITY_MIN]
 

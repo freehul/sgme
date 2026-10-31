@@ -517,6 +517,7 @@ def list_memories_by_dimension(
     order_by: str = "updated_at DESC",
     priority_min: int = 0,
     exclude_review: bool = False,
+    routes: Iterable[str] | None = None,
 ) -> list[dict]:
     """按维度过滤记忆（模板查询用，纯 SQL 零 LLM）。
 
@@ -530,6 +531,9 @@ def list_memories_by_dimension(
     - exclude_review=True（2.0 D-23）：过滤 `needs_review=1` 的待审候选——
       **不进主注入块、不进人格证据**，只在待审候选页可见。默认 False 保持
       检索/统计等既有调用方行为不变。
+    - routes（2.0 D-67）：只取这些 route 的记忆。注入侧传 ("memory",)——`skill_candidate`
+      （可复用经验，该进技能库）与 `wiki_candidate`（该进知识库）**不得污染画像**；
+      1.x 存量记忆 route 为 NULL，按 memory 对待（COALESCE）。默认 None 不过滤。
     """
     dims = list(dimension_ids)
     if not dims:
@@ -556,6 +560,10 @@ def list_memories_by_dimension(
     if exclude_review:
         # 2.0 D-23：待审候选不进主注入块 / 人格证据（默认不过滤，检索仍可见）
         sql += " AND COALESCE(m.needs_review, 0) = 0"
+    if routes:
+        rt = tuple(routes)
+        sql += f" AND COALESCE(m.route, 'memory') IN ({','.join('?' * len(rt))})"
+        params.extend(rt)
     if match == "all":
         sql += " GROUP BY m.memory_id HAVING COUNT(DISTINCT t.dimension_id)=?"
         params.append(len(dims))
