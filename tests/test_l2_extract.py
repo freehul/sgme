@@ -171,3 +171,22 @@ def test_main_without_static_facts_is_fact():
     unit = _unit(facts=[{"type": "状态", "content": "用户本周腰疼"}])
     recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
     assert recs[0]["memory_type"] == "fact"
+
+
+def test_main_event_as_string_is_tolerated():
+    """模型偶尔把 main_event 写成字符串，不能因此把整个文件判失败。
+
+    2026-10-31 实测：全量重建 320 个文件里 21 个因 AttributeError 整file丢失。
+    """
+    import json as _json
+
+    dims = [{"id": "preferences", "display_name": "偏好"}]
+    payload = _json.dumps([{
+        "main_event": "用户决定删除操作一律走回收站",
+        "dimensions": ["preferences"],
+        "route": "memory",
+        "facts": [],
+    }], ensure_ascii=False)
+    recs = parse_l2_output(payload, dims)
+    assert len(recs) == 1
+    assert "回收站" in recs[0]["content"]

@@ -89,6 +89,12 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
         return []  # D-67：按来源判定的降噪结果，直接分流
 
     main = unit.get("main_event") or {}
+    # 模型偶尔把 main_event 写成字符串（"main_event": "用户做了某事"）而不是对象，
+    # 直接 .get 会 AttributeError 把整个文件判失败（2026-10-31 实测：320 个文件里 21 个因此丢）。
+    if isinstance(main, str):
+        main = {"content": main}
+    if not isinstance(main, dict):
+        main = {}
     facts = [f for f in (unit.get("facts") or []) if isinstance(f, dict)]
     causes = [c for c in (unit.get("causes") or []) if isinstance(c, dict)]
     dims = _dimensions_of(unit, dimensions)
