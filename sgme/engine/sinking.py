@@ -21,6 +21,10 @@ _SKILL_CALL = re.compile(r"(?:sgme_)?skill_put")
 _SKILL_PATH = re.compile(r"skills[\\/]([A-Za-z0-9_-]+)[\\/]([A-Za-z0-9._-]+)[\\/]SKILL\.md", re.I)
 
 _PAGE_ID = re.compile(r"page_id[\"']?\s*[:=]\s*[\"']?([\w\u4e00-\u9fff.:-]{3,90})")
+#: 搜索结果里的 page_id（真 slug 一定含连字符且 ≥8 字符，能滤掉 "p1" 这类占位）
+_PAGE_ID_SLUG = re.compile(r"page_id[\"']?\s*[:=]\s*[\"']([\w\u4e00-\u9fff.-]{8,120})[\"']")
+#: slug 后紧跟的标题（搜索结果形态：{"page_id": ..., "title": ...}）
+_TITLE_AFTER = re.compile(r"[^}]{0,120}?[\"']title[\"']\s*:\s*[\"']([^\"']{2,80})[\"']")
 _TITLE = re.compile(r"(?:title|页面标题)[\"']?\s*[:=]\s*[\"']([^\"'\n]{2,80})")
 _SKILL_NAME = re.compile(r"(?:name|技能名)[\"']?\s*[:=]\s*[\"']([a-z0-9][a-z0-9_-]{2,60})")
 
@@ -68,6 +72,16 @@ def extract_sunk_refs(text: str, *, max_refs: int = MAX_REFS) -> list[SunkRef]:
         ref = SunkRef("skill", nm.group(1))
         found.setdefault((ref.kind, ref.ref_id), ref)
 
+    # 搜索结果/回执里的 page_id + 标题（真实原件里绝大多数 page_id 是这种形态）
+    for m in _PAGE_ID_SLUG.finditer(text):
+        pid = m.group(1)
+        if "-" not in pid:
+            continue
+        tail = text[m.end(): m.end() + 200]
+        tm = _TITLE_AFTER.search(tail)
+        ref = SunkRef("wiki", pid, tm.group(1) if tm else None)
+        found.setdefault((ref.kind, ref.ref_id), ref)
+
     for m in _SKILL_PATH.finditer(text):
         name = m.group(2)
         # SKILL.md 上一层目录名即技能名；分类目录只作上下文
@@ -85,22 +99,36 @@ def render_sunk_refs(refs: list[SunkRef]) -> str:
     return "\n".join(r.line() for r in refs)
 
 
-def link_targets(content: str, refs: list[SunkRef], *, min_overlap: int = 3) -> list[SunkRef]:
-    """按标题/技能名与记忆正文的重合度挑出该挂的条目（落库建关联用）。
+def _tokens(text: str) -> set[str]:
+    """取「显著词」：英文/数字词（≥3 字符）+ 中文二元组。
 
-    判据保守：标题（或技能名）去掉空格/标点后，至少 ``min_overlap`` 个连续字符
-    出现在正文里。宁可不挂，也不乱挂——乱挂会让「详情见」指错地方。
+    单字符与 2 字词不参与——实测 3 字窗口会把「VPS」「流量」这种通用词命中，
+    导致一条记忆挂上十几个不相干的页（宁可漏，不乱挂）。
+    """
+    if not text:
+        return set()
+    ascii_words = {w.lower() for w in re.findall(r"[A-Za-z0-9]{3,}", text)}
+    zh = re.sub(r"[^\u4e00-\u9fff]", "", text)
+    bigrams = {zh[i: i + 2] for i in range(len(zh) - 1)}
+    return ascii_words | bigrams
+
+
+def link_targets(content: str, refs: list[SunkRef], *, min_hits: int = 2) -> list[SunkRef]:
+    """按「显著词重合数」挑出该挂的详情页（落库建关联用）。
+
+    判据：标题（或技能名）与记忆正文共享 **≥ min_hits 个显著词**。
+    宁可漏挂也不乱挂——乱挂会让「详情见 …」指错地方，比没有索引更坏。
     """
     if not content or not refs:
         return []
-    norm = re.sub(r"[\s_\-：:，,。.（）()《》\"'`]", "", content)
+    mem_tokens = _tokens(content)
+    if not mem_tokens:
+        return []
     out: list[SunkRef] = []
     for ref in refs:
-        key = re.sub(r"[\s_\-：:，,。.（）()《》\"'`]", "", ref.title or ref.ref_id)
-        if len(key) < min_overlap:
+        key_tokens = _tokens(ref.title or ref.ref_id)
+        if not key_tokens:
             continue
-        # 用 key 的若干连续子串探命中（避免整串不等就没命中）
-        hit = any(key[i: i + min_overlap] in norm for i in range(max(1, len(key) - min_overlap + 1)))
-        if hit:
+        if len(key_tokens & mem_tokens) >= min_hits:
             out.append(ref)
     return out

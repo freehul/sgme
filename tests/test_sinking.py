@@ -72,3 +72,21 @@ def test_link_targets_matches_by_title_overlap():
 def test_link_targets_ignores_too_short_title():
     refs = [sinking.SunkRef("wiki", "page-1", "参数")]
     assert sinking.link_targets("参数", refs) == []
+
+
+def test_extracts_page_id_from_search_results():
+    """真实原件里 page_id 大多出现在 wiki_search 结果，而不是 add 调用旁。"""
+    text = (
+        '{"query": "雷池 WAF 部署", "count": 1, "results": [{"page_id": '
+        '"雷池-safeline-waf-部署到-vps-全记录-2026-10-26-324963fb", '
+        '"title": "雷池 SafeLine WAF 部署全记录", "status": "archived"}]}'
+    )
+    refs = sinking.extract_sunk_refs(text)
+    assert len(refs) == 1
+    assert refs[0].ref_id == "雷池-safeline-waf-部署到-vps-全记录-2026-10-26-324963fb"
+    assert refs[0].title == "雷池 SafeLine WAF 部署全记录"
+
+
+def test_ignores_placeholder_page_ids():
+    """文档里举的 "p1" 这类占位不是真页，不能挂。"""
+    assert sinking.extract_sunk_refs('返回 {"page_id": "p1"}') == []

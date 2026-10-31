@@ -136,6 +136,20 @@ def refine_file(
         result.content_hash = current_hash
         return result
 
+    # 沉淀清单（2026-10-31 用户定）：**必须在剪枝之前抽**——知识库 page_id 绝大多数
+    # 出现在 tool 回执里，剪枝会把 tool 输出整段抹掉，剪枝后再抽永远是空清单
+    # （实测教训：端到端用例把 page_id 放在 assistant 消息里能过，真实会话全是 tool 回执 → 挂 0 条）。
+    from sgme.engine import sinking as sinking_mod
+
+    _raw_text = "\n".join(
+        f"{getattr(m, 'role', '')}: {getattr(m, 'content', '') or ''}" for m in incremental
+    )
+    sunk_refs = sinking_mod.extract_sunk_refs(_raw_text)
+    sunk_refs_text = sinking_mod.render_sunk_refs(sunk_refs)
+    if sunk_refs:
+        logger.info("沉淀清单: 本会话命中 %d 条知识页/技能（%s）", len(sunk_refs),
+                    ", ".join(f"{r.kind}:{r.ref_id[:24]}" for r in sunk_refs[:5]))
+
     # 剪枝（先剪枝后分块）：tool 输出/系统注入/超长消息压缩，
     # 避免 95% 工具输出噪音撑爆分块并稀释 LLM 信噪比
     from sgme.engine import prune as prune_mod
@@ -158,20 +172,6 @@ def refine_file(
     # #33：bucket_ctx 携带 file_id（A/B 确定性分流）；mem_conn 记录 refine_run
     bucket_ctx = BucketCtx(bucket_key=file_id)
     try:
-        # 沉淀清单（2026-10-31 用户定）：技术细节归技能库/知识库，记忆只留摘要+索引。
-        # 清单从**原件本身**抽（wiki_page_add / skill_put / SKILL.md 路径），零 LLM：
-        # 一个记忆过两次 LLM 的方案成本翻倍，已被用户否决。
-        from sgme.engine import sinking as sinking_mod
-
-        _raw_text = "\n".join(
-            f"{getattr(m, 'role', '')}: {getattr(m, 'content', '') or ''}" for m in incremental
-        )
-        sunk_refs = sinking_mod.extract_sunk_refs(_raw_text)
-        sunk_refs_text = sinking_mod.render_sunk_refs(sunk_refs)
-        if sunk_refs:
-            logger.info("沉淀清单: 本会话已沉淀 %d 条（%s）", len(sunk_refs),
-                        ", ".join(f"{r.kind}:{r.ref_id}" for r in sunk_refs[:5]))
-
         raw_memories, provider, prompt_meta = l1.extract_l1(
             conversations, dimensions, cfg["llm"], client=client,
             chunk_size=chunk_size,
