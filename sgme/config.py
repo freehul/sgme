@@ -241,6 +241,37 @@ DEFAULT_L2_CONFIG = {
     "warn_thresholds": {"yellow": 150, "orange": 180, "red": 200},
 }
 
+#: L3 裁决层默认配置（2.0 D-28/D-29 · T-320）
+#: 规则前置：明显重复 / 明显改口由规则消化，灰区才付 LLM 成本。
+#: enabled 默认 **False**——不配置时行为与 1.x 完全一致（灰度上线，避免默认改变现网裁决路径）。
+DEFAULT_L3_CONFIG = {
+    "rules": {
+        "enabled": False,
+        "overlap_gray": 0.30,    # 相似度高于此值即灰区（交 LLM）
+        "overlap_same": 0.85,    # 高于此值且无改口信号 → 判 llm（补充细节还是重复）
+    },
+}
+
+
+def _merge_l3_config(user_cfg: dict | None) -> dict:
+    """合并 l3 段默认值与用户配置。
+
+    只认 `rules` 下的已知键，其余忽略（与其它段同一口径：未知键不落到运行期）。
+    """
+    base = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_L3_CONFIG.items()}
+    if not isinstance(user_cfg, dict):
+        return base
+    rules = user_cfg.get("rules")
+    if isinstance(rules, dict):
+        if isinstance(rules.get("enabled"), bool):
+            base["rules"]["enabled"] = rules["enabled"]
+        for key in ("overlap_gray", "overlap_same"):
+            val = rules.get(key)
+            if isinstance(val, (int, float)) and 0 <= float(val) <= 1:
+                base["rules"][key] = float(val)
+    return base
+
+
 # 场景主动治理（T-97 治本）：后台自动合并 + 归档相似场景
 DEFAULT_SCENE_GC_CONFIG = {
     "enabled": True,            # 总开关
@@ -1330,6 +1361,7 @@ def load_config(
         "term_aliases": term_aliases,
         "relations": relations,
         "l2": sgme_cfg.get("l2", dict(DEFAULT_L2_CONFIG)),
+        "l3": _merge_l3_config(sgme_cfg.get("l3")),
         "search": sgme_cfg.get("search", _merge_search_config(None)),
         "backup": sgme_cfg.get("backup", dict(DEFAULT_BACKUP_CONFIG)),
         "l1": sgme_cfg.get("l1", dict(DEFAULT_L1_CONFIG)),
