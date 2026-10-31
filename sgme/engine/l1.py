@@ -407,7 +407,8 @@ def _item_lang_drift(item: dict, english_session: bool) -> bool:
         return False
     cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
     latin_words = len(re.findall(r"[A-Za-z]+", text))
-    return cjk >= 4 and cjk > latin_words * 2 + 3
+    # 阈值 4 → 8：英文会话里夹一个中文专名（"微信"）不该被当漂移丢掉
+    return cjk >= 8 and cjk > latin_words * 2 + 3
 
 
 def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
@@ -547,10 +548,24 @@ def parse_l1_output(text: str, dimensions: list[dict]) -> list[dict]:
     return result
 
 
+#: L0 会话文本里的工具段（`# <ts> tool` 起，到下一个 `# <ts> <role>` 之前）
+_TOOL_BLOCK_RE = re.compile(r"^# \S+ tool\n.*?(?=^# \S+ (?:user|assistant)\n|\Z)", re.MULTILINE | re.DOTALL)
+
+
+def _human_text(text: str) -> str:
+    """去掉工具段的会话正文（判语言只看人和助手说了什么）。
+
+    2026-10-31 实测教训：整段文本判语言时，工具回执里的英文 JSON/路径/命令占比极高，
+    中文会话会被判成「英文会话」，随后逐条丢中文记忆（全量重建前 20 个文件就丢了 23 条）。
+    """
+    return _TOOL_BLOCK_RE.sub("", text or "")
+
+
 def _is_english_session(text: str) -> bool:
-    """会话是否「英文为主」（与 `_lang_mismatch` 判定同口径）。"""
-    latin = sum(1 for ch in (text or "") if ch.isascii() and ch.isalpha())
-    cjk = sum(1 for ch in (text or "") if "\u4e00" <= ch <= "\u9fff")
+    """会话是否「英文为主」——只看人话，不看工具输出（见 `_human_text`）。"""
+    human = _human_text(text)
+    latin = sum(1 for ch in human if ch.isascii() and ch.isalpha())
+    cjk = sum(1 for ch in human if "\u4e00" <= ch <= "\u9fff")
     return latin >= 200 and latin >= cjk * 2
 
 
@@ -787,6 +802,7 @@ def extract_l1(
         return _extract_l1_chunk(
             chunks[0], dimensions, llm_cfg, client=client,
             bucket_ctx=bucket_ctx, mem_conn=mem_conn,
+            sunk_refs_text=sunk_refs_text,
         )
 
     # 多块：逐块提炼 + 按 content 去重合并
@@ -799,6 +815,7 @@ def extract_l1(
             memories, _, meta = _extract_l1_chunk(
                 chunk, dimensions, llm_cfg, client=client,
                 bucket_ctx=bucket_ctx, mem_conn=mem_conn,
+                sunk_refs_text=sunk_refs_text,
             )
             chunk_metas.append(meta)
         except RefineError as e:
@@ -872,6 +889,7 @@ def _extract_l1_chunk(
     client=None,
     bucket_ctx: BucketCtx | None = None,
     mem_conn: sqlite3.Connection | None = None,
+    sunk_refs_text: str = "",
 ) -> tuple[list[dict], str, dict]:
     """单块 L1 提取（PromptStore 版本 + refine_run 逐块记录）。
 
