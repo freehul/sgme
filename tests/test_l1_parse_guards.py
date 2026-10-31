@@ -286,3 +286,28 @@ def test_lang_drift_dropped_when_explicitly_enabled():
     assert len(kept) == 1
     assert "vintage cameras" in kept[0]["content"]
     assert violation_counts()["lang_drift_dropped"] == 1
+
+
+def test_strip_injected_profile_block():
+    """原件里被当 user 消息写进去的「自注入画像」必须剥掉。
+
+    2026-10-31 实测：186 个失败文件里多数开头带 `--- SGME 用户画像 --- [Tier0 摘要]`，
+    模型读到后认为「这些我都知道」直接返回 []，整份会话（后面还有真实对话）被判空。
+    """
+    from sgme.engine.refine import _strip_injected_profile
+
+    text = (
+        "前一句真实对话\n"
+        "--- SGME 用户画像 ---\n[Tier0 摘要]\n<用户名>，某地独立开发者…\n\n---\n"
+        "**【工厂】方案报价单** 项目：城东工厂车间监控"
+    )
+    out = _strip_injected_profile(text)
+    assert "用户画像" not in out and "Tier0" not in out
+    assert "方案报价单" in out
+    assert out.startswith("前一句真实对话")
+
+
+def test_strip_profile_noop_when_absent():
+    from sgme.engine.refine import _strip_injected_profile
+
+    assert _strip_injected_profile("普通对话内容") == "普通对话内容"

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Iterator
@@ -36,6 +37,27 @@ class RefineResult:
     # T-223：本次提炼时 raw 文件的 SHA-256（含未变场景），供落库成功后的
     # commit_refine 同步到 raw_files.content_hash；哈希计算失败为 None。
     content_hash: str | None = None
+
+
+#: 自注入画像块（dsh/hermes 把 Tier0 画像当 user 消息写进原件时的标记）
+_PROFILE_START = "--- SGME 用户画像 ---"
+
+
+def _strip_injected_profile(text: str, limit: int = 30000) -> str:
+    """剥掉原件里的「自注入画像」块。
+
+    2026-10-31 实测：186 个失败文件里 27/40 在开头带 `--- SGME 用户画像 --- [Tier0 摘要]`
+    ——那是我们自己注入给 agent 的画像，被当成 user 消息记进了原件。模型读到后认为
+    「这些我都知道」直接返回 []，整份会话（后面还有真实对话，如报价单、方案）被判空。
+    剥掉它既止血，也符合数据卫生：注入内容不该回流成源数据。
+    """
+    if not text or _PROFILE_START not in text:
+        return text
+    i = text.find(_PROFILE_START)
+    tail = text[i:]
+    m = re.search(r"\n---\s*\n", tail[10:])
+    end = i + 10 + m.start() if m else min(len(text), i + limit)
+    return (text[:i] + "\n" + text[end:]).strip() or text[:i]
 
 
 def _format_conversation(messages: list, file_id: str) -> str:
@@ -156,6 +178,14 @@ def refine_file(
 
     prune_cfg = (cfg.get("refine", {}) or {}).get("prune")
     incremental = prune_mod.prune_messages(incremental, prune_cfg)
+
+    # 剥自注入画像（见 _strip_injected_profile 注释）：不剥会让模型直接返回 []，
+    # 整份会话被判「全部分块失败」（实测 186 个文件栽在这上面）
+    for _m in incremental:
+        try:
+            _m.content = _strip_injected_profile(_m.content or "")
+        except Exception:  # noqa: BLE001
+            pass
 
     # 回合感知分块：剪枝后消息按「user+回答」语义单元贪心填充分块，
     # 不拆散问答对（固定字符切块会切碎上下文导致提取无效）
