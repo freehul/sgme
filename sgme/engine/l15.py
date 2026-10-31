@@ -949,6 +949,8 @@ def _store_memory(
         # 2.0（2026-10-31）：三轴/路由/七值类型/feeling/trait/needs_review 等
         # 由解析层算出，落库必须一并写入——此前这些字段在 INSERT 时被整体丢弃
         extra=_extra_of(new_mem),
+        # 记忆 → 知识页/技能 关联（提炼阶段按会话内沉淀痕迹挂，零 LLM）
+        sunk_refs=new_mem.get("_sunk_refs"),
     )
 
 

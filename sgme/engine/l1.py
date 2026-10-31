@@ -160,7 +160,12 @@ def render_l1(conversation: str, dimensions: list[dict], ctx: BucketCtx | None =
     return _render_l1_text(template, conversation, dimensions)
 
 
-def _render_l1_text(template: str, conversation: str, dimensions: list[dict]) -> str:
+def _render_l1_text(
+    template: str,
+    conversation: str,
+    dimensions: list[dict],
+    sunk_refs_text: str = "",
+) -> str:
     """渲染已读出的模板文本（{{dimensions}} + {{conversation}}）。
 
     T-11：维度行附 boundaries（vs 对照消歧说明）——此前 import 静默丢弃、
@@ -175,7 +180,14 @@ def _render_l1_text(template: str, conversation: str, dimensions: list[dict]) ->
                 line += f"（边界：{b}）"
             dim_lines.append(line)
     dim_text = "\n".join(dim_lines) if dim_lines else "- (无可用维度)"
-    return template.replace("{{dimensions}}", dim_text).replace("{{conversation}}", conversation)
+    out = template.replace("{{dimensions}}", dim_text).replace("{{conversation}}", conversation)
+    # 沉淀清单（2026-10-31）：模型据此知道「这些主题已有详情页」，对它们只写摘要不写细节
+    if "{{sunk_refs}}" in out:
+        out = out.replace(
+            "{{sunk_refs}}",
+            sunk_refs_text or "（本会话未发现已沉淀到知识库/技能库的条目）",
+        )
+    return out
 
 
 # ---------- JSON 解析与校验 ----------
@@ -744,6 +756,7 @@ def extract_l1(
     overlap: int | None = None,
     bucket_ctx: BucketCtx | None = None,
     mem_conn: sqlite3.Connection | None = None,
+    sunk_refs_text: str = "",
 ) -> tuple[list[dict], str, dict]:
     """完整 L1 提取：render → call_with_fallback → parse。
 
@@ -872,7 +885,7 @@ def _extract_l1_chunk(
     from sgme.data.refine_dao import RefineRunRecorder
 
     pv = PromptStore().get("l1_extraction", bucket_ctx)
-    prompt = _render_l1_text(pv.text, conversation, dimensions)
+    prompt = _render_l1_text(pv.text, conversation, dimensions, sunk_refs_text)
     bucket_key = bucket_ctx.bucket_key if (bucket_ctx and bucket_ctx.bucket_key) else "unknown"
     max_attempts = 2  # 解析/空结果：重试 1 次（B164 既有行为）
     lang_retries = 0
@@ -922,7 +935,7 @@ def _extract_l1_chunk(
                 logger.warning("L1 输出解析失败 (attempt=%s): %s", attempt, e)
                 # 重试时 prompt 加提示
                 if attempt < max_attempts:
-                    prompt = _render_l1_text(pv.text, conversation, dimensions) + \
+                    prompt = _render_l1_text(pv.text, conversation, dimensions, sunk_refs_text) + \
                         "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
                 continue
 
@@ -935,7 +948,7 @@ def _extract_l1_chunk(
             )
             if not memories and attempt < max_attempts and conv_chars >= EMPTY_RETRY_MIN_CONV_CHARS:
                 logger.warning("L1 空结果 (attempt=%s)，加提示重试", attempt)
-                prompt = _render_l1_text(pv.text, conversation, dimensions) + \
+                prompt = _render_l1_text(pv.text, conversation, dimensions, sunk_refs_text) + \
                     "\n\n# 注意\n上次输出为空数组 []，但对话中可能仍有值得长期保存的记忆。" \
                     "请逐条复查对话内容，确保不遗漏任何用户事实（尤其数字、时长、地点、偏好等细节）。" \
                     "若确实没有可提炼的记忆，再输出 []。"
@@ -948,7 +961,7 @@ def _extract_l1_chunk(
             if lang_retries < max_lang_retries and _lang_mismatch(conversation, memories):
                 lang_retries += 1
                 logger.warning("L1 语言漂移（英文会话→中文记忆，attempt=%s），加语言提示重试", attempt)
-                prompt = _render_l1_text(pv.text, conversation, dimensions) + \
+                prompt = _render_l1_text(pv.text, conversation, dimensions, sunk_refs_text) + \
                     "\n\n# 注意\n上次输出把会话内容翻译成了中文，这会破坏检索。必须使用**与会话原文相同的语言**输出：" \
                     "英文会话 → 英文记忆（逐条改写为英文，专名/数字/术语保持原样，不要意译）；中文会话 → 中文记忆。"
                 continue

@@ -264,6 +264,7 @@ def insert_memory(
     valid_from: str | None = None,
     valid_to: str | None = None,
     extra: dict | None = None,
+    sunk_refs: Iterable[dict] | None = None,
 ) -> str:
     """插入一条记忆 + 标签 + 溯源。
 
@@ -322,6 +323,10 @@ def insert_memory(
         except Exception:
             conn.rollback()
             raise
+    # 记忆 → 知识页/技能 关联（2026-10-31）：技术细节在技能库/知识库，记忆只留索引。
+    # 放在事务外：关联写失败不该回滚已落库的记忆（索引可后补，记忆丢了补不回来）。
+    if sunk_refs:
+        link_memory_pages(conn, mid, sunk_refs)
     return mid
 
 
@@ -879,3 +884,46 @@ def list_memories_page(
         item["source_ref"] = source_map.get(item["memory_id"])
 
     return items, int(total)
+
+# ---------- memory_pages：记忆 → 知识页/技能 关联（2026-10-31）----------
+
+def link_memory_pages(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    refs: Iterable[dict],
+    relation: str = "details",
+) -> int:
+    """把「这条记忆的详情在哪」写进 memory_pages（幂等：主键去重）。
+
+    Args:
+        refs: 形如 ``[{"kind": "wiki", "ref_id": "page-1", "title": "..."}]``
+            （title 仅用于调试，不落库）
+
+    Returns:
+        新写入条数（重复调用不重复计）。
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    n = 0
+    for ref in refs or []:
+        kind = (ref or {}).get("kind")
+        ref_id = (ref or {}).get("ref_id")
+        if not kind or not ref_id:
+            continue
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO memory_pages (memory_id, kind, ref_id, relation, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (memory_id, kind, ref_id, relation, now),
+        )
+        n += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    if n:
+        conn.commit()
+    return n
+
+
+def get_memory_pages(conn: sqlite3.Connection, memory_id: str) -> list[dict]:
+    """取一条记忆挂的详情页/技能（注入渲染「详情见 …」用）。"""
+    rows = conn.execute(
+        "SELECT kind, ref_id, relation FROM memory_pages WHERE memory_id = ? ORDER BY kind, ref_id",
+        (memory_id,),
+    ).fetchall()
+    return [{"kind": r[0], "ref_id": r[1], "relation": r[2]} for r in rows]

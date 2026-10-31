@@ -158,12 +158,27 @@ def refine_file(
     # #33：bucket_ctx 携带 file_id（A/B 确定性分流）；mem_conn 记录 refine_run
     bucket_ctx = BucketCtx(bucket_key=file_id)
     try:
+        # 沉淀清单（2026-10-31 用户定）：技术细节归技能库/知识库，记忆只留摘要+索引。
+        # 清单从**原件本身**抽（wiki_page_add / skill_put / SKILL.md 路径），零 LLM：
+        # 一个记忆过两次 LLM 的方案成本翻倍，已被用户否决。
+        from sgme.engine import sinking as sinking_mod
+
+        _raw_text = "\n".join(
+            f"{getattr(m, 'role', '')}: {getattr(m, 'content', '') or ''}" for m in incremental
+        )
+        sunk_refs = sinking_mod.extract_sunk_refs(_raw_text)
+        sunk_refs_text = sinking_mod.render_sunk_refs(sunk_refs)
+        if sunk_refs:
+            logger.info("沉淀清单: 本会话已沉淀 %d 条（%s）", len(sunk_refs),
+                        ", ".join(f"{r.kind}:{r.ref_id}" for r in sunk_refs[:5]))
+
         raw_memories, provider, prompt_meta = l1.extract_l1(
             conversations, dimensions, cfg["llm"], client=client,
             chunk_size=chunk_size,
             overlap=l1_cfg.get("overlap", 1200),
             bucket_ctx=bucket_ctx,
             mem_conn=mem_conn,
+            sunk_refs_text=sunk_refs_text,
         )
         result.prompt_versions["l1_extraction"] = prompt_meta
     except l1.RefineError as e:
@@ -228,6 +243,11 @@ def refine_file(
                 "type", "subject", "certainty", "derivation", "modality", "route",
                 "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
             ) if rm.get(k) is not None},
+            # 记忆 → 知识页/技能 关联（2026-10-31）：按标题重合度挂，落库写 memory_pages
+            "_sunk_refs": [
+                {"kind": r.kind, "ref_id": r.ref_id}
+                for r in sinking_mod.link_targets(rm.get("content") or "", sunk_refs)
+            ],
         })
 
     result.memories = normalized_memories

@@ -543,6 +543,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_mem_valid_period(conn)
     _migrate_refine_runs_elapsed_ms(conn)
     _migrate_memory_2_0_columns(conn)
+    _migrate_memory_pages_table(conn)
     return conn
 
 
@@ -1411,4 +1412,29 @@ def _migrate_ingest_tasks_table(conn: sqlite3.Connection) -> None:
     幂等性：CREATE TABLE / CREATE INDEX 全部 IF NOT EXISTS，重复调用无副作用。
     """
     conn.executescript(INGEST_TASKS_DDL)
+    conn.commit()
+
+
+# ---------- memory_pages（记忆 → 知识页/技能 关联，2026-10-31）----------
+#
+# 用户定：技术细节与踩坑经验沉淀到技能库/知识库，**记忆只留摘要 + 指向详情页的索引**。
+# 刻意不加外键（同 memory_edges 先例）：知识页会归档/合并，记忆也会走 Supersession 归档。
+# kind: wiki（ref_id=page_id）| skill（ref_id=技能名）
+# relation: details（详情在该页）| derived_from（该页由本条记忆生成）
+MEMORY_PAGES_DDL = """
+CREATE TABLE IF NOT EXISTS memory_pages (
+  memory_id  TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  ref_id     TEXT NOT NULL,
+  relation   TEXT NOT NULL DEFAULT 'details',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (memory_id, kind, ref_id));
+CREATE INDEX IF NOT EXISTS idx_mpage_ref ON memory_pages(kind, ref_id);
+CREATE INDEX IF NOT EXISTS idx_mpage_mem ON memory_pages(memory_id);
+"""
+
+
+def _migrate_memory_pages_table(conn: sqlite3.Connection) -> None:
+    """建/补 memory_pages（幂等）。多语句必须用 executescript。"""
+    conn.executescript(MEMORY_PAGES_DDL)
     conn.commit()
