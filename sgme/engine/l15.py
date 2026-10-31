@@ -1179,6 +1179,74 @@ def resolve_batch_budget(llm_cfg: dict, default: int = DEFAULT_BATCH_BUDGET) -> 
 _resolve_batch_budget = resolve_batch_budget
 
 
+# ---------- L3 规则裁决前置（2.0 D-28 / D-29）----------
+
+def _apply_l3_rules(
+    mem_conn: sqlite3.Connection,
+    groups: list["CandidateGroup"],
+    idem_skip: set[int],
+    cfg: dict,
+) -> tuple[dict[int, ConflictDecision], list["CandidateGroup"]]:
+    """把「明显重复 / 明显改口」先由规则消化，只把灰区留给 LLM。
+
+    2.0 D-28 的口径：规则层不碰数据库、不调 LLM，只判「新记忆与给定候选的关系」。
+    本函数负责两侧接线：把候选行转成规则层要的视图（含维度标签），再把
+    RuleDecision 翻成 ConflictDecision（supersede → update，复用既有归档链）。
+
+    Returns:
+        (decisions, remaining_groups)
+        - decisions：已决项（store/skip/update），key 为新记忆全局下标
+        - remaining_groups：需要送 LLM 的候选组（规则判 llm 的）
+    """
+    from sgme.engine import l3_rules
+
+    rule_cfg = ((cfg.get("l3") or {}).get("rules") or {}) if isinstance(cfg, dict) else {}
+    overlap_gray = float(rule_cfg.get("overlap_gray", 0.30))
+    overlap_same = float(rule_cfg.get("overlap_same", 0.85))
+
+    decisions: dict[int, ConflictDecision] = {}
+    remaining: list[CandidateGroup] = []
+    tag_cache: dict[str, list[str]] = {}
+    action_of = {"store": "store", "skip": "skip", "supersede": "update"}
+
+    for g in groups:
+        if g.new_memory_index in idem_skip or not g.candidates:
+            continue  # 幂等跳过 / 无候选：交给既有落库段处理
+        views = []
+        for cand in g.candidates:
+            cid = cand.get("memory_id")
+            if not cid:
+                continue
+            views.append({
+                "memory_id": cid,
+                "content": cand.get("content"),
+                "subject": cand.get("subject"),
+                "dimensions": _memory_tags(mem_conn, cid, tag_cache),
+            })
+        decision = l3_rules.adjudicate(
+            # 规则层只认 dimensions 键（2.0 {primary, secondary} 或缺省），
+            # 而管线里的新记忆用 dimension_ids——这里统一映射，否则「同维度」判据永远为假，
+            # 改口检测会退化成普通入库（接线实测踩到的坑）。
+            {
+                "content": g.new_memory.get("content"),
+                "subject": g.new_memory.get("subject"),
+                "dimensions": g.new_memory.get("dimensions")
+                or g.new_memory.get("dimension_ids") or [],
+            },
+            views,
+            overlap_gray=overlap_gray, overlap_same=overlap_same,
+        )
+        if decision.kind == "llm":
+            remaining.append(g)
+            continue
+        target = [decision.target_id] if (decision.target_id and decision.kind != "store") else []
+        decisions[g.new_memory_index] = ConflictDecision(
+            g.new_memory_index, target, action_of[decision.kind],
+            reason=f"L3 规则：{decision.reason}",
+        )
+    return decisions, remaining
+
+
 def resolve_conflicts(
     new_memories: list[dict],
     mem_conn: sqlite3.Connection,
@@ -1287,6 +1355,19 @@ def resolve_conflicts(
         _record_near_dup_run(mem_conn, bucket_key, result, bucket_ctx)
         return result
 
+    # 1.7 L3 规则裁决前置（2.0 D-28 / D-29；开关 l3.rules.enabled，默认关）
+    #     明显重复 / 明显改口由规则消化，只有灰区进 LLM——这是 2.0 砍裁决成本的主落点。
+    l3_rule_decisions: dict[int, ConflictDecision] = {}
+    l3_cfg = (cfg.get("l3", {}) or {}).get("rules", {}) or {}
+    if l3_cfg.get("enabled", False):
+        l3_rule_decisions, groups = _apply_l3_rules(mem_conn, groups, idem_skip, cfg)
+        logger.info(
+            "L3 规则先行: 已决 %d 条（%s），灰区 %d 条转 LLM",
+            len(l3_rule_decisions),
+            dict(Counter(d.action for d in l3_rule_decisions.values())),
+            sum(1 for g in groups if g.candidates),
+        )
+
     # 2. 分批（铁律 #7：按上下文预算分批，同一新记忆只进一批）
     # 无候选的新记忆不进任何批 → 无裁决 → 落库阶段默认 store（无冲突可能，短路到单记忆粒度）
     # 幂等跳过的记忆不进批（已确定 skip，省一次 LLM 调用）
@@ -1306,7 +1387,8 @@ def resolve_conflicts(
             batches = []
 
     # 3. 逐批 LLM 裁决（批内 new_memory_index 重映射回全局下标）
-    all_decisions: list[ConflictDecision] = []
+    #    L3 规则已决的项直接进 decisions（不送 LLM）
+    all_decisions: list[ConflictDecision] = list(l3_rule_decisions.values())
     for batch in batches:
         pv = PromptStore().get("l1_conflict", bucket_ctx)
         prompt = _render_l15_text(pv.text, batch.new_memories, batch.candidates,
