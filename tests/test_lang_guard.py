@@ -51,3 +51,30 @@ def test_short_chinese_name_in_english_memory_not_dropped():
 def test_fully_chinese_memory_in_english_session_dropped():
     item = {"content": "用户要求所有插件改动都先写测试再改代码，避免回归"}
     assert l1._item_lang_drift(item, True) is True
+
+
+def test_strips_tool_blocks_in_refine_format():
+    """提炼侧格式 `[msg#N] <ts> <role>:` 也必须能剥（第一次修复只认 L0 格式，形同虚设）。"""
+    text = """[msg#1] 2026-10-31T00:00:01Z user:
+  帮我查一下这个插件为什么加载不了
+[msg#2] 2026-10-31T00:00:02Z assistant:
+  我先看路径转换
+[msg#3] 2026-10-31T00:00:03Z tool:
+  (tool=bash)
+  {"path": "C:\\Users\\LEO\\plugins", "error": "ENOENT", "stack": "at Object.<anonymous> (...)"}
+"""
+    human = l1._human_text(text)
+    assert "ENOENT" not in human and "stack" not in human
+    assert "插件" in human
+    assert l1._is_english_session(text) is False
+
+
+def test_drift_kept_by_default_and_dropped_only_on_request():
+    """默认只告警不丢——判英文会话靠字符占比，误判代价是整条记忆消失。"""
+    session = EN_TALK
+    item = {"content": "用户要求所有插件改动都先写测试再改代码，避免回归"}
+    kept = l1._drop_lang_drift_items([item], session)
+    assert kept == [item], "默认必须保留"
+
+    dropped = l1._drop_lang_drift_items([item], session, drop=True)
+    assert dropped == [], "显式开启才丢"

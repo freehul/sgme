@@ -549,16 +549,35 @@ def parse_l1_output(text: str, dimensions: list[dict]) -> list[dict]:
 
 
 #: L0 会话文本里的工具段（`# <ts> tool` 起，到下一个 `# <ts> <role>` 之前）
-_TOOL_BLOCK_RE = re.compile(r"^# \S+ tool\n.*?(?=^# \S+ (?:user|assistant)\n|\Z)", re.MULTILINE | re.DOTALL)
+#: 会话文本里的段头两种形态都要认：
+#:   ① L0 原件 `# <ts> <role>`
+#:   ② 提炼侧 `_format_conversation` 生成的 `[msg#N] <ts> <role>:`
+_TOOL_HEAD_RE = re.compile(r"^(?:# \S+ (?P<r1>user|assistant|tool)\s*$|\[msg#\d+\] \S+ (?P<r2>user|assistant|tool):)")
 
 
 def _human_text(text: str) -> str:
     """去掉工具段的会话正文（判语言只看人和助手说了什么）。
 
     2026-10-31 实测教训：整段文本判语言时，工具回执里的英文 JSON/路径/命令占比极高，
-    中文会话会被判成「英文会话」，随后逐条丢中文记忆（全量重建前 20 个文件就丢了 23 条）。
+    中文会话会被判成「英文会话」，随后逐条丢中文记忆（首轮全量 100 个文件丢了 86 条）。
+    ⚠️ 段头格式**两种都要认**——只认 L0 的 `# <ts> tool` 不认提炼侧的 `[msg#N] … tool:`，
+    结果就是剥不掉工具段、判据形同虚设（第一次修复就踩了这个）。
     """
-    return _TOOL_BLOCK_RE.sub("", text or "")
+    # 先剥代码块：assistant 消息里的 ``` 代码/JSON 同样是英文重灾区
+    text = re.sub(r"```[\s\S]*?```", "", text or "")
+    out: list[str] = []
+    skipping = False
+    for line in (text or "").splitlines():
+        m = _TOOL_HEAD_RE.match(line.strip())
+        if m:
+            role = m.group("r1") or m.group("r2")
+            skipping = role == "tool"
+            if skipping:
+                continue
+        if skipping:
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def _is_english_session(text: str) -> bool:
@@ -569,22 +588,32 @@ def _is_english_session(text: str) -> bool:
     return latin >= 200 and latin >= cjk * 2
 
 
-def _drop_lang_drift_items(memories: list[dict], session_text: str) -> list[dict]:
-    """逐条剔除语言漂移（英文会话里的中文条目），并计数。
+def _drop_lang_drift_items(
+    memories: list[dict], session_text: str, *, drop: bool = False,
+) -> list[dict]:
+    """语言漂移处理：**默认只告警不丢**（2026-10-31 用户定：宁可留错，不要悄悄丢）。
 
-    放在块级重试**之后**执行：先给整块一次「按原文语言重写」的机会，重试也没救回来
-    才逐条丢——否则会白白丢掉那些重试本可救回的记忆。
+    放在块级重试**之后**执行：先给整块一次「按原文语言重写」的机会。
+
+    为什么默认不丢：判会话语言靠字符占比，中文技术会话里夹着大量英文代码/路径/JSON，
+    极易被判成英文会话，随后把纯中文记忆逐条扔掉——实测两轮全量分别丢了 23 和 86 条，
+    丢的全是踩坑与根因。检索侧是语言无关的，留一条中文记忆的代价远小于丢一条。
     """
     if not memories or not _is_english_session(session_text):
         return memories
     kept: list[dict] = []
     for m in memories:
         if _item_lang_drift(m, True):
-            _VIOLATION_COUNTER["lang_drift_dropped"] += 1
-            logger.warning(
-                "L1 语言漂移逐条丢弃（英文会话）：%r", str((m or {}).get("content"))[:60]
+            if drop:
+                _VIOLATION_COUNTER["lang_drift_dropped"] += 1
+                logger.warning(
+                    "L1 语言漂移逐条丢弃（英文会话）：%r", str((m or {}).get("content"))[:60]
+                )
+                continue
+            _VIOLATION_COUNTER["lang_drift_kept"] = _VIOLATION_COUNTER.get("lang_drift_kept", 0) + 1
+            logger.info(
+                "L1 语言漂移（英文会话里出现中文条目，已保留）：%r", str((m or {}).get("content"))[:60]
             )
-            continue
         kept.append(m)
     return kept
 
