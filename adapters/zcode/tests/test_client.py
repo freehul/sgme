@@ -5,7 +5,7 @@
 - 地址六级解析（参数 → 环境变量 → 部署配置 → 身份文件 → ZCode MCP 配置 → 回环默认）与 MCP 端点推导
 - 密钥五级解析（SGME_ZCODE_KEY → 部署副本 .env → 身份文件 → ZCode MCP 配置 → SGME_AGENT_KEY 兜底）
 - HTTP 层请求构造（append 首行格式 / 查询参数 / 头部 / 错误包装）
-- 45 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
+- 49 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
 - fetch 技能完整包（T-283）：下载 → MANIFEST 校验 → 安全解包 → 原子落盘；失败不留残件
 - 测试样例全部使用假值：私网语义用 10.0.0.x，密钥用低熵占位拼接
 
@@ -618,6 +618,42 @@ class TestMcpMethodSignatures(NoDeployConfig):
         args, _kw = self._call(mo)
         self.assertEqual(args[1], {"async_mode": True, "limit": 50, "file_ids": ["a", "b"]})
 
+    def test_review_list_params(self):
+        """D-30 待审队列：review_list 支持 limit/offset/dimension（dimension 可选）。"""
+        c, mo = self._client()
+        c.review_list()
+        args, _kw = self._call(mo)
+        self.assertEqual(args[0], "review_list")
+        self.assertEqual(args[1], {"limit": 50, "offset": 0})
+        self.assertNotIn("dimension", args[1])
+        c.review_list(limit=10, offset=20, dimension="identity")
+        args, _kw = self._call(mo)
+        self.assertEqual(args[1], {"limit": 10, "offset": 20, "dimension": "identity"})
+
+    def test_review_approve_params(self):
+        c, mo = self._client()
+        c.review_approve("mem-1")
+        args, _kw = self._call(mo)
+        self.assertEqual(args[0], "review_approve")
+        self.assertEqual(args[1], {"memory_id": "mem-1"})
+        c.review_approve("mem-1", note="确认无误")
+        args, _kw = self._call(mo)
+        self.assertEqual(args[1], {"memory_id": "mem-1", "note": "确认无误"})
+
+    def test_review_reject_params(self):
+        c, mo = self._client()
+        c.review_reject("mem-1", "与事实不符")
+        args, _kw = self._call(mo)
+        self.assertEqual(args[0], "review_reject")
+        self.assertEqual(args[1], {"memory_id": "mem-1", "reason": "与事实不符"})
+
+    def test_review_auto_resolve_params(self):
+        c, mo = self._client()
+        c.review_auto_resolve()
+        self.assertEqual(mo.call_args.args, ("review_auto_resolve", {"days": 7}))
+        c.review_auto_resolve(days=3)
+        self.assertEqual(mo.call_args.args, ("review_auto_resolve", {"days": 3}))
+
     def test_stats(self):
         c, mo = self._client()
         c.stats()
@@ -777,11 +813,11 @@ class TestMcpMethodSignatures(NoDeployConfig):
 
 
 class TestCapabilityMatrix(unittest.TestCase):
-    """45 个基准能力：方法层 + CLI 层缺一不可。"""
+    """49 个基准能力：方法层 + CLI 层缺一不可。"""
 
     def test_baseline_count(self):
-        self.assertEqual(len(BASELINE_TOOLS), 45)
-        self.assertEqual(len(set(BASELINE_TOOLS)), 45)
+        self.assertEqual(len(BASELINE_TOOLS), 49)
+        self.assertEqual(len(set(BASELINE_TOOLS)), 49)
         self.assertEqual(set(BASELINE_SPEC), set(BASELINE_TOOLS))
 
     def test_every_baseline_has_method(self):
@@ -805,7 +841,7 @@ class TestCapabilityMatrix(unittest.TestCase):
 
     def test_capability_report_all_covered(self):
         rows = sc.capability_report()
-        self.assertEqual(len(rows), 45)
+        self.assertEqual(len(rows), 49)
         bad = [r["tool"] for r in rows if not (r["method_ok"] and r["cli_ok"])]
         self.assertEqual(bad, [])
 
@@ -834,10 +870,10 @@ class TestCLI(NoDeployConfig):
                 code = sc.main(argv)
         return code, buf.getvalue()
 
-    def test_offline_capabilities_lists_45(self):
+    def test_offline_capabilities_lists_49(self):
         code, out = self._run(["capabilities"])
         self.assertEqual(code, 0)
-        self.assertIn("45/45", out)
+        self.assertIn("49/49", out)
         for tool in BASELINE_TOOLS:
             self.assertIn(tool, out)
 
@@ -894,6 +930,16 @@ class TestCLI(NoDeployConfig):
         cases = [
             (["stats"], "stats", ()),
             (["refine-status"], "refine_status", ()),
+            (["review-list"], "review_list", (50, 0, None)),
+            (["review-list", "--limit", "10", "--offset", "5", "--dimension", "identity"],
+             "review_list", (10, 5, "identity")),
+            (["review-approve", "mem-1"], "review_approve", ("mem-1", None)),
+            (["review-approve", "mem-1", "--note", "确认无误"],
+             "review_approve", ("mem-1", "确认无误")),
+            (["review-reject", "mem-1", "--reason", "与事实不符"],
+             "review_reject", ("mem-1", "与事实不符")),
+            (["review-auto-resolve"], "review_auto_resolve", (7,)),
+            (["review-auto-resolve", "--days", "3"], "review_auto_resolve", (3,)),
             (["role-active-get"], "role_active_get", ()),
             (["role-active-set", "role-1"], "role_active_set", ("role-1",)),
             (["persona-fill", "role-1", "你中学在哪上的？"],
