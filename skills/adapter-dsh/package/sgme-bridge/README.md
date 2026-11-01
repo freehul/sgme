@@ -17,6 +17,7 @@
 | **运维观测** | `health` / `stats` / `config_get` / `config_update` / `refine_status` / `refine_trigger` / `refine_batch` / `signal_clear`（v0.5.0）——连接自检、记忆水位、提炼监控与配置读写 |
 | **技能写侧** | `skill_materialize`（L3 字节保真落盘成真文件）/ `skill_put` / `skill_delete` / `skill_rename`（v0.5.0） |
 | **主动关怀** | `signal_pull` / `signal_claim` / `signal_ack` 三工具，消费 SGME 关怀信号——信号消费 = 主动关怀，谁消费谁标记 |
+| **待审队列** | `review_list` / `review_approve` / `review_reject` / `review_auto_resolve` 四工具（D-30）——needs_review 闸门的人工放行/拒绝与超期保守直存消化 |
 | **DSH 规则注入** | 读取 `~/.dsh/dsg-rules/rules.md` 注册为 `dsg:rules` system section（order -70）——身份/铁律/SGME手册/偏好/环境进稳定层，前缀缓存全命中（v0.2，2026-08-16） |
 
 ## 前置条件
@@ -102,7 +103,7 @@ syncOnTurnEnd: true
 
 ## 用法
 
-接入后，DSH 自动拥有 43 个工具（v0.6.1 起与 SGME 1.10.2 能力面对齐，适配器平级对账零漂移）：
+接入后，DSH 自动拥有 47 个工具（与 SGME 能力面对齐，适配器平级对账零漂移）：
 
 **检索与知识库（7）**
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
@@ -161,6 +162,12 @@ syncOnTurnEnd: true
 **凭据读侧（2，T-277 对齐 EP-11）**
 - `credential_list()` — 凭据键名 + 元数据（**不含值**；需服务端 `credentials.enabled` 已启用）；
 - `credential_get(name)` — 取凭据单值（服务端记 read 审计）。⚠️ **值不得进入对话正文**——标准姿势是客户端注入（`sgme-cred run`，值不落盘不进对话）；本工具仅限「必须显式查看」场景，取用后勿复述值。
+
+**待审队列（4，D-30 对齐 MCP review_*）**
+- `review_list(limit, offset, dimension)` — 列出待审记忆（needs_review=1，未进主注入块，等待人工放行或拒绝）；
+- `review_approve(memory_id, note)` — 放行（恢复进主注入；幂等，已放行为 no-op）；
+- `review_reject(memory_id, reason)` — 拒绝（软删 status=rejected，可恢复；reason 必填，幂等不覆盖首次理由）；
+- `review_auto_resolve(days)` — 触发超期自动消化（超 N 天未处理按保守直存放行，notes 追加「未经人工确认」标记可复查）。
 
 > ⚠️ 写侧工具（`config_update` / `skill_put` / `skill_delete` / `skill_rename` / `refine_*` / `signal_clear`）需 **Admin Key**，且会真实改变服务端状态或消耗额度——工具描述内已加护栏，仅在用户明确要求时调用。
 

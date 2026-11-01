@@ -8,6 +8,7 @@
  * - POST /v1/inject         — Agent Key — 画像注入（注意：max_tokens 协议接受但不消费）
  * - POST /v1/append         — Agent Key — L0 写入
  * - POST /v1/admin/refine/trigger_async — Admin Key — 触发提炼（实际返回 200，非 202）
+ * - GET /v1/admin/review/pending + POST approve/reject/auto-resolve — Agent Key — 待审队列（D-30）
  * - POST /v1/admin/ideas|demands|projects — Admin Key — 三池登记（T-86）
  * - GET/PUT /v1/admin/roles* + /v1/admin/care/active-role — Agent Key — 角色模板（T-86）
  * - GET /v1/memory/{id} + POST /v1/memory/{id}/reject — Agent Key — 记忆纠错（T-86）
@@ -442,6 +443,25 @@ export interface MemoryRejectResponse {
 export interface MemoryUnrejectResponse {
   memory_id: string
   status: string                   // active
+}
+
+// ---------- 待审记忆队列类型（D-30：needs_review 闸门的人工放行/拒绝） ----------
+
+/** GET /v1/admin/review/pending 响应体（operations.review.list_pending，data 即响应）。 */
+export interface ReviewPendingResponse {
+  items: Array<Record<string, unknown>> // 完整记忆行（含 memory_id/content/created_at 等）
+  total: number
+}
+
+/** POST /v1/admin/review/{id}/approve | /reject 响应体。 */
+export interface ReviewDecisionResponse {
+  memory_id: string
+  ok: boolean
+}
+
+/** POST /v1/admin/review/auto-resolve 响应体。 */
+export interface ReviewAutoResolveResponse {
+  resolved: number
 }
 
 // ---------- 聚合答案类型（T-149：跨会话计数/列举/时序推理） ----------
@@ -1217,6 +1237,65 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] memoryUnreject failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 待审记忆队列（D-30：needs_review 闸门的人工放行/拒绝） ----------
+
+  /** 待审列表（GET /v1/admin/review/pending，Agent Key）。失败返回 null。 */
+  async reviewPending(limit: number, offset: number, dimension?: string | null): Promise<ReviewPendingResponse | null> {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+    if (dimension) params.set('dimension', dimension)
+    const [data, err] = await this.get<ReviewPendingResponse>(
+      `/v1/admin/review/pending?${params.toString()}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] reviewPending failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 放行待审记忆（POST /v1/admin/review/{id}/approve，Agent Key；404/失败返回 null）。 */
+  async reviewApprove(memoryId: string, note?: string | null): Promise<ReviewDecisionResponse | null> {
+    const [data, err] = await this.post<ReviewDecisionResponse>(
+      `/v1/admin/review/${encodeURIComponent(memoryId)}/approve`,
+      { note: note ?? null },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] reviewApprove failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 拒绝待审记忆（POST /v1/admin/review/{id}/reject，Agent Key；软删可恢复，404/失败返回 null）。 */
+  async reviewReject(memoryId: string, reason: string): Promise<ReviewDecisionResponse | null> {
+    const [data, err] = await this.post<ReviewDecisionResponse>(
+      `/v1/admin/review/${encodeURIComponent(memoryId)}/reject`,
+      { reason },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] reviewReject failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 触发超期自动消化（POST /v1/admin/review/auto-resolve，Agent Key；返回 resolved 条数）。失败返回 null。 */
+  async reviewAutoResolve(days?: number): Promise<ReviewAutoResolveResponse | null> {
+    const [data, err] = await this.post<ReviewAutoResolveResponse>(
+      '/v1/admin/review/auto-resolve',
+      { ...(days !== undefined ? { days } : {}) },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] reviewAutoResolve failed: ${err}`)
       return null
     }
     return data
