@@ -150,13 +150,14 @@ def resolve_addresses(http_url: str | None = None, mcp_url: str | None = None,
     return http.rstrip("/"), mcp.rstrip("/"), src
 
 
-# ---------- MCP 基准工具清单（权威基准：sgme/mcp_server.py，45 个） ----------
+# ---------- MCP 基准工具清单（权威基准：sgme/mcp_server.py，49 个） ----------
 
 BASELINE_TOOLS: tuple[str, ...] = (
     "agent_onboarding", "append", "inject", "search", "answer",
     "wiki_search", "wiki_pages", "wiki_page", "wiki_page_add", "wiki_page_update",
     "wiki_evolve_trigger", "memory_get", "memory_reject", "memory_unreject",
     "refine_trigger", "refine_batch", "refine_status", "stats", "health",
+    "review_list", "review_approve", "review_reject", "review_auto_resolve",
     "config_get", "config_update", "idea_add", "demand_create", "project_register",
     "signal_pull", "signal_claim", "signal_ack", "signal_clear",
     "role_list", "role_assemble", "role_active_get", "role_active_set", "persona_fill",
@@ -185,6 +186,10 @@ BASELINE_SPEC: dict[str, tuple[str, str, str, str]] = {
     "refine_trigger": ("refine_trigger", "refine-trigger", "mcp", "agent"),
     "refine_batch": ("refine_batch", "refine-batch", "mcp", "agent"),
     "refine_status": ("refine_status", "refine-status", "mcp", "agent"),
+    "review_list": ("review_list", "review-list", "mcp", "agent"),
+    "review_approve": ("review_approve", "review-approve", "mcp", "agent"),
+    "review_reject": ("review_reject", "review-reject", "mcp", "agent"),
+    "review_auto_resolve": ("review_auto_resolve", "review-auto-resolve", "mcp", "agent"),
     "stats": ("stats", "stats", "mcp", "agent"),
     "health": ("health", "health", "http", "agent"),
     "config_get": ("config_get", "config-get", "mcp", "agent"),
@@ -484,6 +489,25 @@ class SGME:
     def refine_status(self):
         return self._mcp("refine_status", {})
 
+    # ---------- MCP 层：待审队列 ----------
+    def review_list(self, limit: int = 50, offset: int = 0, dimension: str | None = None):
+        args: dict = {"limit": limit, "offset": offset}
+        if dimension:
+            args["dimension"] = dimension
+        return self._mcp("review_list", args)
+
+    def review_approve(self, memory_id: str, note: str | None = None):
+        args: dict = {"memory_id": memory_id}
+        if note:
+            args["note"] = note
+        return self._mcp("review_approve", args)
+
+    def review_reject(self, memory_id: str, reason: str):
+        return self._mcp("review_reject", {"memory_id": memory_id, "reason": reason})
+
+    def review_auto_resolve(self, days: int = 7):
+        return self._mcp("review_auto_resolve", {"days": days})
+
     def stats(self):
         return self._mcp("stats", {})
 
@@ -770,7 +794,7 @@ def _fetch_skill_package(client, name: str, dest_dir: str) -> dict:
 # ================= 能力矩阵 =================
 
 def capability_report() -> list[dict]:
-    """逐条核对 45 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
+    """逐条核对 49 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
     rows = []
     for tool in BASELINE_TOOLS:
         method, cli, layer, scope = BASELINE_SPEC[tool]
@@ -1067,6 +1091,33 @@ CMD_SPECS: list[dict] = [
     },
     {"cli": "refine-status", "help": "提炼进度（队列/水位）",
      "run": lambda c, a: c.refine_status()},
+    # ---- MCP 层：待审队列 ----
+    {
+        "cli": "review-list", "help": "待审记忆列表（needs_review=1 不进主注入）",
+        "options": [
+            {"dest": "limit", "flag": "limit", "type": int, "default": 50, "help": "条数"},
+            {"dest": "offset", "flag": "offset", "type": int, "default": 0, "help": "翻页偏移"},
+            {"dest": "dimension", "flag": "dimension", "help": "维度过滤（注册表 id，如 identity）"},
+        ],
+        "run": lambda c, a: c.review_list(a.limit, a.offset, a.dimension),
+    },
+    {
+        "cli": "review-approve", "help": "放行待审记忆（恢复进主注入）",
+        "positionals": [{"dest": "memory_id", "help": "记忆 ID"}],
+        "options": [{"dest": "note", "flag": "note", "help": "放行备注（可选）"}],
+        "run": lambda c, a: c.review_approve(a.memory_id, a.note),
+    },
+    {
+        "cli": "review-reject", "help": "拒绝待审记忆（软删 status=rejected，可恢复）",
+        "positionals": [{"dest": "memory_id", "help": "记忆 ID"}],
+        "options": [{"dest": "reason", "flag": "reason", "required": True, "help": "拒绝原因"}],
+        "run": lambda c, a: c.review_reject(a.memory_id, a.reason),
+    },
+    {
+        "cli": "review-auto-resolve", "help": "触发超期自动消化（超 N 天按保守直存放行）",
+        "options": [{"dest": "days", "flag": "days", "type": int, "default": 7, "help": "超期天数阈值"}],
+        "run": lambda c, a: c.review_auto_resolve(a.days),
+    },
     {"cli": "stats", "help": "引擎统计（记忆数/维度分布/水位）",
      "run": lambda c, a: c.stats()},
     # ---- MCP 层：配置 ----
