@@ -486,17 +486,24 @@ def _now_iso() -> str:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    """打开 SQLite 连接：启用 WAL、外键、row_factory。
+    """打开 SQLite 连接：启用 WAL、外键、忙碌等待、row_factory。
 
      check_same_thread=False：FastAPI 把同步端点丢到 threadpool 执行，
      连接需跨线程复用。SQLite WAL 模式 + 单用户 Server 场景下安全
     （读不阻塞、写由 SQLite 文件锁串行）。
+
+    ``busy_timeout``（2026-11-01 补）：SQLite 默认值为 0——写锁被占用时**立即**
+    抛 ``database is locked``，不等待。生产日志实测累计 948 条锁错误、
+    并出现「未处理异常: database is locked」的 500 响应；提炼任务持锁期间
+    任何并发写（信号、用量统计、管理端点）都会瞬时失败。设 5 秒等待后，
+    写操作会在锁释放后自动重试，代价只是极少数请求慢几十毫秒。
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA busy_timeout=5000;")
     return conn
 
 
