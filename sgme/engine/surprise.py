@@ -12,8 +12,11 @@ surprise = 1 - 最大 jaccard 相似度（0-1，越大越意外）。纯词法�
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
+
+logger = logging.getLogger("sgme.engine.surprise")
 
 # 冷启动样本下限：少于该值时先验不可信，confidence="low"
 CONFIDENCE_MIN_SAMPLES = 30
@@ -145,6 +148,30 @@ def batch_backfill(conn: sqlite3.Connection, limit: int = 1000) -> dict:
             low_confidence += 1
 
     return {"computed": computed, "low_confidence": low_confidence}
+
+
+def compute_for_store(
+    conn,
+    content: str | None,
+    memory_type: str | None,
+    sample_limit: int = 150,
+) -> float | None:
+    """落库钩子：算一条新记忆的惊讶度分数（D-78 接线点）。
+
+    **旁路语义**：任何异常都返回 None，绝不阻塞落库——惊讶度是排序先验，
+    没有它记忆照样该存。``sample_limit`` 取 150 而非默认 300：落库是热路径，
+    每条记忆都要扫同类样本，控制在几十毫秒内。
+    """
+    try:
+        text = (content or "").strip()
+        if not text:
+            # 空内容没有"惊讶"可言：返回 None（= 未计算），而不是 1.0 冒充最高惊讶
+            return None
+        res = compute_surprise(conn, text, memory_type, sample_limit=sample_limit)
+        return res.get("surprise")
+    except Exception as exc:  # noqa: BLE001——先验计算失败不得影响存储
+        logger.warning("惊讶度计算失败（不阻塞落库）: %s", exc)
+        return None
 
 
 # 模块自检：python -m sgme.engine.surprise 直接看分词/相似度行为

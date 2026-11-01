@@ -616,6 +616,10 @@ def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: d
         sources = []
         if m.get("file_id"):
             sources.append((m["file_id"], "session"))
+        # D-78 惊讶度先验：L2 兜底落库路径同样要算（旁路失败返回 None）
+        from sgme.engine.surprise import compute_for_store
+
+        surprise = compute_for_store(mem_conn, m.get("content"), m.get("memory_type"))
         mid = memory_dao.insert_memory(
             mem_conn,
             content=m["content"],
@@ -629,6 +633,7 @@ def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: d
             created_at=m.get("created_at"),
             updated_at=m.get("updated_at"),
             occurred_at=m.get("occurred_at"),
+            extra={"surprise": surprise} if surprise is not None else None,
         )
         m["memory_id"] = mid
     return memories

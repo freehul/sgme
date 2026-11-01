@@ -931,6 +931,13 @@ def _store_memory(
         memory_type=new_mem.get("memory_type"),
     )
     sources = [(source_ref, "session")] if source_ref else None
+    extra = _extra_of(new_mem)
+    # D-78 惊讶度先验：落库时算（纯词法零 LLM；旁路失败返回 None，不阻塞存储）
+    from sgme.engine.surprise import compute_for_store
+
+    surprise = compute_for_store(mem_conn, new_mem.get("content"), new_mem.get("memory_type"))
+    if surprise is not None:
+        extra["surprise"] = surprise
     return memory_dao.insert_memory(
         mem_conn,
         content=new_mem["content"],
@@ -948,7 +955,7 @@ def _store_memory(
         facts=new_mem.get("facts"),
         # 2.0（2026-10-31）：三轴/路由/七值类型/feeling/trait/needs_review 等
         # 由解析层算出，落库必须一并写入——此前这些字段在 INSERT 时被整体丢弃
-        extra=_extra_of(new_mem),
+        extra=extra,
         # 记忆 → 知识页/技能 关联（提炼阶段按会话内沉淀痕迹挂，零 LLM）
         sunk_refs=new_mem.get("_sunk_refs"),
     )

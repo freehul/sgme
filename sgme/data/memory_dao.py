@@ -226,6 +226,8 @@ def delete_alias(conn: sqlite3.Connection, alias: str):
 _EXTRA_COLUMNS: tuple[str, ...] = (
     "type", "subject", "certainty", "derivation", "modality", "route",
     "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
+    # D-78 惊讶度先验（0-1）：NULL = 未计算，存量记忆不编造
+    "surprise",
 )
 
 
@@ -290,18 +292,25 @@ def insert_memory(
     c_at = created_at or _now_iso()
     u_at = updated_at or c_at
     o_at = occurred_at or c_at
+    # 2.0 扩展列从 _EXTRA_COLUMNS 常量生成——**不要再手写列清单**：
+    # 2026-11-01 加 surprise 列时，硬编码的 26 个占位符与 12 个 extra 值对不上，
+    # 直接 ProgrammingError（binding 数不符）。由常量推导可永久免疫。
+    _base_cols = (
+        "memory_id, content, content_seg, memory_type, priority, time_velocity, "
+        "ttl_days, created_at, updated_at, agent_tag, prompt_version, occurred_at, "
+        "facts_json, valid_from, valid_to"
+    )
+    _extra_cols_sql = ", ".join(_EXTRA_COLUMNS)
+    _placeholders = ",".join("?" * (15 + len(_EXTRA_COLUMNS)))
     with _TXN_LOCK:  # T-222：BEGIN…COMMIT/ROLLBACK 全程互斥（含 rollback，防连带回滚他人事务）
         try:
             conn.execute("BEGIN")
             conn.execute(
-                """
+                f"""
                 INSERT INTO memories
-                  (memory_id, content, content_seg, memory_type, priority, time_velocity,
-                   ttl_days, created_at, updated_at, agent_tag, prompt_version, occurred_at,
-                   facts_json, valid_from, valid_to,
-                   type, subject, certainty, derivation, modality, route,
-                   feeling, trait, scene_key, needs_review, l2_facts_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  ({_base_cols},
+                   {_extra_cols_sql})
+                VALUES ({_placeholders})
                 """,
                 (mid, content, segment(content), memory_type, priority, time_velocity,
                  ttl_days, c_at, u_at, agent_tag, prompt_version, o_at,
