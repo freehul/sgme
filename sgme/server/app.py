@@ -1136,6 +1136,7 @@ def create_app(
     from sgme.server.routes_registry import router as registry_router
     from sgme.server.routes_prompts import router as prompts_router
     from sgme.server.routes_ideas import router as ideas_router
+    from sgme.server.routes_review import router as review_router
     from sgme.server.routes_llm import router as llm_router
     # T-231：AI-INSTALL 在线文档（免 Key；索引 + 全文；远程 agent 无仓库亦可读）
     from sgme.server.routes_onboarding import router as onboarding_router
@@ -1153,6 +1154,7 @@ def create_app(
     app.include_router(registry_router)
     app.include_router(prompts_router)
     app.include_router(ideas_router)
+    app.include_router(review_router)
     app.include_router(llm_router)
     # wiki 扩展模块（v0.7 §10；wiki.enabled=false 时不挂载）
     if cfg.get("wiki", {}).get("enabled", True):

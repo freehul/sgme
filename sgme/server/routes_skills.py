@@ -188,6 +188,46 @@ def skill_digest(
     return data
 
 
+# ---------- GET /v1/skills/catalog-version （D-59 一级缓存短路） ----------
+
+@router.get("/v1/skills/catalog-version")
+def skills_catalog_version(
+    request: Request,
+    _: str = Depends(require_agent_key),
+):
+    """目录版本（<100 字节）：与本地记录比对，相同则零请求返回。
+
+    2.0 D-59 两级缓存的第一级——527 个技能逐个比对要 527 次请求，
+    改为一次目录版本比对 + 本地已落盘子集的单点比对。
+    """
+    from sgme.operations.skill_cache import catalog_version
+
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
+    if skills_conn is None:
+        return {"catalog_version": "disabled"}
+    return {"catalog_version": catalog_version(skills_conn)}
+
+
+# ---------- GET /v1/skills/{name}/manifest （D-59 二级缓存比对） ----------
+
+@router.get("/v1/skills/{name}/manifest")
+def skills_manifest(
+    name: str,
+    request: Request,
+    _: str = Depends(require_agent_key),
+):
+    """单技能清单（<200 字节）：``package_sha256`` 相同即复用本地副本。"""
+    from sgme.operations.skill_cache import skill_manifest
+
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
+    if skills_conn is None:
+        return api_error(503, "ERR_SKILLS_DISABLED", "技能库未启用")
+    data = skill_manifest(skills_conn, name)
+    if data is None:
+        return api_error(404, "ERR_SKILL_NOT_FOUND", f"技能不存在: {name}")
+    return data
+
+
 # ---------- GET /v1/skills/{name}?section= （L2 全文/节选） ----------
 
 @router.get("/v1/skills/{name}")

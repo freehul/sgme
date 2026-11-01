@@ -590,6 +590,10 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "memory_unreject", "description": "撤销「不采用」：恢复为 active（rejected 误操作时用，T-163 补齐）"},
     {"name": "refine_trigger", "description": "触发提炼：单文件或扫 status=new 批量（async_mode 分流同步/异步）"},
     {"name": "refine_batch", "description": "批量提炼：显式文件列表或扫全部未提炼，异步排队即返"},
+    {"name": "review_list", "description": "待审记忆列表（needs_review=1 不进主注入，需人工放行/拒绝；D-30 七天未处理自动消化）"},
+    {"name": "review_approve", "description": "放行待审记忆（needs_review 置 0，恢复进主注入）"},
+    {"name": "review_reject", "description": "拒绝待审记忆（软删 status=rejected，可恢复）"},
+    {"name": "review_auto_resolve", "description": "触发超期自动消化（超 N 天未处理的待审记忆按保守直存放行）"},
     {"name": "refine_status", "description": "提炼进度：待提炼/已完成/失败计数 + 水位 + 最近失败"},
     {"name": "stats", "description": "统计：记忆数/维度分布/原始文件状态/水位"},
     {"name": "health", "description": "健康检查：LLM 可用性/提炼水位/心跳"},
@@ -949,6 +953,59 @@ def build_mcp_server():
         if "error" in data:
             return json.dumps(data, ensure_ascii=False)
         return json.dumps(refine_mcp_payload(data), ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def review_list(limit: int = 50, offset: int = 0, dimension: str | None = None) -> str:
+        """待审记忆列表（needs_review=1 的记忆不进主注入，需人工放行或拒绝）。
+
+        D-30：7 天未处理的按保守直存消化（由 review_auto_resolve 承担）。
+        """
+        from sgme.operations.review import list_pending
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(
+            list_pending, mem_conn, limit=limit, offset=offset, dimension=dimension
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def review_approve(memory_id: str, note: str | None = None) -> str:
+        """放行一条待审记忆（needs_review 置 0，恢复进主注入）。"""
+        from sgme.operations.review import approve
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(approve, mem_conn, memory_id, note=note)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def review_reject(memory_id: str, reason: str) -> str:
+        """拒绝一条待审记忆（软删 status='rejected'，可恢复，不物理删除）。"""
+        from sgme.operations.review import reject
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(reject, mem_conn, memory_id, reason=reason)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def review_auto_resolve(days: int = 7) -> str:
+        """触发超期自动消化（D-30：超 N 天未处理的待审记忆按保守直存放行）。"""
+        from sgme.operations.review import auto_resolve_expired
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(auto_resolve_expired, mem_conn, days=days)
+        return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
     @tool
