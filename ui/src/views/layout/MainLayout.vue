@@ -116,6 +116,8 @@ function goSearch() {
           <RouterLink to="/signals"><span class="nav-ico">💗</span><span class="lbl">关怀信号</span></RouterLink>
           <RouterLink to="/wiki"><span class="nav-ico">📚</span><span class="lbl">Wiki 知识库</span></RouterLink>
           <RouterLink to="/skills"><span class="nav-ico">🧰</span><span class="lbl">技能仓库</span></RouterLink>
+          <RouterLink to="/ops/ttl"><span class="nav-ico">⏳</span><span class="lbl">TTL 处置</span></RouterLink>
+          <RouterLink to="/ops/cost"><span class="nav-ico">💰</span><span class="lbl">LLM 成本</span></RouterLink>
           <RouterLink to="/settings"><span class="nav-ico">⚙</span><span class="lbl">设置</span></RouterLink>
         </div>
       </nav>

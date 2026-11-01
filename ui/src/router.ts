@@ -35,6 +35,10 @@ const routes = [
       { path: 'wiki', name: 'wiki', component: () => import('./views/wiki/WikiView.vue'), meta: { title: 'Wiki 知识库' } },
       { path: 'skills', name: 'skills', component: () => import('./views/skills/SkillsView.vue'), meta: { title: '技能仓库' } },
 
+      // 运维看板（2.0 可观测性：TTL 处置 / LLM 成本）
+      { path: 'ops/ttl', name: 'ops-ttl', component: () => import('./views/ops/TtlDispositionView.vue'), meta: { title: 'TTL 处置' } },
+      { path: 'ops/cost', name: 'ops-cost', component: () => import('./views/ops/CostView.vue'), meta: { title: 'LLM 成本' } },
+
       // Care Engine 角色（T-39：角色管理，挂记忆闭环组）
       { path: 'roles', name: 'roles', component: () => import('./views/care/RolesView.vue'), meta: { title: '角色管理' } },
       { path: 'signals', name: 'signals', component: () => import('./views/care/SignalsView.vue'), meta: { title: '关怀信号' } },
