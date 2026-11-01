@@ -145,18 +145,60 @@ def _mark_expired_ttl(mem_conn: sqlite3.Connection) -> int:
     status != 'active'（已 rejected/expired/archived）跳过。
     rejected_at 复用既有列做标记时间（语义扩展，见数据模型文档），
     reject_reason 固定 'dream_ttl_expired'。
+
+    **D-73 召回加固接线（2026-11-01）**：召回次数越多有效期按幂律放宽
+    （``recall_aging.compute_ttl_multiplier``，上限 3×）。因此不能一条 SQL
+    判完——先按原 TTL 粗筛候选（倍率只会放宽不会收紧，候选是超集），
+    再逐条按「ttl_days × 倍率」精判。精判仍走 julianday，与查询层口径一致
+    （不在 Python 侧比时间，避免时区解释漂移）。
+    ``forget_request`` 记忆豁免放大——遗忘请求必须按原期生效。
     """
-    cur = mem_conn.execute(
+    from sgme.engine.recall_aging import compute_ttl_multiplier
+
+    candidates = mem_conn.execute(
         """
-        UPDATE memories
-        SET status='expired', rejected_at=?, reject_reason='dream_ttl_expired'
-        WHERE status='active' AND ttl_days IS NOT NULL
-          AND julianday(updated_at) <= julianday('now') - ttl_days
-        """,
-        (_now_iso(),),
-    )
+        SELECT m.memory_id, m.ttl_days, COALESCE(s.recall_count, 0) AS recall_count,
+               COALESCE(m.memory_type, '') AS memory_type
+        FROM memories m
+        LEFT JOIN memory_stats s ON s.memory_id = m.memory_id
+        WHERE m.status='active' AND m.ttl_days IS NOT NULL
+          AND julianday(m.updated_at) <= julianday('now') - m.ttl_days
+        """
+    ).fetchall()
+
+    expired_ids: list[str] = []
+    for memory_id, ttl_days, recall_count, memory_type in candidates:
+        # forget_request 豁免放大：按原 TTL 判（不是永不过期）
+        if memory_type == "forget_request":
+            multiplier = 1.0
+        else:
+            multiplier = compute_ttl_multiplier(int(recall_count or 0))
+        effective_ttl = float(ttl_days) * multiplier
+        hit = mem_conn.execute(
+            "SELECT 1 FROM memories WHERE memory_id=? AND status='active' "
+            "AND julianday(updated_at) <= julianday('now') - ?",
+            (memory_id, effective_ttl),
+        ).fetchone()
+        if hit:
+            expired_ids.append(memory_id)
+
+    if not expired_ids:
+        return 0
+
+    now_iso = _now_iso()
+    changed = 0
+    for i in range(0, len(expired_ids), 500):
+        batch = expired_ids[i : i + 500]
+        placeholders = ",".join("?" * len(batch))
+        cur = mem_conn.execute(
+            f"UPDATE memories SET status='expired', rejected_at=?, "
+            f"reject_reason='dream_ttl_expired' "
+            f"WHERE memory_id IN ({placeholders}) AND status='active'",
+            [now_iso, *batch],
+        )
+        changed += cur.rowcount
     mem_conn.commit()
-    return cur.rowcount
+    return changed
 
 
 def _archive_old_raw_files(session_conn: sqlite3.Connection, archive_days: int) -> int:
