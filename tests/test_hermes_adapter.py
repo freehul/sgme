@@ -406,6 +406,10 @@ _ENDPOINTS = {
     "sgme_memory_get": ("GET", "/v1/memory/mem-1"),
     "sgme_memory_reject": ("POST", "/v1/memory/mem-1/reject"),
     "sgme_memory_unreject": ("POST", "/v1/memory/mem-1/unreject"),
+    "sgme_review_list": ("GET", "/v1/admin/review/pending"),
+    "sgme_review_approve": ("POST", "/v1/admin/review/mem-1/approve"),
+    "sgme_review_reject": ("POST", "/v1/admin/review/mem-1/reject"),
+    "sgme_review_auto_resolve": ("POST", "/v1/admin/review/auto-resolve"),
     "sgme_refine_trigger": ("POST", "/v1/admin/refine/trigger"),
     "sgme_refine_batch": ("POST", "/v1/admin/refine/trigger_async"),
     "sgme_refine_status": ("GET", "/v1/admin/refine_runs"),
@@ -456,6 +460,10 @@ _CALL_ARGS = {
     "sgme_memory_get": {"memory_id": "mem-1"},
     "sgme_memory_reject": {"memory_id": "mem-1", "reason": "记错了"},
     "sgme_memory_unreject": {"memory_id": "mem-1"},
+    "sgme_review_list": {},
+    "sgme_review_approve": {"memory_id": "mem-1", "note": "没问题"},
+    "sgme_review_reject": {"memory_id": "mem-1", "reason": "与既有记忆冲突"},
+    "sgme_review_auto_resolve": {"days": 7},
     "sgme_refine_trigger": {},
     "sgme_refine_batch": {},
     "sgme_refine_status": {},
@@ -497,6 +505,10 @@ _ADMIN_TOOLS = {
     "sgme_wiki_page_update",
     "sgme_memory_reject",
     "sgme_memory_unreject",
+    "sgme_review_list",
+    "sgme_review_approve",
+    "sgme_review_reject",
+    "sgme_review_auto_resolve",
     "sgme_refine_trigger",
     "sgme_refine_batch",
     "sgme_refine_status",
@@ -583,13 +595,13 @@ def _baseline_tools() -> set:
 
 
 def test_tool_count_and_names():
-    """注册 45 个工具（默认面）：43 个基准覆盖 + 3 个自有工具（conversation_search /
+    """注册 49 个工具（默认面）：47 个基准覆盖 + 3 个自有工具（conversation_search /
     role_save / role_delete）− sgme_credential_get（catalog 审核整改 2026-10 默认隐藏；
-    开启后恢复 46，见 test_catalog_remediation）。"""
+    开启后恢复 50，见 test_catalog_remediation）。"""
     p, _ = _tool_provider()
     names = [s["name"] for s in p.get_tool_schemas()]
-    assert len(names) == 45, f"工具数应为 45（credential_get 默认隐藏），实际 {len(names)}"
-    assert len(set(names)) == 45, "工具名重复"
+    assert len(names) == 49, f"工具数应为 49（credential_get 默认隐藏），实际 {len(names)}"
+    assert len(set(names)) == 49, "工具名重复"
     assert "sgme_credential_get" not in names, "credential_get 默认不应在工具面"
     assert set(EXEMPT_TOOLS).isdisjoint({n[len("sgme_"):] for n in names}), "豁免工具不应被实现"
     expected = (
