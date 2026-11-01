@@ -14,6 +14,7 @@ const routes = [
       // 记忆闭环
       { path: 'memories', name: 'memories', component: () => import('./views/memory/MemoryList.vue'), meta: { title: '记忆浏览' } },
       { path: 'memories/:id', name: 'memory-detail', component: () => import('./views/memory/MemoryDetail.vue'), meta: { title: '记忆详情' } },
+      { path: 'review', name: 'review', component: () => import('./views/review/ReviewQueue.vue'), meta: { title: '待审候选' } },
       { path: 'scenes', name: 'scenes', component: () => import('./views/scenes/SceneList.vue'), meta: { title: '场景管理' } },
       { path: 'scenes/:id', name: 'scene-detail', component: () => import('./views/scenes/SceneList.vue'), meta: { title: '场景详情' } },
       { path: 'graph', name: 'graph', component: () => import('./views/graph/GraphView.vue'), meta: { title: '知识图谱' } },
