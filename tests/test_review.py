@@ -80,8 +80,8 @@ class TestListPending:
 
         out = review.list_pending(conn)
 
-        assert out["total"] == 2
-        assert [it["memory_id"] for it in out["items"]] == ["new", "old"]
+        assert out.data["total"] == 2
+        assert [it["memory_id"] for it in out.data["items"]] == ["new", "old"]
 
     def test_pagination_limit_offset(self, tmp_path):
         """limit/offset 分页：total 始终是过滤后总数，不受分页影响。"""
@@ -92,10 +92,10 @@ class TestListPending:
         page1 = review.list_pending(conn, limit=2, offset=0)
         page2 = review.list_pending(conn, limit=2, offset=2)
 
-        assert page1["total"] == 3 and len(page1["items"]) == 2
-        assert [it["memory_id"] for it in page1["items"]] == ["m2", "m1"]
-        assert page2["total"] == 3 and len(page2["items"]) == 1
-        assert page2["items"][0]["memory_id"] == "m0"
+        assert page1.data["total"] == 3 and len(page1.data["items"]) == 2
+        assert [it["memory_id"] for it in page1.data["items"]] == ["m2", "m1"]
+        assert page2.data["total"] == 3 and len(page2.data["items"]) == 1
+        assert page2.data["items"][0]["memory_id"] == "m0"
 
     def test_dimension_filter_via_memory_tags(self, tmp_path):
         """dimension 过滤走 memory_tags 关联；不过滤时全量返回。"""
@@ -105,9 +105,9 @@ class TestListPending:
 
         out = review.list_pending(conn, dimension="identity")
 
-        assert out["total"] == 1
-        assert out["items"][0]["memory_id"] == "with_dim"
-        assert review.list_pending(conn)["total"] == 2
+        assert out.data["total"] == 1
+        assert out.data["items"][0]["memory_id"] == "with_dim"
+        assert review.list_pending(conn).data["total"] == 2
 
 
 # ---------- approve：人工放行 ----------
@@ -120,13 +120,13 @@ class TestApprove:
 
         out = review.approve(conn, "m1")
 
-        assert out == {"ok": True, "memory_id": "m1"}
+        assert out.ok is True and out.data["memory_id"] == "m1"
         row = conn.execute(
             "SELECT needs_review, status FROM memories WHERE memory_id='m1'"
         ).fetchone()
         assert row["needs_review"] == 0 and row["status"] == "active"
         # 放行后退出待审队列
-        assert review.list_pending(conn)["total"] == 0
+        assert review.list_pending(conn).data["total"] == 0
 
     def test_approve_with_note_appends_to_notes(self, tmp_path):
         """note 非空时写入 notes 列（含放行时间戳，可读回原文）。"""
@@ -135,7 +135,7 @@ class TestApprove:
 
         out = review.approve(conn, "m1", note="用户确认过，放心")
 
-        assert out["ok"] is True
+        assert out.ok is True
         notes = conn.execute(
             "SELECT notes FROM memories WHERE memory_id='m1'"
         ).fetchone()[0]
@@ -158,7 +158,7 @@ class TestApprove:
         conn = _make_conn(tmp_path)
         out = review.approve(conn, "ghost")
 
-        assert out == {"ok": False, "error": "not_found"}
+        assert out.ok is False and out.error_code == "ERR_NOT_FOUND"
 
     def test_approve_idempotent(self, tmp_path):
         """幂等：已放行的记忆再放行不报错、notes 不重复追加。"""
@@ -168,7 +168,7 @@ class TestApprove:
 
         out = review.approve(conn, "m1", note="第二次放行")
 
-        assert out == {"ok": True, "memory_id": "m1"}
+        assert out.ok is True and out.data["memory_id"] == "m1"
         notes = conn.execute(
             "SELECT notes FROM memories WHERE memory_id='m1'"
         ).fetchone()[0]
@@ -186,7 +186,7 @@ class TestReject:
 
         out = review.reject(conn, "m1", "事实有误")
 
-        assert out == {"ok": True, "memory_id": "m1"}
+        assert out.ok is True and out.data["memory_id"] == "m1"
         row = conn.execute(
             "SELECT status, reject_reason, rejected_at FROM memories WHERE memory_id='m1'"
         ).fetchone()
@@ -194,14 +194,14 @@ class TestReject:
         assert row["reject_reason"] == "事实有误"
         assert row["rejected_at"]  # 留痕：拒绝时刻
         # 拒绝后退出待审队列
-        assert review.list_pending(conn)["total"] == 0
+        assert review.list_pending(conn).data["total"] == 0
 
     def test_reject_not_found(self, tmp_path):
         """不存在的记忆 → ok=False + error=not_found。"""
         conn = _make_conn(tmp_path)
         out = review.reject(conn, "ghost", "原因")
 
-        assert out == {"ok": False, "error": "not_found"}
+        assert out.ok is False and out.error_code == "ERR_NOT_FOUND"
 
     def test_reject_idempotent(self, tmp_path):
         """幂等：已拒绝的记忆再拒绝不报错、reason 不被覆盖（保留首次理由）。"""
@@ -211,7 +211,7 @@ class TestReject:
 
         out = review.reject(conn, "m1", "第二次理由")
 
-        assert out == {"ok": True, "memory_id": "m1"}
+        assert out.ok is True and out.data["memory_id"] == "m1"
         reason = conn.execute(
             "SELECT reject_reason FROM memories WHERE memory_id='m1'"
         ).fetchone()[0]
@@ -228,7 +228,7 @@ class TestAutoResolveExpired:
 
         out = review.auto_resolve_expired(conn, days=7)
 
-        assert out == {"resolved": 0}
+        assert out.ok is True and out.data["resolved"] == 0
         row = conn.execute(
             "SELECT needs_review, notes FROM memories WHERE memory_id='m1'"
         ).fetchone()
@@ -242,7 +242,7 @@ class TestAutoResolveExpired:
 
         out = review.auto_resolve_expired(conn, days=7)
 
-        assert out == {"resolved": 1}
+        assert out.ok is True and out.data["resolved"] == 1
         row = conn.execute(
             "SELECT needs_review, notes FROM memories WHERE memory_id='m1'"
         ).fetchone()
@@ -258,12 +258,12 @@ class TestAutoResolveExpired:
 
         out = review.auto_resolve_expired(conn, days=7)
 
-        assert out == {"resolved": 2}
+        assert out.ok is True and out.data["resolved"] == 2
         remaining = review.list_pending(conn)
-        assert remaining["total"] == 1
-        assert remaining["items"][0]["memory_id"] == "young"
+        assert remaining.data["total"] == 1
+        assert remaining.data["items"][0]["memory_id"] == "young"
         # 已消化行不再出现在任何过滤结果的待审队列
-        assert review.list_pending(conn, dimension=None)["items"]
+        assert review.list_pending(conn, dimension=None).data["items"]
 
     def test_auto_resolve_mark_is_deduped(self, tmp_path):
         """标记去重：notes 已含「未经人工确认」时不再重复追加。"""
@@ -279,7 +279,7 @@ class TestAutoResolveExpired:
 
         out = review.auto_resolve_expired(conn, days=7)
 
-        assert out == {"resolved": 1}
+        assert out.ok is True and out.data["resolved"] == 1
         notes = conn.execute(
             "SELECT notes FROM memories WHERE memory_id='m1'"
         ).fetchone()[0]
@@ -297,7 +297,7 @@ class TestAutoResolveExpired:
         ).fetchone()[0]
         second = review.auto_resolve_expired(conn, days=7)
 
-        assert first == {"resolved": 1} and second == {"resolved": 0}
+        assert first.ok is True and first.data["resolved"] == 1 and second.data["resolved"] == 0
         assert conn.execute(
             "SELECT notes FROM memories WHERE memory_id='m1'"
         ).fetchone()[0] == notes_after_first
@@ -309,4 +309,4 @@ class TestAutoResolveExpired:
 
         out = review.auto_resolve_expired(conn)
 
-        assert out == {"resolved": 1}
+        assert out.ok is True and out.data["resolved"] == 1

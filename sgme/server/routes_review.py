@@ -44,11 +44,19 @@ def list_pending(
     （越界或非整数 → 400 ERR_INVALID_ARGS）。
     """
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    # HTTP query 一律是 str，operations 层要 int——在此转换（非法值回退默认，
+    # 不把 "3" 这类字符串直接喂给 list_pending 的 _parse_limit，否则 400）
+    def _int_or(raw: str | None, default: int) -> int:
+        try:
+            return int(raw) if raw is not None else default
+        except (TypeError, ValueError):
+            return default
+
     return run_operation(
         list_pending_operation,
         mem_conn,
-        limit=limit if limit is not None else 50,
-        offset=offset if offset is not None else 0,
+        limit=_int_or(limit, 50),
+        offset=_int_or(offset, 0),
         dimension=dimension,
     )
 

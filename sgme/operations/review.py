@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from sgme.operations.errors import InvalidArgs
+from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult
 
 # 列表分页硬上限（防查询放大，对齐 demand.py 的 MAX_LIMIT 先例）
 MAX_LIMIT: int = 200
@@ -105,10 +105,9 @@ def list_pending(
         f"ORDER BY m.created_at DESC, m.memory_id LIMIT ? OFFSET ?",
         (*params, limit_val, offset),
     ).fetchall()
-    return {
-        "items": [dict(r) for r in rows],
-        "total": total,
-    }
+    return OperationResult.succeed(
+        {"items": [dict(r) for r in rows], "total": total}
+    )
 
 
 # ---------- 操作 2：人工放行 ----------
@@ -130,7 +129,7 @@ def approve(conn: sqlite3.Connection, memory_id: str, note: str | None = None) -
         "SELECT needs_review, notes FROM memories WHERE memory_id = ?", (memory_id,)
     ).fetchone()
     if row is None:
-        return {"ok": False, "error": "not_found"}
+        return OperationResult.fail(ERR_NOT_FOUND, f"记忆不存在: {memory_id}")
 
     if row["needs_review"] == 1:
         conn.execute(
@@ -143,7 +142,7 @@ def approve(conn: sqlite3.Connection, memory_id: str, note: str | None = None) -
                 (_append_note(row["notes"], stamped), memory_id),
             )
         conn.commit()
-    return {"ok": True, "memory_id": memory_id}
+    return OperationResult.succeed({"memory_id": memory_id})
 
 
 # ---------- 操作 3：人工拒绝 ----------
@@ -170,7 +169,7 @@ def reject(conn: sqlite3.Connection, memory_id: str, reason: str) -> dict:
         "SELECT status FROM memories WHERE memory_id = ?", (memory_id,)
     ).fetchone()
     if row is None:
-        return {"ok": False, "error": "not_found"}
+        return OperationResult.fail(ERR_NOT_FOUND, f"记忆不存在: {memory_id}")
 
     if row["status"] != "rejected":
         conn.execute(
@@ -179,7 +178,7 @@ def reject(conn: sqlite3.Connection, memory_id: str, reason: str) -> dict:
             (reason.strip(), _now_iso(), memory_id),
         )
         conn.commit()
-    return {"ok": True, "memory_id": memory_id}
+    return OperationResult.succeed({"memory_id": memory_id})
 
 
 # ---------- 操作 4：超期保守直存 ----------
@@ -229,4 +228,4 @@ def auto_resolve_expired(
         )
         resolved += 1
     conn.commit()
-    return {"resolved": resolved}
+    return OperationResult.succeed({"resolved": resolved})
