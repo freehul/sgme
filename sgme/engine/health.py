@@ -59,13 +59,22 @@ def _now_dt() -> datetime:
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
-    """解析 ISO 8601 时间戳为 aware datetime；失败返回 None。"""
+    """解析 ISO 8601 时间戳为 aware datetime；失败返回 None。
+
+    无时区标记的时间戳（如 ``2026-10-31 05:43:09``，SQLite ``CURRENT_TIMESTAMP``
+    与部分历史写入路径的产物）按 **UTC** 解释——否则与 ``_now_dt()`` 的 aware
+    值比较会抛 ``TypeError: can't compare offset-naive and offset-aware datetimes``，
+    整个 /v1/health 随之 500（2026-11-01 全量重建库实测 62 条触发）。
+    """
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _now_iso() -> str:
