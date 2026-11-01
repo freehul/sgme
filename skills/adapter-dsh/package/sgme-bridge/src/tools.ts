@@ -499,6 +499,11 @@ export function registerTools(
   ctx.tools.register(createRefineStatusTool(client))
   ctx.tools.register(createRefineTriggerTool(client))
   ctx.tools.register(createRefineBatchTool(client))
+  // 待审记忆队列（D-30：needs_review 闸门的人工放行/拒绝/超期消化）
+  ctx.tools.register(createReviewListTool(client))
+  ctx.tools.register(createReviewApproveTool(client))
+  ctx.tools.register(createReviewRejectTool(client))
+  ctx.tools.register(createReviewAutoResolveTool(client))
   ctx.tools.register(createSkillMaterializeTool(client))
   ctx.tools.register(createSkillPutTool(client))
   ctx.tools.register(createSkillDeleteTool(client))
@@ -1465,6 +1470,155 @@ export function createMemoryUnrejectTool(client: SgmeClient) {
         return `[memory_unreject 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`
       }
       return `[memory_unreject 已恢复：memory_id=${resp.memory_id} status=${resp.status}]`
+    },
+  })
+}
+
+// ---------- 待审记忆队列（D-30：needs_review 闸门，对齐 MCP review_* 四工具） ----------
+
+/** 创建 review_list 工具（待审记忆分页列表）。 */
+export function createReviewListTool(client: SgmeClient) {
+  return defineTool({
+    name: 'review_list',
+    description: [
+      '列出 SGME 待审记忆（needs_review=1，未进主注入块，等待人工放行或拒绝）。',
+      'D-30：7 天未处理的按保守直存消化（由 review_auto_resolve 承担）。',
+    ].join(' '),
+    parameters: {
+      limit: {
+        type: 'number',
+        description: '页大小（1-200，默认 50）',
+      },
+      offset: {
+        type: 'number',
+        description: '跳过条数（≥0，默认 0）',
+      },
+      dimension: {
+        type: 'string',
+        description: '只看该维度（如 identity/goals）；省略=全部维度',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { limit?: number; offset?: number; dimension?: string }
+      const resp = await client.reviewPending(a.limit ?? 50, a.offset ?? 0, a.dimension ?? null)
+      if (!resp) {
+        return '[review_list 失败：SGME Gateway 不可达，稍后重试]'
+      }
+      if (!resp.items?.length) {
+        return '[review_list 待审队列为空（0 条）]'
+      }
+      const lines = resp.items.map((item) => {
+        const content = String(item.content ?? '')
+        const brief = content.length > 80 ? `${content.slice(0, 80)}…` : content
+        return `- ${item.memory_id}｜${item.created_at ?? ''}｜${brief}`
+      })
+      return [
+        `[review_list 共 ${resp.total} 条待审，本页 ${resp.items.length} 条（limit=${a.limit ?? 50}，offset=${a.offset ?? 0}）]`,
+        ...lines,
+      ].join('\n')
+    },
+  })
+}
+
+/** 创建 review_approve 工具（放行待审记忆）。 */
+export function createReviewApproveTool(client: SgmeClient) {
+  return defineTool({
+    name: 'review_approve',
+    description: [
+      '放行一条待审记忆（needs_review 置 0，恢复进主注入）。',
+      'memory_id 来自 review_list；幂等（已放行为 no-op）。',
+    ].join(' '),
+    parameters: {
+      memory_id: {
+        type: 'string',
+        required: true,
+        description: '记忆 id（review_list 返回）',
+      },
+      note: {
+        type: 'string',
+        description: '放行备注（追加进 notes，可溯源）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { memory_id: string; note?: string }
+      const resp = await client.reviewApprove(a.memory_id, a.note ?? null)
+      if (!resp) {
+        return `[review_approve 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`
+      }
+      return `[review_approve 已放行：memory_id=${resp.memory_id}（已恢复进主注入）]`
+    },
+  })
+}
+
+/** 创建 review_reject 工具（拒绝待审记忆）。 */
+export function createReviewRejectTool(client: SgmeClient) {
+  return defineTool({
+    name: 'review_reject',
+    description: [
+      '拒绝一条待审记忆（软删 status=rejected，可恢复，不物理删除）。',
+      'reason 必填（人可读理由，落 reject_reason）；幂等（已拒绝不覆盖首次理由）。',
+    ].join(' '),
+    parameters: {
+      memory_id: {
+        type: 'string',
+        required: true,
+        description: '记忆 id（review_list 返回）',
+      },
+      reason: {
+        type: 'string',
+        required: true,
+        description: '拒绝理由（用户说明的原因）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { memory_id: string; reason: string }
+      const resp = await client.reviewReject(a.memory_id, a.reason)
+      if (!resp) {
+        return `[review_reject 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`
+      }
+      return `[review_reject 已拒绝：memory_id=${resp.memory_id}（status=rejected，可恢复）]`
+    },
+  })
+}
+
+/** 创建 review_auto_resolve 工具（触发超期保守直存消化）。 */
+export function createReviewAutoResolveTool(client: SgmeClient) {
+  return defineTool({
+    name: 'review_auto_resolve',
+    description: [
+      '触发超期自动消化：超 N 天（默认 7）未处理的待审记忆按保守直存放行',
+      '（notes 追加「未经人工确认」标记，可按标记批量复查）。',
+      '用于定期兜底消化；需要立即处理具体记忆时用 review_approve/review_reject。',
+    ].join(' '),
+    parameters: {
+      days: {
+        type: 'number',
+        description: '超期天数阈值（默认 7，≥1）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { days?: number }
+      const resp = await client.reviewAutoResolve(a.days)
+      if (!resp) {
+        return '[review_auto_resolve 失败：SGME Gateway 不可达，稍后重试]'
+      }
+      return `[review_auto_resolve 已消化 ${resp.resolved} 条超期待审（保守直存，可按标记复查）]`
     },
   })
 }

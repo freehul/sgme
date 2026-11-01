@@ -247,13 +247,13 @@ describe('memory_get / memory_reject tool', () => {
 // ---------- 注册 + dimensions 描述修正 ----------
 
 describe('registerTools 注册（T-86 扩充 → SGME 1.2.2 对齐）', () => {
-  it('注册全部 44 个工具（9 旧 + 9 新 + inject + 5 技能层 + 15 对齐 + conversation_search + 2 凭据 + persona_fill + guard_reply）', () => {
+  it('注册全部 48 个工具（9 旧 + 9 新 + inject + 5 技能层 + 15 对齐 + conversation_search + 2 凭据 + persona_fill + guard_reply + 4 待审）', () => {
     const registered: string[] = []
     const ctx = {
       tools: { register: (tool: unknown) => { registered.push((tool as ToolLike).name); return () => {} } },
     }
     registerTools(ctx as unknown as Parameters<typeof registerTools>[0], makeMockClient({}), 5)
-    expect(registered).toHaveLength(44)
+    expect(registered).toHaveLength(48)
     for (const name of [
       'memory_search', 'conversation_search',
       'idea_add', 'demand_create', 'project_register',
@@ -270,6 +270,8 @@ describe('registerTools 注册（T-86 扩充 → SGME 1.2.2 对齐）', () => {
       'skill_materialize', 'skill_put', 'skill_delete', 'skill_rename',
       // EP-11 凭据读侧（T-277）
       'credential_list', 'credential_get',
+      // 待审队列（D-30，对齐 MCP review_*）
+      'review_list', 'review_approve', 'review_reject', 'review_auto_resolve',
     ]) {
       expect(registered).toContain(name)
     }
