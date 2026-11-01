@@ -43,8 +43,9 @@ from sgme.data import memory_dao
 
 # ---------- v0.6 冻结契约（改造前逐字段抄录，任何变动即破坏性变更） ----------
 
-# GET /v1/memory/{id} 成功体：三键包裹，sources 与 memory.sources 同值冗余
-HTTP_GET_TOP_KEYS = ["memory", "sources", "archive_chain"]
+# GET /v1/memory/{id} 成功体：四键包裹，sources 与 memory.sources 同值冗余
+# pages 为 2026-11-01 增补（memory_pages 关联页索引）——**纯增量**，老调用方不受影响
+HTTP_GET_TOP_KEYS = ["memory", "sources", "archive_chain", "pages"]
 # MCP memory_get 成功体：裸记忆对象（memories 表列 + tags + sources）
 MCP_GET_REQUIRED_KEYS = {"memory_id", "content", "memory_type", "priority",
                          "time_velocity", "ttl_days", "created_at", "updated_at",
@@ -176,7 +177,7 @@ def test_get_memory_data_is_superset(mem_conn):
     data = get_memory(mem_conn, "mem-1").data
 
     # Assert
-    assert set(data.keys()) == {"memory", "archive_chain"}
+    assert set(data.keys()) == {"memory", "archive_chain", "pages"}
     assert data["memory"]["memory_id"] == "mem-1"
     assert data["memory"]["content"] == "用户偏好深色主题"
     assert data["memory"]["sources"] == [

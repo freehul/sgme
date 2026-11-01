@@ -95,7 +95,12 @@ def get_memory(mem_conn: sqlite3.Connection, memory_id: str) -> OperationResult:
     if not mem:
         return _not_found(memory_id)
     archive_chain = memory_dao.get_archive_chain(mem_conn, memory_id)
-    return OperationResult.succeed({"memory": mem, "archive_chain": archive_chain})
+    # 关联页/技能（memory_pages）：技术细节沉淀在知识库/技能库，记忆只留索引。
+    # WebUI 记忆详情页需要它展示「详情见 …」；此前只有 DAO 没有端点暴露。
+    pages = memory_dao.get_memory_pages(mem_conn, memory_id)
+    return OperationResult.succeed(
+        {"memory": mem, "archive_chain": archive_chain, "pages": pages}
+    )
 
 
 def get_http_payload(data: dict[str, Any]) -> dict[str, Any]:
@@ -108,6 +113,8 @@ def get_http_payload(data: dict[str, Any]) -> dict[str, Any]:
         "memory": memory,
         "sources": memory.get("sources", []),
         "archive_chain": data["archive_chain"],
+        # 2.0：关联页/技能索引（memory_pages）——WebUI 详情页渲染「详情见 …」
+        "pages": data.get("pages", []),
     }
 
 
