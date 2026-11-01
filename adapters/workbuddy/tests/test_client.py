@@ -10,7 +10,7 @@
 - HTTP 层请求构造（append 首行格式 / 查询参数 / 头部 / 错误包装）
 - agent_id 解析链（T-233）：显式 → 环境变量 → 身份文件 → 默认；空值回退；
   构造解析 / append 请求体取值 / install.py 身份播种既有值保留
-- 45 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
+- 49 个 MCP 基准能力的方法层 + CLI 命令层全覆盖（缺一即失败）
 - fetch 技能完整包（T-283）：下载 → MANIFEST 校验 → 安全解包 → 原子落盘；失败不留残件
 - 新增/修正方法与 CLI 命令的参数转译（含管理员 Key 范围）
 - 测试样例全部使用假值：私网语义用 10.0.0.x，密钥用低熵占位
@@ -719,6 +719,61 @@ class TestMcpMethodSignatures(NoDeployConfig):
         args, _kw = self._call(mo)
         self.assertEqual(args[1], {"async_mode": True, "limit": 50, "file_ids": ["a", "b"]})
 
+    def test_review_list_params(self):
+        """D-30 待审队列四件套之一：分页 + 维度过滤（dimension 缺省不进参数）。"""
+        c, mo = self._client()
+        c.review_list(limit=10, offset=20, dimension="identity")
+        args, _kw = self._call(mo)
+        self.assertEqual(args[0], "review_list")
+        self.assertEqual(args[1], {"limit": 10, "offset": 20, "dimension": "identity"})
+        c.review_list()
+        self.assertEqual(mo.call_args.args[1], {"limit": 50, "offset": 0})
+
+    def test_review_approve_params(self):
+        c, mo = self._client()
+        c.review_approve("mem-1", note="人工确认无误")
+        args, _kw = self._call(mo)
+        self.assertEqual(args[0], "review_approve")
+        self.assertEqual(args[1], {"memory_id": "mem-1", "note": "人工确认无误"})
+        c.review_approve("mem-2")
+        self.assertEqual(mo.call_args.args[1], {"memory_id": "mem-2"})
+
+    def test_review_reject_params(self):
+        c, mo = self._client()
+        c.review_reject("mem-1", "与事实不符")
+        self.assertEqual(mo.call_args.args,
+                         ("review_reject", {"memory_id": "mem-1", "reason": "与事实不符"}))
+
+    def test_review_auto_resolve_scope_auto(self):
+        """写侧：超期消化会改记忆状态，走 auto 范围（有管理员 Key 时自动用管理员 Key）。"""
+        c, mo = self._client()
+        c.review_auto_resolve(days=14)
+        args, kw = self._call(mo)
+        self.assertEqual(args[0], "review_auto_resolve")
+        self.assertEqual(args[1], {"days": 14})
+        self.assertEqual(kw["scope"], "auto")
+
+    def test_review_auto_resolve_requires_admin_key(self):
+        """缺管理员 Key 时必须报密钥错（真实 _mcp 路径：密钥校验在 import mcp 之前）。"""
+        c = make_client()
+        with env_ctx():
+            with self.assertRaises(SGMEError) as ctx:
+                c.review_auto_resolve()
+            self.assertIn("SGME_ADMIN_KEY", str(ctx.exception))
+
+    def test_review_read_side_without_admin_key_still_works(self):
+        """读/放行/拒绝是常规 agent 能力：缺管理员 Key 也必须可用（不误伤）。"""
+        c = make_client()
+        patcher = mock.patch.object(c, "_mcp", return_value={"ok": True})
+        mo = patcher.start()
+        self.addCleanup(patcher.stop)
+        with env_ctx():
+            c.review_list()
+            c.review_approve("mem-1", note="ok")
+            c.review_reject("mem-1", "理由")
+        scopes = [call.kwargs.get("scope") for call in mo.call_args_list]
+        self.assertEqual(scopes, ["agent", "agent", "agent"])
+
     def test_stats(self):
         c, mo = self._client()
         c.stats()
@@ -878,11 +933,11 @@ class TestMcpMethodSignatures(NoDeployConfig):
 
 
 class TestCapabilityMatrix(unittest.TestCase):
-    """45 个基准能力：方法层 + CLI 层缺一不可。"""
+    """49 个基准能力：方法层 + CLI 层缺一不可。"""
 
     def test_baseline_count(self):
-        self.assertEqual(len(BASELINE_TOOLS), 45)
-        self.assertEqual(len(set(BASELINE_TOOLS)), 45)
+        self.assertEqual(len(BASELINE_TOOLS), 49)
+        self.assertEqual(len(set(BASELINE_TOOLS)), 49)
         self.assertEqual(set(BASELINE_SPEC), set(BASELINE_TOOLS))
 
     def test_every_baseline_has_method(self):
@@ -906,7 +961,7 @@ class TestCapabilityMatrix(unittest.TestCase):
 
     def test_capability_report_all_covered(self):
         rows = sc.capability_report()
-        self.assertEqual(len(rows), 45)
+        self.assertEqual(len(rows), 49)
         bad = [r["tool"] for r in rows if not (r["method_ok"] and r["cli_ok"])]
         self.assertEqual(bad, [])
 
@@ -935,10 +990,10 @@ class TestCLI(NoDeployConfig):
                 code = sc.main(argv)
         return code, buf.getvalue()
 
-    def test_offline_capabilities_lists_45(self):
+    def test_offline_capabilities_lists_49(self):
         code, out = self._run(["capabilities"])
         self.assertEqual(code, 0)
-        self.assertIn("45/45", out)
+        self.assertIn("49/49", out)
         for tool in BASELINE_TOOLS:
             self.assertIn(tool, out)
 
@@ -1034,6 +1089,14 @@ class TestCLI(NoDeployConfig):
             (["skill-delete", "demo", "--hard"], "skill_delete", ("demo", True, False)),
             (["skill-rename", "old-name", "new-name"],
              "skill_rename", ("old-name", "new-name")),
+            (["review-list"], "review_list", (50, 0, None)),
+            (["review-list", "--dimension", "identity"], "review_list", (50, 0, "identity")),
+            (["review-approve", "mem-1", "--note", "ok"],
+             "review_approve", ("mem-1", "ok")),
+            (["review-reject", "mem-1", "--reason", "理由"],
+             "review_reject", ("mem-1", "理由")),
+            (["review-auto-resolve", "--days", "14"],
+             "review_auto_resolve", (14,)),
         ]
         for argv, method, expected_args in cases:
             m = mock.MagicMock()
