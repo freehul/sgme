@@ -56,10 +56,17 @@ export interface MemorySource {
   source_ref: string
   source_type: string
 }
+// 2.0 关联页索引（memory_pages 表：后端详情接口暂未返回，有值才渲染该区块）
+export interface MemoryPageRef {
+  kind: string // wiki（ref_id=page_id）| skill（ref_id=技能名）
+  ref_id: string
+  relation: string // details（详情在该页）| derived_from（该页由本条记忆生成）
+}
 export interface MemoryDetail {
-  memory: MemoryItem & { sources: MemorySource[] }
+  memory: MemoryItem & { sources: MemorySource[] } & Partial<Record<string, unknown>>
   sources: MemorySource[]
   archive_chain: Array<Record<string, unknown>>
+  pages?: MemoryPageRef[]
 }
 export function getMemory(id: string) {
   return api.get<MemoryDetail>(`/v1/memory/${id}`)
