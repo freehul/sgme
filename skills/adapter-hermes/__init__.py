@@ -188,6 +188,17 @@ def _clamp_limit(value: Any, default: int, maximum: int) -> int:
     return max(1, min(num, maximum))
 
 
+def _arg_int(value: Any, default: int, minimum: int, maximum: Optional[int] = None) -> int:
+    """取整数参数：缺失/非法用 default，夹在 [minimum, maximum]（下限可为 0，如 offset）。"""
+    try:
+        num = int(value)
+    except (TypeError, ValueError):
+        num = default
+    if maximum is not None:
+        return max(minimum, min(num, maximum))
+    return max(minimum, num)
+
+
 def _pick_scopes(value: Any) -> List[str]:
     """取 scopes 列表：按白名单过滤（未知层丢弃，防误传到服务端）。"""
     if not isinstance(value, (list, tuple)):
@@ -1148,6 +1159,60 @@ class SGMEProvider(MemoryProvider):
             },
         },
         {
+            "name": "sgme_review_list",
+            "description": "查看 SGME 待审记忆队列：提炼产物置信度不足时打 needs_review=1 闸门，"
+                           "暂不进主注入，需人工逐条放行或拒绝。D-30：7 天未处理的会被自动消化"
+                           "（保守直存），建议定期来看一眼别让队列积压。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "页大小 1-200（默认 50）"},
+                    "offset": {"type": "integer", "description": "跳过条数（分页翻页用，默认 0）"},
+                    "dimension": {"type": "string", "description": "按维度过滤（注册表 id，如 identity/goals/status；省略=全部）"},
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "sgme_review_approve",
+            "description": "放行一条 SGME 待审记忆：needs_review 置 0，恢复进主注入与检索。"
+                           "与用户核对内容无误后再放行；可附 note 备注溯源。幂等。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string", "description": "待审记忆 id（sgme_review_list 可见）"},
+                    "note": {"type": "string", "description": "放行备注（可选，追加进该记忆的 notes）"},
+                },
+                "required": ["memory_id"],
+            },
+        },
+        {
+            "name": "sgme_review_reject",
+            "description": "拒绝一条 SGME 待审记忆：软删（status=rejected，不物理删除，可恢复）。"
+                           "⚠️ 必须给 reason 说明理由（如与既有记忆冲突/信息过期/误提炼）。幂等。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string", "description": "待审记忆 id（sgme_review_list 可见）"},
+                    "reason": {"type": "string", "description": "拒绝理由（必填，落 reject_reason 可溯源）"},
+                },
+                "required": ["memory_id", "reason"],
+            },
+        },
+        {
+            "name": "sgme_review_auto_resolve",
+            "description": "触发 SGME 待审队列超期自动消化（D-30）：超过 N 天（默认 7）无人处理的待审记忆"
+                           "按保守直存放行——进库但 notes 追加「未经人工确认」标记，可溯源可复查。"
+                           "服务端定时任务也会执行；本工具用于手动提前消化或核查消化结果。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "超期天数阈值（默认 7，≥1）"},
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "sgme_refine_trigger",
             "description": "同步触发提炼：给 file_id 提炼单个会话原文，或扫 status=new 批量提炼。"
                            "⚠️ 同步阻塞直到完成且真实消耗 LLM 额度；批量任务优先用 sgme_refine_batch（异步）。"
@@ -1843,6 +1908,72 @@ class SGMEProvider(MemoryProvider):
         if err:
             return self._err(f"撤销不采用失败（memory_id={memory_id}）: {err}")
         return self._ok(data if isinstance(data, dict) else {"memory_id": memory_id, "status": "active"})
+
+    def _t_review_list(self, args: Dict[str, Any]) -> str:
+        """sgme_review_list：待审记忆队列分页列表（needs_review=1）。需管理员 Key。"""
+        params: Dict[str, Any] = {"limit": _clamp_limit(args.get("limit"), 50, 200)}
+        # offset 允许 0，不能用 _clamp_limit（其下限 1）
+        params["offset"] = _arg_int(args.get("offset"), 0, minimum=0)
+        dimension = _arg_str(args, "dimension")
+        if dimension:
+            params["dimension"] = dimension
+        data, err = self._request("GET", "/v1/admin/review/pending", key="admin", params=params)
+        if err:
+            return self._err(f"查询待审队列失败: {err}")
+        if not isinstance(data, dict):
+            return self._err("查询待审队列响应异常")
+        items = data.get("items")
+        return self._ok({
+            "total": data.get("total", len(items) if isinstance(items, list) else 0),
+            "count": len(items) if isinstance(items, list) else 0,
+            "items": items if isinstance(items, list) else [],
+            "limit": params["limit"], "offset": params["offset"],
+        })
+
+    def _t_review_approve(self, args: Dict[str, Any]) -> str:
+        """sgme_review_approve：放行待审记忆（needs_review 置 0）。需管理员 Key。"""
+        memory_id = _arg_str(args, "memory_id")
+        if not memory_id:
+            return self._err("缺少 memory_id")
+        body: Dict[str, Any] = {}
+        note = _arg_str(args, "note", 500)
+        if note:
+            body["note"] = note
+        data, err = self._request(
+            "POST", f"/v1/admin/review/{_path_seg(memory_id)}/approve",
+            key="admin", json_body=body,
+        )
+        if err:
+            return self._err(f"放行失败（memory_id={memory_id}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"memory_id": memory_id, "status": "approved"})
+
+    def _t_review_reject(self, args: Dict[str, Any]) -> str:
+        """sgme_review_reject：拒绝待审记忆（软删 status=rejected，可恢复）。需管理员 Key。"""
+        memory_id = _arg_str(args, "memory_id")
+        if not memory_id:
+            return self._err("缺少 memory_id")
+        reason = _arg_str(args, "reason", 500)
+        if not reason:
+            return self._err("缺少 reason（拒绝必须说明理由，服务端落 reject_reason 溯源）")
+        data, err = self._request(
+            "POST", f"/v1/admin/review/{_path_seg(memory_id)}/reject",
+            key="admin", json_body={"reason": reason},
+        )
+        if err:
+            return self._err(f"拒绝失败（memory_id={memory_id}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"memory_id": memory_id, "status": "rejected"})
+
+    def _t_review_auto_resolve(self, args: Dict[str, Any]) -> str:
+        """sgme_review_auto_resolve：触发超期待审自动消化（D-30 保守直存）。需管理员 Key。"""
+        body: Dict[str, Any] = {}
+        if args.get("days") not in (None, ""):
+            body["days"] = _arg_int(args.get("days"), 7, minimum=1)
+        data, err = self._request(
+            "POST", "/v1/admin/review/auto-resolve", key="admin", json_body=body,
+        )
+        if err:
+            return self._err(f"触发自动消化失败: {err}")
+        return self._ok(data if isinstance(data, dict) else {"resolved": 0})
 
     def _t_refine_trigger(self, args: Dict[str, Any]) -> str:
         """sgme_refine_trigger：同步提炼（阻塞 + 消耗 LLM 额度）。需管理员 Key。"""

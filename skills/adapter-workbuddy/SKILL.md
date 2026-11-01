@@ -10,7 +10,7 @@ tags: [skill, adapter, sgme]
 你（WorkBuddy）已接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 > 本技能是 SGME 官方适配器（源码 `adapters/workbuddy/`）。两种分发形态：① WorkBuddy 插件市场安装（本目录即插件包，由市场物化到插件缓存，更新走 `/plugin marketplace update`）；② 手动部署副本（`install.py` 同步，可随时重建）。
-> **能力面 = CLI 命令面**：下方矩阵 45 个基准能力一个不少。
+> **能力面 = CLI 命令面**：下方矩阵 49 个基准能力一个不少。
 > **优先用本会话已挂载的 MCP 工具**（同名能力）；无 MCP 或要脚本化时再走 CLI。
 > 本机 agent_id **默认 `workbuddy`**（服务端已注册）——可被本机覆盖：环境变量 `SGME_WORKBUDDY_AGENT_ID` → 身份文件 `~/.sgme/workbuddy-agent.json` 的 `agent_id` → 默认。**多设备接入时必须覆盖为服务端为本机签发的注册 id**（占位符示例 `<注册id>-<设备名>`）；用 `env-info` 查看生效值与来源。不要借用其它 agent 的 key。
 
@@ -99,34 +99,38 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 15 | refine_trigger | MCP | `refine-trigger` |
 | 16 | refine_batch | MCP | `refine-batch` |
 | 17 | refine_status | MCP | `refine-status` |
-| 18 | stats | MCP | `stats` |
-| 19 | health | HTTP | `health` |
-| 20 | config_get | MCP | `config-get` |
-| 21 | config_update | MCP | `config-update` |
-| 22 | idea_add | MCP | `idea-add` |
-| 23 | demand_create | MCP | `demand-create` |
-| 24 | project_register | MCP | `project-register` |
-| 25 | signal_pull | MCP | `signal-pull` |
-| 26 | signal_claim | MCP | `signal-claim` |
-| 27 | signal_ack | MCP | `signal-ack` |
-| 28 | signal_clear | MCP | `signal-clear` |
-| 29 | role_list | MCP | `role-list` |
-| 30 | role_assemble | MCP | `role-assemble` |
-| 31 | role_active_get | MCP | `role-active-get` |
-| 32 | role_active_set | MCP | `role-active-set` |
-| 33 | persona_fill | MCP | `persona-fill` |
-| 34 | guard_reply | MCP | `guard-reply <role_id> "<reply>" [--session-id <sid>]` |
-| 35 | skill_search | HTTP | `skill-search` |
-| 36 | skill_digest | HTTP | `skill-digest` |
-| 37 | skill_get | HTTP | `skill-get` |
-| 38 | skill_materialize | HTTP | `skill-materialize`（返回 path + sha256；落盘在服务端文件系统，跨机改用包通道 `fetch <name> <dest_dir>`） |
-| 39 | skill_list | HTTP | `skill-list` |
-| 40 | skill_coldstart | HTTP | `skill-coldstart` |
-| 41 | skill_put | MCP | `skill-put` |
-| 42 | skill_delete | MCP | `skill-delete` |
-| 43 | skill_rename | MCP | `skill-rename` |
-| 44 | credential_list | HTTP | `credential-list` |
-| 45 | credential_get | HTTP | `credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
+| 18 | review_list | MCP | `review-list [--limit N] [--offset N] [--dimension <id>]` |
+| 19 | review_approve | MCP | `review-approve <id> [--note …]` |
+| 20 | review_reject | MCP | `review-reject <id> --reason …` |
+| 21 | review_auto_resolve | MCP | `review-auto-resolve [--days 7]`（管理类，需 SGME_ADMIN_KEY） |
+| 22 | stats | MCP | `stats` |
+| 23 | health | HTTP | `health` |
+| 24 | config_get | MCP | `config-get` |
+| 25 | config_update | MCP | `config-update` |
+| 26 | idea_add | MCP | `idea-add` |
+| 27 | demand_create | MCP | `demand-create` |
+| 28 | project_register | MCP | `project-register` |
+| 29 | signal_pull | MCP | `signal-pull` |
+| 30 | signal_claim | MCP | `signal-claim` |
+| 31 | signal_ack | MCP | `signal-ack` |
+| 32 | signal_clear | MCP | `signal-clear` |
+| 33 | role_list | MCP | `role-list` |
+| 34 | role_assemble | MCP | `role-assemble` |
+| 35 | role_active_get | MCP | `role-active-get` |
+| 36 | role_active_set | MCP | `role-active-set` |
+| 37 | persona_fill | MCP | `persona-fill` |
+| 38 | guard_reply | MCP | `guard-reply <role_id> "<reply>" [--session-id <sid>]` |
+| 39 | skill_search | HTTP | `skill-search` |
+| 40 | skill_digest | HTTP | `skill-digest` |
+| 41 | skill_get | HTTP | `skill-get` |
+| 42 | skill_materialize | HTTP | `skill-materialize`（返回 path + sha256；落盘在服务端文件系统，跨机改用包通道 `fetch <name> <dest_dir>`） |
+| 43 | skill_list | HTTP | `skill-list` |
+| 44 | skill_coldstart | HTTP | `skill-coldstart` |
+| 45 | skill_put | MCP | `skill-put` |
+| 46 | skill_delete | MCP | `skill-delete` |
+| 47 | skill_rename | MCP | `skill-rename` |
+| 48 | credential_list | HTTP | `credential-list` |
+| 49 | credential_get | HTTP | `credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
 
 扩展命令：`fetch <name> <dest_dir>`（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包；失败不留残件） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
 

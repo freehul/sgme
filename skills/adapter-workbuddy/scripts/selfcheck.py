@@ -5,7 +5,7 @@ selfcheck.py — SGME × WorkBuddy 接入自检（能力矩阵 + 连通性）
 
 两层自检，全部可重跑：
 
-  ① 静态能力矩阵（离线）：核对 45 个 MCP 基准能力是否**方法层 + CLI 层**双覆盖
+  ① 静态能力矩阵（离线）：核对 49 个 MCP 基准能力是否**方法层 + CLI 层**双覆盖
      （权威基准：sgme/mcp_server.py 工具清单）
   ② 连通性实测（在线）：HTTP 只读项 + MCP 只读项 + 一次 append 接入心跳
 
@@ -49,11 +49,11 @@ def _count(resp) -> str:
 
 
 def run_static() -> tuple[list[tuple[str, bool, str]], bool]:
-    """静态能力矩阵核对：45 基准能力的方法层与 CLI 层覆盖。"""
+    """静态能力矩阵核对：49 基准能力的方法层与 CLI 层覆盖。"""
     rows = capability_report()
     bad = [r for r in rows if not (r["method_ok"] and r["cli_ok"])]
     detail = f"{len(rows) - len(bad)}/{len(rows)} 基准能力双覆盖（方法层 + CLI 层）"
-    out = [("静态 ① 基准能力矩阵（45 个）", not bad, detail)]
+    out = [("静态 ① 基准能力矩阵（49 个）", not bad, detail)]
     for r in bad:
         out.append((f"     ↳ 缺失 {r['tool']}", False,
                     f"方法={r['method']}({r['method_ok']}) CLI={r['cli']}({r['cli_ok']})"))
@@ -125,6 +125,7 @@ def main(argv=None) -> int:
             run("⑫ MCP role_list（角色清单）", lambda: _count(c.role_list()))
             run("⑬ MCP role_active_get（当前角色）", lambda: _count(c.role_active_get()))
             run("⑭ MCP signal_pull（关怀信号）", lambda: _count(c.signal_pull(limit=5)))
+            run("⑮ MCP review_list（待审队列）", lambda: _count(c.review_list(limit=1)))
 
     ok = sum(1 for _, s, _ in results if s)
     print(f"SGME × WorkBuddy 接入自检（{ok}/{len(results)} 通过）  基准能力 {len(BASELINE_TOOLS)} 个\n")
