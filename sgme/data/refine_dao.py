@@ -140,6 +140,41 @@ class RefineRunRecorder:
              run_id),
         )
         conn.commit()
+        # 成本计量（设计文档第 12 项 / D-63）：批次收尾后同步累加当日用量。
+        # 旁路设计——记账失败只告警，绝不影响提炼结果落库（与 elapsed_ms 同款边界）。
+        if u.get("prompt_tokens") is not None or u.get("completion_tokens") is not None:
+            try:
+                from sgme.data import llm_usage_dao
+                from sgme.engine.cost_meter import extract_from_refine_run
+
+                row = conn.execute(
+                    "SELECT stage, provider, prompt_tokens, completion_tokens, finished_at "
+                    "FROM refine_runs WHERE run_id=?",
+                    (run_id,),
+                ).fetchone()
+                if row:
+                    rec = extract_from_refine_run(
+                        {
+                            "stage": row[0],
+                            "provider": row[1],
+                            "prompt_tokens": row[2],
+                            "completion_tokens": row[3],
+                            "finished_at": row[4],
+                        }
+                    )
+                    if rec:
+                        llm_usage_dao.ensure_table(conn)
+                        llm_usage_dao.record_usage(
+                            conn,
+                            day=rec["day"],
+                            provider=rec["provider"],
+                            model=rec["model"],
+                            stage=rec["stage"],
+                            prompt_tokens=rec["prompt_tokens"],
+                            completion_tokens=rec["completion_tokens"],
+                        )
+            except Exception as exc:  # noqa: BLE001——账本是旁路，不得影响主记账
+                logger.warning("LLM 用量记账失败（run_id=%s）: %s", run_id, exc)
 
     @staticmethod
     def reap_stale_running(
