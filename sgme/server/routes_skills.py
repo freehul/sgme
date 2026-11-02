@@ -453,6 +453,27 @@ def skill_file(
 
     cfg = request.app.state.cfg
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
+
+    # T-404：全存库口径——优先从 skill_files 表读（库是唯一真源）；
+    # 未命中（老库无表 / 附件尚未回填 / 路径形态非法）再回退文件系统，
+    # 保证迁移过渡期两种来源都能用。
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
+    if skills_conn is not None:
+        from sgme.operations.skill_cache import skill_file as _skill_file
+
+        raw = _skill_file(skills_conn, name, relpath)
+        if raw is not None:
+            import hashlib as _hashlib
+
+            _record_skill_usage(
+                request, "package", name, note=f"file;{_file_ext_note(relpath)}"
+            )
+            return Response(
+                content=raw,
+                media_type="application/octet-stream",
+                headers={"X-File-Sha256": _hashlib.sha256(raw).hexdigest()},
+            )
+
     data = run_operation(read_file_operation, cfg, wiki_conn, name=name, relpath=relpath)
 
     _record_skill_usage(

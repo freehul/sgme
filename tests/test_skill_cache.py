@@ -143,8 +143,12 @@ class TestSkillManifest:
 
     def test_returns_contract_fields(self, ro_conn):
         m = skill_cache.skill_manifest(ro_conn, "pdf")
+        # files 为 T-404 新增（附属文件清单，不含 SKILL.md）；新增键向后兼容，
+        # 老客户端只读自己认识的键，不因多一个键而失败。
+        assert m is not None
         assert set(m.keys()) == {"name", "version", "package_sha256",
-                                 "content_len", "updated_at"}
+                                 "content_len", "updated_at", "files"}
+        assert m["files"] == []  # 该夹具未回填附属文件
         assert m["name"] == "pdf"
         assert m["version"] == "1.2.0"
         assert m["content_len"] == len("# PDF\n处理 pdf 表格")
@@ -247,3 +251,56 @@ class TestReadOnly:
         assert v != "empty"
         assert m is not None
         assert isinstance(p, (bytes, bytearray))
+
+
+# ---------- T-404：附属文件进包 ----------
+
+
+class TestAttachmentFiles:
+    """skill_files 表里的附件必须进包、进 manifest、能单独读。"""
+
+    def test_package_includes_attachment_bytes(self, conn):
+        from sgme.data import skill_package_dao
+
+        _seed(conn, "pdf", "# PDF 表格处理", sha="sha-pdf")
+        skill_package_dao.ensure_tables(conn)
+        skill_package_dao.put_files(
+            conn, "pdf", [{"path": "references/table.md", "content": "表结构说明".encode()}, {"path": "scripts/a.py", "content": b"print(1)"}]
+        )
+
+        m = skill_cache.skill_manifest(conn, "pdf")
+        assert m is not None
+        paths = {f["path"] for f in m["files"]}
+        assert paths == {"references/table.md", "scripts/a.py"}
+
+        pkg = skill_cache.skill_package(conn, "pdf")
+        assert pkg is not None
+        with tarfile.open(fileobj=io.BytesIO(pkg), mode="r:gz") as tar:
+            names = set(tar.getnames())
+        assert "references/table.md" in names
+        assert "scripts/a.py" in names
+        assert "SKILL.md" in names
+        assert "SKILL.json" in names
+
+    def test_package_sha_changes_when_attachment_changes(self, conn):
+        from sgme.data import skill_package_dao
+
+        _seed(conn, "pdf", "# PDF", sha="sha-pdf")
+        skill_package_dao.ensure_tables(conn)
+        before = skill_cache.skill_manifest(conn, "pdf")["package_sha256"]
+        skill_package_dao.put_files(conn, "pdf", [{"path": "references/x.md", "content": b"v1"}])
+        after = skill_cache.skill_manifest(conn, "pdf")["package_sha256"]
+        assert before != after
+
+    def test_skill_file_reads_from_db(self, conn):
+        from sgme.data import skill_package_dao
+
+        _seed(conn, "pdf", "# PDF", sha="sha-pdf")
+        skill_package_dao.ensure_tables(conn)
+        skill_package_dao.put_files(conn, "pdf", [{"path": "references/table.md", "content": "表结构说明".encode()}])
+        assert skill_cache.skill_file(conn, "pdf", "references/table.md") == "表结构说明".encode()
+
+    def test_skill_file_rejects_traversal(self, conn):
+        _seed(conn, "pdf", "# PDF", sha="sha-pdf")
+        assert skill_cache.skill_file(conn, "pdf", "../../etc/passwd") is None
+        assert skill_cache.skill_file(conn, "pdf", "/etc/passwd") is None
