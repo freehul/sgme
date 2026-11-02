@@ -215,6 +215,8 @@ def main() -> None:
                     help="文件无新 run 超过该分钟数且无 running 才考虑重触发")
     ap.add_argument("--max-retries", type=int, default=1, help="单文件最大重触发次数")
     ap.add_argument("--file-id", action="append", default=None, help="只处理指定文件（可多次）")
+    ap.add_argument("--order", choices=["desc", "asc"], default="desc",
+                    help="处理顺序：desc=大的先（吞吐充足时用）；asc=小的先（上游限流时先收尾小文件）")
     ap.add_argument("--dry-run", action="store_true", help="只列目标，不触发")
     ap.add_argument("--no-count", action="store_true", help="不预估总块数（省内存）")
     args = ap.parse_args()
@@ -223,6 +225,9 @@ def main() -> None:
         raise SystemExit("缺 SGME_ADMIN_KEY 环境变量")
 
     targets = pending_files()
+    if args.order == "asc":
+        # 上游时间限流时（实测 ~0.6 块/分钟）先跑小文件：能完整收尾的文件数最多
+        targets = list(reversed(targets))
     if args.file_id:
         want = set(args.file_id)
         targets = [t for t in targets if t["file_id"] in want or t["file_id"][:8] in want]
@@ -283,14 +288,20 @@ def main() -> None:
                     _log(f"{fid[:8]} 已达最大重试次数，放弃（保持 status=new 等人工）")
                     entry["gave_up"] = True
                 continue
-            entry["attempts"] += 1
             entry["last_trigger"] = _now()
             try:
                 resp = trigger(fid)
+                # 只有**触发成功**才计一次尝试：触发失败的 429 是接口限流，
+                # 不该烧掉文件的重试额度（2026-11-03 实测：9 个并发触发撞 429，
+                # 结果 5 个文件被误判"已达最大重试次数"直接放弃）
+                entry["attempts"] += 1
                 _log(f"触发 {fid[:8]} 第 {entry['attempts']} 次 → {resp.get('status')}")
                 active += 1
+                # 触发请求本身也受接口限流（120 req/min），连发之间留点间隔
+                time.sleep(0.6)
             except Exception as exc:  # noqa: BLE001
-                _log(f"触发 {fid[:8]} 失败: {type(exc).__name__}: {exc}")
+                _log(f"触发 {fid[:8]} 失败（不计尝试次数）: {type(exc).__name__}: {exc}")
+                time.sleep(2)
             _save_state(state_path, state)
         _save_state(state_path, state)
         time.sleep(args.poll)
