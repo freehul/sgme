@@ -1035,8 +1035,18 @@ def sync_index(
     embed: bool = True,
     rebuild_fts: bool = False,
     fts_check: bool = False,
+    strict_gate: bool = True,
 ) -> OperationResult:
     """把 source_dirs 的技能增量同步进 skills.db（T-112）。
+
+    ``strict_gate``（2026-11-02 新增）：uses 门禁的失败策略。
+    - True（默认）：任一技能违规 → **整批拒绝不写**，用于单技能写入口。
+    - False：违规技能**单独剔除并告警**，其余照常写入，用于批量同步。
+      理由：库/目录里只要有一条脏依赖（如 frontmatter 写了个不存在的技能名），
+      整批拒绝会让技能库**彻底无法同步**——2026-11-02 实测踩到：
+      ``sgme-adapter-development`` 的 ``uses: coding-workflow``（该技能不存在）
+      让 534 个技能的全量同步全部失败，写侧只看到 200 + 日志 warning。
+    
 
     增量判据为 **内容 sha256**（对称向量缓存的失效语义）：
     - insert/update 的技能重写主表（分词随写入计算，FTS 由触发器同步）
@@ -1074,11 +1084,24 @@ def sync_index(
     for w in gate_warnings:
         logger.warning("技能 uses 弱依赖告警: %s", w)
     if gate_errors:
-        return OperationResult.fail(
-            ERR_INVALID_ARGS,
-            f"uses 依赖门禁拒绝写入（{len(gate_errors)} 项）: " + "；".join(gate_errors),
-            details={"violations": gate_errors, "warnings": gate_warnings},
-        )
+        if strict_gate:
+            return OperationResult.fail(
+                ERR_INVALID_ARGS,
+                f"uses 依赖门禁拒绝写入（{len(gate_errors)} 项）: " + "；".join(gate_errors),
+                details={"violations": gate_errors, "warnings": gate_warnings},
+            )
+        # 批量容错：逐技能校验，把违规的**整条剔除**（连正文一起不写，避免
+        # 「正文进了库但依赖是脏的」这种半截状态），其余继续同步。
+        bad: set[str] = set()
+        for rec in dicts:
+            if validate_uses(skills_conn, rec["name"], rec.get("uses") or []):
+                bad.add(rec["name"])
+        if bad:
+            logger.warning(
+                "uses 门禁：批量同步跳过 %d 个违规技能（%s）；违规项：%s",
+                len(bad), ",".join(sorted(bad)[:5]), "；".join(gate_errors[:3]),
+            )
+            dicts = [r for r in dicts if r["name"] not in bad]
 
     diff = skills_dao.diff_records(skills_conn, dicts)
 
@@ -1224,7 +1247,7 @@ def reindex_after_write(
     """
     if skills_conn is None:
         return OperationResult.succeed({"skipped": True, "reason": "no skills_conn"})
-    return sync_index(cfg, skills_conn, wiki_conn, max_embed=0, embed=False)
+    return sync_index(cfg, skills_conn, wiki_conn, max_embed=0, embed=False, strict_gate=False)
 
 
 def _db_ready(skills_conn: sqlite3.Connection | None) -> bool:

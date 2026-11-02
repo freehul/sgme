@@ -774,7 +774,7 @@ def _vector_warmup(
     round_no = 0
     for round_no in range(1, 500):  # 上限防死循环：403 条约需 41 轮
         try:
-            r = skills_ops.sync_index(cfg, skills_conn, wiki_conn, max_embed=10)
+            r = skills_ops.sync_index(cfg, skills_conn, wiki_conn, max_embed=10, strict_gate=False)
             data = (r.data if hasattr(r, "data") else None) or {}
             pending = int(data.get("pending_embed") or 0)
             embedded = int(data.get("embedded") or 0)
@@ -954,6 +954,7 @@ def create_app(
             # 「列表有、检索无」在每次启动自愈，无需人工 reindex。
             r = skills_ops.sync_index(
                 cfg, skills_conn, wiki_conn, max_embed=0, embed=False, fts_check=True,
+                strict_gate=False,
             )
             data = (r.data if hasattr(r, "data") else None) or {}
             if data.get("fts_rebuilt"):

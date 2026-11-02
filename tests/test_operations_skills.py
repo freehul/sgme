@@ -570,6 +570,47 @@ class TestFtsDriftSelfHeal:
         assert r3.data.get("fts_drift_detected") is False
         assert r3.data.get("fts_rebuilt") is False
 
+    def test_sync_index_tolerates_bad_dependency_in_batch(self, skills_cfg, wiki_conn, tmp_path):
+        """批量同步容错：一个技能有悬空依赖，不得让整批同步失败（2026-11-02 实测踩坑）。
+
+        背景：生产库曾因 `sgme-adapter-development` 的 `uses: coding-workflow`（不存在的
+        技能）导致 534 个技能的全量同步**整体失败**，而写侧只看到 200 + 日志 warning——
+        技能库事实上停止同步且无人察觉。现在 strict_gate=True 保持单技能写入口的严格语义，
+        strict_gate=False（所有批量调用方）逐个剔除违规技能、其余照常写入。
+        """
+        from sgme.data import db as db_mod
+        from sgme.operations.skills import sync_index
+
+        root = Path(skills_cfg["skills"]["source_dirs"][0])
+        bad = root / "bad"
+        bad.mkdir()
+        (bad / "SKILL.md").write_text(
+            "---\nname: bad\ndescription: 依赖不存在的技能\nversion: 1.0.0\n"
+            "uses: [not-exist-skill]\n---\n\n# bad\n",
+            encoding="utf-8",
+        )
+        good = root / "good"
+        good.mkdir()
+        (good / "SKILL.md").write_text(
+            "---\nname: good\ndescription: 正常技能\nversion: 1.0.0\n---\n\n# good\n",
+            encoding="utf-8",
+        )
+
+        conn = db_mod.connect_skills(tmp_path)
+        # 严格模式：整批拒绝
+        strict = sync_index(skills_cfg, conn, wiki_conn, max_embed=0, embed=False)
+        assert strict.ok is False
+        assert "uses 依赖门禁拒绝写入" in (strict.message or "")
+
+        # 容错模式：好技能写进去，坏技能跳过
+        loose = sync_index(
+            skills_cfg, conn, wiki_conn, max_embed=0, embed=False, strict_gate=False
+        )
+        assert loose.ok is True
+        names = {r["name"] for r in conn.execute("SELECT name FROM skills")}
+        assert "good" in names
+        assert "bad" not in names
+
     def test_rebuild_fts_flag_forces_rebuild_without_drift(self, skills_cfg, wiki_conn, tmp_path):
         """rebuild_fts=True 为运维兜底：无脱节也无条件重建。"""
         from sgme.data import db as db_mod

@@ -1215,6 +1215,7 @@ def skills_reindex(
         max_embed=0, embed=False,
         rebuild_fts=bool(payload.rebuild_fts) if payload else False,
         fts_check=True,
+        strict_gate=False,
     )
     if not r.ok:
         raise api_error("ERR_INTERNAL", r.message or "reindex 失败")

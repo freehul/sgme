@@ -6,7 +6,7 @@ tags: [skill, sgme, adapter, bridge, mcp, hooks, incremental, dedup]
 version: 1.0.0
 pattern: auto
 uses:
-  - coding-workflow
+  - coding-discipline
   - sgme-development
 ---
 
