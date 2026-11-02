@@ -142,8 +142,13 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
                 "subject": l1._normalize_subject(fact.get("subject")),
                 "certainty": l1._normalize_enum(
                     fact.get("certainty"), l1.VALID_CERTAINTY, "confirmed"),
-                "derivation": "fact",
-                "modality": "done",
+                # 2026-11-02 修复：原先写死 fact/done，从不读模型输出——导致
+                # 「计划下周出差」被记成已发生（modality=done），闸门 A 永远无输入。
+                # 现在逐 fact 取模型值，缺失/非法才回落 fact/unknown（D-43 双轴正交）。
+                "derivation": l1._normalize_enum(
+                    fact.get("derivation"), l1.VALID_DERIVATION, "fact"),
+                "modality": l1._normalize_enum(
+                    fact.get("modality"), l1.VALID_MODALITY, "unknown"),
                 "needs_review": 0,
                 "split_reason": decision.reason,
             },
@@ -163,8 +168,14 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
             "type": None,
             "subject": "self",
             "certainty": "confirmed",
-            "derivation": "fact" if need_review == 0 else "inferred",
-            "modality": "done",
+            # 主干两轴取 unit 内 facts 的众数（主干是整段会话的摘要，两轴应代表
+            # 这批事实的整体性质）；无 facts 时回落 fact/unknown。
+            # need_review=1（降级待审）一律标 inferred——宁可漏注入不可错断言；
+            # 正常项才取 facts 众数。
+            "derivation": "inferred" if need_review else _majority(
+                [f.get("derivation") for f in facts], l1.VALID_DERIVATION, "fact"),
+            "modality": _majority([f.get("modality") for f in facts],
+                                  l1.VALID_MODALITY, "unknown"),
             "feeling": str(main.get("feeling") or "").strip() or None,
             "trait": trait or None,
             "needs_review": need_review,
@@ -175,6 +186,19 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
     )
     return [main_record, *side_records]
 
+
+def _majority(values: list, valid: set[str], default: str) -> str:
+    """取一组轴值的众数（非法值忽略）；全空/全非法时回落 default。
+
+    主干记录没有自己的 derivation/modality——它是对整个 unit 的概括，
+    所以按该 unit 内 facts 的多数意见定，避免「一条计划事实把整段标成 done」。
+    """
+    from collections import Counter
+
+    norm = [v for v in (l1._normalize_enum(x, valid, "") if x else "" for x in values) if v]
+    if not norm:
+        return default
+    return Counter(norm).most_common(1)[0][0]
 
 def parse_l2_output(text: str, dimensions: list[dict]) -> list[dict[str, Any]]:
     """解析 2.0 L2 输出为记忆记录列表。

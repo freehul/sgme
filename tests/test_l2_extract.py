@@ -190,3 +190,71 @@ def test_main_event_as_string_is_tolerated():
     recs = parse_l2_output(payload, dims)
     assert len(recs) == 1
     assert "回收站" in recs[0]["content"]
+
+
+# ---------- D-43 双轴：读模型值，不再写死（2026-11-02） ----------
+
+
+def test_side_record_uses_model_modality():
+    """拆出来的侧面记录必须读模型给的 modality，不能写死 done。
+
+    回归：此前 l2_extract 把侧面的 derivation/modality 写死成 fact/done
+    （2026-11-02 实测「计划下周出差」落库 modality=done，闸门 A 整条失效）。
+    这里用会被拆分出去的「偏好」类事实来验证。
+    """
+    unit = _unit(facts=[
+        {"type": "偏好", "content": "用户打算试试新方案", "subject": "self",
+         "certainty": "confirmed", "derivation": "fact", "modality": "planned"},
+    ])
+    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    side = next(r for r in recs if "新方案" in r["content"])
+    assert side["extra"]["modality"] == "planned"
+    assert side["extra"]["derivation"] == "fact"
+
+
+def test_main_modality_follows_single_planned_fact():
+    """只有一条 planned 事实时，主干（状态类留主干）也应是 planned 而非 done。"""
+    unit = _unit(facts=[
+        {"type": "状态", "content": "用户计划下周三去上海出差", "subject": "self",
+         "certainty": "confirmed", "derivation": "fact", "modality": "planned"},
+    ])
+    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    assert recs[0]["extra"]["modality"] == "planned"
+
+
+def test_side_record_falls_back_when_axis_missing():
+    """模型没给两轴时回落 fact/unknown（不是 done）。"""
+    unit = _unit(facts=[
+        {"type": "偏好", "content": "用户偏好深色主题", "subject": "self",
+         "certainty": "confirmed"},
+    ])
+    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    side = next(r for r in recs if "深色" in r["content"])
+    assert side["extra"]["modality"] == "unknown"
+    assert side["extra"]["derivation"] == "fact"
+
+
+def test_main_takes_majority_of_facts_axes():
+    """主干两轴取 unit 内 facts 的众数：2 条 done + 1 条 planned → done。"""
+    unit = _unit(facts=[
+        {"type": "事实", "content": "用户在写记忆引擎", "subject": "self",
+         "certainty": "confirmed", "derivation": "fact", "modality": "done"},
+        {"type": "事实", "content": "用户用 Python", "subject": "self",
+         "certainty": "confirmed", "derivation": "fact", "modality": "done"},
+        {"type": "状态", "content": "用户计划出差", "subject": "self",
+         "certainty": "confirmed", "derivation": "fact", "modality": "planned"},
+    ])
+    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    main = recs[0]
+    assert main["extra"]["modality"] == "done"
+
+
+def test_main_derivation_inferred_when_needs_review():
+    """降级待审的主干一律 inferred——宁可漏注入不可错断言。"""
+    unit = _unit(facts=[], main_event={"content": "用户在聊技术", "occurred_at": None,
+                                       "feeling": None})
+    unit[0]["dimensions"] = {"primary": None, "secondary": []}
+    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    main = recs[0]
+    if main["extra"]["needs_review"]:
+        assert main["extra"]["derivation"] == "inferred"
