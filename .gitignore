@@ -117,3 +117,6 @@ exports/skills-migration-preview/
 
 # 2026-10-31：本地重建试点数据（原件快照 465MB，不入库）
 rebuild-*/
+
+# 构建产物（2026-11-02 清理：历史误入库 218 个文件）
+build/
