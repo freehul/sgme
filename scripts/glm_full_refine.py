@@ -46,8 +46,9 @@ GLM_GATEWAY = os.environ.get("GLM_GATEWAY", "http://127.0.0.1:13425")
 SGME_BASE = os.environ.get("SGME_BASE", "http://127.0.0.1:9910")
 ADMIN_KEY = os.environ.get("SGME_ADMIN_KEY", "")
 
-# Trial 条目名候选（magpie 的命名约定是 <模型>-Trial）
-TRIAL_HINTS = ("-Trial", "Trial")
+# 赠额唯一可用模型（2026-11-02 用户明确：免费额度指明给 GLM Flash 用，
+# 只有这一个，没有可选项）。写死而不是从模型清单里挑，避免误选到扣付费额度的条目。
+TARGET_MODEL = os.environ.get("GLM_TARGET_MODEL", "zcode/GLM-5.3-Flash-Trial")
 
 
 def _now() -> str:
@@ -65,9 +66,9 @@ def list_models() -> list[str]:
     return [m["id"] for m in r.json().get("data", [])]
 
 
-def find_trial(models: list[str]) -> list[str]:
-    """挑出 Trial 条目——只有这些才花赠额。"""
-    return [m for m in models if any(h in m for h in TRIAL_HINTS)]
+def target_available(models: list[str]) -> bool:
+    """目标模型是否在清单里（只是辅证，主判据是额度窗口）。"""
+    return TARGET_MODEL in models
 
 
 def quotas() -> list[dict]:
@@ -100,23 +101,29 @@ def probe() -> dict:
     live = []
     for q in out["quota"]:
         wins = q.get("windows") or []
-        if wins:
+        # gift 桶（赠额）与订阅额度是两回事：赠额可能以独立条目/独立 kind 出现，
+        # 也可能并进 windows。三处任一有额度就算就绪，避免只认一种形态而干等。
+        kind = str(q.get("kind") or "").lower()
+        is_gift = "gift" in kind or "grant" in kind or bool(q.get("gift"))
+        if wins or is_gift:
             live.append(q)
         _log(
-            f"订阅 {q.get('provider')}/{q.get('plan')}：窗口 {len(wins)} 个，"
+            f"订阅 {q.get('provider')}/{q.get('plan')} kind={q.get('kind')}："
+            f"窗口 {len(wins)} 个，赠额标记={is_gift}，"
             f"到期 {q.get('until')}, renew={q.get('renew')}"
         )
-    # 2. 辅证：模型清单里的 Trial 条目
+    # 2. 辅证：目标模型在不在清单里
     try:
         out["all"] = list_models()
-        out["trial"] = find_trial(out["all"])
-        _log(f"模型 {len(out['all'])} 个；Trial 条目: {out['trial'] or '（无）'}")
+        out["target"] = target_available(out["all"])
+        _log(f"模型 {len(out['all'])} 个；目标模型 {TARGET_MODEL}: "
+             f"{'在' if out['target'] else '（不在）'}")
     except Exception as exc:
         _log(f"模型清单不可达: {type(exc).__name__}: {exc}")
 
     out["ready"] = bool(live)
-    if out["ready"] and not out["trial"]:
-        _log("警告：额度窗口已开但模型清单没有 Trial 条目——网关可能需要重启刷新")
+    if out["ready"] and not out.get("target"):
+        _log(f"警告：额度窗口已开但 {TARGET_MODEL} 不在清单——网关需要重启刷新")
     return out
 
 
@@ -286,10 +293,10 @@ def main() -> None:
         sys.exit(2)
     if args.action == "probe":
         return
-    if not info["trial"]:
-        _log("额度窗口已开但模型清单无 Trial 条目，拒绝开跑（会扣付费额度）。")
+    if not info.get("target"):
+        _log(f"额度窗口已开但 {TARGET_MODEL} 不在清单，拒绝开跑（会扣付费额度）。")
         sys.exit(4)
-    if args.smoke and not smoke_trial(info["trial"][0]):
+    if args.smoke and not smoke_trial(TARGET_MODEL):
         _log("Trial 冒烟未通过，不开跑")
         sys.exit(3)
     run_refine(Path(args.state), dry_run=args.dry_run)
