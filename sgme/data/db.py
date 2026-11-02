@@ -477,6 +477,30 @@ CREATE INDEX IF NOT EXISTS idx_edges_from ON memory_edges(from_id, relation);
 CREATE INDEX IF NOT EXISTS idx_edges_to   ON memory_edges(to_id, relation);
 """
 
+# ---------- 2026-11-02 任务 B：角色离线生活独立表（memory.db，独立 DDL 常量） ----------
+# 硬边界（交接文档 §3.4）：
+# 1. **与 memories 无任何关系**：角色人生是虚构设定，进事实池会污染用户真实记忆
+#    （与 ideas/demands 同款独立表模式，无外键、无 route、不进 /v1/search）
+# 2. 内容只到类型级（上游保证，DAO 不自作主张清洗）
+# 3. is_secret=1 永不进注入；shared_at 记「已经说出口」，同一段只说一次
+# injected_at 是注入频率闸的记账列（每装配最多 1 条 / 每日上限按它统计）
+ROLE_LIFE_DDL = """
+CREATE TABLE IF NOT EXISTS role_life_events (
+  event_id    TEXT PRIMARY KEY,
+  role_id     TEXT NOT NULL,
+  at          TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'see',
+  content     TEXT NOT NULL,
+  mood        TEXT,
+  why_secret  TEXT,
+  is_secret   INTEGER NOT NULL DEFAULT 0,
+  injected_at TEXT,
+  shared_at   TEXT,
+  created_at  TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_role_life_role_at ON role_life_events(role_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_role_life_pick ON role_life_events(role_id, is_secret, injected_at);
+"""
+
 
 def _now_iso() -> str:
     """UTC ISO 8601 时间戳。"""
@@ -551,6 +575,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_refine_runs_elapsed_ms(conn)
     _migrate_memory_2_0_columns(conn)
     _migrate_memory_pages_table(conn)
+    _migrate_role_life_table(conn)
     return conn
 
 
@@ -1367,9 +1392,18 @@ def _migrate_memory_2_0_columns(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_role_life_table(conn: sqlite3.Connection) -> None:
+    """老库迁移：建角色离线生活独立表 role_life_events（2026-11-02 任务 B）。幂等。
+
+    与 `_migrate_ideas_table` 同模式：独立 DDL 常量 + 本迁移函数，老库
+    （schema_versions 已登记 memory_v4）连上时才补得出这张表。
+    """
+    conn.executescript(ROLE_LIFE_DDL)
+    conn.commit()
+
+
 def _migrate_ideas_table(conn: sqlite3.Connection) -> None:
     """老库迁移：建创意池独立表 ideas（T-56，2026-08-14）。幂等。
-
     与 `_migrate_demands_table` 同模式：ideas 不进 MEMORY_DDL 而独立成
     `IDEAS_DDL` + 本迁移函数——老库（schema_versions 已登记 memory_v4）
     不会重跑 MEMORY_DDL 之外的变更，必须走迁移函数才能补齐新表。

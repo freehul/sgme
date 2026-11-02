@@ -671,6 +671,37 @@ def _deny_assemble(
     )
 
 
+def _pick_life_block(
+    mem_conn: sqlite3.Connection, cfg: dict[str, Any], role_id: str
+) -> tuple[dict[str, Any] | None, str]:
+    """取一条角色自己的生活（2026-11-02 任务 B·步 2）。
+
+    返回 (生活条目, 渲染好的提示词片段)；没有可给的返回 (None, "")。
+
+    频率闸全部在 DAO 内：每次装配最多 1 条、当日上限 daily_max、只看
+    lookback_days 内、秘密永不参与。任何异常都静默降级——角色生活是加分项，
+    不能因为它挂掉整个装配。
+    """
+    try:
+        lc = cfg.get("role_life") or {}
+        if not lc.get("enabled", False):
+            return None, ""
+        from sgme.data import role_life_dao
+
+        item = role_life_dao.pick_for_injection(
+            mem_conn,
+            role_id,
+            daily_max=int(lc.get("daily_max", 2)),
+            lookback_days=int(lc.get("lookback_days", 7)),
+        )
+        if not item:
+            return None, ""
+        return item, role_life_dao.render_life_block(item)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("角色生活注入跳过（%s）: %s", role_id, e)
+        return None, ""
+
+
 def assemble(
     role_id: str,
     mem_conn: sqlite3.Connection,
@@ -732,6 +763,18 @@ def assemble(
             res = inject_operation(mem_conn, cfg, mode=inject_mode)
             if res.ok:
                 profile_blocks = res.data.get("blocks", [])
+        # 2026-11-02 任务 B：角色离线生活（可选块）。
+        # 拼在 system_prompt **末尾**——位置即权重，且这样八个适配器零改动就能拿到
+        # （写进独立字段的话，没人消费等于没做）。失败静默降级，绝不阻塞装配。
+        life_block, life_text = _pick_life_block(mem_conn, cfg, role_id)
+        if life_text:
+            sys_prompt = f"{sys_prompt.rstrip()}\n\n{life_text}"
+            # 生活块自带 {{user}} 宏（「不是你的事」那句）——本函数在渲染之后才拼它，
+            # 所以 render=True 时必须再跑一遍宏替换，否则用户会看到字面的 {{user}}。
+            if render:
+                sys_prompt = _render_macros(
+                    sys_prompt, str(data.get("name") or role_id), user_name
+                )
     except Exception as e:
         return OperationResult.fail(ERR_INTERNAL, f"角色装配失败: {e}")
     return OperationResult.succeed({
@@ -741,6 +784,7 @@ def assemble(
         "persona": persona,
         "profile_blocks": profile_blocks,
         "care_policy": care_policy,
+        "life_block": life_block,
     })
 
 

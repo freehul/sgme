@@ -352,6 +352,16 @@ DEFAULT_CARE_CONFIG = {
     "persona_max_chars": 2000,   # persona 物化上限（TencentDB 方法论）
 }
 
+# ---------- 2026-11-02 任务 B：角色离线生活（注入侧频率闸） ----------
+# 角色「自己过日子」的产物注入多少：每天最多 daily_max 条、每次装配最多 1 条（硬编码）、
+# 只给 lookback_days 内的新鲜事。秘密（is_secret）**永远不进注入**，不给配置开关——
+# 那是硬边界，不是可调参数。
+DEFAULT_ROLE_LIFE_CONFIG = {
+    "enabled": True,
+    "daily_max": 2,
+    "lookback_days": 7,
+}
+
 # 备份段默认兜底（0.8 方案 B 每日自动备份；旧版 schedule cron 格式已升级为 HH:MM）
 DEFAULT_BACKUP_CONFIG = {
     "enabled": True,
@@ -893,6 +903,7 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
             "server": dict(DEFAULT_SERVER_CONFIG),
             "dream": _merge_dream_config(None),
             "care": _merge_care_config(None),
+            "role_life": _merge_role_life_config(None),
             "update_check": dict(DEFAULT_UPDATE_CHECK_CONFIG),
             "scene_gc": _merge_scene_gc_config(None),
             "credentials": _merge_credentials_config(None),
@@ -924,6 +935,8 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
     raw["dream"] = _merge_dream_config(raw.get("dream"))
     # care 段合并默认值（ST-25 角色层）
     raw["care"] = _merge_care_config(raw.get("care"))
+    # role_life 段合并默认值（2026-11-02 任务 B 角色离线生活）
+    raw["role_life"] = _merge_role_life_config(raw.get("role_life"))
     # update_check 段合并默认值（ST-34 自动更新检测）
     raw["update_check"] = _merge_update_check_config(raw.get("update_check"))
     # scene_gc 段合并默认值（T-97 场景主动治理）
@@ -946,6 +959,31 @@ def _merge_care_config(user_cfg: dict | None) -> dict:
     base = dict(DEFAULT_CARE_CONFIG)
     if isinstance(user_cfg, dict):
         base.update({k: v for k, v in user_cfg.items() if v is not None})
+    return base
+
+
+def _merge_role_life_config(user_cfg: dict | None) -> dict:
+    """合并 role_life 段默认值与用户配置（2026-11-02 任务 B）。
+
+    数值字段做类型兜底：非法值（负数/非整数）回退默认——频率闸算错会把
+    「每天 2 条」变成「每天 0 条或无限条」，属静默劣化，不如回默认。
+    """
+    base = dict(DEFAULT_ROLE_LIFE_CONFIG)
+    if isinstance(user_cfg, dict):
+        for k, v in user_cfg.items():
+            if v is None:
+                continue
+            if k == "enabled":
+                base[k] = bool(v)
+            elif k in ("daily_max", "lookback_days"):
+                try:
+                    iv = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if iv >= 0:
+                    base[k] = iv
+            else:
+                base[k] = v
     return base
 
 
@@ -1375,6 +1413,8 @@ def load_config(
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
         "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
+        # 2026-11-02 任务 B：角色离线生活注入闸（assemble 读 cfg["role_life"]）
+        "role_life": _merge_role_life_config(sgme_cfg.get("role_life")),
         "wiki": sgme_cfg.get("wiki", dict(DEFAULT_WIKI_CONFIG)),
         "skills": sgme_cfg.get("skills", {"enabled": False}),
         "skills_hub": _merge_skills_hub_config(sgme_cfg.get("skills_hub")),
