@@ -38,3 +38,13 @@ export function approveMemory(memoryId: string, note?: string) {
 export function rejectMemory(memoryId: string, reason: string) {
   return api.post<{ ok: boolean }>(`/v1/admin/review/${memoryId}/reject`, { reason })
 }
+
+// ---------- POST /v1/admin/review/auto-resolve（超期待审批量消化，D-30 七天规则） ----------
+export interface AutoResolveResult {
+  resolved: number
+  [k: string]: unknown
+}
+// days 不传走后端默认 7 天
+export function autoResolveReview(days?: number) {
+  return api.post<AutoResolveResult>('/v1/admin/review/auto-resolve', days ? { days } : {})
+}
