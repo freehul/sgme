@@ -1002,7 +1002,7 @@ class SGMEProvider(MemoryProvider):
         try:
             # 异步端点：SGME 后台线程提炼，立即返回（fire-and-forget）
             r = cli.post(
-                f"{self.base_url}/v1/admin/refine/trigger_async",
+                f"{self.base_url}/v1/admin/refine/trigger-async",
                 json={"limit": 50},
                 headers={"X-API-Key": self.admin_key},
                 timeout=5.0,
@@ -1665,6 +1665,67 @@ class SGMEProvider(MemoryProvider):
             },
         },
         {
+            "name": "sgme_skill_catalog_version",
+            "description": "技能目录版本（两级缓存第 1 级，<100 字节）。批量比对技能前先调："
+                           "与本地记录的目录版本相同就零请求复用本地目录（几百个技能逐条比对会变成几百次请求）。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "name": "sgme_skill_manifest",
+            "description": "单技能缓存清单（两级缓存第 2 级）：package_sha256 相同即复用本地副本（零整包传输）；"
+                           "files[] 列出全部附件（references/scripts/assets，含 sha256/size）。"
+                           "判断「要不要重拉」或「这个技能带哪些附件」时用；附件原文用 sgme_skill_file_get。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "技能名（kebab-case）"},
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "sgme_skill_file_get",
+            "description": "读技能附件原文（references/scripts/assets）：技能正文用 sgme_skill_get，"
+                           "正文里引用的 references/x.md、scripts/y.py 用本工具取。"
+                           "二进制或超过 64 KiB 只返回 path/size/sha256 摘要并指路 HTTP 原字节通道。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "技能名（kebab-case）"},
+                    "relpath": {"type": "string", "description": "相对技能目录的路径，如 references/notes.md"},
+                },
+                "required": ["name", "relpath"],
+            },
+        },
+        {
+            "name": "sgme_skill_file_put",
+            "description": "写入技能附件（references/ scripts/ assets/ 白名单；需管理员 Key）。"
+                           "给已存在的技能补参考手册/脚本时用——sgme_skill_put 只带 SKILL.md 正文，"
+                           "附件没有通道会让正文里的 references/ 引用断链（先建技能再补附件）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "技能名（kebab-case，必须已存在）"},
+                    "relpath": {"type": "string", "description": "相对路径，首段必须在 references/ scripts/ assets/ 内"},
+                    "content": {"type": "string", "description": "文件全文（UTF-8 文本）"},
+                },
+                "required": ["name", "relpath", "content"],
+            },
+        },
+        {
+            "name": "sgme_skill_lint",
+            "description": "技能格式预检（只校验不入库，需管理员 Key）：返回 ok / errors / warnings / violations。"
+                           "准备 sgme_skill_put 前先跑，省一次被 lint 门禁拦下的失败写；纯只读，可反复调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "技能名（kebab-case）"},
+                    "content": {"type": "string", "description": "SKILL.md 全文（含 frontmatter）"},
+                },
+                "required": ["name", "content"],
+            },
+        },
+        {
             "name": "sgme_credential_list",
             "description": "列出 SGME 凭据库的键名与元数据（不含值；EP-11，需凭据模块已启用）。"
                            "想知道「有哪些凭据可用」时用；取值走 sgme_credential_get 或 sgme-cred run 注入。",
@@ -1729,6 +1790,32 @@ class SGMEProvider(MemoryProvider):
             return r.json(), None
         except Exception as e:
             return None, f"响应解析失败: {e}"
+
+    def _request_bytes(
+        self, path: str, *, key: str = "agent", timeout: Optional[float] = None
+    ) -> "tuple[Optional[bytes], Dict[str, str], Optional[str]]":
+        """原始字节 GET（附件读用）：返回 (body, headers, error)。
+
+        ``_request`` 只解 JSON，二进制附件（octet-stream）会解析失败；
+        本方法保留原字节 + 小写化响应头，供上层判定文本/二进制并取 X-File-Sha256。
+        """
+        cli = self._http()
+        if cli is None:
+            return None, {}, "httpx 不可用（插件依赖缺失）"
+        headers = {"X-API-Key": self.admin_key if key == "admin" else self.agent_key}
+        try:
+            r = cli.get(f"{self.base_url}{path}", headers=headers,
+                        timeout=timeout or self.timeout)
+        except Exception as e:
+            return None, {}, f"SGME Gateway 不可达: {e}"
+        if not 200 <= int(getattr(r, "status_code", 0)) < 300:
+            detail = str(getattr(r, "text", "") or "")[:200]
+            return None, {}, f"SGME 返回 {r.status_code}: {detail}"
+        raw = getattr(r, "content", None)
+        if raw is None:
+            raw = b""
+        resp_headers = {str(k).lower(): v for k, v in (getattr(r, "headers", {}) or {}).items()}
+        return bytes(raw), resp_headers, None
 
     @staticmethod
     def _ok(payload: Any) -> str:
@@ -2061,7 +2148,7 @@ class SGMEProvider(MemoryProvider):
         if args.get("limit") not in (None, ""):
             body["limit"] = _clamp_limit(args.get("limit"), 100, 1000)
         data, err = self._request(
-            "POST", "/v1/admin/refine/trigger_async", key="admin", json_body=body,
+            "POST", "/v1/admin/refine/trigger-async", key="admin", json_body=body,
         )
         if err:
             return self._err(f"批量提炼排队失败: {err}")
@@ -2505,12 +2592,111 @@ class SGMEProvider(MemoryProvider):
         if not name or not new_name:
             return self._err("缺少 name 或 new_name")
         data, err = self._request(
-            "POST", f"/v1/admin/skills/{_path_seg(name)}/rename", key="admin",
+            "PUT", f"/v1/admin/skills/{_path_seg(name)}/rename", key="admin",
             json_body={"new_name": new_name},
         )
         if err:
             return self._err(f"技能改名失败（{name} → {new_name}）: {err}")
         return self._ok(data if isinstance(data, dict) else {"name": new_name, "status": "ok"})
+
+    # ---------- 技能缓存与附件（2.0 D-59 / T-404：对齐 MCP 五工具） ----------
+
+    def _t_skill_catalog_version(self, args: Dict[str, Any]) -> str:
+        """sgme_skill_catalog_version：目录版本短路（<100 字节，零请求复用本地目录）。"""
+        data, err = self._request("GET", "/v1/skills/catalog-version")
+        if err:
+            return self._err(f"取技能目录版本失败: {err}")
+        return self._ok(data if isinstance(data, dict) else {"catalog_version": "unknown"})
+
+    def _t_skill_manifest(self, args: Dict[str, Any]) -> str:
+        """sgme_skill_manifest：单技能清单（package_sha256 + files[] 附件清单）。"""
+        name = _arg_str(args, "name")
+        if not name:
+            return self._err("缺少 name")
+        data, err = self._request("GET", f"/v1/skills/{_path_seg(name)}/manifest")
+        if err:
+            return self._err(f"取技能清单失败（name={name}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"error": "清单响应异常"})
+
+    def _t_skill_file_get(self, args: Dict[str, Any]) -> str:
+        """sgme_skill_file_get：附件原文（二进制/超 64 KiB 只给摘要 + 指路 HTTP）。"""
+        name = _arg_str(args, "name")
+        relpath = _arg_str(args, "relpath", 500)
+        if not name or not relpath:
+            return self._err("缺少 name 或 relpath")
+        seg = "/".join(_path_seg(p) for p in relpath.split("/") if p)
+        raw, headers, err = self._request_bytes(f"/v1/skills/{_path_seg(name)}/files/{seg}")
+        if err:
+            return self._err(f"读附件失败（{name}/{relpath}）: {err}")
+        body = raw or b""
+        sha = str(headers.get("x-file-sha256") or "")
+        payload: Dict[str, Any] = {
+            "name": name, "path": relpath, "size": len(body), "sha256": sha,
+        }
+        text: Optional[str] = None
+        if b"\x00" not in body:
+            try:
+                text = body.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+        if text is None:
+            payload["binary"] = True
+            payload["hint"] = (
+                f"二进制附件不进对话；原字节走 HTTP GET /v1/skills/{name}/files/{relpath}（octet-stream），"
+                f"或完整包 GET /v1/skills/{name}/package（tar.gz + MANIFEST.sha256）"
+            )
+            return self._ok(payload)
+        limit = 64 * 1024
+        truncated = len(body) > limit
+        if truncated:
+            text = body[:limit].decode("utf-8", "ignore")
+            payload["hint"] = (
+                f"内容超过 {limit // 1024} KiB 已截断；完整原文走 HTTP 单文件通道 "
+                f"GET /v1/skills/{name}/files/{relpath}"
+            )
+        payload.update({"binary": False, "content": text, "truncated": truncated})
+        return self._ok(payload)
+
+    def _t_skill_file_put(self, args: Dict[str, Any]) -> str:
+        """sgme_skill_file_put：写附件（白名单目录；需管理员 Key）。"""
+        name = _arg_str(args, "name")
+        relpath = _arg_str(args, "relpath", 500)
+        content = args.get("content")
+        if not name or not relpath:
+            return self._err("缺少 name 或 relpath")
+        if not isinstance(content, str):
+            return self._err("content 必须是文件全文（字符串）")
+        seg = "/".join(_path_seg(p) for p in relpath.split("/") if p)
+        data, err = self._request(
+            "PUT", f"/v1/admin/skills/{_path_seg(name)}/files/{seg}",
+            key="admin", json_body={"content": content},
+        )
+        if err:
+            return self._err(
+                f"写附件失败（{name}/{relpath}；技能未建 / 路径不在白名单 / 超配额 / 未配置管理员 Key）: {err}"
+            )
+        return self._ok(data if isinstance(data, dict) else {"ok": True})
+
+    def _t_skill_lint(self, args: Dict[str, Any]) -> str:
+        """sgme_skill_lint：格式预检（只校验不入库；需管理员 Key）。
+
+        走 GET + ``?content=``（服务端 GET 支持查询串/正文两种入参）；正文较大时
+        自动改走旧 POST 兼容别名——URL 请求行过长会被反向代理拒绝。
+        """
+        name = _arg_str(args, "name")
+        content = args.get("content")
+        if not name:
+            return self._err("缺少 name")
+        if not isinstance(content, str) or not content.strip():
+            return self._err("content（SKILL.md 全文）不能为空")
+        path = f"/v1/admin/skills/{_path_seg(name)}/lint"
+        if len(content) > 12000:
+            data, err = self._request("POST", path, key="admin", json_body={"content": content})
+        else:
+            data, err = self._request("GET", path, key="admin", params={"content": content})
+        if err:
+            return self._err(f"技能预检失败（name={name}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"ok": False, "error": "预检响应异常"})
 
     # ---------- 凭据模块（EP-11：读侧两工具，Agent Key 平级） ----------
 

@@ -28,6 +28,7 @@ stats → storage.stats_dao；config → sgme.config。依赖方向：mcp_server
 from __future__ import annotations
 
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -621,6 +622,11 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "skill_put", "description": "写入/覆盖技能（ST-36 M3 写侧）：content 为 SKILL.md 全文（自动解析 frontmatter）；需管理员 Key"},
     {"name": "skill_delete", "description": "删除技能（ST-36 M3 写侧）：默认软删；hard=True 物理删；有入向 uses 引用需 force=True"},
     {"name": "skill_rename", "description": "改名（ST-36 M3 写侧，墓碑制）：写新名副本+旧位置留 superseded_by 墓碑+登记"},
+    {"name": "skill_catalog_version", "description": "技能目录版本（两级缓存第 1 级，<100 字节）：批量比对前先调，与本地记录相同即零请求复用本地目录"},
+    {"name": "skill_manifest", "description": "单技能清单（两级缓存第 2 级）：package_sha256 相同即复用本地副本；files[] 列附件（path/sha256/size）"},
+    {"name": "skill_file_get", "description": "读技能附件原文（references/scripts/assets）：库优先、未命中回退磁盘；二进制或超 64KiB 只回摘要并指路 HTTP 原字节通道"},
+    {"name": "skill_file_put", "description": "写技能附件（references/scripts/assets 白名单；需管理员 Key）：SKILL.md 正文走 skill_put，附件走本工具"},
+    {"name": "skill_lint", "description": "技能格式预检（只校验不入库）：skill_put 前先跑，返回 ok/errors/warnings/violations"},
     {"name": "credential_list", "description": "凭据列表（EP-11）：键名+元数据，不含值；需凭据模块已启用"},
     {"name": "credential_get", "description": "取凭据单值（EP-11）：⚠️ 值不得进入对话正文——标准姿势 sgme-cred run 注入；仅限必须显式查看场景"},
 )
@@ -682,6 +688,75 @@ def _op_json(op: Callable[..., Any], *args: Any, **kwargs: Any) -> Dict[str, Any
     if not result.ok:
         return {"error": result.message or result.error_code or "操作失败"}
     return result.data or {}
+
+
+# ---------- 技能附件：MCP 文本通道的承载规则（T-404 附件读写工具共用） ----------
+
+# 附件原文超过该阈值只回摘要：MCP 是文本协议，一次工具返回塞几十万字符会直接
+# 撑爆调用方上下文（附件单文件配额 256 KiB，远超对话可承载量）。
+MCP_FILE_TEXT_LIMIT = 64 * 1024
+
+# 资产配额默认值：与 routes_skills_admin.DEFAULT_ASSET_* 同值。入口层之间不互相
+# import（模块纪律：入口不依赖入口），故此处独立声明；skills.asset_quota.* 可覆盖。
+_ASSET_MAX_BYTES = 256 * 1024
+_ASSET_TOTAL_BYTES = 2 * 1024 * 1024
+_ASSET_MAX_FILES = 100
+
+
+def _asset_quota(skills_section: Dict[str, Any] | None) -> Dict[str, int]:
+    """cfg.skills.asset_quota → 写侧配额三参数（非法取默认，与 HTTP PUT 同口径）。"""
+    quota = (skills_section or {}).get("asset_quota") or {}
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return int(quota.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "max_file_bytes": _int("max_file_bytes", _ASSET_MAX_BYTES),
+        "max_total_bytes": _int("max_total_bytes", _ASSET_TOTAL_BYTES),
+        "max_files": _int("max_files", _ASSET_MAX_FILES),
+    }
+
+
+def _file_payload(name: str, relpath: str, raw: bytes) -> Dict[str, Any]:
+    """附件字节 → MCP 可承载的 JSON（文本给原文；二进制/超大只给摘要 + 指路）。
+
+    二进制判定：含 NUL 或非 UTF-8——这类字节进工具返回只会变成乱码/转义垃圾，
+    故只回 path/size/sha256，并指路 HTTP 原字节通道（包通道 / 单文件通道）。
+    """
+    payload: Dict[str, Any] = {
+        "name": name,
+        "path": relpath,
+        "size": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    text: str | None = None
+    if b"\x00" not in raw:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+    if text is None:
+        payload.update({
+            "binary": True,
+            "hint": (
+                f"二进制附件不进 MCP 文本通道；原字节走 HTTP：单文件 "
+                f"GET /v1/skills/{name}/files/{relpath}（octet-stream），"
+                f"或完整包 GET /v1/skills/{name}/package（tar.gz + MANIFEST.sha256）"
+            ),
+        })
+        return payload
+    truncated = len(raw) > MCP_FILE_TEXT_LIMIT
+    if truncated:
+        text = raw[:MCP_FILE_TEXT_LIMIT].decode("utf-8", "ignore")
+        payload["hint"] = (
+            f"内容超过 {MCP_FILE_TEXT_LIMIT // 1024} KiB 已截断；完整原文走 HTTP 单文件通道 "
+            f"GET /v1/skills/{name}/files/{relpath}"
+        )
+    payload.update({"binary": False, "content": text, "truncated": truncated})
+    return payload
 
 
 def build_mcp_server():
@@ -1896,6 +1971,171 @@ def build_mcp_server():
         _reindex_skills_db()
         return json.dumps(
             {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
+            ensure_ascii=False,
+        )
+
+    # ---------- 技能缓存与附件（2.0 D-59 两级缓存 + T-404 附件读写） ----------
+
+    @mcp.tool()
+    @tool
+    def skill_catalog_version() -> str:
+        """技能目录版本（两级缓存第 1 级，响应 <100 字节）：批量比对技能前先调。
+
+        何时用：本地已缓存技能目录、要判断「是否需要重新拉目录」时——返回值与本地
+        记录相同就零请求复用本地缓存（几百个技能逐个比对会变成几百次请求）。
+        对应 HTTP GET /v1/skills/catalog-version（agent key）；技能库未启用返回 disabled。
+        """
+        import json
+
+        from sgme.operations.skill_cache import catalog_version
+
+        conn = _app_state.get("skills_conn")
+        if conn is None:
+            return json.dumps({"catalog_version": "disabled"}, ensure_ascii=False)
+        return json.dumps({"catalog_version": catalog_version(conn)}, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def skill_manifest(name: str) -> str:
+        """单技能清单（两级缓存第 2 级）：package_sha256 相同即复用本地副本，files[] 列附件。
+
+        何时用：①判断某技能是否需要重拉（比对 package_sha256，避免整包传输）；
+        ②需要知道该技能有哪些附件（references/scripts/assets，含 sha256/size）时。
+        附件原文用 skill_file_get，整包走 HTTP GET /v1/skills/{name}/package。
+        """
+        import json
+
+        from sgme.operations.skill_cache import skill_manifest as manifest_operation
+
+        conn = _app_state.get("skills_conn")
+        if conn is None:
+            return json.dumps(
+                {"error": "技能库未启用", "code": "ERR_SKILLS_DISABLED"}, ensure_ascii=False
+            )
+        data = manifest_operation(conn, name)
+        if data is None:
+            return json.dumps(
+                {"error": f"技能不存在: {name}", "code": "ERR_SKILL_NOT_FOUND"},
+                ensure_ascii=False,
+            )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def skill_file_get(name: str, relpath: str) -> str:
+        """读技能附件原文（references/scripts/assets）：库优先，未命中回退技能树磁盘。
+
+        何时用：需要附件正文（参考手册、示例脚本）时——技能正文由 skill_get 给，
+        正文里 ./references/x.md 这类引用由本工具取。
+        二进制或超 64 KiB 只回 path/size/sha256 摘要并指路 HTTP 原字节通道
+        （MCP 是文本协议，字节/超长文本不进上下文）。
+        """
+        import json
+
+        cfg = _app_state["cfg"]
+        if _skills_disabled(cfg):
+            return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
+
+        # 2.0 全存库：先读 skill_files（唯一真源）；未命中再回退磁盘（老库/未回填附件）
+        conn = _app_state.get("skills_conn")
+        raw = None
+        if conn is not None:
+            from sgme.operations.skill_cache import skill_file as read_file_cached
+
+            raw = read_file_cached(conn, name, relpath)
+        if raw is None:
+            from sgme.operations.skills import read_skill_file as read_file_operation
+
+            data = _op_json(
+                read_file_operation, cfg, _app_state.get("wiki_conn"),
+                name=name, relpath=relpath,
+            )
+            if "error" in data:
+                # 操作层错误原文可诊断（技能不存在 / 成员不存在 / 路径形态非法）
+                return json.dumps(data, ensure_ascii=False)
+            raw = data["content"] if isinstance(data["content"], bytes) else str(data["content"]).encode("utf-8")
+            relpath = str(data.get("path") or relpath)
+        return json.dumps(_file_payload(name, relpath, raw), ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def skill_file_put(name: str, relpath: str, content: str, ctx: Context | None = None) -> str:
+        """写入技能附件（references/ scripts/ assets/ 白名单；需管理员 Key）。
+
+        何时用：给**已存在**的技能补参考手册或脚本——PUT SKILL.md 只带正文，
+        附件没有通道就会让技能里的 references/ 引用变成断链。先 skill_put 建技能，
+        再本工具补附件；路径必须在三个白名单目录内（其它路径会被拒）。
+        """
+        import json
+
+        from sgme.skills import store as skills_store
+
+        ok, err = _require_admin(ctx)
+        if not ok:
+            return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
+        cfg = _app_state["cfg"]
+        section = cfg.get("skills") or {}
+        source_dirs = section.get("source_dirs") or []
+        if not source_dirs:
+            return json.dumps({"error": "skills.source_dirs 未配置，无法写入附件"}, ensure_ascii=False)
+        if not isinstance(content, str):
+            return json.dumps(
+                {"error": 'content 必须是文本全文（{"content": "<文件全文>"}）'}, ensure_ascii=False
+            )
+        try:
+            result = skills_store.write_skill_file(
+                name, relpath, content, source_dirs, **_asset_quota(section)
+            )
+        except skills_store.StoreError as e:
+            return json.dumps(
+                {"error": f"附件写入失败: {e.message}", "code": "ERR_INTERNAL"}, ensure_ascii=False
+            )
+        if not result.get("ok"):
+            not_found = result.get("code") == "not_found"
+            return json.dumps(
+                {
+                    "error": f"附件写入被拒（{result.get('code')}）",
+                    "code": "ERR_NOT_FOUND" if not_found else "ERR_INVALID_ARGS",
+                    "violations": result.get("violations", []),
+                },
+                ensure_ascii=False,
+            )
+        _reindex_skills_db()
+        return json.dumps(
+            {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
+            ensure_ascii=False,
+        )
+
+    @mcp.tool()
+    @tool
+    def skill_lint(name: str, content: str) -> str:
+        """技能格式预检（只校验不入库）：返回 ok/errors/warnings/violations。
+
+        何时用：准备 skill_put 前先自检 SKILL.md 会不会被 lint 门禁拦下
+        （省一次失败写 + 一堆违规明细）；纯只读，可反复调用。
+        """
+        import json
+
+        from sgme.operations.skill_lint import lint_skill
+        from sgme.skills.indexer import parse_skill_md
+
+        if not isinstance(content, str) or not content.strip():
+            return json.dumps({"error": "content（SKILL.md 全文）不能为空"}, ensure_ascii=False)
+        try:
+            description = str(parse_skill_md(content)["meta"].get("description") or "")
+        except Exception:  # frontmatter 损坏时按空描述继续——lint 会给出结构化的错
+            description = ""
+        results = lint_skill(name, description, content)
+        errors = [r for r in results if r.get("level") == "error"]
+        warnings = [r for r in results if r.get("level") == "warn"]
+        return json.dumps(
+            {
+                "ok": not errors,
+                "name": name,
+                "errors": errors,
+                "warnings": warnings,
+                "violations": [e["message"] for e in errors],
+            },
             ensure_ascii=False,
         )
 

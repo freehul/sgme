@@ -110,11 +110,11 @@ var SgmeClient = class {
 		return data;
 	}
 	/**
-	* 触发批量提炼（POST /v1/admin/refine/trigger_async，Admin Key）。
+	* 触发批量提炼（POST /v1/admin/refine/trigger-async，Admin Key）。
 	* 实际返回 200（非 202），兼容两种状态码。失败返回 null。
 	*/
 	async triggerRefine(req) {
-		const [data, err] = await this.post("/v1/admin/refine/trigger_async", req, "admin");
+		const [data, err] = await this.post("/v1/admin/refine/trigger-async", req, "admin");
 		if (err) {
 			console.warn(`[sgme-bridge] triggerRefine failed: ${err}`);
 			return null;
@@ -782,15 +782,90 @@ var SgmeClient = class {
 		return data;
 	}
 	/**
-	* 技能改名（POST /v1/admin/skills/{name}/rename，Admin Key；墓碑制永不原地改名）。
+	* 技能改名（PUT /v1/admin/skills/{name}/rename，Admin Key；墓碑制永不原地改名）。
 	*
 	* 写新名副本 + 旧位置留 superseded_by 墓碑 + 登记 tombstones.json。
 	* 需服务端 skills.source_dirs 指向 git 技能仓。
 	*/
 	async skillRename(name, newName) {
-		const [data, err] = await this.post(`/v1/admin/skills/${encodeURIComponent(name)}/rename`, { new_name: newName }, "admin");
+		const [data, err] = await this.put(`/v1/admin/skills/${encodeURIComponent(name)}/rename`, { new_name: newName }, "admin");
 		if (err) {
 			console.warn(`[sgme-bridge] skillRename failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 读技能附件原始字节（GET /v1/skills/{name}/files/{relpath}，Agent Key；T-404）。
+	*
+	* 返回 octet-stream 字节 + X-File-Sha256；二进制/超长由工具层转摘要，不进对话。
+	*/
+	async skillFileGet(name, relpath) {
+		const rel = relpath.split("/").map(encodeURIComponent).join("/");
+		const url = `${this.baseUrl}/v1/skills/${encodeURIComponent(name)}/files/${rel}`;
+		try {
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+			const resp = await fetch(url, {
+				method: "GET",
+				headers: { "X-API-Key": this.agentKey },
+				signal: ctrl.signal
+			});
+			clearTimeout(timer);
+			if (!resp.ok) {
+				const text = await resp.text().catch(() => "");
+				return {
+					status: resp.status,
+					error: `HTTP ${resp.status}: ${text.slice(0, 200)}`
+				};
+			}
+			return {
+				status: resp.status,
+				data: Buffer.from(await resp.arrayBuffer()),
+				sha256: resp.headers.get("x-file-sha256") ?? ""
+			};
+		} catch (e) {
+			return {
+				status: 0,
+				error: `fetch error: ${e instanceof Error ? e.message : String(e)}`
+			};
+		}
+	}
+	/**
+	* 写技能附件（PUT /v1/admin/skills/{name}/files/{relpath}，Admin Key；ST-45 白名单）。
+	*
+	* 路径必须在 references/ scripts/ assets/ 之内；技能须已存在（先 skill_put 建技能）。
+	*/
+	async skillFilePut(name, relpath, content) {
+		const rel = relpath.split("/").map(encodeURIComponent).join("/");
+		const [data, err] = await this.put(`/v1/admin/skills/${encodeURIComponent(name)}/files/${rel}`, { content }, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] skillFilePut failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 技能格式预检（GET /v1/admin/skills/{name}/lint，Admin Key；只校验不入库）。
+	*
+	* Node fetch 禁止 GET 带 body，故正文走 `?content=` 查询串（服务端同时支持
+	* body 与查询串两种入参）。**超长正文（>12000 字符）改走旧的 POST 兼容别名**：
+	* 请求行过长会被反向代理/服务器拒绝，此时 POST 是唯一可靠通道（响应带
+	* Deprecation 头，属服务端登记的兼容路径）。
+	*/
+	async skillLint(name, content) {
+		const path = `/v1/admin/skills/${encodeURIComponent(name)}/lint`;
+		if (content.length > 12e3) {
+			const [data, err] = await this.post(path, { content }, "admin");
+			if (err) {
+				console.warn(`[sgme-bridge] skillLint (compat POST) failed: ${err}`);
+				return null;
+			}
+			return data;
+		}
+		const [data, err] = await this.get(`${path}?content=${encodeURIComponent(content)}`, "admin");
+		if (err) {
+			console.warn(`[sgme-bridge] skillLint failed: ${err}`);
 			return null;
 		}
 		return data;
@@ -4251,6 +4326,11 @@ function registerTools(ctx, client, defaultLimit, eventSubscriber) {
 	ctx.tools.register(createSkillPutTool(client));
 	ctx.tools.register(createSkillDeleteTool(client));
 	ctx.tools.register(createSkillRenameTool(client));
+	ctx.tools.register(createSkillCatalogVersionTool(client));
+	ctx.tools.register(createSkillManifestTool(client));
+	ctx.tools.register(createSkillFileGetTool(client));
+	ctx.tools.register(createSkillFilePutTool(client));
+	ctx.tools.register(createSkillLintTool(client));
 	ctx.tools.register(createCredentialListTool(client));
 	ctx.tools.register(createCredentialGetTool(client));
 }
@@ -5682,6 +5762,195 @@ function createSkillRenameTool(client) {
 		}
 	});
 }
+/** 创建 skill_catalog_version 工具（目录版本短路，<100 字节）。 */
+function createSkillCatalogVersionTool(client) {
+	return defineTool({
+		name: "skill_catalog_version",
+		description: [
+			"技能目录版本（两级缓存第 1 级，<100 字节）。批量比对技能前先调：",
+			"与本地记录的目录版本相同就零请求复用本地目录（527 个技能逐条比对会变成 527 次请求）。",
+			"返回 disabled 表示技能库未启用。"
+		].join(" "),
+		parameters: {},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(_args, _exec) {
+			const version = await client.skillCatalogVersion();
+			if (version === null) return "[skill_catalog_version 失败：Gateway 不可达或服务端版本过旧]";
+			return `catalog_version=${version}`;
+		}
+	});
+}
+/** 创建 skill_manifest 工具（单技能清单 + 附件列表）。 */
+function createSkillManifestTool(client) {
+	return defineTool({
+		name: "skill_manifest",
+		description: [
+			"单技能缓存清单（两级缓存第 2 级）：package_sha256 相同即复用本地副本（零整包传输），",
+			"files[] 列出该技能全部附件（references/scripts/assets，含 sha256/size）。",
+			"判断「要不要重拉」或「这个技能带哪些附件」时用；附件原文用 skill_file_get。"
+		].join(" "),
+		parameters: { name: {
+			type: "string",
+			required: true,
+			description: "技能名（kebab-case）"
+		} },
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const m = await client.skillManifest(a.name);
+			if (!m) return `[skill_manifest 失败：技能不存在 / 技能库未启用 / Gateway 不可达（name="${a.name}"）]`;
+			const files = m.files ?? [];
+			return [
+				`[skill_manifest: ${m.name} v${m.version || "—"}]`,
+				`package_sha256=${m.package_sha256}`,
+				`content_len=${m.content_len} updated_at=${m.updated_at || "—"}`,
+				files.length ? `附件 ${files.length} 个：` : "附件 0 个",
+				...files.map((f) => `- ${f.path}（${f.size} B；sha256 ${f.sha256.slice(0, 12)}…）`)
+			].join("\n");
+		}
+	});
+}
+/** 创建 skill_file_get 工具（附件原文；二进制/超长只给摘要）。 */
+function createSkillFileGetTool(client) {
+	return defineTool({
+		name: "skill_file_get",
+		description: [
+			"读技能附件原文（references/scripts/assets）：技能正文用 skill_get，正文里引用的",
+			"references/x.md、scripts/y.py 用本工具取。",
+			"二进制或超过 64 KiB 只返回 path/size/sha256 摘要并指路 HTTP 原字节通道（MCP/dsh 都是文本面）。"
+		].join(" "),
+		parameters: {
+			name: {
+				type: "string",
+				required: true,
+				description: "技能名（kebab-case）"
+			},
+			relpath: {
+				type: "string",
+				required: true,
+				description: "相对技能目录的路径，如 references/notes.md"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const res = await client.skillFileGet(a.name, a.relpath);
+			if (!res.data) return `[skill_file_get 失败：附件不存在 / 路径非法 / Gateway 不可达（${a.name}/${a.relpath}）：${res.error ?? ""}]`;
+			const data = res.data;
+			if (data.includes(0) || !isUtf8Text(data)) return [
+				`[skill_file_get: ${a.name}/${a.relpath} 为二进制附件（${data.length} B；sha256 ${res.sha256 ?? ""}）]`,
+				"二进制不进对话：原字节走 HTTP GET /v1/skills/{name}/files/{relpath}（octet-stream）",
+				"或完整包 GET /v1/skills/{name}/package（tar.gz + MANIFEST.sha256）。"
+			].join("\n");
+			const LIMIT = 65536;
+			const text = data.subarray(0, LIMIT).toString("utf8");
+			return data.length > LIMIT ? `${text}\n\n[已截断：原文 ${data.length} B，完整内容走 HTTP 单文件通道]` : text;
+		}
+	});
+}
+/** 创建 skill_file_put 工具（写附件；白名单 + Admin Key）。 */
+function createSkillFilePutTool(client) {
+	return defineTool({
+		name: "skill_file_put",
+		description: [
+			"写入技能附件（references/ scripts/ assets/ 白名单；需 Admin Key）。",
+			"给**已存在**的技能补参考手册/脚本时用——skill_put 只带 SKILL.md 正文，",
+			"附件没有通道会让正文里的 references/ 引用断链。先 skill_put 建技能再补附件。"
+		].join(" "),
+		parameters: {
+			name: {
+				type: "string",
+				required: true,
+				description: "技能名（kebab-case，必须已存在）"
+			},
+			relpath: {
+				type: "string",
+				required: true,
+				description: "相对路径，首段必须在 references/ scripts/ assets/ 内"
+			},
+			content: {
+				type: "string",
+				required: true,
+				description: "文件全文（UTF-8 文本）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.skillFilePut(a.name, a.relpath, a.content);
+			if (!resp) return `[skill_file_put 失败：技能不存在 / 路径不在白名单 / 超配额 / 未配置 Admin Key / Gateway 不可达（${a.name}/${a.relpath}）]`;
+			return `[skill_file_put 已写入：${resp.path ?? `${a.name}/${a.relpath}`}（${resp.bytes ?? a.content.length} B）]`;
+		}
+	});
+}
+/** 创建 skill_lint 工具（只校验不入库）。 */
+function createSkillLintTool(client) {
+	return defineTool({
+		name: "skill_lint",
+		description: ["技能格式预检（只校验不入库，需 Admin Key）：返回 ok / errors / warnings / violations。", "准备 skill_put 前先跑，省一次被 lint 门禁拦下的失败写；纯只读，可反复调用。"].join(" "),
+		parameters: {
+			name: {
+				type: "string",
+				required: true,
+				description: "技能名（kebab-case）"
+			},
+			content: {
+				type: "string",
+				required: true,
+				description: "SKILL.md 全文（含 frontmatter）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.skillLint(a.name, a.content);
+			if (!resp) return `[skill_lint 失败：未配置 Admin Key / Gateway 不可达（name="${a.name}"）]`;
+			return [
+				resp.ok ? `[skill_lint 通过：${a.name}（warnings ${resp.warnings.length} 条）]` : `[skill_lint 未通过：${a.name}（errors ${resp.errors.length} 条，violations ${resp.violations.length} 条）]`,
+				...resp.errors.map((e) => `- ✗ [${e.rule}] ${e.message}`),
+				...resp.warnings.map((w) => `- ⚠ [${w.rule}] ${w.message}`)
+			].join("\n");
+		}
+	});
+}
+/** UTF-8 文本粗判（解码后不含替换字符即视为文本；与 MCP 侧口径一致）。 */
+function isUtf8Text(data) {
+	try {
+		return !new TextDecoder("utf-8", { fatal: true }).decode(data).includes("�");
+	} catch {
+		return false;
+	}
+}
 /** 创建 credential_list 工具（凭据键名 + 元数据，不含值）。 */
 function createCredentialListTool(client) {
 	return defineTool({
@@ -5961,7 +6230,7 @@ function registerSessionSync(ctx, client, config) {
 *
 * 1. 收集本 turn 消息 → 转 L0 格式
 * 2. POST /v1/append（session_key=dsh-{sessionId}，started_at=turn 起始时间）
-* 3. POST /v1/admin/refine/trigger_async（fire-and-forget，失败只 log）
+* 3. POST /v1/admin/refine/trigger-async（fire-and-forget，失败只 log）
 */
 async function syncTurnToSgme(ctx, client, config, payload) {
 	try {
@@ -6315,7 +6584,7 @@ function apply(ctx, config) {
 		logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`);
 	}
 	registerTools({ tools: ctx.tools }, client, config.searchLimit, eventSubscriber);
-	logger.info("工具已注册（43）：memory_search/answer/memory_get/memory_reject/memory_unreject, wiki_search/pages/page/page_add/page_update, inject, signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, skill_search/digest/get/list/coldstart/materialize/put/delete/rename, health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger, review_list/review_approve/review_reject/review_auto_resolve");
+	logger.info("工具已注册（53）：memory_search/answer/memory_get/memory_reject/memory_unreject, wiki_search/pages/page/page_add/page_update, inject, signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, skill_search/digest/get/list/coldstart/materialize/put/delete/rename, skill_catalog_version/manifest/file_get/file_put/lint, conversation_search/persona_fill/guard_reply/health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger, review_list/review_approve/review_reject/review_auto_resolve, credential_list/get");
 	const contextCtx = {
 		on: ctx.on,
 		logger: {

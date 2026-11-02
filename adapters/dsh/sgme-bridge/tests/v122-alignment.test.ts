@@ -303,10 +303,12 @@ describe('sgme-client 1.2.2 新增方法', () => {
     expect(lastHeader('X-API-Key')).toBe('adm_test')
   })
 
-  it('skillRename 走 POST /v1/admin/skills/{name}/rename，body 带 new_name', async () => {
+  it('skillRename 走 PUT /v1/admin/skills/{name}/rename，body 带 new_name', async () => {
     globalThis.fetch = makeFetchMock({ ok: true, status: 200, body: { ok: true } })
     await makeClient().skillRename('old', 'new')
     expect(callAt(0).url).toBe('http://127.0.0.1:9910/v1/admin/skills/old/rename')
+    // 接口语义修正：改名 = 修改资源 → PUT（服务端保留旧 POST 兼容别名）
+    expect(callAt(0).init?.method).toBe('PUT')
     expect(JSON.parse(String(callAt(0).init?.body))).toEqual({ new_name: 'new' })
   })
 
@@ -717,13 +719,13 @@ describe('skill_put / skill_delete / skill_rename tool', () => {
 })
 
 describe('registerTools 1.2.2 对齐注册', () => {
-  it('新增 19 工具全部挂载且总数 48（T-207 ③ 加 conversation_search；T-277 加 2 凭据；T-306 加 persona_fill；T-307 加 guard_reply；D-30 加 4 待审）', () => {
+  it('新增 24 工具全部挂载且总数 53（T-207 ③ conversation_search；T-277 凭据；T-306 persona_fill；T-307 guard_reply；D-30 待审；2.0 技能缓存/附件 5 个）', () => {
     const registered: string[] = []
     const ctx = {
       tools: { register: (tool: unknown) => { registered.push((tool as ToolLike).name); return () => {} } },
     }
     registerTools(ctx as unknown as Parameters<typeof registerTools>[0], makeMockClient({}), 5)
-    expect(registered).toHaveLength(48)
+    expect(registered).toHaveLength(53)
     expect(registered).toContain('conversation_search')
     for (const name of [
       'answer', 'health', 'stats', 'memory_unreject', 'signal_clear',
@@ -732,6 +734,7 @@ describe('registerTools 1.2.2 对齐注册', () => {
       'skill_materialize', 'skill_put', 'skill_delete', 'skill_rename',
       'credential_list', 'credential_get',
       'review_list', 'review_approve', 'review_reject', 'review_auto_resolve',
+      'skill_catalog_version', 'skill_manifest', 'skill_file_get', 'skill_file_put', 'skill_lint',
     ]) {
       expect(registered).toContain(name)
     }

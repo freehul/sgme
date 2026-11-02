@@ -165,6 +165,7 @@ BASELINE_TOOLS: tuple[str, ...] = (
     "guard_reply",
     "skill_search", "skill_digest", "skill_get", "skill_materialize", "skill_list",
     "skill_coldstart", "skill_put", "skill_delete", "skill_rename",
+    "skill_catalog_version", "skill_manifest", "skill_file_get", "skill_file_put", "skill_lint",
     "credential_list", "credential_get",
 )
 
@@ -217,6 +218,11 @@ BASELINE_SPEC: dict[str, tuple[str, str, str, str]] = {
     "skill_put": ("skill_put", "skill-put", "mcp", "admin"),
     "skill_delete": ("skill_delete", "skill-delete", "mcp", "admin"),
     "skill_rename": ("skill_rename", "skill-rename", "mcp", "admin"),
+    "skill_catalog_version": ("skill_catalog_version", "skill-catalog-version", "http", "agent"),
+    "skill_manifest": ("skill_manifest", "skill-manifest", "http", "agent"),
+    "skill_file_get": ("skill_file_get", "skill-file-get", "http", "agent"),
+    "skill_file_put": ("skill_file_put", "skill-file-put", "http", "admin"),
+    "skill_lint": ("skill_lint", "skill-lint", "http", "admin"),
     # EP-11 凭据读侧（T-277）：agent 平级读，走 HTTP
     "credential_list": ("credential_list", "credential-list", "http", "agent"),
     "credential_get": ("credential_get", "credential-get", "http", "agent"),
@@ -256,11 +262,13 @@ class SGME:
         }
 
     # ---------- 底层 ----------
-    def _http(self, method: str, path: str, body: dict | None = None, timeout: int = 60):
+    def _http(self, method: str, path: str, body: dict | None = None, timeout: int = 60,
+              key: str | None = None):
+        """HTTP 调用；key 给定时按能力范围选密钥（admin 写侧），缺省用 agent key。"""
         url = self.base_url + path
         data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
-        req.add_header("X-API-Key", self.key)
+        req.add_header("X-API-Key", self._key_for(key) if key else self.key)
         req.add_header("Accept", "application/json")
         if data is not None:
             req.add_header("Content-Type", "application/json")
@@ -411,6 +419,71 @@ class SGME:
         """技能物化落盘，返回 path + sha256。"""
         return self._http("POST", f"/v1/skills/{urllib.parse.quote(name)}/materialize",
                           {"dest_dir": dest_dir})
+
+    # ---------- HTTP 层：技能缓存 / 附件 / 预检（2.0 D-59 + T-404） ----------
+
+    def skill_catalog_version(self):
+        """技能目录版本（两级缓存第 1 级，<100 字节）：批量比对前先调，相同即零请求复用本地目录。"""
+        return self._http("GET", "/v1/skills/catalog-version")
+
+    def skill_manifest(self, name: str):
+        """单技能清单（两级缓存第 2 级）：package_sha256 相同即复用本地副本；files[] 列附件。"""
+        return self._http("GET", f"/v1/skills/{urllib.parse.quote(name)}/manifest")
+
+    def skill_file_get(self, name: str, relpath: str):
+        """读技能附件原文（octet-stream 原字节 + X-File-Sha256）。
+
+        返回 {"name","path","size","sha256","binary","content"/"hint"}：文本附件给全文
+        （超 64 KiB 截断并给 hint）；二进制只给摘要并指路 HTTP 单文件/包通道——
+        二进制字节不进对话上下文。
+        """
+        seg = "/".join(urllib.parse.quote(p) for p in relpath.split("/") if p)
+        raw, headers = self._http_raw(
+            f"/v1/skills/{urllib.parse.quote(name)}/files/{seg}"
+        )
+        body = raw or b""
+        payload = {
+            "name": name, "path": relpath, "size": len(body),
+            "sha256": headers.get("x-file-sha256", ""),
+        }
+        text = None
+        if b"\x00" not in body:
+            try:
+                text = body.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+        if text is None:
+            payload["binary"] = True
+            payload["hint"] = (
+                f"二进制附件不进对话；原字节走 HTTP GET /v1/skills/{name}/files/{relpath}"
+                f"（octet-stream），或完整包 GET /v1/skills/{name}/package（tar.gz）"
+            )
+            return payload
+        limit = 64 * 1024
+        truncated = len(body) > limit
+        if truncated:
+            text = body[:limit].decode("utf-8", "ignore")
+            payload["hint"] = "内容超过 64 KiB 已截断；完整原文走 HTTP 单文件通道"
+        payload.update({"binary": False, "content": text, "truncated": truncated})
+        return payload
+
+    def skill_file_put(self, name: str, relpath: str, content: str):
+        """写技能附件（PUT /v1/admin/skills/{name}/files/{relpath}；白名单目录；需管理员 Key）。"""
+        seg = "/".join(urllib.parse.quote(p) for p in relpath.split("/") if p)
+        return self._http(
+            "PUT", f"/v1/admin/skills/{urllib.parse.quote(name)}/files/{seg}",
+            {"content": content}, key="admin",
+        )
+
+    def skill_lint(self, name: str, content: str):
+        """技能格式预检（GET /v1/admin/skills/{name}/lint；只校验不入库；需管理员 Key）。
+
+        GET 带 JSON body（urllib 允许）；服务端同时支持 body 与 ?content= 两种入参。
+        """
+        return self._http(
+            "GET", f"/v1/admin/skills/{urllib.parse.quote(name)}/lint",
+            {"content": content}, key="admin",
+        )
 
     def fetch(self, name: str, dest_dir: str) -> dict:
         """跨机取技能完整包并按规则落盘（包通道，T-283；方法 + CLI 双面）。
@@ -1188,6 +1261,45 @@ CMD_SPECS: list[dict] = [
             {"dest": "new_name", "help": "新技能名"},
         ],
         "run": lambda c, a: c.skill_rename(a.name, a.new_name),
+    },
+    # ---- 技能缓存与附件（2.0 D-59 / T-404） ----
+    {"cli": "skill-catalog-version", "help": "技能目录版本（两级缓存第 1 级，<100 字节）",
+     "run": lambda c, a: c.skill_catalog_version()},
+    {
+        "cli": "skill-manifest", "help": "单技能清单（package_sha256 同判 + 附件清单）",
+        "positionals": [{"dest": "name", "help": "技能名"}],
+        "run": lambda c, a: c.skill_manifest(a.name),
+    },
+    {
+        "cli": "skill-file-get", "help": "读技能附件原文（二进制只回摘要，不进对话）",
+        "positionals": [
+            {"dest": "name", "help": "技能名"},
+            {"dest": "relpath", "help": "相对路径，如 references/x.md"},
+        ],
+        "run": lambda c, a: c.skill_file_get(a.name, a.relpath),
+    },
+    {
+        "cli": "skill-file-put", "help": "写技能附件（references/scripts/assets；需管理员 Key）",
+        "positionals": [
+            {"dest": "name", "help": "技能名"},
+            {"dest": "relpath", "help": "相对路径，如 references/x.md"},
+        ],
+        "options": [
+            {"dest": "content", "flag": "content", "help": "文件全文（与 --file 二选一）"},
+            {"dest": "file", "flag": "file", "help": "从文件读（与 --content 二选一）"},
+        ],
+        "run": lambda c, a: c.skill_file_put(
+            a.name, a.relpath, _read_text_arg(a.content, a.file, "skill-file-put")),
+    },
+    {
+        "cli": "skill-lint", "help": "技能格式预检（只校验不入库；需管理员 Key）",
+        "positionals": [{"dest": "name", "help": "技能名"}],
+        "options": [
+            {"dest": "content", "flag": "content", "help": "SKILL.md 全文（与 --file 二选一）"},
+            {"dest": "file", "flag": "file", "help": "从文件读（与 --content 二选一）"},
+        ],
+        "run": lambda c, a: c.skill_lint(
+            a.name, _read_text_arg(a.content, a.file, "skill-lint")),
     },
     # ---- 凭据读侧（EP-11，T-277） ----
     {"cli": "credential-list", "help": "凭据列表（键名+元数据，不含值）",

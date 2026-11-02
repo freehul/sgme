@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -72,6 +72,20 @@ def api_error(code: str, message: str, details: dict | None = None) -> HTTPExcep
         status_code=status,
         detail={"error": {"code": code, "message": message, **(details and {"details": details} or {})}},
     )
+
+
+def mark_deprecated(response: Response, note: str) -> None:
+    """给兼容期旧 method / 旧路径的响应打标准弃用头（接口语义对齐批次）。
+
+    刻意**不改响应体**：存量客户端按原结构解析响应，塞字段会破坏它们的契约。
+    ``Deprecation`` + ``X-SGME-Deprecation-Note`` 是机器可读提示（RFC 8594 系列口径），
+    调用方可据此提前迁移，旧通道继续可用。
+
+    注：header 值必须是 ASCII（HTTP/1.1 头部按 latin-1 编码，中文会抛
+    UnicodeEncodeError）——note 一律用英文短句。
+    """
+    response.headers["Deprecation"] = "true"
+    response.headers["X-SGME-Deprecation-Note"] = note
 
 
 # ---------- 默认开发 Key 与来源限制（ST-22⑧） ----------

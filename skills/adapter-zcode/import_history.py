@@ -173,7 +173,7 @@ def session_exists(http: str, admin_key: str, session_key: str) -> bool:
 def trigger_refine(http: str, admin_key: str, limit: int = 50) -> None:
     """导完后触发异步批量提炼（永远 async）。"""
     body = json.dumps({"limit": limit}).encode("utf-8")
-    req = urllib.request.Request(http + "/v1/admin/refine/trigger_async", data=body, method="POST")
+    req = urllib.request.Request(http + "/v1/admin/refine/trigger-async", data=body, method="POST")
     req.add_header("X-API-Key", admin_key)
     req.add_header("Content-Type", "application/json")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

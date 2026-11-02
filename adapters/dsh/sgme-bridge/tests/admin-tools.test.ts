@@ -253,7 +253,7 @@ describe('registerTools 注册（T-86 扩充 → SGME 1.2.2 对齐）', () => {
       tools: { register: (tool: unknown) => { registered.push((tool as ToolLike).name); return () => {} } },
     }
     registerTools(ctx as unknown as Parameters<typeof registerTools>[0], makeMockClient({}), 5)
-    expect(registered).toHaveLength(48)
+    expect(registered).toHaveLength(53)
     for (const name of [
       'memory_search', 'conversation_search',
       'idea_add', 'demand_create', 'project_register',
@@ -268,6 +268,8 @@ describe('registerTools 注册（T-86 扩充 → SGME 1.2.2 对齐）', () => {
       'config_get', 'config_update',
       'refine_status', 'refine_trigger', 'refine_batch',
       'skill_materialize', 'skill_put', 'skill_delete', 'skill_rename',
+      // 2.0 技能缓存与附件（D-59 / T-404）
+      'skill_catalog_version', 'skill_manifest', 'skill_file_get', 'skill_file_put', 'skill_lint',
       // EP-11 凭据读侧（T-277）
       'credential_list', 'credential_get',
       // 待审队列（D-30，对齐 MCP review_*）

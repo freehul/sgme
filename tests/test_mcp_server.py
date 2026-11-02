@@ -1233,3 +1233,233 @@ def test_mcp_admin_tools_direct_call_rejected(mcp):
                        ("signal_clear", {})):
         text, _ = _call(mcp, name, args)
         assert "ERR_FORBIDDEN" in text, f"{name} 直调未被拒: {text}"
+
+
+# ---------- 2.0 D-59 / T-404：技能缓存与附件（MCP 五工具） ----------
+#
+# 背景：读路径已切库优先（catalog_version / manifest / files 三个 HTTP 端点早已存在），
+# 但 MCP 工具面缺对应入口——跨机 agent 只能走 HTTP。本组测试锁死五个工具的
+# 语义、鉴权与错误路径（含 binary 附件不进上下文）。
+
+ATT_SKILL_MD = (
+    "---\n"
+    "name: att-skill\n"
+    "description: 附件技能——当需要核对附件清单时使用\n"
+    "version: 2.1.0\n"
+    "category: testing\n"
+    "---\n"
+    "# 附件技能\n"
+    "正文。\n"
+)
+
+
+@pytest.fixture
+def mcp_skills_db(mcp, tmp_path):
+    """给 MCP 绑定一份已种技能 + 附件的 skills.db（D-59/T-404 五工具的读源）。"""
+    from sgme.data import skill_package_dao, skills_dao
+    from sgme.mcp_server import _app_state
+
+    conn = db_mod.connect_skills(tmp_path / "skills_db")
+    skills_dao.upsert_skill(conn, {
+        "name": "att-skill",
+        "sha256": "sha-att",
+        "description": "附件技能——当需要核对附件清单时使用",
+        "tags": ["skill"],
+        "category": "testing",
+        "version": "2.1.0",
+        "pattern": "manual",
+        "source": "git",
+        "origin_path": "/tmp/att-skill/SKILL.md",
+        # 库里 content 存的是已剥离 frontmatter 的正文（与索引路径一致）
+        "content": "# 附件技能\n正文。\n",
+        "uses": [],
+    })
+    conn.execute(
+        "UPDATE skills SET updated_at = ? WHERE name = ?",
+        ("2026-11-02T00:00:00Z", "att-skill"),
+    )
+    conn.commit()
+    skill_package_dao.ensure_tables(conn)
+    skill_package_dao.put_files(conn, "att-skill", [
+        {"path": "references/guide.md", "content": "指南正文\n第二行\n".encode("utf-8")},
+        {"path": "assets/logo.bin", "content": b"\x00\x01\x02\xff"},
+    ])
+    _app_state["skills_conn"] = conn
+    yield conn
+    conn.close()
+
+
+def test_mcp_skill_catalog_version(mcp, mcp_skills_db):
+    """skill_catalog_version：与 operations 同源，响应体 <100 字节（一级缓存短路）。"""
+    from sgme.operations.skill_cache import catalog_version
+
+    text, _ = _call(mcp, "skill_catalog_version", {})
+    assert len(text.encode("utf-8")) < 100, text
+    data = json.loads(text)
+    assert data["catalog_version"] == catalog_version(mcp_skills_db)
+
+
+def test_mcp_skill_catalog_version_disabled(mcp):
+    """技能库不可用 → catalog_version=disabled（与 HTTP 端点同语义，不报错）。"""
+    text, _ = _call(mcp, "skill_catalog_version", {})
+    assert json.loads(text)["catalog_version"] == "disabled"
+
+
+def test_mcp_skill_manifest_returns_attachment_files(mcp, mcp_skills_db):
+    """skill_manifest：包指纹四字段 + files[] 附件清单（path/sha256/size）真实返回。"""
+    import hashlib
+
+    from sgme.operations.skill_cache import skill_manifest as manifest_op
+
+    text, _ = _call(mcp, "skill_manifest", {"name": "att-skill"})
+    data = json.loads(text)
+    assert "error" not in data, data
+    expected = manifest_op(mcp_skills_db, "att-skill")
+    assert expected is not None
+    assert data["package_sha256"] == expected["package_sha256"]
+    assert data["version"] == "2.1.0"
+    assert data["content_len"] > 0
+    assert data["updated_at"] == "2026-11-02T00:00:00Z"
+    files = {f["path"]: f for f in data["files"]}
+    assert set(files) == {"references/guide.md", "assets/logo.bin"}
+    assert files["references/guide.md"]["sha256"] == hashlib.sha256("指南正文\n第二行\n".encode()).hexdigest()
+    assert files["assets/logo.bin"]["size"] == 4
+
+
+def test_mcp_skill_manifest_missing_404_style(mcp, mcp_skills_db):
+    """技能不存在 → 扁平 error + code=ERR_SKILL_NOT_FOUND（MCP 错误约定）。"""
+    text, _ = _call(mcp, "skill_manifest", {"name": "ghost"})
+    data = json.loads(text)
+    assert "error" in data and data["code"] == "ERR_SKILL_NOT_FOUND"
+
+
+def test_mcp_skill_file_get_text_and_binary(mcp, mcp_skills_db):
+    """skill_file_get：文本回原文；二进制只回摘要（不把字节塞进文本协议）。"""
+    text, _ = _call(mcp, "skill_file_get",
+                    {"name": "att-skill", "relpath": "references/guide.md"})
+    data = json.loads(text)
+    assert data["content"] == "指南正文\n第二行\n"
+    assert data["binary"] is False and data["size"] == len("指南正文\n第二行\n".encode())
+
+    text2, _ = _call(mcp, "skill_file_get",
+                     {"name": "att-skill", "relpath": "assets/logo.bin"})
+    data2 = json.loads(text2)
+    assert data2["binary"] is True
+    assert data2["size"] == 4 and len(data2["sha256"]) == 64
+    assert "content" not in data2
+    assert "package" in data2["hint"]  # 指路 HTTP 包通道
+
+
+def test_mcp_skill_file_get_missing_and_traversal(mcp, mcp_skills_db):
+    """附件不存在 / 路径非法 → 扁平 error（不抛异常）。"""
+    text, _ = _call(mcp, "skill_file_get", {"name": "att-skill", "relpath": "references/none.md"})
+    assert "error" in json.loads(text)
+    text2, _ = _call(mcp, "skill_file_get", {"name": "att-skill", "relpath": "../../etc/passwd"})
+    assert "error" in json.loads(text2)
+
+
+def test_mcp_skill_file_get_filesystem_fallback(mcp, mcp_skills_env):
+    """库内未命中时回退技能树读盘（与 HTTP 读路径同口径）。"""
+    tree = pathlib.Path(_mcp_state_cfg()["skills"]["source_dirs"][0])
+    (tree / "alpha" / "references").mkdir(parents=True, exist_ok=True)
+    (tree / "alpha" / "references" / "坑.md").write_text("踩坑记录\n", encoding="utf-8", newline="\n")
+    text, _ = _call(mcp, "skill_file_get", {"name": "alpha", "relpath": "references/坑.md"})
+    data = json.loads(text)
+    assert data.get("content") == "踩坑记录\n", data
+
+
+def _mcp_state_cfg():
+    from sgme.mcp_server import _app_state
+
+    return _app_state["cfg"]
+
+
+def test_mcp_skill_lint_ok_and_violations(mcp):
+    """skill_lint：只校验不入库——合法 → ok=true；缺 frontmatter → ok=false + violations。"""
+    text, _ = _call(mcp, "skill_lint", {"name": "lint-ok", "content": ATT_SKILL_MD.replace("att-skill", "lint-ok")})
+    data = json.loads(text)
+    assert data["ok"] is True and data["errors"] == [], data
+
+    text2, _ = _call(mcp, "skill_lint", {"name": "lint-bad", "content": "# 没有 frontmatter\n"})
+    data2 = json.loads(text2)
+    assert data2["ok"] is False
+    assert any("frontmatter" in v for v in data2["violations"])
+    assert data2["errors"] and "warnings" in data2
+
+
+def test_mcp_skill_lint_empty_content_error(mcp):
+    """空 content → 参数错误（MCP 扁平 error），不进入 lint 逻辑。"""
+    text, _ = _call(mcp, "skill_lint", {"name": "lint-empty", "content": "   "})
+    assert "error" in json.loads(text)
+
+
+def test_mcp_skill_file_put_direct_call_forbidden(mcp, mcp_skills_env):
+    """skill_file_put 是写侧：无 HTTP 上下文直调 → ERR_FORBIDDEN（安全默认）。"""
+    text, _ = _call(mcp, "skill_file_put", {
+        "name": "alpha", "relpath": "references/x.md", "content": "x",
+    })
+    data = json.loads(text)
+    assert data.get("code") == "ERR_FORBIDDEN", data
+
+
+def test_mcp_skill_file_put_admin_writes(tmp_path, monkeypatch, raw_dir):
+    """管理员 Key 调 skill_file_put → 落盘 + 回 bytes/path（与 HTTP PUT 同链路）。"""
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        skills_dir = tmp_path / "skills_tree_put"
+        skills_dir.mkdir()
+        _b116_git_init(skills_dir)
+        app.state.cfg["skills"] = {
+            "enabled": True, "source_dirs": [str(skills_dir)], "budget": 40,
+        }
+        body = _mcp_call_tool(client, None, "skill_put", {
+            "name": "put-att", "content": ATT_SKILL_MD.replace("att-skill", "put-att"),
+        }, api_key="test-admin-key")
+        assert '"ok": true' in _mcp_tool_text(body).lower(), body
+
+        res = _mcp_call_tool(client, None, "skill_file_put", {
+            "name": "put-att", "relpath": "references/x.md", "content": "附件内容\n",
+        }, api_key="test-admin-key")
+        data = json.loads(_mcp_tool_text(res))
+        assert data.get("ok") is True, data
+        assert (skills_dir / "put-att" / "references" / "x.md").read_text(encoding="utf-8") == "附件内容\n"
+    finally:
+        gen.close()
+
+
+def test_mcp_skill_file_put_agent_key_forbidden(tmp_path, monkeypatch, raw_dir):
+    """普通 agent key 调 skill_file_put → ERR_FORBIDDEN（写侧门禁不因新工具而降级）。"""
+    gen = _mcp_http_app(tmp_path, monkeypatch, raw_dir)
+    client, app = next(gen)
+    try:
+        skills_dir = tmp_path / "skills_tree_put_denied"
+        skills_dir.mkdir()
+        _b116_git_init(skills_dir)
+        app.state.cfg["skills"] = {
+            "enabled": True, "source_dirs": [str(skills_dir)], "budget": 40,
+        }
+        res = _mcp_call_tool(client, None, "skill_file_put", {
+            "name": "x", "relpath": "references/x.md", "content": "x",
+        }, api_key="test-agent-key")
+        text = _mcp_tool_text(res)
+        assert "ERR_FORBIDDEN" in text, text
+        assert not (skills_dir / "x").exists()
+    finally:
+        gen.close()
+
+
+def test_mcp_skill_file_put_path_outside_whitelist(mcp, mcp_skills_env, monkeypatch):
+    """白名单外路径（非 references/scripts/assets）→ 拒绝并给出 violations。
+
+    直调无 ctx 会被鉴权先拦，故这里用 monkeypatch 放开 admin 校验，专测路径门禁。
+    """
+    import sgme.mcp_server as mcp_mod
+
+    monkeypatch.setattr(mcp_mod, "_require_admin", lambda ctx=None: (True, ""))
+    text, _ = _call(mcp, "skill_file_put", {
+        "name": "alpha", "relpath": "SKILL.md", "content": "越权覆盖正文",
+    })
+    data = json.loads(text)
+    assert "error" in data, data
+    assert data.get("violations"), data

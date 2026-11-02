@@ -468,7 +468,11 @@ class SkillCache:
         # 二级：单技能 package_sha256 比对
         remote = self._remote_manifest(name)
         version = str((remote or {}).get("version") or "")
-        if intact and remote is not None and remote.get("package_sha256") == (local or {}).get("content_hash"):
+        # 二级比对：远端 manifest 的 package_sha256 与本地 manifest 记录的 remote_sha 比。
+        # 注意不能拿 content_hash 比——content_hash 是包内 MANIFEST.sha256 的聚合哈希
+        # （文件逐成员），而 package_sha256 是服务端 DB 行打包的 tar.gz 哈希，
+        # 两者口径不同、永不相等，比了等于缓存永不命中（2026-11-02 实测修正）。
+        if intact and remote is not None and (remote.get("package_sha256") or "") == (local or {}).get("remote_sha"):
             self.last_hit = True
             self.last_manifest = local
             return target
@@ -512,10 +516,6 @@ class SkillCache:
             staged = tmp_root / "staged"
             entries, aggregate, files = _extract_package(name, data, staged)
             _check_response_headers(headers, aggregate, files)
-            expected = str((remote or {}).get("package_sha256") or "").strip().lower()
-            if expected and expected != aggregate:
-                raise SkillCacheError(
-                    f"包聚合哈希与服务端 manifest.package_sha256 不一致——拒绝落盘: {aggregate}")
             skill_stage = staged / name
             if not skill_stage.is_dir():
                 raise SkillCacheError(f"包内缺少技能根目录 <{name}>/——拒绝落盘")
@@ -525,6 +525,7 @@ class SkillCache:
                 "name": name,
                 "version": version or "",
                 "content_hash": aggregate,
+                "remote_sha": str((remote or {}).get("package_sha256") or "").strip().lower(),
                 "files": [{"path": rel, "sha256": digest} for digest, rel in entries],
                 "fetched_at": _now_iso(),
                 "catalog_version": catalog_version or "",

@@ -103,7 +103,7 @@ syncOnTurnEnd: true
 
 ## 用法
 
-接入后，DSH 自动拥有 47 个工具（与 SGME 能力面对齐，适配器平级对账零漂移）：
+接入后，DSH 自动拥有 53 个工具（与 SGME 能力面对齐，适配器平级对账零漂移）：
 
 **检索与知识库（7）**
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
@@ -158,6 +158,13 @@ syncOnTurnEnd: true
 - `skill_put(name, content, skip_limits)` — 写入/覆盖技能（过 lint 门禁 + 三层查重后落盘并提交技能源仓）；
 - `skill_delete(name, hard, force)` — 删除技能（默认软删；有入向引用需 force）；
 - `skill_rename(name, new_name)` — 墓碑制改名。
+
+**技能缓存与附件（5，2.0 D-59 / T-404）**
+- `skill_catalog_version()` — 目录版本（两级缓存第 1 级，<100 字节；相同即零请求复用本地目录）；
+- `skill_manifest(name)` — 单技能清单（`package_sha256` + `files[]` 附件清单 path/sha256/size）；
+- `skill_file_get(name, relpath)` — 附件原文（文本回原文；二进制/超 64 KiB 只回摘要并指路 HTTP 原字节通道）；
+- `skill_file_put(name, relpath, content)` — 写附件（`references/` `scripts/` `assets/` 白名单，需 Admin Key）；
+- `skill_lint(name, content)` — 格式预检（只校验不入库，需 Admin Key；返回 ok/errors/warnings/violations）。
 
 **凭据读侧（2，T-277 对齐 EP-11）**
 - `credential_list()` — 凭据键名 + 元数据（**不含值**；需服务端 `credentials.enabled` 已启用）；

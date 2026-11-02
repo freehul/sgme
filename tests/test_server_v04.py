@@ -557,8 +557,12 @@ def test_agent_revoke_requires_admin(client):
     assert resp.status_code == 403
 
 
-def test_refine_trigger_async_returns_immediately(client, monkeypatch):
-    """/v1/admin/refine/trigger_async 立即返回 queued（后台提炼不阻塞）。"""
+@pytest.mark.parametrize("path", [
+    "/v1/admin/refine/trigger-async",   # 规范路径（kebab-case）
+    "/v1/admin/refine/trigger_async",   # 兼容别名（deprecated）
+])
+def test_refine_trigger_async_returns_immediately(client, monkeypatch, path):
+    """/v1/admin/refine/trigger-async 立即返回 queued（后台提炼不阻塞）。"""
     _block_embed_egress(monkeypatch)      # 后台线程 embed 出口打桩
     _block_llm_chain_egress(monkeypatch)  # 后台线程 LLM 出口打桩（真实 refine 快速降级收尾）
     app = client.app
@@ -581,14 +585,28 @@ def test_refine_trigger_async_returns_immediately(client, monkeypatch):
         agent_id="test", status="new", size=raw_store.file_size(fid),
     )
 
-    resp = client.post("/v1/admin/refine/trigger_async", json={
+    resp = client.post(path, json={
         "file_id": fid,
     }, headers=ADMIN_HEADERS)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["triggered"] == "async"
     assert body["status"] == "queued"
+    # 旧路径带弃用提示（不改响应体，存量客户端零影响）
+    if path.endswith("trigger_async"):
+        assert resp.headers.get("deprecation", "").lower() == "true"
+        assert "trigger-async" in resp.headers.get("x-sgme-deprecation-note", "")
+    else:
+        assert "deprecation" not in resp.headers
     # 不等待后台线程（测试隔离），仅验证立即返回语义
+
+
+def test_refine_trigger_async_legacy_path_marked_deprecated(client):
+    """OpenAPI 里旧下划线路径标 deprecated、新路径为主（机器可读的迁移信号）。"""
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/v1/admin/refine/trigger-async" in paths
+    assert paths["/v1/admin/refine/trigger_async"]["post"]["deprecated"] is True
+    assert not paths["/v1/admin/refine/trigger-async"]["post"].get("deprecated", False)
 
 
 def test_refine_trigger_publishes_memory_updated(client, monkeypatch):

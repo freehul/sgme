@@ -510,6 +510,12 @@ export function registerTools(
   ctx.tools.register(createSkillPutTool(client))
   ctx.tools.register(createSkillDeleteTool(client))
   ctx.tools.register(createSkillRenameTool(client))
+  // 技能缓存与附件（2.0 D-59 / T-404：目录版本 / 清单 / 附件读写 / lint 预检）
+  ctx.tools.register(createSkillCatalogVersionTool(client))
+  ctx.tools.register(createSkillManifestTool(client))
+  ctx.tools.register(createSkillFileGetTool(client))
+  ctx.tools.register(createSkillFilePutTool(client))
+  ctx.tools.register(createSkillLintTool(client))
   // EP-11 凭据读侧（T-277 对齐）
   ctx.tools.register(createCredentialListTool(client))
   ctx.tools.register(createCredentialGetTool(client))
@@ -2108,6 +2114,180 @@ export function createSkillRenameTool(client: SgmeClient) {
       return `[skill_rename 已完成：${a.name} → ${a.new_name}（旧位置留墓碑）]`
     },
   })
+}
+
+// ---------- 技能缓存与附件（2.0 D-59 / T-404；对齐 MCP 五个新工具） ----------
+
+/** 创建 skill_catalog_version 工具（目录版本短路，<100 字节）。 */
+export function createSkillCatalogVersionTool(client: SgmeClient) {
+  return defineTool({
+    name: 'skill_catalog_version',
+    description: [
+      '技能目录版本（两级缓存第 1 级，<100 字节）。批量比对技能前先调：',
+      '与本地记录的目录版本相同就零请求复用本地目录（527 个技能逐条比对会变成 527 次请求）。',
+      '返回 disabled 表示技能库未启用。',
+    ].join(' '),
+    parameters: {},
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(_args, _exec) {
+      const version = await client.skillCatalogVersion()
+      if (version === null) return '[skill_catalog_version 失败：Gateway 不可达或服务端版本过旧]'
+      return `catalog_version=${version}`
+    },
+  })
+}
+
+/** 创建 skill_manifest 工具（单技能清单 + 附件列表）。 */
+export function createSkillManifestTool(client: SgmeClient) {
+  return defineTool({
+    name: 'skill_manifest',
+    description: [
+      '单技能缓存清单（两级缓存第 2 级）：package_sha256 相同即复用本地副本（零整包传输），',
+      'files[] 列出该技能全部附件（references/scripts/assets，含 sha256/size）。',
+      '判断「要不要重拉」或「这个技能带哪些附件」时用；附件原文用 skill_file_get。',
+    ].join(' '),
+    parameters: {
+      name: { type: 'string', required: true, description: '技能名（kebab-case）' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { name: string }
+      const m = await client.skillManifest(a.name)
+      if (!m) return `[skill_manifest 失败：技能不存在 / 技能库未启用 / Gateway 不可达（name="${a.name}"）]`
+      const files = m.files ?? []
+      const lines = [
+        `[skill_manifest: ${m.name} v${m.version || '—'}]`,
+        `package_sha256=${m.package_sha256}`,
+        `content_len=${m.content_len} updated_at=${m.updated_at || '—'}`,
+        files.length ? `附件 ${files.length} 个：` : '附件 0 个',
+        ...files.map((f) => `- ${f.path}（${f.size} B；sha256 ${f.sha256.slice(0, 12)}…）`),
+      ]
+      return lines.join('\n')
+    },
+  })
+}
+
+/** 创建 skill_file_get 工具（附件原文；二进制/超长只给摘要）。 */
+export function createSkillFileGetTool(client: SgmeClient) {
+  return defineTool({
+    name: 'skill_file_get',
+    description: [
+      '读技能附件原文（references/scripts/assets）：技能正文用 skill_get，正文里引用的',
+      'references/x.md、scripts/y.py 用本工具取。',
+      '二进制或超过 64 KiB 只返回 path/size/sha256 摘要并指路 HTTP 原字节通道（MCP/dsh 都是文本面）。',
+    ].join(' '),
+    parameters: {
+      name: { type: 'string', required: true, description: '技能名（kebab-case）' },
+      relpath: {
+        type: 'string',
+        required: true,
+        description: '相对技能目录的路径，如 references/notes.md',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { name: string; relpath: string }
+      const res = await client.skillFileGet(a.name, a.relpath)
+      if (!res.data) {
+        return `[skill_file_get 失败：附件不存在 / 路径非法 / Gateway 不可达（${a.name}/${a.relpath}）：${res.error ?? ''}]`
+      }
+      const data = res.data
+      const binary = data.includes(0) || !isUtf8Text(data)
+      if (binary) {
+        return [
+          `[skill_file_get: ${a.name}/${a.relpath} 为二进制附件（${data.length} B；sha256 ${res.sha256 ?? ''}）]`,
+          '二进制不进对话：原字节走 HTTP GET /v1/skills/{name}/files/{relpath}（octet-stream）',
+          '或完整包 GET /v1/skills/{name}/package（tar.gz + MANIFEST.sha256）。',
+        ].join('\n')
+      }
+      const LIMIT = 64 * 1024
+      const text = data.subarray(0, LIMIT).toString('utf8')
+      return data.length > LIMIT
+        ? `${text}\n\n[已截断：原文 ${data.length} B，完整内容走 HTTP 单文件通道]`
+        : text
+    },
+  })
+}
+
+/** 创建 skill_file_put 工具（写附件；白名单 + Admin Key）。 */
+export function createSkillFilePutTool(client: SgmeClient) {
+  return defineTool({
+    name: 'skill_file_put',
+    description: [
+      '写入技能附件（references/ scripts/ assets/ 白名单；需 Admin Key）。',
+      '给**已存在**的技能补参考手册/脚本时用——skill_put 只带 SKILL.md 正文，',
+      '附件没有通道会让正文里的 references/ 引用断链。先 skill_put 建技能再补附件。',
+    ].join(' '),
+    parameters: {
+      name: { type: 'string', required: true, description: '技能名（kebab-case，必须已存在）' },
+      relpath: {
+        type: 'string',
+        required: true,
+        description: '相对路径，首段必须在 references/ scripts/ assets/ 内',
+      },
+      content: { type: 'string', required: true, description: '文件全文（UTF-8 文本）' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { name: string; relpath: string; content: string }
+      const resp = await client.skillFilePut(a.name, a.relpath, a.content)
+      if (!resp) {
+        return `[skill_file_put 失败：技能不存在 / 路径不在白名单 / 超配额 / 未配置 Admin Key / Gateway 不可达（${a.name}/${a.relpath}）]`
+      }
+      return `[skill_file_put 已写入：${resp.path ?? `${a.name}/${a.relpath}`}（${resp.bytes ?? a.content.length} B）]`
+    },
+  })
+}
+
+/** 创建 skill_lint 工具（只校验不入库）。 */
+export function createSkillLintTool(client: SgmeClient) {
+  return defineTool({
+    name: 'skill_lint',
+    description: [
+      '技能格式预检（只校验不入库，需 Admin Key）：返回 ok / errors / warnings / violations。',
+      '准备 skill_put 前先跑，省一次被 lint 门禁拦下的失败写；纯只读，可反复调用。',
+    ].join(' '),
+    parameters: {
+      name: { type: 'string', required: true, description: '技能名（kebab-case）' },
+      content: { type: 'string', required: true, description: 'SKILL.md 全文（含 frontmatter）' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { name: string; content: string }
+      const resp = await client.skillLint(a.name, a.content)
+      if (!resp) return `[skill_lint 失败：未配置 Admin Key / Gateway 不可达（name="${a.name}"）]`
+      const head = resp.ok
+        ? `[skill_lint 通过：${a.name}（warnings ${resp.warnings.length} 条）]`
+        : `[skill_lint 未通过：${a.name}（errors ${resp.errors.length} 条，violations ${resp.violations.length} 条）]`
+      const lines = [head, ...resp.errors.map((e) => `- ✗ [${e.rule}] ${e.message}`),
+        ...resp.warnings.map((w) => `- ⚠ [${w.rule}] ${w.message}`)]
+      return lines.join('\n')
+    },
+  })
+}
+
+/** UTF-8 文本粗判（解码后不含替换字符即视为文本；与 MCP 侧口径一致）。 */
+function isUtf8Text(data: Buffer): boolean {
+  try {
+    return !new TextDecoder('utf-8', { fatal: true }).decode(data).includes('\uFFFD')
+  } catch {
+    return false
+  }
 }
 
 // ---------- 凭据读侧（EP-11 T-277 对齐） ----------

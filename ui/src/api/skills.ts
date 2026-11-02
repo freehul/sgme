@@ -165,9 +165,9 @@ export function putSkillFile(name: string, relpath: string, content: string) {
   )
 }
 
-/** 技能改名（POST /v1/admin/skills/{name}/rename；墓碑制——旧名留 superseded_by 墓碑） */
+/** 技能改名（PUT /v1/admin/skills/{name}/rename；墓碑制——旧名留 superseded_by 墓碑） */
 export function renameSkill(name: string, newName: string) {
-  return api.post<{ ok: boolean }>(`/v1/admin/skills/${encodeURIComponent(name)}/rename`, {
+  return api.put<{ ok: boolean }>(`/v1/admin/skills/${encodeURIComponent(name)}/rename`, {
     new_name: newName,
   })
 }

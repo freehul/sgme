@@ -230,15 +230,15 @@ class TestDeleteSkill:
         assert r.status_code == 404
 
 
-# ---------- POST rename ----------
+# ---------- PUT rename（HTTP 语义修正：改名 = 修改资源） ----------
 
 
 class TestRenameSkill:
-    def test_rename_ok_tombstone_written(self, client, skill_repo, tmp_path):
+    def test_rename_put_ok_tombstone_written(self, client, skill_repo, tmp_path):
         assert client.put(
             f"{BASE}/old-nm", json={"content": valid_content("old-nm")}, headers=ADMIN_HEADERS
         ).status_code == 200
-        r = client.post(
+        r = client.put(
             f"{BASE}/old-nm/rename", json={"new_name": "new-nm"}, headers=ADMIN_HEADERS
         )
         assert r.status_code == 200, r.text
@@ -248,6 +248,18 @@ class TestRenameSkill:
         # 墓碑登记文件（fixture 写入 cfg.skills.tombstone_registry 指定的测试路径）
         reg_path = tmp_path / "data" / "skills" / "tombstones.json"
         assert reg_path.exists()
+
+    def test_rename_post_compat_alias_still_works(self, client):
+        """迁移期兼容：旧 POST 仍可用，但响应头标注 deprecated（不摔碎存量客户端）。"""
+        assert client.put(
+            f"{BASE}/old-p", json={"content": valid_content("old-p")}, headers=ADMIN_HEADERS
+        ).status_code == 200
+        r = client.post(
+            f"{BASE}/old-p/rename", json={"new_name": "new-p"}, headers=ADMIN_HEADERS
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers.get("deprecation", "").lower() == "true"
+        assert "PUT" in r.headers.get("x-sgme-deprecation-note", "")
 
     def test_rename_to_existing_409(self, client):
         # 两个技能内容必须不同（同内容异名会被 SHA 查重拒绝）
@@ -260,9 +272,67 @@ class TestRenameSkill:
             assert client.put(
                 f"{BASE}/{n}", json=payload, headers=ADMIN_HEADERS
             ).status_code == 200
-        r = client.post(f"{BASE}/r-a/rename", json={"new_name": "r-b"}, headers=ADMIN_HEADERS)
+        r = client.put(f"{BASE}/r-a/rename", json={"new_name": "r-b"}, headers=ADMIN_HEADERS)
         assert r.status_code == 409
 
     def test_rename_missing_old_404(self, client):
-        r = client.post(f"{BASE}/ghost-y/rename", json={"new_name": "zz"}, headers=ADMIN_HEADERS)
+        r = client.put(f"{BASE}/ghost-y/rename", json={"new_name": "zz"}, headers=ADMIN_HEADERS)
         assert r.status_code == 404
+
+    def test_rename_requires_admin(self, client):
+        assert client.put(
+            f"{BASE}/x/rename", json={"new_name": "y"}, headers=AGENT_HEADERS
+        ).status_code == 403
+
+
+# ---------- GET lint（HTTP 语义修正：只读预检） ----------
+
+
+class TestLintSkill:
+    def test_lint_get_ok(self, client):
+        # TestClient.get() 不接受 json（Starlette 包装层签名限制）；GET 带 body 用 request()
+        r = client.request(
+            "GET", f"{BASE}/lint-ok/lint",
+            json={"content": valid_content("lint-ok")}, headers=ADMIN_HEADERS,
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["ok"] is True and data["errors"] == []
+        assert data["name"] == "lint-ok"
+
+    def test_lint_get_violations(self, client):
+        bad = valid_content("lint-bad").replace("description: 合法技能描述\n", "")
+        r = client.request(
+            "GET", f"{BASE}/lint-bad/lint", json={"content": bad}, headers=ADMIN_HEADERS
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is False
+        assert any("description" in v for v in data["violations"])
+
+    def test_lint_get_query_content(self, client):
+        """GET 不便带 body 的客户端可用 ?content= 传全文（等价语义）。"""
+        r = client.get(
+            f"{BASE}/lint-q/lint", params={"content": valid_content("lint-q")},
+            headers=ADMIN_HEADERS,
+        )
+        assert r.status_code == 200 and r.json()["ok"] is True, r.text
+
+    def test_lint_get_missing_body_400(self, client):
+        r = client.get(f"{BASE}/lint-x/lint", headers=ADMIN_HEADERS)
+        assert r.status_code == 400
+
+    def test_lint_post_compat_alias(self, client):
+        """旧 POST 保留（deprecated），保证既有脚本不因 method 修正而断。"""
+        r = client.post(
+            f"{BASE}/lint-p/lint", json={"content": valid_content("lint-p")},
+            headers=ADMIN_HEADERS,
+        )
+        assert r.status_code == 200 and r.json()["ok"] is True
+        assert r.headers.get("deprecation", "").lower() == "true"
+
+    def test_lint_requires_admin(self, client):
+        assert client.request(
+            "GET", f"{BASE}/lint-a/lint",
+            json={"content": valid_content("lint-a")}, headers=AGENT_HEADERS,
+        ).status_code == 403

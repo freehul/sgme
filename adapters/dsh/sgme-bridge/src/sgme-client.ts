@@ -7,7 +7,7 @@
  * - POST /v1/search        — Agent Key — 记忆+wiki 检索
  * - POST /v1/inject         — Agent Key — 画像注入（注意：max_tokens 协议接受但不消费）
  * - POST /v1/append         — Agent Key — L0 写入
- * - POST /v1/admin/refine/trigger_async — Admin Key — 触发提炼（实际返回 200，非 202）
+ * - POST /v1/admin/refine/trigger-async — Admin Key — 触发提炼（实际返回 200，非 202）
  * - GET /v1/admin/review/pending + POST approve/reject/auto-resolve — Agent Key — 待审队列（D-30）
  * - POST /v1/admin/ideas|demands|projects — Admin Key — 三池登记（T-86）
  * - GET/PUT /v1/admin/roles* + /v1/admin/care/active-role — Agent Key — 角色模板（T-86）
@@ -113,6 +113,33 @@ export interface SkillManifestResponse {
   package_sha256: string
   content_len: number
   updated_at: string
+  /** 附件清单（references/scripts/assets；T-404 起返回，老服务端缺省） */
+  files?: { path: string; sha256: string; size: number }[]
+}
+
+/** 技能附件原始读结果（GET /v1/skills/{name}/files/{relpath}；非 2xx 由 status 表达）。 */
+export interface SkillFileFetch {
+  status: number
+  data?: Buffer
+  sha256?: string
+  error?: string
+}
+
+/** 技能附件写入结果（PUT /v1/admin/skills/{name}/files/{relpath}）。 */
+export interface SkillFileWriteResponse {
+  ok: boolean
+  path?: string
+  bytes?: number
+  committed?: boolean
+}
+
+/** lint 预检结果（GET /v1/admin/skills/{name}/lint；只校验不入库）。 */
+export interface SkillLintResponse {
+  ok: boolean
+  name: string
+  errors: { level: string; rule: string; message: string }[]
+  warnings: { level: string; rule: string; message: string }[]
+  violations: string[]
 }
 
 /** 技能包下载结果（GET /v1/skills/{name}/package；非 2xx 由 status 表达）。 */
@@ -199,13 +226,13 @@ export interface AppendResponse {
   appended?: boolean            // 追加段时 true
 }
 
-/** /v1/admin/refine/trigger_async 请求体（RefineTriggerRequest）。 */
+/** /v1/admin/refine/trigger-async 请求体（RefineTriggerRequest）。 */
 export interface RefineTriggerRequest {
   file_id?: string | null       // 指定单文件；null/空串 → 批量扫 status=new
   limit?: number                // 批量上限，默认 100；必须为正整数
 }
 
-/** /v1/admin/refine/trigger_async 响应体。 */
+/** /v1/admin/refine/trigger-async 响应体。 */
 export interface RefineTriggerResponse {
   triggered: 'async'
   file_id: string
@@ -734,12 +761,12 @@ export class SgmeClient {
   }
 
   /**
-   * 触发批量提炼（POST /v1/admin/refine/trigger_async，Admin Key）。
+   * 触发批量提炼（POST /v1/admin/refine/trigger-async，Admin Key）。
    * 实际返回 200（非 202），兼容两种状态码。失败返回 null。
    */
   async triggerRefine(req: RefineTriggerRequest): Promise<RefineTriggerResponse | null> {
     const [data, err] = await this.post<RefineTriggerResponse>(
-      '/v1/admin/refine/trigger_async',
+      '/v1/admin/refine/trigger-async',
       req,
       'admin',
     )
@@ -1607,19 +1634,103 @@ export class SgmeClient {
   }
 
   /**
-   * 技能改名（POST /v1/admin/skills/{name}/rename，Admin Key；墓碑制永不原地改名）。
+   * 技能改名（PUT /v1/admin/skills/{name}/rename，Admin Key；墓碑制永不原地改名）。
    *
    * 写新名副本 + 旧位置留 superseded_by 墓碑 + 登记 tombstones.json。
    * 需服务端 skills.source_dirs 指向 git 技能仓。
    */
   async skillRename(name: string, newName: string): Promise<SkillWriteResponse | null> {
-    const [data, err] = await this.post<SkillWriteResponse>(
+    const [data, err] = await this.put<SkillWriteResponse>(
       `/v1/admin/skills/${encodeURIComponent(name)}/rename`,
       { new_name: newName },
       'admin',
     )
     if (err) {
       console.warn(`[sgme-bridge] skillRename failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 读技能附件原始字节（GET /v1/skills/{name}/files/{relpath}，Agent Key；T-404）。
+   *
+   * 返回 octet-stream 字节 + X-File-Sha256；二进制/超长由工具层转摘要，不进对话。
+   */
+  async skillFileGet(name: string, relpath: string): Promise<SkillFileFetch> {
+    const rel = relpath.split('/').map(encodeURIComponent).join('/')
+    const url = `${this.baseUrl}/v1/skills/${encodeURIComponent(name)}/files/${rel}`
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs)
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: { 'X-API-Key': this.agentKey },
+        signal: ctrl.signal,
+      })
+      clearTimeout(timer)
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        return { status: resp.status, error: `HTTP ${resp.status}: ${text.slice(0, 200)}` }
+      }
+      return {
+        status: resp.status,
+        data: Buffer.from(await resp.arrayBuffer()),
+        sha256: resp.headers.get('x-file-sha256') ?? '',
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { status: 0, error: `fetch error: ${msg}` }
+    }
+  }
+
+  /**
+   * 写技能附件（PUT /v1/admin/skills/{name}/files/{relpath}，Admin Key；ST-45 白名单）。
+   *
+   * 路径必须在 references/ scripts/ assets/ 之内；技能须已存在（先 skill_put 建技能）。
+   */
+  async skillFilePut(
+    name: string,
+    relpath: string,
+    content: string,
+  ): Promise<SkillFileWriteResponse | null> {
+    const rel = relpath.split('/').map(encodeURIComponent).join('/')
+    const [data, err] = await this.put<SkillFileWriteResponse>(
+      `/v1/admin/skills/${encodeURIComponent(name)}/files/${rel}`,
+      { content },
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillFilePut failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 技能格式预检（GET /v1/admin/skills/{name}/lint，Admin Key；只校验不入库）。
+   *
+   * Node fetch 禁止 GET 带 body，故正文走 `?content=` 查询串（服务端同时支持
+   * body 与查询串两种入参）。**超长正文（>12000 字符）改走旧的 POST 兼容别名**：
+   * 请求行过长会被反向代理/服务器拒绝，此时 POST 是唯一可靠通道（响应带
+   * Deprecation 头，属服务端登记的兼容路径）。
+   */
+  async skillLint(name: string, content: string): Promise<SkillLintResponse | null> {
+    const path = `/v1/admin/skills/${encodeURIComponent(name)}/lint`
+    if (content.length > 12000) {
+      const [data, err] = await this.post<SkillLintResponse>(path, { content }, 'admin')
+      if (err) {
+        console.warn(`[sgme-bridge] skillLint (compat POST) failed: ${err}`)
+        return null
+      }
+      return data
+    }
+    const [data, err] = await this.get<SkillLintResponse>(
+      `${path}?content=${encodeURIComponent(content)}`,
+      'admin',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillLint failed: ${err}`)
       return null
     }
     return data

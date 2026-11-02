@@ -322,7 +322,7 @@ def test_trigger_refine_recovers_after_client_closed(monkeypatch):
     assert p._client is rebuilt
     assert old.closed is True  # 旧 client 保持关闭，未被复用
     assert len(rebuilt.posts) == 1
-    assert "/v1/admin/refine/trigger_async" in rebuilt.posts[0]["url"]
+    assert "/v1/admin/refine/trigger-async" in rebuilt.posts[0]["url"]
 
 
 def test_append_delta_recovers_after_client_closed(monkeypatch):
@@ -390,7 +390,7 @@ HERMES_EXTRA_TOOLS = {"sgme_conversation_search", "sgme_role_save", "sgme_role_d
 # 基准名 → 适配器名的别名（parity map 的 aliases.search.hermes）
 ALIASED = {"search": "sgme_memory_search"}
 
-# 工具 → 期望 HTTP 端点（方法, 路径）或调用序列；覆盖全部 46 个工具
+# 工具 → 期望 HTTP 端点（方法, 路径）或调用序列；覆盖全部 51 个工具
 # role_save 为双调用序列：[GET 既有卡, POST upsert]
 _ENDPOINTS = {
     "sgme_memory_search": ("POST", "/v1/search"),
@@ -411,7 +411,7 @@ _ENDPOINTS = {
     "sgme_review_reject": ("POST", "/v1/admin/review/mem-1/reject"),
     "sgme_review_auto_resolve": ("POST", "/v1/admin/review/auto-resolve"),
     "sgme_refine_trigger": ("POST", "/v1/admin/refine/trigger"),
-    "sgme_refine_batch": ("POST", "/v1/admin/refine/trigger_async"),
+    "sgme_refine_batch": ("POST", "/v1/admin/refine/trigger-async"),
     "sgme_refine_status": ("GET", "/v1/admin/refine_runs"),
     "sgme_stats": ("GET", "/v1/admin/stats"),
     "sgme_health": ("GET", "/v1/health"),
@@ -439,7 +439,12 @@ _ENDPOINTS = {
     "sgme_skill_coldstart": ("GET", "/v1/skills/coldstart"),
     "sgme_skill_put": ("PUT", "/v1/admin/skills/demo-skill"),
     "sgme_skill_delete": ("DELETE", "/v1/admin/skills/demo-skill"),
-    "sgme_skill_rename": ("POST", "/v1/admin/skills/demo-skill/rename"),
+    "sgme_skill_rename": ("PUT", "/v1/admin/skills/demo-skill/rename"),
+    "sgme_skill_catalog_version": ("GET", "/v1/skills/catalog-version"),
+    "sgme_skill_manifest": ("GET", "/v1/skills/demo-skill/manifest"),
+    "sgme_skill_file_get": ("GET", "/v1/skills/demo-skill/files/references/x.md"),
+    "sgme_skill_file_put": ("PUT", "/v1/admin/skills/demo-skill/files/references/x.md"),
+    "sgme_skill_lint": ("GET", "/v1/admin/skills/demo-skill/lint"),
     "sgme_credential_list": ("GET", "/v1/credentials"),
     "sgme_credential_get": ("GET", "/v1/credentials/demo-cred"),
 }
@@ -493,6 +498,11 @@ _CALL_ARGS = {
     "sgme_skill_put": {"name": "demo-skill", "content": "---\nname: demo\n---\n正文"},
     "sgme_skill_delete": {"name": "demo-skill"},
     "sgme_skill_rename": {"name": "demo-skill", "new_name": "demo-skill-2"},
+    "sgme_skill_catalog_version": {},
+    "sgme_skill_manifest": {"name": "demo-skill"},
+    "sgme_skill_file_get": {"name": "demo-skill", "relpath": "references/x.md"},
+    "sgme_skill_file_put": {"name": "demo-skill", "relpath": "references/x.md", "content": "正文"},
+    "sgme_skill_lint": {"name": "demo-skill", "content": "---\nname: demo-skill\n---\n正文"},
     "sgme_credential_list": {},
     "sgme_credential_get": {"name": "demo-cred"},
 }
@@ -520,6 +530,8 @@ _ADMIN_TOOLS = {
     "sgme_skill_put",
     "sgme_skill_delete",
     "sgme_skill_rename",
+    "sgme_skill_file_put",
+    "sgme_skill_lint",
 }
 
 
@@ -530,6 +542,9 @@ class _RecordingResponse:
         self.status_code = status_code
         self._json_body = json_body if json_body is not None else {"ok": True}
         self.text = text
+        # 附件读（_request_bytes）走原始字节 + 响应头；默认给文本字节，测试可覆盖
+        self.content = text.encode("utf-8") if text else b""
+        self.headers: Dict[str, str] = {}
 
     def json(self):
         return self._json_body
@@ -593,13 +608,13 @@ def _baseline_tools() -> set:
 
 
 def test_tool_count_and_names():
-    """注册 49 个工具（默认面）：47 个基准覆盖 + 3 个自有工具（conversation_search /
+    """注册 54 个工具（默认面）：52 个基准覆盖 + 3 个自有工具（conversation_search /
     role_save / role_delete）− sgme_credential_get（catalog 审核整改 2026-10 默认隐藏；
-    开启后恢复 50，见 test_catalog_remediation）。"""
+    开启后恢复 55，见 test_catalog_remediation）。"""
     p, _ = _tool_provider()
     names = [s["name"] for s in p.get_tool_schemas()]
-    assert len(names) == 49, f"工具数应为 49（credential_get 默认隐藏），实际 {len(names)}"
-    assert len(set(names)) == 49, "工具名重复"
+    assert len(names) == 54, f"工具数应为 54（credential_get 默认隐藏），实际 {len(names)}"
+    assert len(set(names)) == 54, "工具名重复"
     assert "sgme_credential_get" not in names, "credential_get 默认不应在工具面"
     assert set(EXEMPT_TOOLS).isdisjoint({n[len("sgme_"):] for n in names}), "豁免工具不应被实现"
     expected = (

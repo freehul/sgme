@@ -30,7 +30,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -55,7 +55,7 @@ from sgme.operations.usage import query_usage as query_usage_operation
 from sgme.operations.refine import refine_trigger as refine_trigger_operation
 from sgme.operations.refine import refine_trigger_async as refine_trigger_async_operation
 from sgme.profile import tier0 as tier0_mod
-from sgme.server.app import _now_iso, api_error, require_admin_key, run_operation
+from sgme.server.app import _now_iso, api_error, mark_deprecated, require_admin_key, run_operation
 from sgme.security_log import (
     mask_key,
 )  # T-265：admin_op 审计脱敏指纹（_mask_key 同款语义）
@@ -378,7 +378,7 @@ def refine_trigger(
     """手动触发提炼：指定 file_id 或扫 status=new 批量。
 
     v0.7：业务逻辑已下沉 ``sgme.operations.refine``，本函数只做协议翻译。
-    同步执行（可能耗时数分钟，真实 LLM 分块）。需要立即返回用 /trigger_async。
+    同步执行（可能耗时数分钟，真实 LLM 分块）。需要立即返回用 /trigger-async。
     """
     cfg = request.app.state.cfg
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
@@ -403,18 +403,29 @@ def refine_trigger(
     return data
 
 
-@router.post("/v1/admin/refine/trigger_async")
+@router.post("/v1/admin/refine/trigger-async", operation_id="refine_trigger_async")
+@router.post("/v1/admin/refine/trigger_async", operation_id="refine_trigger_async_legacy", deprecated=True)
 def refine_trigger_async(
     payload: RefineTriggerRequest,
     request: Request,
+    response: Response,
     _: str = Depends(require_admin_key),
 ):
-    """异步触发提炼：后台线程执行，立即返回 202。
+    """异步触发提炼：后台线程执行，立即返回 queued（不是 202）。
 
     v0.7：业务逻辑已下沉 ``sgme.operations.refine``，本函数只做协议翻译。
     后台执行体在 engine/pipeline.async_refine_worker，
     失败由 SGME 批扫兜底（status=new 文件会被下次 trigger 拾起）。
+
+    路径规范（接口对齐批次）：kebab-case 为规范路径 ``trigger-async``；
+    旧下划线路径 ``trigger_async`` 保留为兼容别名（响应带 Deprecation 头）——
+    已部署的适配器副本（dsh / hermes / zcode）仍在调旧路径，按纪律不摔碎。
     """
+    if request.url.path.endswith("/trigger_async"):
+        mark_deprecated(
+            response,
+            "underscore path is deprecated; use POST /v1/admin/refine/trigger-async",
+        )
     cfg = request.app.state.cfg
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     session_conn: sqlite3.Connection = request.app.state.session_conn

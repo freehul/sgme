@@ -9,10 +9,12 @@
 端点（读侧 GET 归 routes_skills.py，另一代理并行开发；本路由在 app.py 中
 先于 routes_admin 注册——同路径写端点由治理版优先接管）：
     PUT    /v1/admin/skills/{name}               写入（{meta,body} 或 {content} 自动解析）
-    POST   /v1/admin/skills/{name}/lint          格式预检（只校验不入库，T-403）
+    GET    /v1/admin/skills/{name}/lint          格式预检（只校验不入库，T-403；主方法 GET）
+    POST   /v1/admin/skills/{name}/lint          同上（兼容别名，deprecated）
     PUT    /v1/admin/skills/{name}/files/{path}  资产写入（ST-45；references/scripts/assets 白名单目录）
     DELETE /v1/admin/skills/{name}?hard=&force=  删除（默认软删；入向引用未 force → 409）
-    POST   /v1/admin/skills/{name}/rename        {new_name} 改名（墓碑制，永不原地改名）
+    PUT    /v1/admin/skills/{name}/rename        {new_name} 改名（墓碑制，永不原地改名；主方法 PUT）
+    POST   /v1/admin/skills/{name}/rename        同上（兼容别名，deprecated）
 
 兼容策略（迁移期）：``skills.source_dirs`` 未配置时回退旧 skills_hub 直写路径
 （无门禁覆盖写/物理删，行为与 routes_admin 旧端点一致），既有 hub 部署零影响；
@@ -22,9 +24,9 @@ M4 wiki 迁移收敛后移除回退分支。
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 
-from sgme.server.app import api_error, require_admin_key
+from sgme.server.app import api_error, mark_deprecated, require_admin_key
 
 router = APIRouter()
 
@@ -108,41 +110,57 @@ def _parse_body(body: dict | None) -> tuple[dict, str]:
 # ---------- 格式预检（T-403，设计 §5.2 Anthropic 基准） ----------
 
 
-@router.post("/v1/admin/skills/{name}/lint")
+@router.get("/v1/admin/skills/{name}/lint", operation_id="lint_skill")
+@router.post("/v1/admin/skills/{name}/lint", operation_id="lint_skill_legacy", deprecated=True)
 def lint_skill_endpoint(
     name: str,
     request: Request,
+    response: Response,
     body: dict | None = None,
+    content: str | None = None,
     _: str = Depends(require_admin_key),
 ):
-    """只校验不入库：按 Anthropic 基准返回技能格式违规清单。
+    """只校验不入库：按 Anthropic 基准返回技能格式违规清单（**只读预检**）。
 
-    Body 与 PUT 一致：``{"content": "<SKILL.md 全文>"}`` 或
-    ``{"meta": {...}, "body": "..."}``。
+    入参三选一（等价）：
+      - GET + body ``{"content": "<SKILL.md 全文>"}``（推荐：读语义 + 大正文不进 URL）
+      - GET + ``?content=<urlencoded 全文>``（不便发 GET body 的客户端）
+      - GET/POST + ``{"meta": {...}, "body": "..."}``
 
     - 合法 → 200 ``{"ok": true, "errors": [], "warnings": [...]}``
     - 违规 → 200 ``{"ok": false, "errors": [...], "warnings": [...], "violations": [...]}``
       （预检端点不写库、不返回 400；调用方按 ok 判定）
+
+    语义修正（接口对齐批次）：本端点只读，主方法由 POST 改为 **GET**；旧 POST 保留为
+    兼容别名（响应带 Deprecation 头），迁移完成后再评估下线。
     """
     from sgme.operations.skill_lint import lint_skill
     from sgme.skills.indexer import parse_skill_md
     from sgme.skills.store import render_skill_md
 
+    if request.method != "GET":
+        mark_deprecated(response, "POST is deprecated; use GET /v1/admin/skills/{name}/lint")
+
     b = body or {}
+    content_md = ""
+    description = ""
     if isinstance(b.get("content"), str) and b["content"].strip():
-        content = b["content"]
-        description = str(parse_skill_md(content)["meta"].get("description") or "")
+        content_md = b["content"]
+        description = str(parse_skill_md(content_md)["meta"].get("description") or "")
     elif "meta" in b and "body" in b:
         meta = dict(b.get("meta") or {})
-        content = render_skill_md(meta, str(b.get("body") or ""))
+        content_md = render_skill_md(meta, str(b.get("body") or ""))
         description = str(meta.get("description") or "")
+    elif isinstance(content, str) and content.strip():
+        content_md = content
+        description = str(parse_skill_md(content_md)["meta"].get("description") or "")
     else:
         raise api_error(
             "ERR_INVALID_ARGS",
-            "请求体需要 {content}（SKILL.md 全文）或 {meta, body}",
+            "请求体需要 {content}（SKILL.md 全文）或 {meta, body}；GET 也可用 ?content= 传全文",
         )
 
-    results = lint_skill(name, description, content)
+    results = lint_skill(name, description, content_md)
     errors = [r for r in results if r["level"] == "error"]
     warnings = [r for r in results if r["level"] == "warn"]
     return {
@@ -313,19 +331,28 @@ def delete_skill(
     return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}
 
 
-@router.post("/v1/admin/skills/{name}/rename")
+@router.put("/v1/admin/skills/{name}/rename", operation_id="rename_skill")
+@router.post("/v1/admin/skills/{name}/rename", operation_id="rename_skill_legacy", deprecated=True)
 def rename_skill(
     name: str,
     request: Request,
+    response: Response,
     body: dict | None = None,
     _: str = Depends(require_admin_key),
 ):
     """改名（墓碑制）：写新名副本 + 旧位置 superseded_by 墓碑 + tombstones.json 登记。
 
+    语义修正（接口对齐批次）：改名是**修改资源**，主方法由 POST 改为 **PUT**；
+    旧 POST 保留为兼容别名（响应带 Deprecation 头）——存量客户端数量超过 3 处
+    （dsh 客户端 + 构建产物 + UI + 适配器测试），按纪律不摔碎。
+
     Body：``new_name``（必填）。旧名不存在 → 404；新名已占用 → 409；
     新名过不了门禁 → 400 带违规清单。需 skills.source_dirs 指向 git 技能仓。
     """
     from sgme.skills import store as skills_store
+
+    if request.method != "PUT":
+        mark_deprecated(response, "POST is deprecated; use PUT /v1/admin/skills/{name}/rename")
 
     dirs = _source_dirs(request)
     if not dirs:

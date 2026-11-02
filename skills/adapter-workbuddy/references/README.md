@@ -23,7 +23,7 @@ WorkBuddy 原生能力已含 MCP（`~/.workbuddy/mcp.json` 挂 `sgme`）。适�
 
 ## 能力面（与 MCP 基准 45 个工具一一对应）
 
-WorkBuddy 侧没有「工具注册表」——工具面即 CLI 命令面（SKILL.md 指示 agent 调 `scripts/sgme_client.py`）。客户端把 `sgme/mcp_server.py` 的 **45 个基准工具**逐个映射成子命令，缺一不可：
+WorkBuddy 侧没有「工具注册表」——工具面即 CLI 命令面（SKILL.md 指示 agent 调 `scripts/sgme_client.py`）。客户端把 `sgme/mcp_server.py` 的 **54 个基准工具**逐个映射成子命令，缺一不可：
 
 | 层 | 基准能力（45） | 说明 |
 |---|---|---|
@@ -31,7 +31,7 @@ WorkBuddy 侧没有「工具注册表」——工具面即 CLI 命令面（SKILL
 | MCP（需 mcp 库，24 个） | `agent-onboarding` `refine-trigger/batch/status` `stats` `config-get/update` `idea-add` `demand-create` `project-register` `signal-pull/claim/ack/clear` `role-list/assemble/active-get/active-set` `persona-fill` `guard-reply` `wiki-evolve-trigger` `skill-put/delete/rename` | 提炼/统计/配置/三池/信号闭环/角色/越界自检/自进化/技能写侧 |
 | 适配器扩展（7 个） | `fetch`（跨机取技能完整包：两级缓存（目录版本短路 + package_sha256 比对，命中零下载）→ 未命中才下载 → MANIFEST 校验 → 安全解包）`events-pull` `events-after` `wiki-raw` `mcp`（逃生口）`capabilities` `env-info` | 超出基准的自有通道 |
 
-合计 52 个 CLI 子命令（45 基准 + 7 扩展）。
+合计 61 个 CLI 子命令（54 基准 + 7 扩展）。
 
 ```bash
 python scripts/sgme_client.py capabilities   # 离线核对 45/45（方法层 + CLI 层双覆盖）
@@ -133,7 +133,7 @@ python adapters/workbuddy/install.py --no-seed-identity
 
 ## 关键设计
 
-- **能力面 = CLI 命令面**：45 个基准工具全部有对应子命令；`capabilities` 可离线自证覆盖度。
+- **能力面 = CLI 命令面**：54 个基准工具全部有对应子命令；`capabilities` 可离线自证覆盖度。
 - **双通道**：HTTP 层（agent key 全可用、零依赖）覆盖记忆/检索/技能读/wiki；MCP 层补提炼/统计/配置/信号/角色/三池/自进化/技能写侧。
 - **零配置继承**：直接从 WorkBuddy 已生效的 `mcp.json` 取地址与密钥，不新增 key、不重复配置。
 - **密钥不落盘**：身份文件只写地址与 `agent_id`；密钥一律来自环境变量或既有 `mcp.json`。

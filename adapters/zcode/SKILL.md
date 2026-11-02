@@ -8,7 +8,7 @@ description: ZCode 的 SGME（拾光记忆）官方适配器。当对话涉及�
 你（ZCode）已接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 > 本技能是 SGME 官方适配器（源码 `adapters/zcode/`；本目录为部署副本，由 `install.py` 同步，可随时重建）。
-> **能力面 = CLI 命令面**：下方矩阵 49 个基准能力一个不少。
+> **能力面 = CLI 命令面**：下方矩阵 54 个基准能力一个不少。
 > **优先用本会话已挂载的 MCP 工具**（`mcp__sgme__*`，由 `~/.zcode/cli/config.json` 的 `sgme` server 提供）；无 MCP 或要脚本化时再走 CLI。
 > 本机 agent_id = `zcode`（服务端已注册）——不要借用其它 agent 的 key。
 
@@ -142,6 +142,11 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 47 | skill_rename | MCP | `skill-rename` |
 | 48 | credential_list | HTTP | `credential-list` |
 | 49 | credential_get | HTTP | `credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
+| 50 | skill_catalog_version | HTTP | `skill-catalog-version`（两级缓存第 1 级，<100 字节） |
+| 51 | skill_manifest | HTTP | `skill-manifest <name>`（package_sha256 + 附件清单 files[]） |
+| 52 | skill_file_get | HTTP | `skill-file-get <name> <relpath>`（文本回原文；二进制只回摘要） |
+| 53 | skill_file_put | HTTP | `skill-file-put <name> <relpath> --file <path>`（白名单目录；需管理员 Key） |
+| 54 | skill_lint | HTTP | `skill-lint <name> --file <path>`（只校验不入库；需管理员 Key） |
 
 扩展命令：`fetch <name> <dest_dir>`（跨机取技能完整包：两级缓存（目录版本短路 + package_sha256 比对，命中零下载）→ 未命中才下载 → MANIFEST 校验 → 安全解包；失败不留残件） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
 

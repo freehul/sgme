@@ -18,7 +18,7 @@
  *
  * 契约对齐：
  * - POST /v1/append（Agent Key，session_key/started_at/content/agent_id/ended_at）
- * - POST /v1/admin/refine/trigger_async（Admin Key，limit=50，兼容 200/202）
+ * - POST /v1/admin/refine/trigger-async（Admin Key，limit=50，兼容 200/202）
  */
 import type { SgmeClient, SessionMessage } from './sgme-client.js'
 import { toL0 } from './sgme-client.js'
@@ -254,7 +254,7 @@ export function registerSessionSync(
  *
  * 1. 收集本 turn 消息 → 转 L0 格式
  * 2. POST /v1/append（session_key=dsh-{sessionId}，started_at=turn 起始时间）
- * 3. POST /v1/admin/refine/trigger_async（fire-and-forget，失败只 log）
+ * 3. POST /v1/admin/refine/trigger-async（fire-and-forget，失败只 log）
  */
 async function syncTurnToSgme(
   ctx: SessionSyncCtx,

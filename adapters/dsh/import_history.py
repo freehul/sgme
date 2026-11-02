@@ -310,7 +310,7 @@ def trigger_refine() -> bool:
         return False
     try:
         r = cli.post(
-            f"{_BASE_URL}/v1/admin/refine/trigger_async",
+            f"{_BASE_URL}/v1/admin/refine/trigger-async",
             json={"limit": 50},
             headers={"X-API-Key": _ADMIN_KEY},
         )

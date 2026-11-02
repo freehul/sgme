@@ -21,7 +21,7 @@ dsh 有完整插件 SDK（工具注册/事件监听/上下文注入/命令注册
 | `memory_search` 工具 | `ctx.tools.register(defineTool(...))` | `POST /v1/search`（scopes: memory） |
 | `wiki_search` 工具 | `ctx.tools.register(defineTool(...))` | `POST /v1/search`（scopes: wiki） |
 | `/sgme` 命令 | `ctx.command.register(...)` | `POST /v1/search`（memory + wiki） |
-| 会话入库 | `ctx.on('session/event')` 拦 `turn/end` → L0 → 触发提炼 | `POST /v1/append` + `POST /v1/admin/refine/trigger_async` |
+| 会话入库 | `ctx.on('session/event')` 拦 `turn/end` → L0 → 触发提炼 | `POST /v1/append` + `POST /v1/admin/refine/trigger-async` |
 
 > **v0.5.0（2026-09-18）**：工具面与 SGME 1.2.2 对齐，由 24 个扩展到 **39 个**——新增聚合答案（`answer`）、健康/统计/配置（`health`/`stats`/`config_get`/`config_update`）、提炼监控（`refine_status`/`refine_trigger`/`refine_batch`）、信号清空（`signal_clear`）、自进化手动触发（`wiki_evolve_trigger`）、技能物化与写侧（`skill_materialize`/`skill_put`/`skill_delete`/`skill_rename`）、撤销纠错（`memory_unreject`）。完整清单见 `sgme-bridge/README.md`。`append` 刻意不暴露——dsh 侧由 session-sync 自动入库，手写 L0 会破坏查重与幂等语义。
 
@@ -86,7 +86,7 @@ dsh 每轮对话 → memory_search / wiki_search 工具（按需）
 dsh 对话回合结束 → session/event(turn/end) → sgme-bridge
     ├─ 收集本 turn 消息 → 转 L0 格式
     ├─ POST /v1/append       （session_key=dsh-<sessionId>，agent_id=dsh）
-    └─ POST /v1/admin/refine/trigger_async
+    └─ POST /v1/admin/refine/trigger-async
 ```
 
 ## 关键设计

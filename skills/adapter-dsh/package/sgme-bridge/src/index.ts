@@ -134,12 +134,14 @@ export function apply(ctx: CordisContext, config: Config): void {
   const toolsCtx = { tools: ctx.tools }
   registerTools(toolsCtx, client, config.searchLimit, eventSubscriber)
   logger.info(
-    '工具已注册（43）：memory_search/answer/memory_get/memory_reject/memory_unreject, '
+    '工具已注册（53）：memory_search/answer/memory_get/memory_reject/memory_unreject, '
     + 'wiki_search/pages/page/page_add/page_update, inject, '
     + 'signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, '
     + 'skill_search/digest/get/list/coldstart/materialize/put/delete/rename, '
+    + 'skill_catalog_version/manifest/file_get/file_put/lint, '
+    + 'conversation_search/persona_fill/guard_reply/'
     + 'health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger, '
-    + 'review_list/review_approve/review_reject/review_auto_resolve',
+    + 'review_list/review_approve/review_reject/review_auto_resolve, credential_list/get',
   )
 
   // 2. 画像首步注入（turn/start 拦截，对齐 dsh-agent-instructions 的 session/event 用法）

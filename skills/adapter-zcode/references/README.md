@@ -6,8 +6,8 @@ ZCode（CLI Agent 平台）的 SGME 记忆引擎官方适配器。**Skill 形态
 
 | 文件 | 职责 |
 |---|---|
-| `SKILL.md` | 技能本体（`sgme-zcode`）：接入纪律 + 五条铁律 + 49 能力矩阵；部署到 `~/.agents/skills/sgme-zcode/` |
-| `scripts/sgme_client.py` | 运行时客户端：49 基准能力方法面 + CLI 命令面（`capabilities` 可离线核对；扩展含跨机取技能完整包 `fetch <name> <dest_dir>`，带两级落盘缓存：目录版本短路 + `package_sha256` 比对，命中零下载） |
+| `SKILL.md` | 技能本体（`sgme-zcode`）：接入纪律 + 五条铁律 + 54 能力矩阵；部署到 `~/.agents/skills/sgme-zcode/` |
+| `scripts/sgme_client.py` | 运行时客户端：54 基准能力方法面 + CLI 命令面（`capabilities` 可离线核对；扩展含跨机取技能完整包 `fetch <name> <dest_dir>`，带两级落盘缓存：目录版本短路 + `package_sha256` 比对，命中零下载） |
 | `scripts/selfcheck.py` | 接入自检：静态能力矩阵 + 在线连通 + 一次 append 心跳（session_key=`zcode-selfcheck`） |
 | `scripts/care_watch.py` | 主动关怀守护（可选）：pull / claim / ack / watch |
 | `import_history.py` | 历史会话补导入：`~/.zcode/cli/db/db.sqlite` → SGME L0（幂等可重跑） |

@@ -734,11 +734,11 @@ class TestMcpMethodSignatures(NoDeployConfig):
 
 
 class TestCapabilityMatrix(unittest.TestCase):
-    """49 个基准能力：方法层 + CLI 层缺一不可。"""
+    """54 个基准能力：方法层 + CLI 层缺一不可。"""
 
     def test_baseline_count(self):
-        self.assertEqual(len(BASELINE_TOOLS), 49)
-        self.assertEqual(len(set(BASELINE_TOOLS)), 49)
+        self.assertEqual(len(BASELINE_TOOLS), 54)
+        self.assertEqual(len(set(BASELINE_TOOLS)), 54)
         self.assertEqual(set(BASELINE_SPEC), set(BASELINE_TOOLS))
 
     def test_every_baseline_has_method(self):
@@ -762,7 +762,7 @@ class TestCapabilityMatrix(unittest.TestCase):
 
     def test_capability_report_all_covered(self):
         rows = sc.capability_report()
-        self.assertEqual(len(rows), 49)
+        self.assertEqual(len(rows), 54)
         bad = [r["tool"] for r in rows if not (r["method_ok"] and r["cli_ok"])]
         self.assertEqual(bad, [])
 
@@ -794,7 +794,7 @@ class TestCLI(NoDeployConfig):
     def test_offline_capabilities_lists_45(self):
         code, out = self._run(["capabilities"])
         self.assertEqual(code, 0)
-        self.assertIn("49/49", out)
+        self.assertIn("54/54", out)
         for tool in BASELINE_TOOLS:
             self.assertIn(tool, out)
 
