@@ -183,7 +183,9 @@ def skill_digest(
 
     cfg = request.app.state.cfg
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
-    data = run_operation(digest_operation, cfg, wiki_conn, name=name)
+    # 2.0 全存库：库优先（与 /search、L0 列表同源），None 时操作层回退扫盘
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
+    data = run_operation(digest_operation, cfg, wiki_conn, name=name, skills_conn=skills_conn)
     # L1 附带可用小节骨架的便捷提示（sections 已含标题行，无需额外字段）
     return data
 
@@ -242,7 +244,10 @@ def skill_get(
 
     cfg = request.app.state.cfg
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
-    return run_operation(get_operation, cfg, wiki_conn, name=name, section=section)
+    # 2.0 全存库：库优先（正文与检索/包同源），None 时操作层回退扫盘
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
+    return run_operation(get_operation, cfg, wiki_conn, name=name, section=section,
+                         skills_conn=skills_conn)
 
 
 # ---------- POST /v1/skills/{name}/materialize （L3 物化落盘） ----------
@@ -275,9 +280,12 @@ def materialize_skill(
 
     cfg = request.app.state.cfg
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
+    # 2.0 全存库：记录解析库优先（SKILL.md 字节仍取原文件，见 operations.materialize）
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
     return run_operation(
         materialize_operation, cfg, wiki_conn,
         name=name, dest_dir=payload.dest_dir, allowed_roots=payload.allowed_roots,
+        skills_conn=skills_conn,
     )
 
 
@@ -395,7 +403,8 @@ def skill_package(
 
     cfg = request.app.state.cfg
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
-    data = run_operation(package_operation, cfg, wiki_conn, name=name)
+    skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
+    data = run_operation(package_operation, cfg, wiki_conn, name=name, skills_conn=skills_conn)
 
     sha256 = str(data["sha256"])
     count = int(data["count"])

@@ -1700,7 +1700,9 @@ def build_mcp_server():
         if _skills_disabled(cfg):
             return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
         wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
-        data = _op_json(digest_operation, cfg, wiki_conn, name=name)
+        # 2.0 全存库：库优先（与 HTTP 端点同参数），None 时操作层回退扫盘
+        skills_conn: sqlite3.Connection | None = _app_state.get("skills_conn")
+        data = _op_json(digest_operation, cfg, wiki_conn, name=name, skills_conn=skills_conn)
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
@@ -1716,7 +1718,10 @@ def build_mcp_server():
         if _skills_disabled(cfg):
             return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
         wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
-        data = _op_json(get_operation, cfg, wiki_conn, name=name, section=section)
+        # 2.0 全存库：库优先（与 HTTP 端点同参数），None 时操作层回退扫盘
+        skills_conn: sqlite3.Connection | None = _app_state.get("skills_conn")
+        data = _op_json(get_operation, cfg, wiki_conn, name=name, section=section,
+                        skills_conn=skills_conn)
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
@@ -1742,9 +1747,12 @@ def build_mcp_server():
         if _skills_disabled(cfg):
             return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
         wiki_conn: sqlite3.Connection | None = _app_state.get("wiki_conn")
+        # 2.0 全存库：记录解析库优先（SKILL.md 字节仍取原文件），None 时回退扫盘
+        skills_conn: sqlite3.Connection | None = _app_state.get("skills_conn")
         data = _op_json(
             materialize_operation, cfg, wiki_conn,
             name=name, dest_dir=dest_dir, allowed_roots=allowed_roots,
+            skills_conn=skills_conn,
         )
         return json.dumps(data, ensure_ascii=False)
 

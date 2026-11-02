@@ -26,11 +26,14 @@
   真相）——逐文件 sha256 → canonical manifest（相对基点 = 技能根）；入口层先枚举算哈希
   再开流，归档内全部为服务端生成的相对路径（无宿主路径）
 
-数据源：``sgme.skills.index_all(source_dirs)``（git 工作区 SKILL.md，按名排序）。
+数据源（2.0 全存库）：**库优先、盘回退**——``skills_conn`` 非 None 时按名读
+``skills.db``（``skills`` 正文 + ``skill_uses`` 依赖边），与 list/search 同源；
+未命中 / 空库 / 老库无表时回退 ``sgme.skills.index_all(source_dirs)`` 扫盘
+（git 工作区 SKILL.md，冷启动兜底，**不得删除**）。
 2026-08-28 起 wiki 桥接已移除，技能唯一来源为 ``skills.source_dirs`` 的 SKILL.md；
 ``wiki_conn`` 形参在部分操作（cold_start 手册检索）中仍用于取 SGME 操作手册，
-但不参与技能索引。本模块**不做索引缓存**（百条规模毫秒级重建，
-入口层可用 app.state 缓存 BM25 索引对象复用，见 routes_skills._get_records）。
+但不参与技能索引。本模块**不做索引缓存**（百条规模毫秒级重建，入口层可用 app.state
+缓存 BM25 索引对象复用，见 routes_skills._ensure_index）。
 
 search_skills 融合：BM25 分数 + 向量余弦相似度简单加权和（0.6/0.4）；
 向量不可达（未配置/网络失败/维度不符）自动降级纯 BM25——镜像统一搜索
@@ -94,6 +97,124 @@ def _load_records(cfg: dict, wiki_conn: sqlite3.Connection | None) -> list[Skill
 
     sc = parse_skills_config(cfg)
     return index_all(sc.source_dirs, wiki_conn)
+
+
+def _record_from_db(
+    skills_conn: sqlite3.Connection | None, name: str
+) -> SkillRecord | None:
+    """按名从 skills.db 取一条技能记录（2.0「全存库」读路径的库优先入口）。
+
+    字段语义**对齐 ``indexer.index_all`` 的扫盘产物**（不是凭空造记录）：
+    - ``skills.content`` 存的是已剥离 frontmatter 的正文（frontmatter 拆成列），
+      与 ``SkillRecord.content`` 同义 —— 直接取用，**不再解析 frontmatter**；
+    - ``SkillRecord.sha256`` 的口径是「正文 strip 后的 sha256」：按正文现算，
+      保证 sha 与返回的 content 恒一致（DB 列由同一正文算出，正常同步下相等）；
+    - ``uses`` / ``use_strengths`` 来自 ``skill_uses`` 出边（扫盘路径解析
+      frontmatter 得到）；附属表缺失时降级为空清单，不让它把整条记录判死。
+
+    任何「组不出可信记录」的情形一律返回 ``None``，由调用方回退扫盘
+    （冷启动空库、老库无表、API 写盘后未重建索引都靠这条兜底）：
+    - 连接为 None / 查询异常（库不可用不该让读侧 500）；
+    - 行不存在；
+    - 正文缺失（非 str 或 strip 后为空）—— 空正文技能视为脏行；
+    - 生命周期为 tombstone（已改名/废弃，不该再被按名读到）。
+    """
+    if skills_conn is None:
+        return None
+    try:
+        from sgme.data import skills_dao
+
+        row = skills_dao.get_skill(skills_conn, name)
+    except Exception as e:  # 容错隔离：库读失败 → 回退扫盘（老库无表也走这条）
+        logger.info("技能库读取失败，回退扫盘: name=%s err=%s", name, e)
+        return None
+    if not row or not row.get("name"):
+        return None
+    if str(row.get("status") or "active") == "tombstone":
+        return None
+    content = row.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None  # 正文缺失 = 脏行；宁可回退扫盘取真身
+    body = content.strip()
+
+    tags = [str(t).strip() for t in (row.get("tags") or []) if str(t).strip()]
+    if "skill" not in tags:
+        tags.insert(0, "skill")  # 与 collect_from_dir 同口径：固定首标 skill
+
+    uses: list[str] = []
+    use_strengths: dict[str, str] = {}
+    try:
+        from sgme.data import skills_dao
+
+        for edge in skills_dao.find_outgoing_edges(skills_conn, name):
+            dst = str(edge.get("dst") or "").strip()
+            if dst:
+                uses.append(dst)
+                use_strengths[dst] = str(edge.get("strength") or "weak")
+    except Exception as e:  # 老库无 skill_uses：依赖清单降级为空，正文照读
+        logger.info("技能依赖边读取失败（uses 降级为空）: name=%s err=%s", name, e)
+
+    import hashlib
+
+    # SkillRecord.sha256 的语义是「正文指纹」：按返回给调用方的正文现算，
+    # 保证 digest/get 的 sha 与 content 恒一致（DB 列的 sha 由同一正文算出，
+    # 正常同步下两者相等；手改过的脏行也不会让 sha 与正文对不上）。
+    sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return SkillRecord(
+        name=str(row["name"]),
+        description=str(row.get("description") or ""),
+        tags=tags,
+        category=str(row.get("category") or ""),
+        version=str(row.get("version") or ""),
+        pattern=str(row.get("pattern") or ""),
+        uses=uses,
+        use_strengths=use_strengths,
+        content=body,
+        sha256=sha256,
+        source=str(row.get("source") or "git"),
+        origin_path=str(row.get("origin_path") or ""),
+    )
+
+
+def _resolve_record(
+    cfg: dict,
+    wiki_conn: sqlite3.Connection | None,
+    name: str,
+    skills_conn: sqlite3.Connection | None = None,
+) -> SkillRecord | None:
+    """按名取技能记录：**库优先、盘回退**（读路径统一取记录入口）。
+
+    优先级（保证 get/digest/materialize/package 与 list/search 同源）：
+    1. ``skills_conn`` 非 None 且库内命中且记录可信 → 返回库记录；
+    2. 否则 → ``index_all`` 现扫 ``source_dirs``（冷启动空库 / 老库无表 /
+       库内脏行都靠它；**不得删除**）。
+
+    Raises:
+        InvalidArgs: 名字非法（先校验再查，不对非法名扫盘）。
+    """
+    try:
+        safe = validate_name(name)
+    except ValueError as e:
+        raise InvalidArgs(str(e)) from e
+    rec = _record_from_db(skills_conn, safe)
+    if rec is not None:
+        return rec
+    return _find_record(_load_records(cfg, wiki_conn), safe)
+
+
+def _resolve_record_with_builtin(
+    cfg: dict,
+    wiki_conn: sqlite3.Connection | None,
+    name: str,
+    skills_conn: sqlite3.Connection | None = None,
+) -> SkillRecord | None:
+    """库优先/盘回退取记录，未命中再兜底内置《技能检索协议》（包通道与 L2 同语义）。"""
+    rec = _resolve_record(cfg, wiki_conn, name, skills_conn)
+    if rec is None:
+        bp = _load_builtin_protocol()
+        if bp is not None and bp.name == name:
+            rec = bp
+    return rec
 
 
 def _find_record(records: list[SkillRecord], name: str) -> SkillRecord | None:
@@ -289,14 +410,14 @@ def skill_digest(
     wiki_conn: sqlite3.Connection | None,
     *,
     name: str,
+    skills_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
-    """L1 摘要：frontmatter 字段 + 正文骨架（各标题行）+ uses 清单。审核媒介层。"""
-    records = _load_records(cfg, wiki_conn)
-    rec = _find_record(records, name)
-    if rec is None:
-        bp = _load_builtin_protocol()
-        if bp is not None and bp.name == name:
-            rec = bp
+    """L1 摘要：frontmatter 字段 + 正文骨架（各标题行）+ uses 清单。审核媒介层。
+
+    ``skills_conn`` 非 None 时**库优先**（与 list/search 同源）；未命中/传 None
+    回退扫盘（向后兼容，冷启动路径不变）。
+    """
+    rec = _resolve_record_with_builtin(cfg, wiki_conn, name, skills_conn)
     if rec is None:
         return not_found(name)
     return OperationResult.succeed(
@@ -322,14 +443,14 @@ def skill_get(
     *,
     name: str,
     section: str | None = None,
+    skills_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
-    """L2 全文：正文全文；section 给定时只回该节（找不到该节 → NOT_FOUND）。"""
-    records = _load_records(cfg, wiki_conn)
-    rec = _find_record(records, name)
-    if rec is None:
-        bp = _load_builtin_protocol()
-        if bp is not None and bp.name == name:
-            rec = bp
+    """L2 全文：正文全文；section 给定时只回该节（找不到该节 → NOT_FOUND）。
+
+    ``skills_conn`` 非 None 时**库优先**（正文与检索/包同源）；未命中/传 None
+    回退扫盘（向后兼容）。
+    """
+    rec = _resolve_record_with_builtin(cfg, wiki_conn, name, skills_conn)
     if rec is None:
         return not_found(name)
     content = rec.content
@@ -478,9 +599,14 @@ def materialize(
     name: str,
     dest_dir: str,
     allowed_roots: list[str] | tuple[str, ...] | None = None,
+    skills_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
     """L3 物化：SKILL.md **原文件字节**写盘 dest_dir/<name>/SKILL.md（不走 LLM 转写）。
 
+    - ``skills_conn`` 非 None 时**记录解析库优先**（技能身份/元数据与检索同源），
+      未命中/传 None 回退扫盘；但 **SKILL.md 字节仍优先读 origin_path 原文件**——
+      库里 ``content`` 只存正文（frontmatter 拆成列），按正文写盘会丢 frontmatter、
+      破坏 L3 字节保真铁律；源文件缺失时才回退库内正文（单文件包口径）；
     - git 源技能直接读 origin_path 字节流（真源字节保真）；
       wiki 源技能用索引内容（wiki_pages 本身存全文，等价保真）；
     - **A2 分发（2026-09-28）**：git 源技能目录下的随附文件一并落盘
@@ -523,8 +649,7 @@ def materialize(
                 "dest_dir 不在允许落盘的白名单内（allowed_roots 由调用方声明；"
                 "Hermes 适配器固定为 $HERMES_HOME/plugin-data/sgme/skills/）"
             )
-    records = _load_records(cfg, wiki_conn)
-    rec = _find_record(records, name)
+    rec = _resolve_record(cfg, wiki_conn, name, skills_conn)
     if rec is None:
         return not_found(name)
 
@@ -661,12 +786,16 @@ def package_skill(
     wiki_conn: sqlite3.Connection | None,
     *,
     name: str,
+    skills_conn: sqlite3.Connection | None = None,
 ) -> OperationResult:
     """跨机**完整包**（T-281）：枚举包文件集 → 逐文件 sha256 → canonical manifest。
 
+    - ``skills_conn`` 非 None 时**记录解析库优先**（未命中/传 None 回退扫盘）；
     - 文件集与 materialize **同源同过滤**（``iter_package_files``）：git 源技能 =
       SKILL.md + 随附文件（scripts/ install.py locales/ package/ 等）；wiki 源 / 源文件
       缺失 / 内置《技能检索协议》→ 回退索引正文的**单文件包**（合法）；
+    - **SKILL.md 成员字节仍优先取 origin_path 原文件**（库里 ``content`` 只存正文，
+      按正文重建会丢 frontmatter）；源文件缺失才回退库内正文——与 materialize 同口径；
     - 聚合哈希 = canonical manifest 文本（UTF-8）的 sha256；文件数 = 清单行数
       （= ``<name>/`` 下文件数，不含 MANIFEST 自身）；
     - 容量：``skills.package_quota.*`` 单文件 / 整包 / 文件数三维（**独立于**写侧
@@ -676,8 +805,7 @@ def package_skill(
     """
     import hashlib
 
-    records = _load_records(cfg, wiki_conn)
-    rec = _find_record_with_builtin(records, name)
+    rec = _resolve_record_with_builtin(cfg, wiki_conn, name, skills_conn)
     if rec is None:
         return not_found(name)
 
@@ -814,6 +942,11 @@ def search_skills(
     T-112 双写过渡：``skills_conn`` 非 None 时优先走**库内检索**
     （FTS5 持久化索引 + skill_vectors 持久化向量 + 停用词过滤 + name 加权），
     库不可用/异常时自动回退内存索引路径，行为与改造前一致。
+
+    **库优先、盘回退**（2.0 全存库）：库有数据即库内检索，检索语料与
+    ``skill_get``/``skill_digest`` 同源；零命中不回退扫盘——统一搜索每层每次
+    都要跑，miss 就全量扫 source_dirs 会把 /v1/search 拖成 IO 放大（库就绪后
+    库即权威，未入库的技能由写后同步负责补）。库不可读/空库（冷启动）才扫盘。
     """
     if not isinstance(query, str) or not query.strip() or limit <= 0:
         return []
@@ -1339,6 +1472,18 @@ def search_skills_db(
     ranked = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
 
     meta = {h["name"]: h for h in fts_hits}
+    # 读盘点补齐：向量路 / name 直达命中的技能可能不在 FTS 结果集里（meta 缺行 →
+    # source/description/category 只能退默认值，与 digest/get 的库内元数据不一致）。
+    # 这些名字同样在主表里，逐条补读一次行（≤limit，代价可忽略）。
+    for name, _score in ranked:
+        if name in meta:
+            continue
+        try:
+            row = skills_dao.get_skill(skills_conn, name)
+        except Exception:
+            row = None
+        if row:
+            meta[name] = row
     out: list[dict] = []
     for name, score in ranked:
         row = meta.get(name)

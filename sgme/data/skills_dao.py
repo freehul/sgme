@@ -435,6 +435,18 @@ def find_outgoing(conn: sqlite3.Connection, name: str) -> list[str]:
     return [r["dst"] for r in cur.fetchall()]
 
 
+def find_outgoing_edges(conn: sqlite3.Connection, name: str) -> list[dict[str, Any]]:
+    """出向依赖边（含 strength，T-402 读侧）：name uses 了哪些技能、各是什么强度。
+
+    与 ``find_incoming_edges`` 对称；库优先读路径用它把 ``SkillRecord.uses`` /
+    ``use_strengths`` 从 ``skill_uses`` 还原（扫盘路径是解析 frontmatter 得到）。
+    """
+    cur = conn.execute(
+        "SELECT dst, strength FROM skill_uses WHERE src=? ORDER BY dst", (name,)
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
 # ---------- 同步水位（对账 cron 用） ----------
 
 
