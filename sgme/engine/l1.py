@@ -896,15 +896,21 @@ def _lang_mismatch(conversation: str, memories: list[dict]) -> bool:
 def _parse_extraction_output(text: str, dimensions: list[dict]) -> list[dict]:
     """按 schema 开关选择解析器（2.0 结构开关，默认 1.x 行为不变）。
 
-    开关：环境变量 ``SGME_L2_SCHEMA``，取值 ``2.0``/``2`` 时走 2.0 解析
-    （`parse_l2_output` + `records_to_items`），其余走 1.x。
+    开关：**默认走 2.0 解析**（`parse_l2_output` + `records_to_items`）。
+    显式设 ``SGME_L2_SCHEMA=1`` / ``1.0`` 才回退 1.x 解析器。
 
-    为什么用环境变量：`_extract_l1_chunk` 的调用链上没有 cfg（只有 llm_cfg），
-    临时给整条链加参数会波及全部调用点；这里先用环境变量做过渡开关，
-    待 T-315 定版后改为配置项（`l2.schema`）。
+    2026-11-02 变更（2.0 正式上线）：此前默认值是空串 → 生产从未启用 2.0 解析器，
+    而 l1_extraction 提示词已是 v019（输出 2.0 结构：main_event + facts[] + route），
+    1.x 解析器读不懂 → **静默返回 0 条**。实测同一条会话：默认路径 0 条，
+    设 SGME_L2_SCHEMA=2.0 后 3 条。这与"提示词切了就算上线"是两个独立开关，
+    两个都开才算真的 2.0 抽取链。
+
+    为什么还用环境变量：`_extract_l1_chunk` 的调用链上没有 cfg（只有 llm_cfg），
+    给整条链加参数会波及全部调用点；配置化（`l2.schema`）留待后续批次。
     2.0 解析器自带向后兼容：输出里没有 `main_event` 时自动回退 1.x。
     """
-    if os.environ.get("SGME_L2_SCHEMA", "").strip() in ("2.0", "2"):
+    schema = os.environ.get("SGME_L2_SCHEMA", "2.0").strip()
+    if schema not in ("1", "1.0"):
         from sgme.engine.l2_extract import parse_l2_output, records_to_items
 
         return records_to_items(parse_l2_output(text, dimensions), dimensions)
