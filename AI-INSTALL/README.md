@@ -25,7 +25,7 @@
 
 ## 本目录文件
 
-- `agent-onboarding.md` —— **协议层唯一真相**（服务发现 / 连接 / 写入 / 提炼 / 技能），所有任务卡以它为准，本目录不复制其内容。
+- `agent-onboarding.md` —— **协议层唯一真相**（服务发现 / 连接 / 写入 / 提炼 / 技能 / 2.0 管理面），所有任务卡以它为准，本目录不复制其内容。
 - **在线读取（v1.7.2+ 服务端内置，免 Key）**：`GET {base}/v1/onboarding/docs` 拿索引；`GET {base}/v1/onboarding/docs/<文件名>` 拿全文（含本目录全部文件）。
 - `免费模型Key申请指南.md` —— 免费 LLM / 向量 Key 申请（两款免费平台，零充值）。
 - `prompts/` —— 可整段复制给 AI 的提示词（每份含中文 + English 两个复制块）。
@@ -34,6 +34,19 @@
 - 官方适配器经技能库自助获取：`skill_search("adapter")` → `skill_get` 读指引 → **取完整包**：同机 `skill_materialize` 落盘（服务端文件系统）/ 跨机 `skill_fetch.py` 拉取（`GET /v1/skills/{name}/package` 一键下载校验解包；详见 `agent-onboarding.md` §6.1）。
 - **能力平面**：SGME 核心是 `memory / skills / wiki`（另有可选凭据模块 `credentials`——跨机共享重要 KEY，标准姿势 `sgme-cred run` 注入）；只安装宿主适配器，普通专业 skill 按需检索，不批量复制到本地。
 - **内置开发能力**：技能库已纳入 `coding-workflow`、`sgme-development`、`sgme-adapter-development`、`sgme-docs-authoring`、`sgme-operations` 和 `skill-governance`；编码、运维和技能治理先从 SGME 检索，不要求宿主另装一套同名 skill。
+
+## 2.0 新增能力速查
+
+| 能力 | 入口 | 详见 |
+|---|---|---|
+| 待审队列 | `GET /v1/admin/review/pending`；`POST .../{memory_id}/approve` / `reject`；`POST .../auto-resolve` | `agent-onboarding.md` §8.5.1 |
+| 运维看板 | `GET /v1/admin/ops/ttl-disposition`、`GET /v1/admin/ops/llm-cost`（Admin Key） | §8.5.2 |
+| 凭证管理 | `GET/POST /v1/credentials`、`GET/DELETE /v1/credentials/{key}`、`POST .../restore`、`GET /v1/credentials/export` | §4.3 |
+| 角色演化 | `GET/POST /v1/admin/roles/{role_id}/evolution`；基线层 `extensions.sgme_profile` | §8.5.3 |
+| 技能包通道 | `GET /v1/skills/catalog-version`、`.../{name}/manifest`、`.../{name}/package`、`.../{name}/files/{relpath}` | §6.3 |
+| 技能编写 | `scripts/skill_workspace.py pull/status/push`（仓库内，不随镜像） | §6.4 |
+
+> 数据卫生：地址一律用 `<NAS_IP>` / `{base}` 占位；凭据列表永不含明文值，`export` 是危险操作（批量明文）。
 
 ## 三条原则
 
@@ -57,6 +70,19 @@
 
 **Capability plane**: SGME's three core modules are `memory / skills / wiki` (plus an optional `credentials` module for cross-machine KEY sharing, injected via `sgme-cred run`). Install only the host adapter; retrieve ordinary specialist skills from SGME on demand instead of copying many skills locally.
 
-**Files**: `agent-onboarding.md` (protocol source of truth), `免费模型Key申请指南.md` (free API keys), `prompts/` (copy-paste prompts), `selfcheck.md` (post-setup checks). **Online (v1.7.2+, no key)**: `GET /v1/onboarding/docs` (index) / `GET /v1/onboarding/docs/<file>` (full text).
+**Files**: `agent-onboarding.md` (protocol source of truth, including the 2.0 management surface), `免费模型Key申请指南.md` (free API keys), `prompts/` (copy-paste prompts), `selfcheck.md` (post-setup checks). **Online (v1.7.2+, no key)**: `GET /v1/onboarding/docs` (index) / `GET /v1/onboarding/docs/<file>` (full text).
+
+**What's new in 2.0**
+
+| Capability | Entry points | Details |
+|---|---|---|
+| Review queue | `GET /v1/admin/review/pending`; `POST .../{memory_id}/approve` / `reject`; `POST .../auto-resolve` (7-day conservative auto-store) | `agent-onboarding.md` §8.5.1 |
+| Ops dashboards | `GET /v1/admin/ops/ttl-disposition`, `GET /v1/admin/ops/llm-cost` (admin key; empty tables return zero totals, not 500) | §8.5.2 |
+| Credentials | `GET/POST /v1/credentials`, `GET/DELETE /v1/credentials/{key}`, `POST .../restore`, `GET /v1/credentials/export` | §4.3 |
+| Role evolution | `GET/POST /v1/admin/roles/{role_id}/evolution`; baseline layer lives in the role card's `extensions.sgme_profile` | §8.5.3 |
+| Skill package channel | `GET /v1/skills/catalog-version`, `.../{name}/manifest`, `.../{name}/package` (tar.gz), `.../{name}/files/{relpath}`; two-level cache (catalog-version short-circuit + `package_sha256` compare) with atomic local landing | §6.3 |
+| Skill authoring | `scripts/skill_workspace.py pull/status/push` (repo checkout only, not shipped in the image) | §6.4 |
+
+> Data hygiene: use `<NAS_IP>` / `{base}` placeholders only; credential listings never contain plaintext values, and `export` is a dangerous bulk-plaintext operation.
 
 **Principles**: AI-first instructions with acceptance criteria per step; single source of truth (this directory references, never duplicates, the protocol doc); secrets only via environment variables — each agent mints its own dedicated key at connect time (never a shared or default key).

@@ -11,6 +11,7 @@
 4. **写入**：每轮对话结束 `append` 当前轮次；会话结束 `refine_trigger(async_mode=true)`。
 5. **提炼**：批量 ≥20 文件必须分批 + 批间 30–60s；429 不立即重试，交 `batch_scan` 兜底。
 6. **技能获取（按需检索，MUST）**：需要 SGME 未内置的专业能力时，先 `skill_search(query)` 检索、命中后 `skill_get(name)` 拉全文注入再执行——**禁止未检索就声称具备技能或硬凑步骤**。冷启动包只含《技能检索协议》一个 skill、不预载全量技能，按需检索才是正路。
+7. **管理面（2.0）**：待审队列 / 运维看板 / 角色演化见 §8.5；凭证管理见 §4.3；技能包两级缓存与技能编写见 §6.3 / §6.4。
 
 ### SGME 能力平面（核心三模块）
 
@@ -184,17 +185,22 @@ content 格式（首行必须）：
 - 无其它通道时：就在当前会话发（当前会话是唯一通道）；
 - 用户明确说「以后不用在当前会话发了」才停止兜底，否则默认一直兜底。
 
-### 4.3 凭据取用（EP-11，可选，2026-10-15）
+### 4.3 凭据取用与管理（EP-11，可选，2.0 管理面补齐）
 
-SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 降级为缓存），任何已注册 agent 可平级读取（写 / 删 / 恢复仅 admin）。模块未启用（`credentials.enabled=false`）时两个工具返回友好提示，属正常。
+SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 降级为缓存），任何已注册 agent 可平级读取；写 / 删 / 恢复仅 admin。模块未启用（`credentials.enabled=false`）时相关端点/工具返回友好提示或 404，属正常。
+
+> **红线：列表与管理视图永不返回明文值。** 明文只有两个出口——单值读取 `GET /v1/credentials/{key}` 与批量导出 `GET /v1/credentials/export`；后者是**危险操作**（一次拿到多把 KEY 的明文），只在用户明确要求且目的清楚时执行，导出内容不得进对话正文、记忆或日志。
 
 | 你要做的事 | 姿势 |
 |---|---|
 | 程序需要 KEY 运行 | **标准姿势**：`sgme-cred run -- python app.py`（拉取 → 注入环境变量 → 执行子进程；值不落盘、不进对话） |
-| 看有哪些 KEY | MCP `credential_list()`（键名+元数据，不含值）或 `sgme-cred list` |
-| 必须显式查看某值 | MCP `credential_get(name)` / `sgme-cred get KEY`——**仅限必须**；值不得写入对话正文或记忆 |
+| 看有哪些 KEY | MCP `credential_list()` / `sgme-cred list` / `GET /v1/credentials`——键名 + 元数据（`description` / `created_at` / `updated_at` / `updated_by`），**不含值** |
+| 必须显式查看某值 | MCP `credential_get(name)` / `sgme-cred get KEY` / `GET /v1/credentials/{key}`——**仅限必须**；值不得写入对话正文或记忆 |
 | 落一份本地缓存 | `sgme-cred export > .env`（显式操作；缓存只读不手改，真源始终在 SGME） |
-| 非 Python / 不便拷贝脚本 | HTTP 直连：`GET {base}/v1/credentials`（列名）/ `GET {base}/v1/credentials/{key}`（单值）——`X-API-Key` = 本 Agent Key |
+| 新增 / 轮换 | `POST /v1/credentials`（admin）body `{key_name, value, description?}`；同名写入即轮换 |
+| 下线某 KEY | `DELETE /v1/credentials/{key}`（admin，软删幂等；不存在 404） |
+| 恢复误删 | `POST /v1/credentials/{key}/restore`（admin，幂等）；已删键名直接重写会 409，必须先 restore（不自动复活，防误覆盖） |
+| 批量导出 | `GET /v1/credentials/export?only=K1,K2` 或 `?prefix=...`（互斥）→ `{"credentials": {KEY: value}, "count": n}`；**危险**，逐键记审计 + SecurityLog |
 
 > ⚠️ 值一旦进入对话正文，会经 append 进 L0 原始层并随对话出境云端模型（不可回收）。客户端 `scripts/sgme_cred.py` 单文件零依赖、可裸拷任意机器；认证读 `~/.sgme/install.json`（零明文）。**运维细节**（备份/恢复/轮换/部署/迁移）见技能 `sgme-operations`（`skill_search("SGME 运维")` → `skill_get` 取手册）。
 
@@ -273,6 +279,67 @@ SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 
 | ⑧ | 适配器 | 已装 `adapter-<host>`，或显式走通用 MCP 且 ⑦ 完成 |
 
 > 两套「完成」定义曾互相打架（selfcheck 六项 vs self_config 模板）——自 2026-09-28 起统一为上表，`selfcheck.md` / `agent_onboarding.self_config.requirement` / 本节三处同源。
+
+## 6.3 技能包通道与两级缓存（2.0 / D-59）
+
+> 目标：技能库到几百条后，不逐个请求、不整库重拉。先比目录版本，再比单技能包指纹；命中零传输，未命中才拉包并逐文件校验。
+> 四个端点均需 `X-API-Key`（Agent Key），且仅在 `skills.enabled=true` 时挂载。
+
+| 端点 | 返回 | 用途 |
+|---|---|---|
+| `GET /v1/skills/catalog-version` | `{"catalog_version": "<16 位十六进制>"}`；空库 `"empty"`，技能库连接不可用 `"disabled"`（模块未挂载则端点 404） | 一级短路（响应 <100 字节） |
+| `GET /v1/skills/{name}/manifest` | `{name, version, package_sha256, content_len, updated_at, files:[{path,sha256,size}]}`；`files` 不含 `SKILL.md` | 二级比对（响应 <200 字节） |
+| `GET /v1/skills/{name}/package` | `application/gzip` 流：归档根 `MANIFEST.sha256` + `<name>/` 下逐文件（`SKILL.md` + `references/`/`scripts/`/`assets/` 等）；响应头 `X-Skill-Sha256`、`X-Skill-Files`、`ETag` | 完整包下载 |
+| `GET /v1/skills/{name}/files/{relpath}` | 原始字节 `application/octet-stream` + `X-File-Sha256` | 单文件精确取用 |
+
+**包通道细节**：
+
+- `package` 只支持 `format=tar.gz`（默认）；`format=zip` 是保留参数 → 400。`If-None-Match: <ETag>` 命中 → 304（不重复计一次下载）。
+- 包内 `MANIFEST.sha256` 每行 `<sha256><两个空格><相对路径>`（相对技能根，不含 `<name>/` 前缀）；`X-Skill-Sha256` = 该清单文本的 sha256，`X-Skill-Files` = 清单行数（不含 MANIFEST 自身）。
+- wiki 源 / 源文件缺失 / 内置《技能检索协议》→ 退化为**单文件包**（仅 `SKILL.md`），属合法。
+- `files/{relpath}` 必须命中包文件集：绝对路径 / 盘符 / `..` → 400；技能或成员不存在（含 junk、符号链接）→ 404。读宽写严，顶层 `install.py` / `locales/**` / `package/**` 可读。
+- 配额：`skills.package_quota.*` 单文件 / 整包 / 文件数三维，超限 → 400（独立于写侧 asset_quota）。
+
+**两级缓存**（官方适配器已内置；真源 `adapters/_shared/skill_cache.py`，各适配器随分发包带副本）：
+
+1. **目录级短路**：`GET /v1/skills/catalog-version` 与本地 `<state_dir>/.sgme-catalog.json` 比对；相同 → 本会话不再逐个比对（进程内只拉一次）。
+2. **单技能比对**：`GET /v1/skills/{name}/manifest` 的 `package_sha256` 与本地 `<dest>/<name>/.sgme-manifest.json` 的 `content_hash` 比对；相同且清单内文件 sha256 全部完好 → 直接用本地副本，**零包传输**。
+3. **未命中才拉包**：下载 `package` → 包内 `MANIFEST.sha256` 逐文件校验 + 文件集双向对照（缺一个/多一个都拒收）+ 响应头 `X-Skill-*` 对账 → 在 `<dest>/.<name>.fetch-*` 临时目录组装 → `os.replace` **原子替换**（失败回滚、不留残件）。
+
+**本地落盘**：
+
+- 落点由调用方给：`<dest>/<name>/`，布局与包内一致；副本清单 `<dest>/<name>/.sgme-manifest.json` = `{name, version, content_hash, files:[{path,sha256}], fetched_at, catalog_version}`。
+- 本地文件被外部改动/删除 → 下次 `ensure_skill` 检出并重拉（清单即自检依据）；只有「同一 `catalog_version` 下取的副本」才允许一级短路，防下载失败后旧副本被误判为最新。
+- **不建**全局技能缓存目录、**不做**预热；落点永远由调用方给。`skill_materialize` 的 `dest_dir` 是**服务端**路径（`landing_side="server"`），跨机不要混用。
+- 降级：catalog/manifest 端点不可用（旧服务端 404/405、网络抖动）→ 直接拉包，行为与 1.x 一致；只有包下载/校验失败才报错。
+
+## 6.4 技能编写：本地工作副本（2.0 §5.2，仓库内工具）
+
+`scripts/skill_workspace.py` 把「改技能」变成普通目录编辑：pull 下来 → 任意编辑器改 → status 看差异 → push 过 lint 入库。直接读写 `skills.db`，不碰 git、不需要服务进程。
+
+> **分发边界**：该脚本在仓库 `scripts/` 下，**不随镜像分发**（镜像只内置 `AI-INSTALL/`、`sgme/`、`roles/`、`skills/` 等运行资产，不含 `scripts/`）。只有源码检出 / 仓库内可用；容器部署要用，需先把脚本临时拷入容器。
+
+```bash
+# 1) 拉一个技能成可编辑目录（已有未入库改动/非本技能会拒绝；--force 才整目录原子替换）
+python scripts/skill_workspace.py pull <skill> --dir <工作区>/<skill>
+
+# 2) 编辑 SKILL.md 与 references/ scripts/ assets/；新增文件直接放进目录
+#    不要动 .sgme-manifest.json
+
+# 3) 看与库的差异（有差异退出码 1，无差异 0，可进 CI）
+python scripts/skill_workspace.py status --dir <工作区>/<skill>
+
+# 4) 提交入库：先跑格式 lint，error 即拒绝并逐条列出；通过则写 skills + skill_files + 修订史
+python scripts/skill_workspace.py push --dir <工作区>/<skill>
+
+# 5) 批量盘点工作副本
+python scripts/skill_workspace.py list --dir <工作区>
+```
+
+- 库定位：默认 `sgme.config.DATA_DIR/skills.db`（`SGME_HOME` 可重定向）；显式 `--data-dir <SGME_DATA_DIR>` 或 `--db <.../skills.db>`（二选一，`--db` 优先）。
+- 冲突：pull 后库内被别处改过，push 默认拒绝（先重新 pull 合并）；`--force` 以本地为准覆盖。
+- 迁移期边界：只写 2.0 的 `skills.db`，**不写** 1.x 的 git 工作区（`skills.source_dirs`）；两套真源迁移完成前不互通。
+- 库表只承载六类 frontmatter（`description` / `category` / `tags` / `version` / `pattern` / `uses`）；`SKILL.md` 其它自定义字段在 pull 重建时不保留，正文与附属文件原样保留。
 
 ## 7. 就绪检查与主动提醒
 
@@ -357,6 +424,57 @@ search:
 - **管理**：`memory_reject` 纠错（不删除、可恢复）；`stats` / `health` 看状态；`config_get` / `config_update` 读写配置。
 - **技能获取**：`skill_search(query)` 检索专业能力 → `skill_get(name)` 拉全文注入上下文 → 按技能执行；无命中如实告知用户（详见冷启动包中的《技能检索协议》）。
 
+## 8.5 管理与运维面（2.0）
+
+> 以下端点用于「人 / 管理 agent 看状态、做裁决」，不是日常记忆写入链路。地址同 `{base}`，均带 `X-API-Key`。
+
+### 8.5.1 待审记忆队列（D-30）
+
+L2 提炼对低置信度产物打 `needs_review=1`：**不进主注入块、不进人格证据**，只在本队列可见，等人工放行/拒绝；超期（默认 7 天）未处理的按**保守直存**消化——放行进库并在 `notes` 追加「未经人工确认」标记（去重），不丢弃、可溯源。
+
+| 动作 | 端点 | 要点 |
+|---|---|---|
+| 看待审 | `GET /v1/admin/review/pending?limit=50&offset=0&dimension=<维度>` | `limit` 1–200（默认 50），`offset` ≥0；返回 `{items, total}`，items 为完整记忆行 |
+| 放行 | `POST /v1/admin/review/{memory_id}/approve` | body 可选 `{"note": "..."}`；幂等；放行后回到正常注入/检索可见 |
+| 拒绝 | `POST /v1/admin/review/{memory_id}/reject` | body `{"reason": "..."}` 必填；置 `status='rejected'`（软删可恢复）；幂等 |
+| 超期消化 | `POST /v1/admin/review/auto-resolve` | body 可选 `{"days": 7}`（≥1）；返回 `{"resolved": n}`；已有标记不重复追加 |
+
+鉴权：`require_agent_key`——Agent Key 或 Admin Key 均可（与 `memory_reject` 同档）；WebUI 管理面用 Admin Key。待审放行/拒绝属**用户裁决**，agent 代用户操作前先确认。
+
+### 8.5.2 运维看板（只读，Admin Key）
+
+| 端点 | 参数 | 返回 |
+|---|---|---|
+| `GET /v1/admin/ops/ttl-disposition` | `days` 1–365，默认 30；非法回退默认 | `{items: [{day, valid_expired, renewed, anchor, sleeping, archived}], total: {...}, days}` |
+| `GET /v1/admin/ops/llm-cost` | 同上 | `{items: [{day, provider, model, stage, prompt_tokens, completion_tokens, calls}], totals: {...}, days}` |
+
+- 两张表懒建；表不存在 / 无数据时返回空 `items` + 零汇总 + `note`，**不是 404/500**——看板显示「暂无数据」即正常。
+- `ttl-disposition` 五档固定枚举：`valid_expired` / `renewed` / `anchor` / `sleeping` / `archived`。
+- `llm-cost` 按 `(day, provider, model, stage)` 聚合，用于看提炼/检索/对话各阶段的 token 与调用量。
+
+### 8.5.3 角色演化（设计 4.2）
+
+角色分两层：
+
+- **基线层**（静态人设，写在角色卡里）：`data.extensions.sgme_profile`，白名单五键——`biography` / `values` / `hobbies` / `voice` / `personality_slots`；`personality_slots` 六个中文槽位：语言风格 / 情绪反应 / 价值观取舍 / 社交姿态 / 冲突处理 / 亲密表达。改基线 = `POST /v1/admin/roles/{role_id}` 整体 upsert 角色卡（body `{"data": {...}}`，`name`/`description` 必填）。
+- **演化层**（运行时数据，不入 git）：`data/role_evolution/<role_id>.json`，记录共同经历 / 心情 / 性格与三观变化。
+
+| 动作 | 端点 | 要点 |
+|---|---|---|
+| 读演化层 | `GET /v1/admin/roles/{role_id}/evolution` | 文件不存在返回空结构 200（`{timeline:[], feelings:[], personality_changes:[], values_changes:[]}`），不 404 |
+| 追加一条 | `POST /v1/admin/roles/{role_id}/evolution` | 扁平 body：`{"kind": "...", ...字段}`；`at` 由服务端生成；角色不存在 → 404；kind/字段非法 → 400 |
+
+`kind` 与字段白名单：
+
+| kind | 必填 | 可选 |
+|---|---|---|
+| `timeline` | `event` | `source` |
+| `feelings` | `thought` | `trigger` |
+| `personality_changes` | `slot`, `to` | `from`, `reason` |
+| `values_changes` | `change` | `reason` |
+
+鉴权：`require_agent_key`（角色卡是用户级资产，与记忆同权限级）。演化层是「角色经历」，不是记忆池——不要用 `append` 混写。
+
 ## 9. 常见坑
 
 | 坑 | 症状 | 对策 |
@@ -367,3 +485,8 @@ search:
 | 同步模式跑大批量 | 会话长时间阻塞 | 永远 async_mode=true |
 | 只 append 不 refine | 记忆永远停在 status=new | 会话结束触发提炼；或开 `refine_on_append` / 靠 batch_scan |
 | 改配置不落盘 | 重启丢失 | `config_update` 自动落盘；手改文件需重启生效 |
+| 待审队列长期积压 | `review/pending` 一直有数据 | 人工 `approve` / `reject`；超 7 天可 `auto-resolve` 保守直存，但会带「未经人工确认」标记 |
+| 以为列表能看凭据值 | `GET /v1/credentials` 无 `value` | 设计如此（列表永不含明文）；取单值用 `GET /v1/credentials/{key}`，批量用 `export`（危险） |
+| 技能每次都全量重拉 | 包流量不降 | 旧服务端无 `catalog-version`/`manifest`（404）会降级直拉；新版先比目录版本与 `package_sha256` |
+| 容器里找不到 `skill_workspace.py` | `scripts/` 不在镜像 | 在仓库检出内运行，或临时把脚本拷入容器（不随镜像分发） |
+| 角色演化写入 404 | `POST .../evolution` 返回角色不存在 | 先建角色卡（`POST /v1/admin/roles/{role_id}`）；演化层是角色运行数据，不允许孤儿 |
