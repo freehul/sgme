@@ -87,6 +87,24 @@ interface RequestOptions {
   key?: string
 }
 
+// 解析非 2xx 响应为统一 ApiError（JSON 与二进制通道共用）
+async function throwApiError(resp: Response): Promise<never> {
+  let code = 'ERR_INTERNAL'
+  let message = `请求失败: ${resp.status}`
+  let details: unknown
+  try {
+    const data = await resp.json()
+    if (data?.error) {
+      code = data.error.code || code
+      message = data.error.message || message
+      details = data.error.details
+    }
+  } catch {
+    // 非 JSON 响应，保留默认错误
+  }
+  throw new ApiError(resp.status, code, message, details)
+}
+
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, key } = opts
   const headers: Record<string, string> = {}
@@ -100,28 +118,38 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
 
-  if (!resp.ok) {
-    let code = 'ERR_INTERNAL'
-    let message = `请求失败: ${resp.status}`
-    let details: unknown
-    try {
-      const data = await resp.json()
-      if (data?.error) {
-        code = data.error.code || code
-        message = data.error.message || message
-        details = data.error.details
-      }
-    } catch {
-      // 非 JSON 响应，保留默认错误
-    }
-    throw new ApiError(resp.status, code, message, details)
-  }
+  if (!resp.ok) await throwApiError(resp)
   return (await resp.json()) as T
+}
+
+// 二进制/raw 通道：整包 tar.gz 下载、技能附件原文（octet-stream）读取。
+// 鉴权头与 request 一致（agent key 路径规则复用 pickKey）；响应头透传给调用方
+// （X-Skill-Sha256 / X-Skill-Files / X-File-Sha256 等）。
+async function requestBlob(
+  path: string,
+  opts: RequestOptions = {}
+): Promise<{ blob: Blob; headers: Headers }> {
+  const { method = 'GET', body, key } = opts
+  const headers: Record<string, string> = {}
+  const useKey = pickKey(path, key)
+  if (useKey) headers['X-API-Key'] = useKey
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
+
+  const resp = await fetch(path, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  if (!resp.ok) await throwApiError(resp)
+  return { blob: await resp.blob(), headers: resp.headers }
 }
 
 export const api = {
   get<T>(path: string, key?: string) {
     return request<T>(path, { method: 'GET', key })
+  },
+  blob(path: string, key?: string) {
+    return requestBlob(path, { method: 'GET', key })
   },
   post<T>(path: string, body?: unknown, key?: string) {
     return request<T>(path, { method: 'POST', body, key })
