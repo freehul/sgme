@@ -15,6 +15,8 @@
 - POST   /v1/admin/roles/{role_id}/guard-reply   越界三级后果（D-77）
 - GET    /v1/admin/roles/{role_id}/metrics       真实感指标快照读取（D-74）
 - POST   /v1/admin/roles/{role_id}/metrics       真实感指标记录（D-74，服务端重算）
+- GET    /v1/admin/roles/{role_id}/evolution     演化层读取（设计 4.2；缺文件 200 空结构）
+- POST   /v1/admin/roles/{role_id}/evolution     演化层追加一条（kind 白名单）
 
 v0.1：业务逻辑全部下沉 ``sgme.operations.care``，本函数只做协议翻译。
 """
@@ -25,7 +27,7 @@ import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from sgme.operations import care as care_operation
 from sgme.operations import role_metrics as role_metrics_operation
@@ -251,6 +253,43 @@ def record_metrics(
         set_as_baseline=payload.set_as_baseline,
         meta=payload.meta,
     )
+
+
+# ---------- GET/POST /v1/admin/roles/{role_id}/evolution（设计 4.2 演化层） ----------
+
+class EvolutionAppendRequest(BaseModel):
+    """演化层追加请求体（**扁平契约**）：``{"kind": "...", ...条目字段}``。
+
+    条目字段按 kind 白名单校验（timeline/feelings/personality_changes/values_changes），
+    extra="allow" 让各 kind 的动态字段都能进来；具体校验在 operations 层。
+    ``at`` 时间戳由服务端生成，不信任客户端。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    kind: str
+
+
+@router.get("/v1/admin/roles/{role_id}/evolution")
+def get_role_evolution(
+    role_id: str,
+    _: str = Depends(require_agent_key),
+):
+    """读取角色演化层；文件不存在返回空结构 200（不 404，演化层是可选运行数据）。"""
+    return run_operation(care_operation.get_evolution, role_id)
+
+
+@router.post("/v1/admin/roles/{role_id}/evolution")
+def append_role_evolution(
+    role_id: str,
+    payload: EvolutionAppendRequest,
+    _: str = Depends(require_agent_key),
+):
+    """向演化层追加一条记录（kind 白名单校验，角色不存在 → ERR_NOT_FOUND）。
+
+    body 为扁平契约：kind + 条目字段；服务端按 kind 校验必填/多余字段。
+    """
+    return run_operation(care_operation.post_evolution, role_id, payload.model_dump())
 
 
 # ---------- 关怀信号（T-36） ----------

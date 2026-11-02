@@ -42,6 +42,32 @@ TIMESTAMP_FIELDS = ("created_at", "updated_at")
 # 关怀策略扩展键（extensions.sgme_care，供消费方读取）
 CARE_EXT_KEYS = ("greeting_templates", "trigger_rules", "frequency")
 
+# ---------- 活人化角色基线层（设计文档 4.2 / 前端契约） ----------
+
+# 基线层扩展键（extensions.sgme_profile）：传记/三观/爱好/语气/性格六槽位
+PROFILE_EXT_KEY = "sgme_profile"
+# sgme_profile 白名单键（五件套；多余键拒绝，防拼写漂移）
+PROFILE_KEYS = ("biography", "values", "hobbies", "voice", "personality_slots")
+# personality_slots 六槽位（与前端工作台对齐，中文槽位名是契约的一部分）
+PERSONALITY_SLOTS = (
+    "语言风格", "情绪反应", "价值观取舍", "社交姿态", "冲突处理", "亲密表达",
+)
+
+# ---------- 演化层（运行时数据：data/role_evolution/<role_id>.json，不入 git） ----------
+
+# 演化层四类条目（kind 白名单）：共同经历时间线 / 心情带触发 / 性格槽位变化 / 三观变化
+EVOLUTION_KINDS = ("timeline", "feelings", "personality_changes", "values_changes")
+# 各 kind 的必填字段与允许字段（多余字段拒绝，防 timeline/feelings 串味）
+EVOLUTION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    # (必填, 可选)
+    "timeline": (("event",), ("source",)),
+    "feelings": (("thought",), ("trigger",)),
+    "personality_changes": (("slot", "to"), ("from", "reason")),
+    "values_changes": (("change",), ("reason",)),
+}
+# 演化层空结构（load 缺文件时返回；GET 端点同样以此为兜底）
+EVOLUTION_EMPTY: dict[str, list[dict[str, Any]]] = {k: [] for k in EVOLUTION_KINDS}
+
 # 角色 id 白名单：小写字母/数字/连字符/下划线（防路径穿越）
 _ROLE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -57,10 +83,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def validate_role_id(role_id: str) -> None:
+    """角色 id 白名单校验（防路径穿越）；非法抛 ValueError。
+
+    演化层文件名/角色卡文件名都由 id 直接拼接，这是唯一的穿越防线，
+    文件读写前必须先过这里。
+    """
+    if not _ROLE_ID_RE.match(role_id or ""):
+        raise ValueError(f"非法角色 id: {role_id!r}（须匹配 {_ROLE_ID_RE.pattern}）")
+
+
 def _role_file(roles_dir: Path, role_id: str) -> Path:
     """角色卡文件路径（防路径穿越：id 白名单校验）。"""
-    if not _ROLE_ID_RE.match(role_id):
-        raise ValueError(f"非法角色 id: {role_id!r}（须匹配 {_ROLE_ID_RE.pattern}）")
+    validate_role_id(role_id)
     return roles_dir / f"{role_id}.json"
 
 
@@ -108,7 +143,38 @@ def validate_role_card(data: dict[str, Any]) -> list[str]:
                                 f"extensions.sgme_care 多余键: {k}"
                                 f"（允许: {CARE_EXT_KEYS}）"
                             )
+            profile = ext.get(PROFILE_EXT_KEY)
+            if profile is not None:
+                errors.extend(_validate_profile(profile))
     return errors
+
+
+def _validate_profile(profile: Any) -> list[str]:
+    """校验 extensions.sgme_profile（基线层五件套）；返回错误列表，空 = 合法。"""
+    if not isinstance(profile, dict):
+        return [f"extensions.{PROFILE_EXT_KEY} 必须是对象"]
+    errs: list[str] = []
+    for k in profile:
+        if k not in PROFILE_KEYS:
+            errs.append(
+                f"extensions.{PROFILE_EXT_KEY} 多余键: {k}（允许: {PROFILE_KEYS}）"
+            )
+    for k in ("biography", "values", "hobbies", "voice"):
+        v = profile.get(k)
+        if v is not None and not isinstance(v, str):
+            errs.append(f"extensions.{PROFILE_EXT_KEY}.{k} 必须是字符串")
+    slots = profile.get("personality_slots")
+    if slots is not None:
+        if not isinstance(slots, dict):
+            errs.append(f"extensions.{PROFILE_EXT_KEY}.personality_slots 必须是对象")
+        else:
+            for k in slots:
+                if k not in PERSONALITY_SLOTS:
+                    errs.append(
+                        f"extensions.{PROFILE_EXT_KEY}.personality_slots 多余槽位: {k}"
+                        f"（允许: {PERSONALITY_SLOTS}）"
+                    )
+    return errs
 
 
 def normalize_role_card(data: dict[str, Any]) -> dict[str, Any]:
@@ -384,6 +450,90 @@ def save_metrics(roles_dir: Path, role_id: str, metrics: dict[str, Any]) -> bool
     })
     logger.info("真实感指标已写回: %s", role_id)
     return True
+
+
+# ---------- 演化层（设计 4.2：共同经历/心情/性格演化/三观演化，运行时数据） ----------
+
+# 单卡演化层条目保留上限：与越界记录同一防膨胀思路，超出只留最近 N 条
+EVOLUTION_KEEP_MAX = 1000
+
+
+def _evolution_file(evolution_dir: Path, role_id: str) -> Path:
+    """演化层文件路径（复用角色 id 白名单，防路径穿越）。"""
+    validate_role_id(role_id)
+    return evolution_dir / f"{role_id}.json"
+
+
+def load_evolution(role_id: str, evolution_dir: Path | None = None) -> dict[str, Any]:
+    """读取角色演化层；文件不存在返回空结构（演化层是可选运行数据，不报错）。
+
+    解析失败抛 ValueError（损坏文件必须显式暴露，不能静默清空运行数据）。
+    """
+    d = evolution_dir or Path("data") / "role_evolution"
+    fp = _evolution_file(d, role_id)
+    if not fp.exists():
+        return {k: list(v) for k, v in EVOLUTION_EMPTY.items()}
+    try:
+        box = json.loads(fp.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("演化层解析失败 %s: %s", role_id, e)
+        raise ValueError(f"演化层解析失败: {role_id}") from e
+    if not isinstance(box, dict):
+        raise ValueError(f"演化层结构非法（必须是 JSON 对象）: {role_id}")
+    out: dict[str, Any] = {}
+    for k in EVOLUTION_KINDS:
+        v = box.get(k)
+        out[k] = v if isinstance(v, list) else []
+    return out
+
+
+def append_evolution(
+    role_id: str,
+    kind: str,
+    entry: dict[str, Any],
+    evolution_dir: Path | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """向演化层追加一条记录并落盘（读-改-写整文件）。
+
+    Args:
+        role_id: 角色 id（白名单校验，防路径穿越）。
+        kind: 条目类型，必须在 ``EVOLUTION_KINDS`` 白名单内。
+        entry: 条目字段（不含 at；落盘前按 kind 白名单校验并自动补 ``at`` 时间戳）。
+        evolution_dir: 演化层目录（缺省 ``data/role_evolution/``）。
+        now: 覆盖时间戳（测试注入用；生产省略取当前 UTC）。
+
+    Raises:
+        ValueError: role_id 非法 / kind 不在白名单 / 必填字段缺失或为空白 /
+            字段多余（防各 kind 串味）。拒绝时不落盘。
+    """
+    validate_role_id(role_id)
+    if kind not in EVOLUTION_KINDS:
+        raise ValueError(f"演化层 kind 非法: {kind!r}（允许: {EVOLUTION_KINDS}）")
+    if not isinstance(entry, dict):
+        raise ValueError(f"演化层条目必须是对象: {kind}")
+    required, optional = EVOLUTION_FIELDS[kind]
+    for f in required:
+        v = entry.get(f)
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"演化层条目 {kind} 缺必填字段或为空白: {f}")
+    extra = set(entry.keys()) - set(required) - set(optional) - {"at"}
+    if extra:
+        raise ValueError(f"演化层条目 {kind} 多余字段: {sorted(extra)}")
+    record: dict[str, Any] = {"at": now or _now_iso()}
+    for f in required + optional:
+        if entry.get(f) is not None:
+            record[f] = entry[f]
+    d = evolution_dir or Path("data") / "role_evolution"
+    d.mkdir(parents=True, exist_ok=True)
+    box = load_evolution(role_id, d)
+    box[kind].append(record)
+    if len(box[kind]) > EVOLUTION_KEEP_MAX:
+        box[kind] = box[kind][-EVOLUTION_KEEP_MAX:]
+    fp = _evolution_file(d, role_id)
+    fp.write_text(json.dumps(box, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("演化层已追加: %s（kind=%s）", role_id, kind)
+    return record
 
 
 # ---------- persona 物化（唯一物化例外） ----------

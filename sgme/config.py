@@ -343,6 +343,8 @@ LOG_DIR = _USER_ROOT / "logs"
 # 角色层目录（T-35：角色卡 = 项目内文件随 git 管理；persona = 运行数据）
 ROLES_DIR = _USER_ROOT / "roles"
 PERSONA_DIR = DATA_DIR / "personas"
+# 角色演化层目录（设计 4.2 演化层：共同经历/心情/性格三观变化，运行数据不入 git）
+ROLE_EVOLUTION_DIR = DATA_DIR / "role_evolution"
 
 # care 段默认兜底（T-35：角色层 + 关怀信号，ST-25）
 DEFAULT_CARE_CONFIG = {
