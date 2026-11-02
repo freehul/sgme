@@ -60,13 +60,23 @@ def _has_trigger_style(description: str) -> bool:
     return any(k in description for k in _TRIGGER_KEYWORDS)
 
 
-def lint_skill(name: str, description: str, content_md: str) -> list[dict]:
+def lint_skill(
+    name: str,
+    description: str,
+    content_md: str,
+    require_frontmatter: bool = True,
+) -> list[dict]:
     """按 Anthropic 基准校验一个技能的格式。
 
     Args:
         name: 技能名（= 目录名 / URL 中的名字）。
         description: 入参描述（通常取自 frontmatter，用于与正文交叉校验）。
         content_md: SKILL.md 全文（含 frontmatter 围栏）。
+        require_frontmatter: 是否要求正文带 ``---`` 围栏。
+            **写入口（用户提交 SKILL.md 原文）传 True**；
+            **全库扫描传 False**——库里 ``skills.content`` 存的是入库时已剥离
+            frontmatter 的正文（name/description 等拆进结构化列），
+            对库内数据要求围栏必然全量误报（2026-11-02 实测：534 条全红）。
 
     Returns:
         违规清单；每项 ``{level, rule, message}``。空列表 = 通过。
@@ -120,10 +130,15 @@ def lint_skill(name: str, description: str, content_md: str) -> list[dict]:
 
     match = _FM_RE.match(content_md)
     if match is None:
-        results.append(_item(
-            "error", "content_frontmatter_missing",
-            "缺少 YAML frontmatter：SKILL.md 必须以 --- 开头并用 --- 闭合",
-        ))
+        if require_frontmatter:
+            results.append(_item(
+                "error", "content_frontmatter_missing",
+                "缺少 YAML frontmatter：SKILL.md 必须以 --- 开头并用 --- 闭合",
+            ))
+            if not content_md.strip():
+                results.append(_item("error", "content_empty", "技能正文不能为空"))
+            return results
+        # 库内数据：frontmatter 已拆成结构化列，正文就是 content 全量
         if not content_md.strip():
             results.append(_item("error", "content_empty", "技能正文不能为空"))
         return results
