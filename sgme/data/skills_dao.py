@@ -53,6 +53,9 @@ _STOPWORDS: frozenset[str] = frozenset(
 # 技能名命中权重最高——name 是唯一性最强、噪声最小的信号。
 _BM25_WEIGHTS = (10.0, 5.0, 1.0)
 
+# T-401：依赖强度白名单——strong=缺了就跑不通（写侧删除应拦），weak=顺带一提（只提示）
+VALID_STRENGTHS: frozenset[str] = frozenset({"strong", "weak"})
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -133,13 +136,31 @@ def delete_skill(conn: sqlite3.Connection, name: str) -> None:
     conn.execute("DELETE FROM skill_uses WHERE src=? OR dst=?", (name, name))
 
 
-def replace_uses(conn: sqlite3.Connection, name: str, uses: list[str]) -> None:
-    """全量替换某技能的 uses 出向依赖（幂等）。"""
+def replace_uses(
+    conn: sqlite3.Connection,
+    name: str,
+    uses: list[str],
+    strength: str = "weak",
+) -> None:
+    """全量替换某技能的 uses 出向依赖（幂等）。
+
+    Args:
+        strength: 依赖强度，白名单 strong / weak（T-401）。默认 weak——存量
+            frontmatter 只有名字清单、没有强度信息，按最宽松语义落库不阻塞
+            任何既有删除/改名；上游显式声明强依赖后再收紧。
+
+    非法 strength **先校验后删边**：避免「删了旧边却写不进新边」的半截状态。
+    """
+    if strength not in VALID_STRENGTHS:
+        raise ValueError(
+            f"非法依赖强度: {strength!r}（合法值: {sorted(VALID_STRENGTHS)}）"
+        )
     conn.execute("DELETE FROM skill_uses WHERE src=?", (name,))
     for dst in uses or []:
         if dst:
             conn.execute(
-                "INSERT OR IGNORE INTO skill_uses (src, dst) VALUES (?,?)", (name, dst)
+                "INSERT OR IGNORE INTO skill_uses (src, dst, strength) VALUES (?,?,?)",
+                (name, dst, strength),
             )
 
 
@@ -335,6 +356,17 @@ def find_incoming(conn: sqlite3.Connection, name: str) -> list[str]:
     """入向引用：哪些技能 uses 了 name（写侧删除/改名的阻塞信号源）。"""
     cur = conn.execute("SELECT src FROM skill_uses WHERE dst=? ORDER BY src", (name,))
     return [r["src"] for r in cur.fetchall()]
+
+
+def find_incoming_edges(conn: sqlite3.Connection, name: str) -> list[dict[str, Any]]:
+    """入向引用边（含 strength，T-401）：strong=硬拦，weak=只提示。
+
+    与 find_incoming 同源同序；需要分级门禁的调用方用本函数。
+    """
+    cur = conn.execute(
+        "SELECT src, strength FROM skill_uses WHERE dst=? ORDER BY src", (name,)
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 def find_outgoing(conn: sqlite3.Connection, name: str) -> list[str]:

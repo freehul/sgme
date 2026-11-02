@@ -610,6 +610,8 @@ def connect_skills(data_dir: str | Path | None = None) -> sqlite3.Connection:
     migrated = _migrate_skills_name_seg(conn)
     # T-287：skill_vectors 补内容指纹列（存量行 NULL → 判待重嵌；不涉 FTS）
     _migrate_skill_vectors_content_sha(conn)
+    # T-401：skill_uses 补 strength（强/弱依赖）列；存量边一律回填 'weak'
+    _migrate_skill_uses_strength(conn)
     # FTS5 虚表 + 同步触发器（幂等；与 wiki 的 init_wiki_fts 同职责，
     # 但技能库体量小且无需历史重建，直接在连接时就绪，避免调用方漏调）
     conn.executescript(SKILLS_FTS_DDL)
@@ -631,8 +633,11 @@ def connect_skills(data_dir: str | Path | None = None) -> sqlite3.Connection:
 #   skills         主表（name PK + sha256 增量锚点 + frontmatter 字段 + 全文）
 #   skills_fts     FTS5 全文索引（外部内容表，索引 jieba 分词列）
 #   skill_vectors  向量（BLOB，对称 scene_vectors；sqlite-vec 加速 + numpy 降级）
-#   skill_uses     uses 依赖图（入向引用一级信号源，写侧门禁用）
+#   skill_uses     uses 依赖图（入向引用一级信号源，写侧门禁用）+ strength 强/弱依赖
 #   skill_sync_meta 同步水位（对账 cron / 增量嵌入用）
+#   skill_files    技能附属文件（references/scripts/assets，T-401 正式建表）
+#   skill_revisions 技能修订史（append-only，T-401 正式建表）
+#   skill_meta     生命周期状态（active/deprecated/tombstone + superseded_by，T-401）
 #
 # ⚠️ 刻意不加外键到 skills(name)：技能删除走墓碑制（store.py），
 #    外键会阻塞软删与重命名；存在性由 operations 层软校验。
@@ -668,6 +673,7 @@ CREATE TABLE IF NOT EXISTS skill_vectors (
 CREATE TABLE IF NOT EXISTS skill_uses (
   src TEXT NOT NULL,
   dst TEXT NOT NULL,
+  strength TEXT NOT NULL DEFAULT 'weak',
   PRIMARY KEY (src, dst));
 CREATE INDEX IF NOT EXISTS idx_skill_uses_dst ON skill_uses(dst);
 
@@ -675,6 +681,39 @@ CREATE TABLE IF NOT EXISTS skill_sync_meta (
   key TEXT PRIMARY KEY,
   value TEXT,
   updated_at TEXT);
+
+-- T-401：技能包附属文件与修订史（原只在 skill_package_dao.ensure_tables 懒建，
+-- 生产库从未建过；此处正式并入建表段，结构以 skill_package_dao 的 CREATE 为准，
+-- 两处列定义必须一致——tests/test_skills_db.py 有结构对账用例钉死）。
+CREATE TABLE IF NOT EXISTS skill_files (
+  skill_name TEXT NOT NULL,
+  rel_path   TEXT NOT NULL,
+  content    BLOB NOT NULL,
+  size       INTEGER NOT NULL,
+  sha256     TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (skill_name, rel_path));
+CREATE TABLE IF NOT EXISTS skill_revisions (
+  revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_name  TEXT NOT NULL,
+  version     TEXT NOT NULL,
+  package_sha256 TEXT NOT NULL,
+  file_count  INTEGER NOT NULL,
+  total_bytes INTEGER NOT NULL,
+  note        TEXT,
+  created_at  TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_skill_rev_name ON skill_revisions(skill_name, created_at);
+
+-- T-401：技能生命周期状态独立成表（不动 skills 主表——状态需在增量同步/改名
+-- 墓碑清理技能行后仍然存续；superseded_by 语义同 store.rename_skill 的墓碑 frontmatter）。
+-- 未登记行按 active 处理；白名单校验在 data/skill_meta_dao.py（DAOs 是唯一写入口）。
+CREATE TABLE IF NOT EXISTS skill_meta (
+  name TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'active'
+         CHECK (status IN ('active', 'deprecated', 'tombstone')),
+  superseded_by TEXT,
+  updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_skill_meta_status ON skill_meta(status);
 """
 
 # FTS5 外部内容表 + 同步触发器（对称 wiki/fts.py 的 WIKI_FTS_DDL / TRIGGERS）
@@ -790,6 +829,38 @@ def _migrate_skill_vectors_content_sha(conn: sqlite3.Connection) -> bool:
         conn.commit()
         return True
     return False
+
+
+def _migrate_skill_uses_strength(conn: sqlite3.Connection) -> bool:
+    """老库迁移（T-401，2026-11-02）：skill_uses 补 strength 依赖强度列。
+
+    Returns:
+        True = 本次补了列；False = 无需迁移（新库或已迁移过）。
+
+    背景：依赖图原先只有 (src,dst) 两列，「强依赖（缺了就跑不通）」与
+    「弱依赖（顺带一提）」无法区分，写侧门禁无法分级。迁移给列默认 'weak'：
+    存量边一律按最宽松语义处理（不阻塞任何既有删除/改名），强依赖由上游
+    按 frontmatter 显式声明后逐步收紧。
+
+    幂等：列已存在则跳过 ALTER；随后的回填只命中 NULL/空串（正常情况下零行，
+    兜底老库手工加过可空 strength 列的形态）。skill_uses 无 FTS 依赖，无需 rebuild。
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_uses'"
+    ).fetchone()
+    if not has_table:
+        return False
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(skill_uses)").fetchall()]
+    added = False
+    if "strength" not in cols:
+        # SQLite 的 ALTER ADD COLUMN 带常量默认值时，存量行自动取 'weak'
+        conn.execute(
+            "ALTER TABLE skill_uses ADD COLUMN strength TEXT NOT NULL DEFAULT 'weak'"
+        )
+        added = True
+    conn.execute("UPDATE skill_uses SET strength='weak' WHERE strength IS NULL OR strength=''")
+    conn.commit()
+    return added
 
 
 def _migrate_wiki_page_columns(conn: sqlite3.Connection) -> None:

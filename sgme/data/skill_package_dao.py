@@ -8,8 +8,10 @@ serialize 入库 → put_files 落库 → record_revision 留痕 →
 list_revisions 回溯 → write_skill_package 反序列化落盘。
 
 设计要点（仿 llm_usage_dao：自建表 + 幂等 + 纯 SQL）：
-- 表 ``skill_files`` / ``skill_revisions`` 由 ``ensure_tables()`` 自建
-  （CREATE TABLE IF NOT EXISTS），**不改 db.py 既有表定义**
+- 表 ``skill_files`` / ``skill_revisions`` 结构以本模块为准；``ensure_tables()``
+  仍是幂等自建入口（独立连接/测试用），而 ``data/db.py`` 的 SKILLS_DDL 已
+  正式并入同一份 CREATE（T-401，生产库启动即建，不再依赖调用方懒建）；
+  两处结构由 tests/test_skills_db.py 对账钉死，改一处必须同步另一处
 - skill_files 主键 (skill_name, rel_path)：put 重复即覆盖（replace）
 - 修订史只增不改（append-only），替代 git 版本管理；created_at 用 UTC ISO
 - package_sha256 口径与 skill_package.serialize_skill_dir 完全一致：
