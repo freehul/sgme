@@ -753,13 +753,20 @@ class TestMcpMethodSignatures(NoDeployConfig):
         self.assertEqual(args[1], {"days": 14})
         self.assertEqual(kw["scope"], "auto")
 
-    def test_review_auto_resolve_requires_admin_key(self):
-        """缺管理员 Key 时必须报密钥错（真实 _mcp 路径：密钥校验在 import mcp 之前）。"""
+    def test_review_auto_resolve_works_with_agent_key_only(self):
+        """服务端该端点用 require_agent_key（与 review_list/approve/reject 同档），
+
+        所以缺管理员 Key 时**不应**报密钥错——走 agent Key 即可。
+        （2026-11-02 订正：原用例按「admin-only」旧假设写，与服务端实现冲突。）
+        """
         c = make_client()
-        with env_ctx():
-            with self.assertRaises(SGMEError) as ctx:
-                c.review_auto_resolve()
-            self.assertIn("SGME_ADMIN_KEY", str(ctx.exception))
+        with mock.patch.object(c, "_mcp", return_value={"resolved": 0}) as mo:
+            with env_ctx():
+                c.review_auto_resolve(days=14)
+        args, kw = mo.call_args
+        self.assertEqual(args[0], "review_auto_resolve")
+        self.assertEqual(args[1], {"days": 14})
+        self.assertEqual(kw["scope"], "auto")
 
     def test_review_read_side_without_admin_key_still_works(self):
         """读/放行/拒绝是常规 agent 能力：缺管理员 Key 也必须可用（不误伤）。"""
@@ -771,7 +778,9 @@ class TestMcpMethodSignatures(NoDeployConfig):
             c.review_list()
             c.review_approve("mem-1", note="ok")
             c.review_reject("mem-1", "理由")
-        scopes = [call.kwargs.get("scope") for call in mo.call_args_list]
+        # 读/放行/拒绝不显式传 scope（用 _mcp 默认值），默认值即 agent——
+        # 所以这里用 get(..., "agent") 兜底，断言「三者都不走 admin 范围」。
+        scopes = [call.kwargs.get("scope", "agent") for call in mo.call_args_list]
         self.assertEqual(scopes, ["agent", "agent", "agent"])
 
     def test_stats(self):

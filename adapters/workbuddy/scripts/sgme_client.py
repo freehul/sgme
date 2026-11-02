@@ -755,7 +755,12 @@ class SGME:
         return self._mcp("review_reject", {"memory_id": memory_id, "reason": reason})
 
     def review_auto_resolve(self, days: int = 7):
-        """消化超期待审记忆（写侧：把超期记忆放行入库）。缺管理员 Key 时报密钥错。"""
+        """消化超期待审记忆（写侧：把超期记忆放行入库）。
+
+        鉴权：服务端该端点与 review_list/approve/reject 同为 require_agent_key，
+        agent Key 即可调用；有管理员 Key 时走 auto 范围优先使用（2026-11-02 核对订正——
+        旧注释写「缺管理员 Key 时报密钥错」与服务端实现不符）。
+        """
         return self._mcp("review_auto_resolve", {"days": days}, scope="auto")
 
     def stats(self):

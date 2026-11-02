@@ -33,7 +33,7 @@
 2026-08-28 起 wiki 桥接已移除，技能唯一来源为 ``skills.source_dirs`` 的 SKILL.md；
 ``wiki_conn`` 形参在部分操作（cold_start 手册检索）中仍用于取 SGME 操作手册，
 但不参与技能索引。本模块**不做索引缓存**（百条规模毫秒级重建，入口层可用 app.state
-缓存 BM25 索引对象复用，见 routes_skills._ensure_index）。
+缓存 BM25 索引对象复用（原 routes_skills._ensure_index 已于 2026-11-02 移除）。
 
 search_skills 融合：BM25 分数 + 向量余弦相似度简单加权和（0.6/0.4）；
 向量不可达（未配置/网络失败/维度不符）自动降级纯 BM25——镜像统一搜索

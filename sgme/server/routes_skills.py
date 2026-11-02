@@ -55,26 +55,9 @@ class MaterializeRequest(BaseModel):
     allowed_roots: list[str] | None = None
 
 
-def _ensure_index(request: Request):
-    """惰性建/复用 app.state.skills_bm25 索引对象（rebuild_if_stale 判过期）。
-
-    - 记录集现扫一次（git 工作区 ∪ wiki skill 页），与上次内容 SHA/数量一致
-      则复用既有 SkillsBm25 对象，变化才整表重建（百条规模毫秒级）；
-    - L0 列表端点消费 len(records)；L1/L2/L3 仍走 operations 层现查
-      （单技能取回无需全量索引）。
-    """
-    from sgme.skills.bm25 import rebuild_if_stale
-    from sgme.skills.config import parse_skills_config
-    from sgme.skills.indexer import index_all
-
-    cfg = request.app.state.cfg
-    sc = parse_skills_config(cfg)
-    wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
-    records = index_all(sc.source_dirs, wiki_conn)[: sc.budget]
-    cached = getattr(request.app.state, "skills_bm25", None)
-    index = rebuild_if_stale(cached, records)
-    request.app.state.skills_bm25 = index  # 写回（新索引或原对象）
-    return records
+# 2026-11-02 移除 `_ensure_index`：它每次 GET /v1/skills 全量扫盘建 BM25 写进
+# app.state.skills_bm25，但**无任何消费者**（列表实际走 skills.db）；而技能已全存库、
+# 读路径库优先，扫盘只在冷启动/库不可用时兜底。删掉省一次 822 技能 + wiki 页的 IO。
 
 
 # ---------- GET /v1/skills （L0 索引列表） ----------
@@ -93,7 +76,6 @@ def list_skills(
     from sgme.operations.skills import list_skills as list_skills_operation
 
     cfg = request.app.state.cfg
-    _ensure_index(request)  # 惰性建/复用 BM25 索引缓存（app.state.skills_bm25）
     wiki_conn: sqlite3.Connection | None = getattr(request.app.state, "wiki_conn", None)
     # T-112：库可用时走 skills.db（结构化查询 + 免全量扫描），None 时操作层回退内存索引
     skills_conn: sqlite3.Connection | None = getattr(request.app.state, "skills_conn", None)
