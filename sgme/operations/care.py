@@ -97,6 +97,64 @@ def delete_role(role_id: str) -> OperationResult:
     return OperationResult.succeed({"role_id": role_id, "status": "archived"})
 
 
+# ---------- 演化层（设计 4.2：共同经历/心情/性格三观变化，运行数据） ----------
+
+def _evolution_dir() -> Path:
+    return Path(sgme_config.ROLE_EVOLUTION_DIR)
+
+
+def get_evolution(role_id: str) -> OperationResult:
+    """读取角色演化层；文件不存在返回空结构 200（演化层是可选运行数据，不 404）。
+
+    结构：``{timeline, feelings, personality_changes, values_changes}``，
+    每类为条目列表（条目自带 ``at`` 时间戳，见 roles.EVOLUTION_FIELDS）。
+    """
+    try:
+        roles_mod.validate_role_id(role_id)
+        evo = roles_mod.load_evolution(role_id, _evolution_dir())
+    except ValueError as e:
+        raise InvalidArgs(str(e)) from e
+    except Exception as e:
+        return OperationResult.fail(ERR_INTERNAL, f"演化层读取失败: {e}")
+    return OperationResult.succeed({"role_id": role_id, **evo})
+
+
+def post_evolution(role_id: str, payload: dict[str, Any]) -> OperationResult:
+    """向演化层追加一条记录（kind 白名单 + 字段校验，详见 roles.append_evolution）。
+
+    角色必须存在（演化层是角色的运行数据，孤儿文件一律拒绝）；非法 kind /
+    缺必填字段抛 InvalidArgs（入口层翻译为 400）。
+    """
+    try:
+        roles_mod.validate_role_id(role_id)
+    except ValueError as e:
+        raise InvalidArgs(str(e)) from e
+    if not isinstance(payload, dict) or not payload.get("kind"):
+        raise InvalidArgs("演化层请求必须带 kind 字段", {"allowed": list(roles_mod.EVOLUTION_KINDS)})
+    kind = str(payload["kind"])
+    if kind not in roles_mod.EVOLUTION_KINDS:
+        raise InvalidArgs(
+            f"演化层 kind 非法: {kind!r}",
+            {"allowed": list(roles_mod.EVOLUTION_KINDS)},
+        )
+    try:
+        card = roles_mod.get_role(_roles_dir(), role_id)
+    except ValueError as e:
+        return OperationResult.fail(ERR_INTERNAL, str(e))
+    except Exception as e:
+        return OperationResult.fail(ERR_INTERNAL, f"角色读取失败: {e}")
+    if card is None:
+        return OperationResult.fail(ERR_NOT_FOUND, f"角色不存在: {role_id}")
+    entry = {k: v for k, v in payload.items() if k != "kind"}
+    try:
+        record = roles_mod.append_evolution(role_id, kind, entry, _evolution_dir())
+    except ValueError as e:
+        raise InvalidArgs(str(e)) from e
+    except Exception as e:
+        return OperationResult.fail(ERR_INTERNAL, f"演化层写入失败: {e}")
+    return OperationResult.succeed({"role_id": role_id, "kind": kind, "entry": record})
+
+
 # ---------- persona 物化（唯一物化例外） ----------
 
 def _build_profile(mem_conn: sqlite3.Connection) -> str:
