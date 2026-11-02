@@ -27,6 +27,13 @@
 （注入计数 sidecar，原样保留）+ T-252 记忆调用统计 ``memory_usage_daily``
 （source='inject'，A2 政策放宽仅限本表，2026-10-10 用户批）。
 
+D-72（2.0 对话冷场修复接线）：``inject`` 增加**可选** ``history`` / ``already_repaired``。
+调用方传入会话历史时，先 ``engine.conversation_state.assess`` 判冷场，
+``should_repair`` 放行则在 ``blocks`` 末尾追加一条修复提示块
+（``kind="coldstart_repair"``，带 ``reason`` / ``signals`` 供调用方识别）。
+不传 history → 响应与接线前逐字段一致（向后兼容）；engine 在此只用于纯函数判断，
+不读写任何库。
+
 投影函数说明：HTTP 与 MCP 两端对注入响应的历史契约形态**本就一致**
 （路由原样返回 response，MCP 直接 json.dumps(response)），因此按
 operations/__init__.py 约定**不写** http_payload / mcp_payload，两端直接使用 ``data``。
@@ -36,12 +43,13 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from sgme.data import memory_dao
+from sgme.engine import conversation_state
 from sgme.operations.errors import ERR_INTERNAL, ERR_INVALID_ARGS, OperationResult
 from sgme.operations.memory_usage import record_memory_usage
 from sgme.profile import inject as inject_mod
 from sgme.profile import template as template_mod
 from sgme.profile import tier0 as tier0_mod
-from sgme.data import memory_dao
 
 # mode 缺省回落目标（T-120：2026-08-30 接入实测定，daily 为最常用画像注入模式）
 DEFAULT_INJECT_MODE = "daily"
@@ -93,12 +101,55 @@ def _attach_fallback_note(response: dict[str, Any], mode: str) -> dict[str, Any]
     return response
 
 
+def _attach_coldstart_repair(
+    response: dict[str, Any],
+    history: list[dict[str, Any]] | None,
+    already_repaired: bool,
+) -> dict[str, Any]:
+    """D-72：对话冷场修复提示——冷场且未修补过时在 ``blocks`` 末尾附加一条。
+
+    - history：会话消息列表（时间正序，``{role, content}``）；None/空 → 原样返回
+    - already_repaired：调用方声明「本次冷场信号已修补过」→ 由修补闸拦下，不重复提示
+    - 命中时附加块 ``{"title", "items", "present", "kind": "coldstart_repair",
+      "reason", "signals"}``，``kind`` 是调用方识别修复提示的标记；
+      位置在末尾，既有 block 顺序与时序不变
+    - 脏数据容错：非 dict 条目跳过、缺失 content 视作空串（判冷场不因此抛异常）
+
+    调用时机：必须在 ``_attach_empty_note`` 之后（空注入提示按**记忆条数**判断，
+    修复块不是记忆，不能把「暂无相关记忆」抵掉）。
+    """
+    if not history or not isinstance(history, list):
+        return response
+    messages = [
+        {"role": str(m.get("role") or ""), "content": str(m.get("content") or "")}
+        for m in history
+        if isinstance(m, dict)
+    ]
+    state = conversation_state.assess(messages)
+    if not conversation_state.should_repair(state, already_repaired):
+        return response
+    hint = conversation_state.repair_hint(state)
+    if not hint:
+        return response
+    response.setdefault("blocks", []).append({
+        "title": "对话冷场修复",
+        "items": [{"content": hint}],
+        "present": True,
+        "kind": "coldstart_repair",
+        "reason": state.get("reason", ""),
+        "signals": state.get("signals", {}),
+    })
+    return response
+
+
 def inject(
     mem_conn: sqlite3.Connection,
     cfg: dict[str, Any],
     mode: str | None = None,
     custom_filter: dict[str, Any] | None = None,
     caller: str | None = None,
+    history: list[dict[str, Any]] | None = None,
+    already_repaired: bool = False,
 ) -> OperationResult:
     """记忆注入：mode 模板查询 或 custom_filter 自定义查询 → blocks + tier0。
 
@@ -115,6 +166,11 @@ def inject(
             ``limit``（默认 10）。
         caller: 调用方标识（T-252；入口层按鉴权 key 反查 agent_id），仅供
             记忆调用统计（source='inject'）记录使用，None → ``unknown``。
+        history: D-72 会话历史（时间正序 ``{role, content}``）。传入时判冷场，
+            冷场且未修补过则额外附加一条 ``kind="coldstart_repair"`` 的修复提示块。
+            不传（None/空）→ 行为与接线前完全一致。
+        already_repaired: D-72 修补闸入参——调用方已消费过本次冷场修复提示时传 True，
+            避免同一信号重复占预算。
 
     Returns:
         OperationResult(ok=True)，``data`` 为注入响应（HTTP/MCP 共用形态）：
@@ -169,6 +225,8 @@ def inject(
             if fallback_mode:
                 # 回落提示最后追加（_attach_empty_note 会整体覆盖 note，须先走既有链路）
                 response = _attach_fallback_note(response, fallback_mode)
+            # D-72：冷场修复块最后追加（不参与空注入/回落 note 判断）
+            response = _attach_coldstart_repair(response, history, already_repaired)
             return OperationResult.succeed(response)
 
         # ---------- 分支 2：custom_filter 自定义查询 ----------
@@ -219,7 +277,10 @@ def inject(
                 "content": tier0_summary,
             }
             response["stats"]["mode"] = "custom"
-            return OperationResult.succeed(_attach_key_missing_note(_attach_empty_note(response), cfg))
+            response = _attach_key_missing_note(_attach_empty_note(response), cfg)
+            # D-72：冷场修复块最后追加（同上）
+            response = _attach_coldstart_repair(response, history, already_repaired)
+            return OperationResult.succeed(response)
 
         # 显式传空值（mode=""/custom_filter={} 等非缺省态）→ 参数非法（照 v0.6 路由兜底文案；
         # 真正的缺省回落已在函数入口处理，T-120）

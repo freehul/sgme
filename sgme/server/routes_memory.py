@@ -61,6 +61,11 @@ class InjectRequest(BaseModel):
     mode: str | None = None
     max_tokens: int | None = None
     custom_filter: dict | None = None
+    # D-72：可选会话历史（时间正序 {role, content}）——传入才判冷场并附加修复提示，
+    # 不传保持既有响应完全不变
+    history: list[dict] | None = None
+    # D-72：调用方已消费过本次冷场修复提示 → 传 true 避免重复提示
+    already_repaired: bool = False
 
 
 class SearchRequest(BaseModel):
@@ -149,6 +154,9 @@ def inject_memories(
         mode=payload.mode,
         custom_filter=payload.custom_filter,
         caller=store.resolve_agent_id(auth_key),
+        # D-72：历史/修补状态仅在请求体显式携带时透传（缺省 None/False → 行为不变）
+        history=payload.history,
+        already_repaired=payload.already_repaired,
     )
 
 

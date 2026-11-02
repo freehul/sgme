@@ -846,8 +846,21 @@ def build_mcp_server():
 
     @mcp.tool()
     @tool
-    def inject(mode: str = "daily", max_tokens: int = 800, ctx: Context | None = None) -> str:
-        """记忆注入：按模式模板查询记忆池，返回注入块（画像视图）。"""
+    def inject(
+        mode: str = "daily",
+        max_tokens: int = 800,
+        history: list[dict] | None = None,
+        already_repaired: bool = False,
+        ctx: Context | None = None,
+    ) -> str:
+        """记忆注入：按模式模板查询记忆池，返回注入块（画像视图）。
+
+        D-72 冷场修复：MCP 协议只透传工具参数、**不带会话消息上下文**，
+        因此 history 必须由调用方显式传入（时间正序 [{role, content}]）。
+        传入冷场历史时，blocks 末尾会多一条 kind="coldstart_repair" 的修复提示块；
+        不传 → 行为与接线前完全一致。already_repaired=true 表示本次冷场提示已消费，
+        避免重复注入。
+        """
         from sgme.operations.inject import inject as inject_operation
         import json
         import sqlite3
@@ -856,7 +869,13 @@ def build_mcp_server():
         cfg = _app_state["cfg"]
         # T-252：调用方反查（鉴权 key → agent_id；直调/失败 → unknown），
         # 供记忆调用统计（source='inject'）记录
-        data = _op_json(inject_operation, mem_conn, cfg, mode=mode, caller=_usage_caller(ctx))
+        data = _op_json(
+            inject_operation, mem_conn, cfg,
+            mode=mode,
+            caller=_usage_caller(ctx),
+            history=history,
+            already_repaired=already_repaired,
+        )
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
