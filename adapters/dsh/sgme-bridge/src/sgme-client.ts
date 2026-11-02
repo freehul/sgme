@@ -106,6 +106,23 @@ export interface SkillDetail {
   source: string | null
 }
 
+/** 单技能缓存清单（GET /v1/skills/{name}/manifest，D-59 二级比对）。 */
+export interface SkillManifestResponse {
+  name: string
+  version: string
+  package_sha256: string
+  content_len: number
+  updated_at: string
+}
+
+/** 技能包下载结果（GET /v1/skills/{name}/package；非 2xx 由 status 表达）。 */
+export interface SkillPackageFetch {
+  status: number
+  data?: Buffer
+  headers?: Record<string, string>
+  error?: string
+}
+
 /** 冷启动包（GET /v1/skills/coldstart）：索引 + 热集 + SGME 操作手册。 */
 export interface SkillsColdstartResponse {
   index: { items: SkillSummary[]; total?: number }
@@ -1475,6 +1492,70 @@ export class SgmeClient {
       return null
     }
     return data
+  }
+
+  /**
+   * 目录版本（GET /v1/skills/catalog-version，Agent Key；D-59 一级缓存短路）。
+   *
+   * 失败返回 null（旧版服务端 / 技能模块未启用）——缓存层按「未知」降级，
+   * 不阻塞技能获取。
+   */
+  async skillCatalogVersion(): Promise<string | null> {
+    const [data, err] = await this.get<{ catalog_version: string }>(
+      '/v1/skills/catalog-version',
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillCatalogVersion failed: ${err}`)
+      return null
+    }
+    return data?.catalog_version ?? null
+  }
+
+  /** 单技能清单（GET /v1/skills/{name}/manifest，Agent Key；D-59 二级比对）。失败返回 null。 */
+  async skillManifest(name: string): Promise<SkillManifestResponse | null> {
+    const [data, err] = await this.get<SkillManifestResponse>(
+      `/v1/skills/${encodeURIComponent(name)}/manifest`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] skillManifest failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /**
+   * 技能完整包（GET /v1/skills/{name}/package，Agent Key；T-281 跨机通道）。
+   *
+   * 二进制下载，不走 JSON 解析；非 2xx 由返回的 status 表达（404/405 = 服务端未
+   * 部署包通道，调用方回退服务端 materialize）。超时 300s（大技能包）。
+   */
+  async skillPackage(name: string): Promise<SkillPackageFetch> {
+    const url = `${this.baseUrl}/v1/skills/${encodeURIComponent(name)}/package`
+    try {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), Math.max(this.timeoutMs, 300_000))
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: { 'X-API-Key': this.agentKey },
+        signal: ctrl.signal,
+      })
+      clearTimeout(timer)
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        return { status: resp.status, error: `HTTP ${resp.status}: ${text.slice(0, 200)}` }
+      }
+      const data = Buffer.from(await resp.arrayBuffer())
+      const headers: Record<string, string> = {}
+      resp.headers.forEach((value, key) => {
+        headers[key.toLowerCase()] = value
+      })
+      return { status: resp.status, data, headers }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      return { status: 0, error: `fetch error: ${msg}` }
+    }
   }
 
   /**

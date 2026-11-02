@@ -121,7 +121,7 @@ SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、
 | 48 | credential_list | HTTP | `sgme_client.py credential-list` |
 | 49 | credential_get | HTTP | `sgme_client.py credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
 
-适配器自有扩展（超出基准）：`fetch <name> <dest_dir>`（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包；失败不留残件）、`events-pull`（HTTP 事件游标）、`events-after`（增量拉取）、`wiki-raw`（取原始文件）、`capabilities`（能力矩阵核对）、`env-info`（端点自检）、`mcp <tool> k=v …`（逃生口：直接调任意 MCP 工具，加 `--admin` 走管理员 Key）。
+适配器自有扩展（超出基准）：`fetch <name> <dest_dir>`（跨机取技能完整包：两级缓存（目录版本短路 + package_sha256 比对，命中零下载）→ 未命中才下载 → MANIFEST 校验 → 安全解包；失败不留残件）、`events-pull`（HTTP 事件游标）、`events-after`（增量拉取）、`wiki-raw`（取原始文件）、`capabilities`（能力矩阵核对）、`env-info`（端点自检）、`mcp <tool> k=v …`（逃生口：直接调任意 MCP 工具，加 `--admin` 走管理员 Key）。
 
 ## 主动关怀守护（可选）
 

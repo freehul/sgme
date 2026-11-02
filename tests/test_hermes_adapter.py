@@ -435,7 +435,6 @@ _ENDPOINTS = {
     "sgme_skill_search": ("POST", "/v1/search"),
     "sgme_skill_digest": ("GET", "/v1/skills/demo-skill/digest"),
     "sgme_skill_get": ("GET", "/v1/skills/demo-skill"),
-    "sgme_skill_materialize": ("POST", "/v1/skills/demo-skill/materialize"),
     "sgme_skill_list": ("GET", "/v1/skills"),
     "sgme_skill_coldstart": ("GET", "/v1/skills/coldstart"),
     "sgme_skill_put": ("PUT", "/v1/admin/skills/demo-skill"),
@@ -489,7 +488,6 @@ _CALL_ARGS = {
     "sgme_skill_search": {"query": "docker 部署"},
     "sgme_skill_digest": {"name": "demo-skill"},
     "sgme_skill_get": {"name": "demo-skill"},
-    "sgme_skill_materialize": {"name": "demo-skill"},
     "sgme_skill_list": {},
     "sgme_skill_coldstart": {},
     "sgme_skill_put": {"name": "demo-skill", "content": "---\nname: demo\n---\n正文"},
@@ -752,9 +750,14 @@ def test_skill_get_normalizes_section():
     assert "params" not in fake.calls[0], "无 section 时不应传 params"
 
 
-def test_skill_materialize_fixed_root_and_rejects_dest_dir():
+def test_skill_materialize_fixed_root_and_rejects_dest_dir(monkeypatch):
     """catalog 审核整改（2026-10）：materialize 落盘根固定（plugin-data）；
-    dest_dir 停用（模型自选路径被拒绝且不触网）。"""
+    dest_dir 停用（模型自选路径被拒绝且不触网）。
+
+    包通道不可用时回退服务端 materialize（旧版 SGME 兼容路径）；新版的本地落盘
+    行为见 ``tests/test_hermes_skill_cache.py``。
+    """
+    monkeypatch.setattr(hermes_mod, "_skill_cache", None)  # 模拟包通道不可用
     p, fake = _tool_provider()
     p._hermes_home = "/tmp/fake-hermes-home"
     err = json.loads(p.handle_tool_call("sgme_skill_materialize", {"name": "demo-skill", "dest_dir": "/srv/skills"}))

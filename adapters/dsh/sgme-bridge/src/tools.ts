@@ -18,6 +18,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { buildInjectionText } from './context.js'
 import type { SgmeClient } from './sgme-client.js'
 import type { SgmeEventSubscriber } from './events.js'
+import { HTTPStatusError, SkillCache } from './skill-cache.js'
+import type { SkillCacheTransport } from './skill-cache.js'
 
 /** 工具参数：检索查询。 */
 interface SearchArgs {
@@ -1919,15 +1921,34 @@ export function createRefineBatchTool(client: SgmeClient) {
 
 // ---------- 技能 L3 物化 + 写侧（ST-36 M3） ----------
 
-/** 创建 skill_materialize 工具（L3：字节保真落盘成真文件）。 */
+/**
+ * 把 SgmeClient 适配成技能缓存传输层（D-59）。
+ *
+ * 目录/清单端点失败返回 null（缓存层按「未知」降级）；包下载失败抛
+ * HTTPStatusError，供调用方区分「服务端未部署包通道」与真实错误。
+ */
+function skillCacheTransport(client: SgmeClient): SkillCacheTransport {
+  return {
+    getCatalogVersion: () => client.skillCatalogVersion(),
+    getManifest: (name) => client.skillManifest(name),
+    async getPackage(name) {
+      const r = await client.skillPackage(name)
+      if (r.status === 200 && r.data) {
+        return { data: r.data, headers: r.headers ?? {} }
+      }
+      throw new HTTPStatusError(r.status, r.error ?? `HTTP ${r.status}`)
+    },
+  }
+}
+
+/** 创建 skill_materialize 工具（L3：字节保真落盘成真文件；D-59 本地缓存）。 */
 export function createSkillMaterializeTool(client: SgmeClient) {
   return defineTool({
     name: 'skill_materialize',
     description: [
-      '把 SGME 技能物化成真文件：字节保真写盘 dest_dir/<name>/SKILL.md，返回路径与 sha256。',
-      '⚠️ 落盘发生在 SGME **服务端**：dest_dir 是服务端可写路径、返回的 path 也是服务端路径。',
-      'SGME 与 agent 同机部署时可直接读该文件；跨机（如 agent 在 PC、SGME 在 NAS 容器）时',
-      'agent 本地拿不到产物，需两端共享挂载该目录才能访问——此时请改用 skill_get 取正文。',
+      '把 SGME 技能落盘为**本地**真文件：字节保真写盘 dest_dir/<name>/，返回本地路径与 sha256。',
+      '走技能库包通道 + 两级缓存（目录版本短路 + package_sha256 比对）：已是最新时零下载。',
+      '旧版 SGME 未部署包通道时自动回退服务端物化（此时 path 是服务端路径）。',
     ].join(' '),
     parameters: {
       name: {
@@ -1938,7 +1959,7 @@ export function createSkillMaterializeTool(client: SgmeClient) {
       dest_dir: {
         type: 'string',
         required: true,
-        description: '目标目录（技能会写到 <dest_dir>/<name>/SKILL.md）',
+        description: '目标目录（技能会写到 <dest_dir>/<name>/）',
       },
     },
     output: {
@@ -1947,11 +1968,23 @@ export function createSkillMaterializeTool(client: SgmeClient) {
     },
     async execute(args, _exec) {
       const a = args as unknown as { name: string; dest_dir: string }
-      const resp = await client.skillMaterialize(a.name, a.dest_dir)
-      if (!resp) {
-        return `[skill_materialize 失败：技能不存在、dest_dir 非法或 Gateway 不可达（name="${a.name}"）]`
+      try {
+        const cache = new SkillCache(skillCacheTransport(client), a.dest_dir)
+        const result = await cache.ensureSkill(a.name, a.dest_dir)
+        const hit = result.cached ? '（缓存命中，零下载）' : ''
+        return `[skill_materialize 已落盘（本地）：${result.path}\nsha256=${result.sha256}${hit}]`
+      } catch (err) {
+        if (err instanceof HTTPStatusError && (err.status === 404 || err.status === 405)) {
+          // 旧版 SGME：包通道未部署 → 回退服务端 materialize（行为与 1.x 一致）
+          const resp = await client.skillMaterialize(a.name, a.dest_dir)
+          if (!resp) {
+            return `[skill_materialize 失败：技能不存在、dest_dir 非法或 Gateway 不可达（name="${a.name}"）]`
+          }
+          return `[skill_materialize 已落盘（服务端路径，旧版回退）：${resp.path}\nsha256=${resp.sha256}]`
+        }
+        const msg = err instanceof Error ? err.message : String(err)
+        return `[skill_materialize 失败：${msg}]`
       }
-      return `[skill_materialize 已落盘（服务端路径）：${resp.path}\nsha256=${resp.sha256}]`
     },
   })
 }

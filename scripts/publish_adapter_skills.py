@@ -53,6 +53,7 @@ KEEP_TOP = {
     "plugin.yaml",
     "config_schema.py",
     "__init__.py",
+    "skill_cache.py",
     "README.md",
     "codex_sgme",
     "claude_sgme",

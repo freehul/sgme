@@ -16,7 +16,7 @@ tags: [skill, adapter, sgme]
 ## 获取与安装（自助）
 
 1. `skill_search("adapter dsh")` → `skill_get` 确认版本与纪律
-2. `skill_materialize(name="adapter-dsh", dest_dir="<工作区>")` 落盘完整包（**仅同机**——落盘在 SGME 服务端文件系统）；**跨机**改用**包通道**取完整包：`GET /v1/skills/{name}/package`（或 `skill_fetch.py --name adapter-dsh --dest <工作区>` 一键下载校验解包，脚本经 `GET /v1/onboarding/docs` 在线获取；失败不留残件）
+2. `skill_materialize(name="adapter-dsh", dest_dir="<工作区>")` 落盘完整包到**本地** `<工作区>/adapter-dsh/`（走技能库包通道 + 两级缓存：目录版本短路 + `package_sha256` 比对，命中零下载；旧版服务端自动回退服务端物化）。也可直接用包通道 `GET /v1/skills/{name}/package`（或 `skill_fetch.py --name adapter-dsh --dest <工作区>` 一键下载校验解包，脚本经 `GET /v1/onboarding/docs` 在线获取；失败不留残件）
 3. 运行 `python scripts/install.py --dir <项目根>`（注册 agent、写 `.env`、打印加载命令）
 4. `dsh plugin add "link:<包路径>/package/sgme-bridge"`（或仓库路径）
 5. 在含 `.env` 的目录启动 dsh

@@ -36,6 +36,24 @@ try:
 except ImportError:  # pragma: no cover
     _HAS_HTTPX = False
 
+# D-59：技能落盘缓存（本目录随包副本，真源 adapters/_shared/skill_cache.py）
+try:
+    from . import skill_cache as _skill_cache
+except ImportError:  # pragma: no cover - 单文件方式加载插件时按路径兜底
+    _skill_cache = None
+    try:
+        import importlib.util as _ilu
+
+        _cache_spec = _ilu.spec_from_file_location(
+            "sgme_skill_cache",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "skill_cache.py"),
+        )
+        if _cache_spec and _cache_spec.loader:
+            _skill_cache = _ilu.module_from_spec(_cache_spec)
+            _cache_spec.loader.exec_module(_skill_cache)
+    except Exception:  # 缓存是可选项：加载失败只降级回旧 materialize 路径
+        _skill_cache = None
+
 try:
     from agent.memory_provider import MemoryProvider
 except ImportError:  # pragma: no cover
@@ -292,6 +310,52 @@ def _coerce_local_value(key: str, value: Any) -> Any:
     if key in ("capture_enabled", "refine_on_end"):
         return _bool_arg(value, True)
     return str(value if value is not None else "").strip()
+
+
+class _SkillCacheTransport:
+    """把插件的 httpx 客户端适配成 SkillCache 传输层（D-59）。
+
+    复用 provider 的 base_url / agent_key / timeout 与 ``trust_env=False`` 的客户端
+    （防 Clash 劫持回环请求，项目铁律）；目录/清单端点失败由缓存层记为「不可比」
+    并降级为直接拉包，包下载失败则把 HTTP 语义原样抛给调用方。
+    """
+
+    def __init__(self, provider: "SGMEProvider") -> None:
+        self._provider = provider
+
+    def _get(self, path: str):
+        assert _skill_cache is not None
+        cli = self._provider._http()
+        if cli is None:
+            raise _skill_cache.SkillCacheError("httpx 不可用（插件依赖缺失）")
+        try:
+            r = cli.get(
+                f"{self._provider.base_url}{path}",
+                headers={"X-API-Key": self._provider.agent_key},
+                timeout=self._provider.timeout,
+            )
+        except Exception as e:
+            raise _skill_cache.SkillCacheError(f"SGME Gateway 不可达: {e}") from e
+        status = int(getattr(r, "status_code", 0) or 0)
+        if status != 200:
+            detail = str(getattr(r, "text", "") or "")[:200]
+            raise _skill_cache.HTTPStatusError(status, f"SGME 返回 {status}: {detail}")
+        return r
+
+    def get_json(self, path: str):
+        r = self._get(path)
+        try:
+            return r.json()
+        except Exception as e:
+            raise _skill_cache.SkillCacheError(f"响应解析失败: {e}") from e  # type: ignore[union-attr]
+
+    def get_bytes(self, path: str):
+        r = self._get(path)
+        body = getattr(r, "content", None)
+        if body is None:  # 传输层兜底：httpx Response 一定有 content，测试 stub 未必
+            body = b""
+        headers = {str(k).lower(): v for k, v in (getattr(r, "headers", {}) or {}).items()}
+        return bytes(body), headers
 
 
 class SGMEProvider(MemoryProvider):
@@ -1526,9 +1590,9 @@ class SGMEProvider(MemoryProvider):
         },
         {
             "name": "sgme_skill_materialize",
-            "description": "把 SGME 技能物化成真文件：字节保真写盘 dest_dir/<name>/SKILL.md，返回 path 与 sha256。"
-                           "⚠️ 落盘发生在 SGME 服务端：dest_dir 与返回的 path 都是服务端路径；"
-                           "跨机部署（agent 在本地、SGME 在远端）时本地拿不到产物，请改用 sgme_skill_get 取正文。",
+            "description": "把 SGME 技能落盘为**本地**真文件：字节保真写盘 <HERMES_HOME>/plugin-data/sgme/skills/<name>/，返回本地 path 与 sha256。"
+                           "走技能库包通道 + 两级缓存（目录版本短路 + package_sha256 比对）：已是最新时零下载。"
+                           "dest_dir 参数已停用（落盘根固定，防绕过写保护）。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2343,12 +2407,14 @@ class SGMEProvider(MemoryProvider):
         return self._ok(data)
 
     def _t_skill_materialize(self, args: Dict[str, Any]) -> str:
-        """sgme_skill_materialize：技能 L3 物化落盘（固定根；catalog 审核整改，禁模型自选路径）。
+        """sgme_skill_materialize：技能落盘到**本地**固定根（包通道 + D-59 两级缓存）。
 
-        落盘根固定 = ``$HERMES_HOME/plugin-data/sgme/skills/``（resolve + 白名单校验
-        在服务端 ``materialize`` 兜底执行）：模型自选 dest_dir 可绕过 Hermes 写保护
-        （如把技能包写进 Hermes 技能目录而不过技能扫描器），审核意见 1 必改项。
-        ``sgme_skill_get`` 覆盖「取正文自行写盘」场景；本工具保留服务端整包落盘。
+        落盘根固定 = ``$HERMES_HOME/plugin-data/sgme/skills/``（catalog 审核整改：
+        禁模型自选 dest_dir，防绕过 Hermes 写保护）。D-60：技能来源从「服务端
+        materialize」改为「库接口 + 落盘缓存」——先 catalog_version 短路、再
+        package_sha256 比对，命中零传输；未命中才下载完整包、按包内 MANIFEST 校验后
+        原子替换。服务端未部署包通道（404/405）时回退旧的 materialize 端点，
+        旧版 SGME 照常可用。
         """
         name = _arg_str(args, "name")
         requested = _arg_str(args, "dest_dir", 1000)
@@ -2363,6 +2429,25 @@ class SGMEProvider(MemoryProvider):
         root = self._materialize_root()
         if not root:
             return self._err("无法确定 HERMES_HOME（物化落盘根），请经 Hermes 正常启动本插件")
+        if _skill_cache is not None:
+            try:
+                cache = _skill_cache.SkillCache(_SkillCacheTransport(self), state_dir=root)
+                path = cache.ensure_skill(name, root)
+                manifest = cache.last_manifest or {}
+                return self._ok({
+                    "name": name,
+                    "path": str(path),
+                    "sha256": manifest.get("content_hash", ""),
+                    "files": len(manifest.get("files") or []),
+                    "cached": bool(cache.last_hit),
+                    "channel": "package-cache",
+                })
+            except _skill_cache.HTTPStatusError as e:
+                # 404/405 = 服务端未部署包通道（旧版 SGME）→ 回退服务端 materialize
+                if e.status not in (404, 405):
+                    return self._err(f"技能物化失败（name={name}）: {e}")
+            except _skill_cache.SkillCacheError as e:
+                return self._err(f"技能物化失败（name={name}）: {e}")
         data, err = self._request(
             "POST", f"/v1/skills/{_path_seg(name)}/materialize",
             json_body={"dest_dir": root, "allowed_roots": [root]},

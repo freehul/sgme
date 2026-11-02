@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 # 本项目 adapters/hermes/ 目录（脚本所在位置）
 SRC_DIR = Path(__file__).resolve().parent
-FILES = ("__init__.py", "config_schema.py", "plugin.yaml")
+FILES = ("__init__.py", "config_schema.py", "plugin.yaml", "skill_cache.py")
 
 # 默认 SGME 地址（回环）；生产部署用 SGME_BASE_URL 指向远端 SGME（如 http://<NAS_IP>:9910）
 DEFAULT_BASE_URL = "http://127.0.0.1:9910"
