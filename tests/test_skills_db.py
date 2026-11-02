@@ -1033,3 +1033,48 @@ class TestVectorVersionedEmbedding:
         ).fetchone()
         assert row["content_sha256"] is None
         c.close()
+
+
+# ---------- 读侧 status 过滤（T-401/T-402 生命周期）----------
+
+
+class TestStatusFilter:
+    def test_list_skills_excludes_tombstone(self, conn):
+        from tests.test_skill_cache import _seed
+
+        _seed(conn, "keep", "# keep")
+        _seed(conn, "gone", "# gone")
+        conn.execute("UPDATE skills SET status='tombstone' WHERE name='gone'")
+        conn.commit()
+
+        names = {s["name"] for s in skills_dao.list_skills(conn)}
+        assert "gone" not in names
+        assert "keep" in names
+
+    def test_list_skills_include_tombstone_flag(self, conn):
+        from tests.test_skill_cache import _seed
+
+        _seed(conn, "gone", "# gone")
+        conn.execute("UPDATE skills SET status='tombstone' WHERE name='gone'")
+        conn.commit()
+        names = {s["name"] for s in skills_dao.list_skills(conn, include_tombstone=True)}
+        assert "gone" in names
+
+    def test_deprecated_still_listed(self, conn):
+        from tests.test_skill_cache import _seed
+
+        _seed(conn, "old", "# old")
+        conn.execute("UPDATE skills SET status='deprecated' WHERE name='old'")
+        conn.commit()
+        names = {s["name"] for s in skills_dao.list_skills(conn)}
+        assert "old" in names  # 停用只降权，不隐藏
+
+    def test_count_skills_excludes_tombstone(self, conn):
+        from tests.test_skill_cache import _seed
+
+        _seed(conn, "a", "# a")
+        _seed(conn, "b", "# b")
+        conn.execute("UPDATE skills SET status='tombstone' WHERE name='b'")
+        conn.commit()
+        assert skills_dao.count_skills(conn) == 1
+        assert skills_dao.count_skills(conn, include_tombstone=True) == 2

@@ -185,18 +185,41 @@ def get_skill(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
     return _row_to_skill(r) if r else None
 
 
+def _has_status_column(conn: sqlite3.Connection) -> bool:
+    """skills 表是否有 status 列（T-402 迁移后才会有；老库/只读测试库可能没有）。
+
+    不假设列一定存在，避免在未迁移的库上直接抛 "no such column: status"。
+    """
+    try:
+        return any(r[1] == "status" for r in conn.execute("PRAGMA table_info(skills)"))
+    except sqlite3.Error:
+        return False
+
+
 def list_skills(
     conn: sqlite3.Connection,
     offset: int = 0,
     limit: int | None = None,
     category: str | None = None,
+    include_tombstone: bool = False,
 ) -> list[dict[str, Any]]:
-    """L0 索引列表（轻量投影，不含 content；按名排序，支持 category 过滤）。"""
+    """L0 索引列表（轻量投影，不含 content；按名排序，支持 category 过滤）。
+
+    T-401/T-402 生命周期：默认**排除 tombstone**（已改名/已废弃的墓碑技能不该
+    出现在列表里让人误以为可用）；``include_tombstone=True`` 供管理面/排查用。
+    deprecated（停用但未删）仍返回——它只是降权，不是不可用。
+    老库没有 status 列时按 active 处理（COALESCE 兜底）。
+    """
     sql = "SELECT name, description, category, tags, version, pattern, source, updated_at FROM skills"
+    conds: list[str] = []
     params: list[Any] = []
     if category:
-        sql += " WHERE category=?"
+        conds.append("category=?")
         params.append(category)
+    if not include_tombstone and _has_status_column(conn):
+        conds.append("COALESCE(status,'active') != 'tombstone'")
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY name ASC"
     if limit is not None:
         sql += " LIMIT ? OFFSET ?"
@@ -204,13 +227,20 @@ def list_skills(
     return [_row_to_skill(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def count_skills(conn: sqlite3.Connection, category: str | None = None) -> int:
-    """技能总数（可选按 category 过滤；与 list_skills 口径一致）。"""
+def count_skills(
+    conn: sqlite3.Connection, category: str | None = None, include_tombstone: bool = False
+) -> int:
+    """技能总数（可选按 category 过滤；与 list_skills 口径一致，默认排除墓碑）。"""
     sql = "SELECT COUNT(*) AS n FROM skills"
+    conds: list[str] = []
     params: list[Any] = []
     if category:
-        sql += " WHERE category=?"
+        conds.append("category=?")
         params.append(category)
+    if not include_tombstone and _has_status_column(conn):
+        conds.append("COALESCE(status,'active') != 'tombstone'")
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
     return int(conn.execute(sql, params).fetchone()["n"])
 
 
