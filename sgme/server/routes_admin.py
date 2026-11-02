@@ -8,6 +8,10 @@
 - POST   /v1/admin/tier0/refresh     手动触发 Tier0 摘要生成
 - GET    /v1/admin/memories          记忆分页列表（0.8 T-15 / 契约 §5.3）
 - GET    /v1/admin/scenes            场景分页列表（0.8 T-15 / 契约 §5.4）
+- GET    /v1/admin/skill-candidates  技能候选池列表（2.0 D-67）
+- GET    /v1/admin/skill-candidates/pending  未消费的 skill_candidate 记忆（D-67）
+- POST   /v1/admin/skill-candidates/adopt    记忆 → 技能候选（D-67，幂等）
+- PATCH  /v1/admin/skill-candidates/{memory_id} 候选审核 accepted/ignored（D-67，幂等）
 - GET    /v1/admin/refine_runs       提炼记录分页（0.8 T-15 / 契约 §5.5）
 - GET    /v1/admin/sessions          L0 会话列表（0.8 T-15 / 契约 §5.6.1）
 - GET    /v1/admin/sessions/{file_id} L0 会话原文（0.8 T-15 / 契约 §5.6.2）
@@ -1294,6 +1298,131 @@ def skills_sync(
     except ValueError as e:
         raise api_error("ERR_INVALID_ARGS", str(e)) from e
     return {"sync": result}
+
+
+# ---------- D-67：技能候选池（route=skill_candidate 消费端） ----------
+
+class SkillCandidateAdoptRequest(BaseModel):
+    """把一条 skill_candidate 记忆转入候选池。"""
+
+    memory_id: str
+    status: str | None = None
+    note: str | None = None
+    dedupe: bool = True
+
+
+class SkillCandidateReviewRequest(BaseModel):
+    """审核候选：accepted / ignored / pending / promoted。"""
+
+    decision: str
+    note: str | None = None
+    reviewer: str | None = None
+
+
+def _skill_candidates_conn(request: Request):
+    """取 skills.db 连接（模块未启用 → 400）。"""
+    conn = getattr(request.app.state, "skills_conn", None)
+    if conn is None:
+        raise api_error("ERR_INVALID_ARGS", "skills 模块未启用（skills.db 不可用）")
+    return conn
+
+
+@router.get("/v1/admin/skill-candidates")
+def admin_skill_candidates(
+    request: Request,
+    status: str | None = None,
+    min_confidence: float | None = Query(default=None, ge=0, le=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    _: str = Depends(require_admin_key),
+):
+    """技能候选池分页列表（D-67）。
+
+    返回 ``{items, count, total, summary}``；``status`` 可选
+    pending/accepted/ignored/promoted，``min_confidence`` 过滤置信度下限。
+    """
+    from sgme.operations import skill_candidates as sc
+
+    conn = _skill_candidates_conn(request)
+    r = sc.list_skill_candidates(
+        conn,
+        status=status,
+        min_confidence=min_confidence,
+        limit=limit,
+        offset=offset,
+    )
+    if not r.ok:
+        raise api_error(r.error_code or "ERR_INTERNAL", r.message or "候选列表失败")
+    summary = sc.candidate_summary(conn)
+    return {**(r.data or {}), "summary": summary.data if summary.ok else {}}
+
+
+@router.get("/v1/admin/skill-candidates/pending")
+def admin_skill_candidates_pending(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    min_confidence: float | None = Query(default=None, ge=0, le=1),
+    _: str = Depends(require_admin_key),
+):
+    """尚未消费的 route=skill_candidate 记忆（转入前的人工/LLM 审核队列）。"""
+    from sgme.operations import skill_candidates as sc
+
+    r = sc.list_pending_route_memories(
+        request.app.state.mem_conn,
+        _skill_candidates_conn(request),
+        limit=limit,
+        offset=offset,
+        min_confidence=min_confidence,
+    )
+    if not r.ok:
+        raise api_error(r.error_code or "ERR_INTERNAL", r.message or "待消费列表失败")
+    return r.data
+
+
+@router.post("/v1/admin/skill-candidates/adopt")
+def admin_skill_candidate_adopt(
+    payload: SkillCandidateAdoptRequest,
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """把一条 skill_candidate 记忆转成技能候选（幂等，重复调用 created=false）。"""
+    from sgme.operations import skill_candidates as sc
+
+    r = sc.adopt_skill_candidate(
+        request.app.state.mem_conn,
+        _skill_candidates_conn(request),
+        payload.memory_id,
+        status=payload.status,
+        note=payload.note,
+        dedupe=payload.dedupe,
+    )
+    if not r.ok:
+        raise api_error(r.error_code or "ERR_INTERNAL", r.message or "转入候选失败")
+    return r.data
+
+
+@router.patch("/v1/admin/skill-candidates/{memory_id}")
+def admin_skill_candidate_review(
+    memory_id: str,
+    payload: SkillCandidateReviewRequest,
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """标记候选 accepted / ignored / pending / promoted（幂等）。"""
+    from sgme.operations import skill_candidates as sc
+
+    r = sc.review_skill_candidate(
+        request.app.state.mem_conn,
+        _skill_candidates_conn(request),
+        memory_id,
+        payload.decision,
+        note=payload.note,
+        reviewer=payload.reviewer,
+    )
+    if not r.ok:
+        raise api_error(r.error_code or "ERR_INTERNAL", r.message or "审核候选失败")
+    return r.data
 
 
 # ---------- GET /v1/admin/skills（技能仓库基础信息 + 列表） ----------
