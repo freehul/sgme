@@ -9,6 +9,7 @@
 端点（读侧 GET 归 routes_skills.py，另一代理并行开发；本路由在 app.py 中
 先于 routes_admin 注册——同路径写端点由治理版优先接管）：
     PUT    /v1/admin/skills/{name}               写入（{meta,body} 或 {content} 自动解析）
+    POST   /v1/admin/skills/{name}/lint          格式预检（只校验不入库，T-403）
     PUT    /v1/admin/skills/{name}/files/{path}  资产写入（ST-45；references/scripts/assets 白名单目录）
     DELETE /v1/admin/skills/{name}?hard=&force=  删除（默认软删；入向引用未 force → 409）
     POST   /v1/admin/skills/{name}/rename        {new_name} 改名（墓碑制，永不原地改名）
@@ -102,6 +103,55 @@ def _parse_body(body: dict | None) -> tuple[dict, str]:
         "ERR_INVALID_ARGS",
         "请求体需要 {meta, body} 或 {content}（SKILL.md 全文，自动解析 frontmatter）",
     )
+
+
+# ---------- 格式预检（T-403，设计 §5.2 Anthropic 基准） ----------
+
+
+@router.post("/v1/admin/skills/{name}/lint")
+def lint_skill_endpoint(
+    name: str,
+    request: Request,
+    body: dict | None = None,
+    _: str = Depends(require_admin_key),
+):
+    """只校验不入库：按 Anthropic 基准返回技能格式违规清单。
+
+    Body 与 PUT 一致：``{"content": "<SKILL.md 全文>"}`` 或
+    ``{"meta": {...}, "body": "..."}``。
+
+    - 合法 → 200 ``{"ok": true, "errors": [], "warnings": [...]}``
+    - 违规 → 200 ``{"ok": false, "errors": [...], "warnings": [...], "violations": [...]}``
+      （预检端点不写库、不返回 400；调用方按 ok 判定）
+    """
+    from sgme.operations.skill_lint import lint_skill
+    from sgme.skills.indexer import parse_skill_md
+    from sgme.skills.store import render_skill_md
+
+    b = body or {}
+    if isinstance(b.get("content"), str) and b["content"].strip():
+        content = b["content"]
+        description = str(parse_skill_md(content)["meta"].get("description") or "")
+    elif "meta" in b and "body" in b:
+        meta = dict(b.get("meta") or {})
+        content = render_skill_md(meta, str(b.get("body") or ""))
+        description = str(meta.get("description") or "")
+    else:
+        raise api_error(
+            "ERR_INVALID_ARGS",
+            "请求体需要 {content}（SKILL.md 全文）或 {meta, body}",
+        )
+
+    results = lint_skill(name, description, content)
+    errors = [r for r in results if r["level"] == "error"]
+    warnings = [r for r in results if r["level"] == "warn"]
+    return {
+        "ok": not errors,
+        "name": name,
+        "errors": errors,
+        "warnings": warnings,
+        "violations": [e["message"] for e in errors],
+    }
 
 
 # ---------- 兼容回退：skills_hub 直写路径（source_dirs 未配置时） ----------

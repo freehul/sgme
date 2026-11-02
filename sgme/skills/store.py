@@ -30,6 +30,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from sgme.operations.skill_lint import lint_skill as lint_skill_format
 from sgme.skills.dedupe import check_duplicate
 from sgme.skills.gates import lint_skill
 from sgme.skills.indexer import (
@@ -338,9 +339,18 @@ def write_skill(
                 for v in relaxed
             )
             violations = kept
+        # 1b) 格式 lint（设计 §5.2 Anthropic 基准）：error 阻断，warn 放行并回传
+        rendered = render_skill_md(meta, body)
+        format_results = lint_skill_format(
+            name, str(meta.get("description") or ""), rendered
+        )
+        violations.extend(
+            r["message"] for r in format_results if r["level"] == "error"
+        )
         if violations:
             return _reject("lint_failed",
                            ["准入门禁拦截"] + violations)
+        warnings.extend(r["message"] for r in format_results if r["level"] == "warn")
 
         # 2) 全库现状（跨名查重排除自身；同名记录单独取用于重复提交判定）
         all_records = _collect_records(source_dirs)
@@ -645,16 +655,23 @@ def rename_skill(old: str, new: str, source_dirs: list[str],
         raw = _read_raw(old, source_dirs)
         parsed = parse_skill_md(raw)
         meta = dict(parsed["meta"])
+        # 新副本 frontmatter 名实一致（读侧按目录名取名）；先归一 name 再做格式 lint
+        meta["name"] = new
         violations = lint_skill(meta, parsed["body"], new, {r.name for r in records})
+        # 格式 lint（设计 §5.2）：error 阻断，warn 回传
+        format_results = lint_skill_format(
+            new, str(meta.get("description") or ""),
+            render_skill_md(meta, parsed["body"]),
+        )
+        violations.extend(r["message"] for r in format_results if r["level"] == "error")
         if violations:
             rej = _reject("lint_failed", ["新名未通过准入门禁"] + violations)
             return rej
+        warnings.extend(r["message"] for r in format_results if r["level"] == "warn")
 
         src = _resolve_source_dir(old, source_dirs)
         assert src is not None  # 记录存在 ⇒ 目录必在
         _require_skill_workspace(src)  # T-221：动盘前守卫（独立 git 技能仓）
-        if "name" in meta:
-            meta["name"] = new  # T-221：新副本 frontmatter 名实一致（读侧按目录名取名）
 
         # ① 写新名副本（完整内容）；② 旧位置留墓碑（只含 superseded_by 最小 frontmatter）
         new_dir = src / new
