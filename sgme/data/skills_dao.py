@@ -93,8 +93,8 @@ def upsert_skill(conn: sqlite3.Connection, rec: dict[str, Any]) -> None:
         """
         INSERT INTO skills (name, sha256, name_seg, description, description_seg, category, tags,
                             version, pattern, source, origin_path, content, content_seg,
-                            content_len, updated_at, synced_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            content_len, updated_at, synced_at, status)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(name) DO UPDATE SET
           sha256=excluded.sha256, name_seg=excluded.name_seg,
           description=excluded.description,
@@ -122,6 +122,7 @@ def upsert_skill(conn: sqlite3.Connection, rec: dict[str, Any]) -> None:
             len(content),
             now,
             now,
+            rec.get("status") or "active",
         ),
     )
 
@@ -133,14 +134,31 @@ def delete_skill(conn: sqlite3.Connection, name: str) -> None:
     conn.execute("DELETE FROM skill_uses WHERE src=? OR dst=?", (name, name))
 
 
-def replace_uses(conn: sqlite3.Connection, name: str, uses: list[str]) -> None:
-    """全量替换某技能的 uses 出向依赖（幂等）。"""
+def replace_uses(conn: sqlite3.Connection, name: str, uses: list[str],
+                 strengths: dict[str, str] | None = None) -> None:
+    """全量替换某技能的 uses 出向依赖（幂等）。
+
+    Args:
+        name: 源技能名。
+        uses: 依赖目标名列表（空/None = 清空出边）。
+        strengths: {dst: 'strong'|'weak'}；缺省/非法值按 weak（T-402）。
+            调用方必须先过 ``sgme.data.skill_gate.validate_uses`` 再调用本函数。
+    """
+    from sgme.data.skill_gate import normalize_strength
+
+    strengths = strengths or {}
     conn.execute("DELETE FROM skill_uses WHERE src=?", (name,))
     for dst in uses or []:
         if dst:
             conn.execute(
-                "INSERT OR IGNORE INTO skill_uses (src, dst) VALUES (?,?)", (name, dst)
+                "INSERT OR IGNORE INTO skill_uses (src, dst, strength) VALUES (?,?,?)",
+                (name, dst, normalize_strength(strengths.get(dst))),
             )
+
+
+def set_skill_status(conn: sqlite3.Connection, name: str, status: str) -> None:
+    """标记技能状态（active/tombstone，T-402 门禁用）。"""
+    conn.execute("UPDATE skills SET status=? WHERE name=?", (status, name))
 
 
 # ---------- 读取 ----------
@@ -262,6 +280,8 @@ def diff_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> dic
     T-124b：sha 口径为 body（不含 frontmatter），category/version/pattern/description/
     tags 等元数据变更不改变 sha——sha 相同者追加元数据指纹比对，防 sync_index 对
     元数据变更失明（T-123 分类治理实测撞出）。
+    T-402：uses 边与 strength 同样纳入指纹——只改 frontmatter.uses（body 不变）
+    时依赖图也会刷新。
     """
     db_sha = list_all_sha(conn)
     src = {r["name"]: (r.get("sha256") or "") for r in records}
@@ -273,6 +293,12 @@ def diff_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> dic
             r.get("pattern") or "",
             r.get("description") or "",
             ",".join(sorted(r.get("tags") or [])),
+            # T-402：uses 边与强弱标记也是同步判据——否则只改 frontmatter.uses
+            # （body sha 不变）时依赖图永不更新
+            ",".join(sorted(r.get("uses") or [])),
+            ",".join(
+                f"{k}:{v}" for k, v in sorted((r.get("uses_strength") or {}).items())
+            ),
         )
 
     update: list[str] = []
@@ -285,7 +311,7 @@ def diff_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> dic
         if db_sha[n] != s:
             update.append(n)
             continue
-        # sha 相同：元数据指纹比对（单行查询，frontmatter 五字段）
+        # sha 相同：元数据指纹比对（frontmatter 五字段 + T-402 uses/strength）
         row = conn.execute(
             "SELECT category, version, pattern, description, tags FROM skills WHERE name=?",
             (n,),
@@ -297,7 +323,18 @@ def diff_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> dic
             db_tags = json.loads(row[4]) if row[4] else []
         except (json.JSONDecodeError, TypeError):
             db_tags = []
-        db_fp = (row[0] or "", row[1] or "", row[2] or "", row[3] or "", ",".join(sorted(db_tags)))
+        db_edges = conn.execute(
+            "SELECT dst, strength FROM skill_uses WHERE src=? ORDER BY dst", (n,)
+        ).fetchall()
+        db_fp = (
+            row[0] or "",
+            row[1] or "",
+            row[2] or "",
+            row[3] or "",
+            ",".join(sorted(db_tags)),
+            ",".join(r["dst"] for r in db_edges),
+            ",".join(f"{r['dst']}:{r['strength'] or 'weak'}" for r in db_edges),
+        )
         (update if db_fp != _meta_fp(rec) else unchanged).append(n)
 
     return {
@@ -335,6 +372,14 @@ def find_incoming(conn: sqlite3.Connection, name: str) -> list[str]:
     """入向引用：哪些技能 uses 了 name（写侧删除/改名的阻塞信号源）。"""
     cur = conn.execute("SELECT src FROM skill_uses WHERE dst=? ORDER BY src", (name,))
     return [r["src"] for r in cur.fetchall()]
+
+
+def find_incoming_edges(conn: sqlite3.Connection, name: str) -> list[tuple[str, str]]:
+    """入向引用边 (src, strength)：strong 阻断删除、weak 仅告警（T-402）。"""
+    cur = conn.execute(
+        "SELECT src, strength FROM skill_uses WHERE dst=? ORDER BY src", (name,)
+    )
+    return [(r["src"], r["strength"] or "weak") for r in cur.fetchall()]
 
 
 def find_outgoing(conn: sqlite3.Connection, name: str) -> list[str]:

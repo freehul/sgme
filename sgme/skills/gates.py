@@ -123,11 +123,19 @@ def lint_skill(meta, body: str, name: str, existing_names,
                     + ", ".join(ghost)
                 )
 
-    # 6) uses 合法性：每项过 validate_name 且不等于自身
+    # 6) uses 合法性：每项过 validate_name 且不等于自身；支持 T-402 强弱标记
     uses = meta.get("uses")
     if isinstance(uses, list):
         for u in uses:
-            u_str = str(u).strip()
+            if isinstance(u, dict):
+                u_str = str(u.get("name") or u.get("skill") or "").strip()
+                strength = str(u.get("strength") or "weak").strip().lower()
+                if strength not in ("strong", "weak"):
+                    violations.append(
+                        f"uses 依赖强度非法: {u_str or u!r}（仅允许 strong/weak）"
+                    )
+            else:
+                u_str = str(u).strip()
             if u_str == name:
                 violations.append(f"uses 引用自身（禁止自依赖）: {u_str}")
             elif u_str:

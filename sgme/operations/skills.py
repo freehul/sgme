@@ -49,7 +49,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult
+from sgme.data.skill_gate import check_removal, validate_uses  # noqa: F401  T-402 门禁公开入口
+from sgme.operations.errors import ERR_INVALID_ARGS, ERR_NOT_FOUND, InvalidArgs, OperationResult
 from sgme.skills.bm25 import SkillsBm25
 from sgme.skills.indexer import SkillRecord, index_all, parse_skill_md, validate_name
 
@@ -941,8 +942,13 @@ def _record_to_dict(rec: SkillRecord | dict) -> dict:
     """
     if isinstance(rec, dict):
         get = lambda k, d="": rec.get(k, d)  # noqa: E731
+        # T-402：强/弱依赖标记（dict 形态键名 uses_strength）
+        use_strengths = rec.get("use_strengths")
+        if use_strengths is None:
+            use_strengths = rec.get("uses_strength") or {}
     else:
         get = lambda k, d="": getattr(rec, k, d)  # noqa: E731
+        use_strengths = getattr(rec, "use_strengths", {}) or {}
     return {
         "name": get("name"),
         "sha256": get("sha256") or "",
@@ -955,6 +961,7 @@ def _record_to_dict(rec: SkillRecord | dict) -> dict:
         "origin_path": get("origin_path") or None,
         "content": get("content") or "",
         "uses": list(get("uses", []) or []),
+        "uses_strength": dict(use_strengths or {}),
     }
 
 
@@ -1038,6 +1045,8 @@ def sync_index(
       不能放在请求线程里一次跑完；剩余交后台预热逐轮补齐）
     - 可选 FTS 缺行探测（T-217）：检出「主表有、索引无」即自动全量重建，
       不依赖触发器纪律——任何历史写入路径造成的脱节都会自愈
+    - uses 门禁（T-402）：整批先校验（悬空/环/自引用/强依赖阻断），未通过
+      **一行不写**；weak 依赖目标被删除只告警（边不写回）
 
     Args:
         max_embed: 本次最多新嵌入多少条；None=不限（离线/后台场景用）。
@@ -1048,27 +1057,57 @@ def sync_index(
 
     Returns:
         OperationResult.data = {inserted, updated, deleted, unchanged,
-        embedded, pending_embed, total, fts_drift_detected, fts_rebuilt}
+        embedded, pending_embed, total, fts_drift_detected, fts_rebuilt,
+        uses_warnings}；uses 门禁不通过 → fail ERR_INVALID_ARGS，
+        details.violations 带完整中文清单。
     """
     from sgme.data import skills_dao
 
     records = _load_records(cfg, wiki_conn)
     dicts = [_record_to_dict(r) for r in records]
+
+    # T-402 uses 门禁：先校验整批，未通过则**一行不写**（不得先写后校验）。
+    # 允许「A 依赖同批新写入的 B」；目标将被本次删除时 strong 阻断、weak 告警。
+    from sgme.data.skill_gate import validate_records_uses
+
+    gate_errors, gate_warnings = validate_records_uses(skills_conn, dicts)
+    for w in gate_warnings:
+        logger.warning("技能 uses 弱依赖告警: %s", w)
+    if gate_errors:
+        return OperationResult.fail(
+            ERR_INVALID_ARGS,
+            f"uses 依赖门禁拒绝写入（{len(gate_errors)} 项）: " + "；".join(gate_errors),
+            details={"violations": gate_errors, "warnings": gate_warnings},
+        )
+
     diff = skills_dao.diff_records(skills_conn, dicts)
 
     for name in diff["delete"]:
         skills_dao.delete_skill(skills_conn, name)
 
     touched = set(diff["insert"]) | set(diff["update"])
+    deleted = set(diff["delete"])
     # 兼容 SkillRecord / dict 两种源（_record_name 与 _record_to_dict 同款双形态处理）
-    by_name = {_record_to_dict(r)["name"]: r for r in records}
+    by_name = {d["name"]: r for r, d in zip(records, dicts)}
+    dicts_by_name = {d["name"]: d for d in dicts}
+    # 先 upsert 全部主表行，再写 uses——同批新技能可被任意顺序引用
     for name in touched:
-        rec = by_name.get(name)
-        if rec is None:
+        rec_dict = dicts_by_name.get(name)
+        if rec_dict is None:
             continue
-        rec_dict = _record_to_dict(rec)
         skills_dao.upsert_skill(skills_conn, rec_dict)
-        skills_dao.replace_uses(skills_conn, name, rec_dict["uses"])
+    for name in touched:
+        rec_dict = dicts_by_name.get(name)
+        if rec_dict is None:
+            continue
+        # weak 依赖的目标本次被删除时只告警：该边不再写回（保持库内无悬空边）
+        effective_uses = [u for u in rec_dict["uses"] if u not in deleted]
+        skills_dao.replace_uses(
+            skills_conn,
+            name,
+            effective_uses,
+            strengths=rec_dict.get("uses_strength"),
+        )
     skills_conn.commit()
 
     # T-217：FTS 缺行探测自愈（含 rebuild_fts 强制重建），必须在 commit 之后
@@ -1109,6 +1148,7 @@ def sync_index(
             "total": len(records),
             "fts_drift_detected": fts_state["drift"],
             "fts_rebuilt": fts_state["rebuilt"],
+            "uses_warnings": gate_warnings,
         }
     )
 

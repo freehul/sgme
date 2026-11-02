@@ -51,6 +51,8 @@ class SkillRecord:
     version: str = ""
     pattern: str = ""
     uses: list[str] = field(default_factory=list)
+    # T-402：{dst: 'strong'|'weak'} 依赖强度标记；缺省按 weak
+    use_strengths: dict[str, str] = field(default_factory=dict)
     content: str = ""
     sha256: str = ""
     source: str = ""
@@ -96,8 +98,38 @@ def _to_list(v) -> list[str]:
     return [s] if s else []
 
 
+def _parse_uses(v) -> tuple[list[str], dict[str, str]]:
+    """解析 frontmatter uses，返回 (目标名列表, {目标: strength})（T-402）。
+
+    支持两种写法（默认 weak，保持存量技能零改动）：
+        uses: [beta, gamma]
+        uses:
+          - name: beta
+            strength: strong
+    """
+    names: list[str] = []
+    strengths: dict[str, str] = {}
+    items = v if isinstance(v, list) else ([v] if v is not None else [])
+    for item in items:
+        strength = "weak"
+        raw = item
+        if isinstance(item, dict):
+            raw = item.get("name") or item.get("skill") or ""
+            if str(item.get("strength") or "").strip().lower() == "strong":
+                strength = "strong"
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        name = validate_name(s)
+        if name not in names:
+            names.append(name)
+        strengths[name] = strength
+    return names, strengths
+
+
 def _record_from_meta(name: str, meta: dict, body: str, source: str, origin: str) -> SkillRecord:
     full = body.strip()
+    uses, use_strengths = _parse_uses(meta.get("uses"))
     return SkillRecord(
         name=name,
         description=str(meta.get("description", "") or "").strip(),
@@ -105,7 +137,8 @@ def _record_from_meta(name: str, meta: dict, body: str, source: str, origin: str
         category=str(meta.get("category", "") or "").strip(),
         version=str(meta.get("version", "") or "").strip(),
         pattern=str(meta.get("pattern", "") or "").strip(),
-        uses=[validate_name(n) for n in _to_list(meta.get("uses"))],
+        uses=uses,
+        use_strengths=use_strengths,
         content=full,
         sha256=hashlib.sha256(full.encode("utf-8")).hexdigest(),
         source=source,

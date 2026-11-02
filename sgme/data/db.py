@@ -610,6 +610,8 @@ def connect_skills(data_dir: str | Path | None = None) -> sqlite3.Connection:
     migrated = _migrate_skills_name_seg(conn)
     # T-287：skill_vectors 补内容指纹列（存量行 NULL → 判待重嵌；不涉 FTS）
     _migrate_skill_vectors_content_sha(conn)
+    # T-402：skills.status + skill_uses.strength（uses 门禁的墓碑/强弱标记）
+    _migrate_skills_uses_gate(conn)
     # FTS5 虚表 + 同步触发器（幂等；与 wiki 的 init_wiki_fts 同职责，
     # 但技能库体量小且无需历史重建，直接在连接时就绪，避免调用方漏调）
     conn.executescript(SKILLS_FTS_DDL)
@@ -653,7 +655,8 @@ CREATE TABLE IF NOT EXISTS skills (
   content_seg TEXT,
   content_len INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT,
-  synced_at TEXT);
+  synced_at TEXT,
+  status TEXT NOT NULL DEFAULT 'active');
 CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
 CREATE INDEX IF NOT EXISTS idx_skills_updated ON skills(updated_at DESC);
 
@@ -668,6 +671,7 @@ CREATE TABLE IF NOT EXISTS skill_vectors (
 CREATE TABLE IF NOT EXISTS skill_uses (
   src TEXT NOT NULL,
   dst TEXT NOT NULL,
+  strength TEXT NOT NULL DEFAULT 'weak',
   PRIMARY KEY (src, dst));
 CREATE INDEX IF NOT EXISTS idx_skill_uses_dst ON skill_uses(dst);
 
@@ -790,6 +794,41 @@ def _migrate_skill_vectors_content_sha(conn: sqlite3.Connection) -> bool:
         conn.commit()
         return True
     return False
+
+
+def _migrate_skills_uses_gate(conn: sqlite3.Connection) -> bool:
+    """老库迁移（T-402）：skills 补 status、skill_uses 补 strength 列。
+
+    Returns:
+        True = 本次发生了补列；False = 无需迁移（新库或已迁移过）。
+
+    仅 ALTER ADD COLUMN（带默认值），**不动存量行**：现有技能默认 active、
+    现有 uses 边默认 weak（强依赖需显式标记，避免升级后突然阻断删除）。
+    """
+    changed = False
+    has_skills = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skills'"
+    ).fetchone()
+    if has_skills:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(skills)").fetchall()]
+        if "status" not in cols:
+            conn.execute(
+                "ALTER TABLE skills ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+            )
+            changed = True
+    has_uses = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_uses'"
+    ).fetchone()
+    if has_uses:
+        ucols = [r[1] for r in conn.execute("PRAGMA table_info(skill_uses)").fetchall()]
+        if "strength" not in ucols:
+            conn.execute(
+                "ALTER TABLE skill_uses ADD COLUMN strength TEXT NOT NULL DEFAULT 'weak'"
+            )
+            changed = True
+    if changed:
+        conn.commit()
+    return changed
 
 
 def _migrate_wiki_page_columns(conn: sqlite3.Connection) -> None:
