@@ -125,9 +125,9 @@ class TestSkipLimits:
         from sgme.skills.store import write_skill
 
         repo = self._store(tmp_path)
-        big_body = "# 大手册\n\n" + ("内容行。\n\n" * 1200)  # >8K
+        big_body = "# 大手册\n\n" + ("内容行。" * 20 + "\n") * 300  # >8K 且 <500 行
         assert len(big_body.encode("utf-8")) > 8192
-        r = write_skill("big-skill", dict(GOOD_META), big_body, [repo], skip_limits=True)
+        r = write_skill("big-skill", dict(GOOD_META, name="big-skill"), big_body, [repo], skip_limits=True)
         assert r["ok"] is True
         assert any("8192" in w or "8K" in w or "超限" in w for w in r["warnings"])
 
@@ -136,7 +136,7 @@ class TestSkipLimits:
 
         repo = self._store(tmp_path)
         big_body = "# 大手册\n\n" + ("内容行。\n\n" * 1200)
-        r = write_skill("big2", dict(GOOD_META), big_body, [repo])
+        r = write_skill("big2", dict(GOOD_META, name="big2"), big_body, [repo])
         assert r["ok"] is False and r["code"] == "lint_failed"
 
     def test_enum_violation_not_relaxed_by_skip(self, tmp_path):
@@ -144,7 +144,7 @@ class TestSkipLimits:
         from sgme.skills.store import write_skill
 
         repo = self._store(tmp_path)
-        bad_meta = dict(GOOD_META, pattern="whatever")
+        bad_meta = dict(GOOD_META, name="bad-pattern", pattern="whatever")
         r = write_skill("bad-pattern", bad_meta, GOOD_BODY, [repo], skip_limits=True)
         assert r["ok"] is False and r["code"] == "lint_failed"
 

@@ -29,17 +29,20 @@ AGENT_KEY = "test-agent-key"
 ADMIN_HEADERS = {"X-API-Key": ADMIN_KEY}
 AGENT_HEADERS = {"X-API-Key": AGENT_KEY}
 
-VALID_CONTENT = (
-    "---\n"
-    "description: 合法技能描述\n"
-    "version: 1.0.0\n"
-    "pattern: manual\n"
-    "category: testing\n"
-    "triggers:\n"
-    "  - 合法\n"
-    "---\n"
-    "# 标题\n\n正文\n"
-)
+def valid_content(name: str = "put-ok", body: str = "# 标题\n\n正文") -> str:
+    """构造合法 SKILL.md（T-403 起 frontmatter name 必填且与路径名一致）。"""
+    return (
+        "---\n"
+        f"name: {name}\n"
+        "description: 合法技能描述\n"
+        "version: 1.0.0\n"
+        "pattern: manual\n"
+        "category: testing\n"
+        "triggers:\n"
+        "  - 合法\n"
+        "---\n"
+        f"{body}\n"
+    )
 
 
 def _run_git(cwd: Path, *args: str) -> None:
@@ -112,13 +115,13 @@ BASE = "/v1/admin/skills"
 
 class TestAuth:
     def test_no_key_403(self, client):
-        assert client.put(f"{BASE}/some-skill", json={"content": VALID_CONTENT}).status_code == 403
+        assert client.put(f"{BASE}/some-skill", json={"content": valid_content("some-skill")}).status_code == 403
         assert client.delete(f"{BASE}/some-skill").status_code == 403
         assert client.post(f"{BASE}/some-skill/rename", json={"new_name": "x"}).status_code == 403
 
     def test_agent_key_403(self, client):
         assert client.put(
-            f"{BASE}/some-skill", json={"content": VALID_CONTENT}, headers=AGENT_HEADERS
+            f"{BASE}/some-skill", json={"content": valid_content("some-skill")}, headers=AGENT_HEADERS
         ).status_code == 403
 
 
@@ -127,7 +130,7 @@ class TestAuth:
 
 class TestPutSkill:
     def test_put_content_ok(self, client, skill_repo):
-        r = client.put(f"{BASE}/put-ok", json={"content": VALID_CONTENT}, headers=ADMIN_HEADERS)
+        r = client.put(f"{BASE}/put-ok", json={"content": valid_content("put-ok")}, headers=ADMIN_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json()["ok"] is True
         assert (skill_repo / "put-ok" / "SKILL.md").exists()
@@ -135,6 +138,7 @@ class TestPutSkill:
     def test_put_meta_body_ok(self, client, skill_repo):
         body = {
             "meta": {
+                "name": "meta-style",
                 "description": "字段式写入",
                 "version": "1.0.0",
                 "pattern": "manual",
@@ -146,7 +150,7 @@ class TestPutSkill:
         assert r.status_code == 200 and r.json()["ok"] is True
 
     def test_put_lint_violation_400_with_list(self, client, skill_repo):
-        bad = VALID_CONTENT.replace("description: 合法技能描述\n", "")  # 缺 description
+        bad = valid_content("bad-lint").replace("description: 合法技能描述\n", "")  # 缺 description
         r = client.put(f"{BASE}/bad-lint", json={"content": bad}, headers=ADMIN_HEADERS)
         assert r.status_code == 400
         err = r.json()["error"]
@@ -162,19 +166,19 @@ class TestPutSkill:
         # httpx 会把路径中的 .. 归一化掉（../escape → /escape）→ 路由不匹配；
         # 穿越形态经 URL 编码后到达路由层：无 SPA catch-all 时=白名单 400，
         # 有 catch-all（ui/dist 存在）时路径通配命中但方法不符 → 405。
-        r = client.put(f"{BASE}/%2e%2e/escape", json={"content": VALID_CONTENT},
+        r = client.put(f"{BASE}/%2e%2e/escape", json={"content": valid_content("escape")},
                        headers=ADMIN_HEADERS)
         assert r.status_code in (400, 404, 405)
-        r2 = client.put(f"{BASE}/Bad%5FName", json={"content": VALID_CONTENT},
+        r2 = client.put(f"{BASE}/Bad%5FName", json={"content": valid_content("Bad_Name")},
                         headers=ADMIN_HEADERS)
         assert r2.status_code == 400
         assert any("kebab" in v for v in r2.json()["error"]["details"]["violations"])
 
     def test_put_duplicate_rejected_409(self, client):
         assert client.put(
-            f"{BASE}/dup-x", json={"content": VALID_CONTENT}, headers=ADMIN_HEADERS
+            f"{BASE}/dup-x", json={"content": valid_content("dup-x")}, headers=ADMIN_HEADERS
         ).status_code == 200
-        r = client.put(f"{BASE}/dup-x", json={"content": VALID_CONTENT}, headers=ADMIN_HEADERS)
+        r = client.put(f"{BASE}/dup-x", json={"content": valid_content("dup-x")}, headers=ADMIN_HEADERS)
         # 同名重复提交按查重拒绝（409 冲突）
         assert r.status_code == 409, r.text
 
@@ -185,10 +189,11 @@ class TestPutSkill:
 class TestDeleteSkill:
     def _seed_pair(self, client):
         """alpha 被 beta 的 frontmatter uses 引用。"""
-        r1 = client.put(f"{BASE}/alpha-del", json={"content": VALID_CONTENT}, headers=ADMIN_HEADERS)
+        r1 = client.put(f"{BASE}/alpha-del", json={"content": valid_content("alpha-del")}, headers=ADMIN_HEADERS)
         assert r1.status_code == 200, r1.text
         uses_beta = (
             "---\n"
+            "name: beta-user\n"
             "description: 依赖方技能\n"
             "version: 1.0.0\n"
             "pattern: manual\n"
@@ -231,7 +236,7 @@ class TestDeleteSkill:
 class TestRenameSkill:
     def test_rename_ok_tombstone_written(self, client, skill_repo, tmp_path):
         assert client.put(
-            f"{BASE}/old-nm", json={"content": VALID_CONTENT}, headers=ADMIN_HEADERS
+            f"{BASE}/old-nm", json={"content": valid_content("old-nm")}, headers=ADMIN_HEADERS
         ).status_code == 200
         r = client.post(
             f"{BASE}/old-nm/rename", json={"new_name": "new-nm"}, headers=ADMIN_HEADERS
@@ -248,7 +253,7 @@ class TestRenameSkill:
         # 两个技能内容必须不同（同内容异名会被 SHA 查重拒绝）
         for n, body in (("r-a", "# 甲\n内容甲"), ("r-b", "# 乙\n内容乙")):
             payload = {
-                "meta": {"description": "改名冲突用", "version": "1.0.0",
+                "meta": {"name": n, "description": "改名冲突用", "version": "1.0.0",
                          "pattern": "manual", "category": "testing"},
                 "body": body,
             }

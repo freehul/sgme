@@ -63,7 +63,9 @@ VALID_META = {
 def _write(repo: Path, name: str, meta=None, body="# 技能\n内容", **kw):
     from sgme.skills.store import write_skill
 
-    return write_skill(name, dict(meta or VALID_META), body, [str(repo)], **kw)
+    payload = dict(meta or VALID_META)
+    payload.setdefault("name", name)  # T-403：frontmatter name 必填且与技能名一致
+    return write_skill(name, payload, body, [str(repo)], **kw)
 
 
 def _read_skill(src: Path, name: str) -> str:
@@ -145,7 +147,7 @@ class TestRemoveSkill:
     def _setup_pair(self, repo: Path):
         """两个技能：beta 的 frontmatter uses 引用 alpha（一级），正文也提及（二级）。"""
         assert _write(repo, "alpha")["ok"]
-        beta_meta = dict(VALID_META, uses=["alpha"])
+        beta_meta = dict(VALID_META, name="beta", uses=["alpha"])
         from sgme.skills.store import write_skill
         r = write_skill("beta", beta_meta, "依赖 alpha 完成部署", [str(repo)])
         assert r["ok"]
@@ -177,7 +179,7 @@ class TestRemoveSkill:
     def test_body_mention_is_warning_only(self, repo):
         """二级信号（正文提及）只列 warnings 不拦。"""
         assert _write(repo, "gamma")["ok"]
-        delta_meta = dict(VALID_META)
+        delta_meta = dict(VALID_META, name="delta")
         from sgme.skills.store import write_skill, remove_skill
         assert write_skill("delta", delta_meta, "本技能与 gamma 无关但提到它", [str(repo)])["ok"]
         r = remove_skill("gamma", source_dirs=[str(repo)])
@@ -256,7 +258,7 @@ class TestWriteDirResolution:
         repo = _make_repo(tmp_path)
         ghost = tmp_path / "nonexistent_dir"
         r = write_skill(
-            "fallback-target", dict(VALID_META), "# 回退\n内容",
+            "fallback-target", dict(VALID_META, name="fallback-target"), "# 回退\n内容",
             [str(ghost), str(repo)],
         )
         assert r["ok"] is True, r
@@ -270,7 +272,7 @@ class TestWriteDirResolution:
         plain = tmp_path / "plain_dir"
         plain.mkdir()  # 存在但非 git 仓
         r = write_skill(
-            "plain-first", dict(VALID_META), "# 甲\n内容甲",
+            "plain-first", dict(VALID_META, name="plain-first"), "# 甲\n内容甲",
             [str(plain), str(repo)],
         )
         assert r["ok"] is True, r
@@ -286,7 +288,7 @@ class TestWriteDirResolution:
         plain_b.mkdir()
         with pytest.raises(StoreError):
             write_skill(
-                "stray-check", dict(VALID_META), "# 乙\n内容乙",
+                "stray-check", dict(VALID_META, name="stray-check"), "# 乙\n内容乙",
                 [str(plain_a), str(plain_b)],
             )
         # 失败不留野目录（历史上 mkdir 先于 git 校验，报错后残留）
@@ -297,7 +299,7 @@ class TestWriteDirResolution:
         from sgme.skills.store import write_skill
 
         # 首项本身是 git 仓 → 行为与旧版一致（向后兼容锚）
-        r = write_skill("first-wins", dict(VALID_META), "# 丙\n内容丙",
+        r = write_skill("first-wins", dict(VALID_META, name="first-wins"), "# 丙\n内容丙",
                         [str(repo)])
         assert r["ok"] is True, r
         assert _read_skill(repo, "first-wins")
