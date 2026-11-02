@@ -31,7 +31,13 @@ class _Ops:
         self.seq = list(seq)
         self.calls = 0
 
-    def sync_index(self, cfg, conn, wiki, max_embed=10):
+    def sync_index(self, cfg, conn, wiki, max_embed=10, **kwargs):
+        """签名要能吞下调用方新加的关键字参数（如 strict_gate / fts_check / rebuild_fts）。
+
+        2026-11-02：sync_index 新增 strict_gate（批量容错）后本 mock 未同步，
+        导致预热线程第一轮就 TypeError 退出、四处用例全红。用 **kwargs 兜底，
+        避免以后再加参数时重演。
+        """
         self.calls += 1
         item = self.seq.pop(0) if self.seq else {"embedded": 0, "pending_embed": 16}
         if isinstance(item, Exception):
