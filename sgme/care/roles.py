@@ -37,6 +37,10 @@ OPTIONAL_FIELDS = (
 )
 # 合法顶层键（spec/spec_version/data）
 TOP_LEVEL_KEYS = ("spec", "spec_version", "data")
+# D-65 隐私层字段：data.privacy_agents 白名单（允许装配该角色的 agent_id 列表）。
+# 不并入 OPTIONAL_FIELDS——normalize 会给每张老卡补 null，而「字段缺失」本身
+# 就是「未启用隔离」的契约语义，不该把 null 写进所有存量角色卡。
+PRIVACY_FIELD = "privacy_agents"
 # save_role 维护的时间戳键（读回再保存时必须合法，否则既有卡 upsert 必失败）
 TIMESTAMP_FIELDS = ("created_at", "updated_at")
 # 关怀策略扩展键（extensions.sgme_care，供消费方读取）
@@ -125,6 +129,13 @@ def validate_role_card(data: dict[str, Any]) -> list[str]:
         if k in REQUIRED_FIELDS or k in OPTIONAL_FIELDS or k in TIMESTAMP_FIELDS:
             if not isinstance(v, (str, dict, list)) and v is not None:
                 errors.append(f"字段类型非法: {k}")
+        elif k == PRIVACY_FIELD:
+            # D-65：白名单只接受非空字符串数组；空白条目等于放行空白身份，一律拒绝
+            if (
+                not isinstance(v, list)
+                or any(not isinstance(a, str) or not a.strip() for a in v)
+            ):
+                errors.append(f"{PRIVACY_FIELD} 必须是非空字符串数组")
         else:
             errors.append(f"data 多余键: {k}（可选键: {OPTIONAL_FIELDS}）")
     ext = d.get("extensions")

@@ -24,7 +24,8 @@ from sgme import config as sgme_config
 from sgme.care import roles as roles_mod
 from sgme.data import memory_dao
 from sgme.llm import provider as llm_provider
-from sgme.operations.errors import ERR_CONFLICT, ERR_INTERNAL, ERR_INVALID_ARGS, ERR_NOT_FOUND, InvalidArgs, OperationResult
+from sgme.operations import privacy_guard
+from sgme.operations.errors import ERR_CONFLICT, ERR_FORBIDDEN, ERR_INTERNAL, ERR_INVALID_ARGS, ERR_NOT_FOUND, InvalidArgs, OperationResult
 
 logger = logging.getLogger("sgme.operations.care")
 
@@ -634,6 +635,42 @@ def _render_macros(text: str, char_name: str, user_name: str | None = None) -> s
     return s
 
 
+def _deny_assemble(
+    role_id: str,
+    agent_id: str,
+    reason: str,
+    mem_conn: sqlite3.Connection,
+) -> OperationResult:
+    """越权装配的统一拒绝出口（D-65）。
+
+    审计是旁路：``record_denial`` 写失败也不能把「拒绝」变成 500——越权请求
+    本来就不该因为审计表炸掉而拿到角色卡。当日同 role+agent 累计达到阈值时
+    在结果里带 ``alert=True`` 并打 ERROR 日志（供运维面消费）。
+    """
+    alert = False
+    try:
+        privacy_guard.record_denial(mem_conn, role_id, agent_id, detail=reason)
+        alert = privacy_guard.should_alert(mem_conn, role_id, agent_id)
+    except Exception as e:  # noqa: BLE001——审计失败不得掩盖拒绝
+        logger.warning("角色越权审计写入失败（拒绝照常返回）: %s", e)
+    if alert:
+        logger.error(
+            "角色隐私层告警：role=%s agent=%s 当日越权访问次数已达阈值（D-65）",
+            role_id,
+            agent_id,
+        )
+    return OperationResult.fail(
+        ERR_FORBIDDEN,
+        f"无权装配该角色: {role_id}",
+        details={
+            "role_id": role_id,
+            "agent_id": agent_id,
+            "reason": reason,
+            "alert": alert,
+        },
+    )
+
+
 def assemble(
     role_id: str,
     mem_conn: sqlite3.Connection,
@@ -642,6 +679,7 @@ def assemble(
     inject_mode: str | None = None,
     render: bool = False,
     user_name: str | None = None,
+    agent_id: str | None = None,
 ) -> OperationResult:
     """角色沟通提示词装配：角色卡 + persona 物化 + 用户画像（零物化）。
 
@@ -656,10 +694,20 @@ def assemble(
     - care_policy：extensions.sgme_care 关怀策略（问候模板/触发规则/频率档位）
 
     **换皮不换芯**：换角色 = 换装配输出（表达风格 + 主动策略），记忆池不动。
+
+    **隐私层（D-65）**：角色卡 ``data.privacy_agents`` 声明白名单时，按
+    ``agent_id``（入口层从鉴权 key 反查，绝不读请求体自称）校验；白名单外
+    返回 ``ERR_FORBIDDEN`` 并写 ``security_log`` 审计。``agent_id=None`` 表示
+    未接入鉴权上下文的老调用方/进程内直调，维持旧行为（不做判定）。
     """
     card = roles_mod.get_role(_roles_dir(), role_id)
     if card is None:
         return OperationResult.fail(ERR_NOT_FOUND, f"角色不存在: {role_id}")
+    # D-65 角色隐私层：装配前校验调用方权限（缺失/空 privacy_agents = 未启用隔离）
+    if agent_id is not None:
+        allowed, reason = privacy_guard.check_access(card, agent_id)
+        if not allowed:
+            return _deny_assemble(role_id, agent_id, reason, mem_conn)
     try:
         data = card.get("data") or {}
         sys_prompt = data.get("system_prompt") or ""
