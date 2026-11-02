@@ -29,7 +29,7 @@ WorkBuddy 侧没有「工具注册表」——工具面即 CLI 命令面（SKILL
 |---|---|---|
 | HTTP（零依赖，21 个） | `health` `append` `inject` `search` `answer` `memory-get/reject/unreject` `skill-list/coldstart/search/digest/get/materialize` `wiki-search/pages/page/page-add/page-update` `credential-list/get` | 记忆/检索/技能读/wiki 读写/凭据读侧 |
 | MCP（需 mcp 库，24 个） | `agent-onboarding` `refine-trigger/batch/status` `stats` `config-get/update` `idea-add` `demand-create` `project-register` `signal-pull/claim/ack/clear` `role-list/assemble/active-get/active-set` `persona-fill` `guard-reply` `wiki-evolve-trigger` `skill-put/delete/rename` | 提炼/统计/配置/三池/信号闭环/角色/越界自检/自进化/技能写侧 |
-| 适配器扩展（7 个） | `fetch`（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包）`events-pull` `events-after` `wiki-raw` `mcp`（逃生口）`capabilities` `env-info` | 超出基准的自有通道 |
+| 适配器扩展（7 个） | `fetch`（跨机取技能完整包：两级缓存（目录版本短路 + package_sha256 比对，命中零下载）→ 未命中才下载 → MANIFEST 校验 → 安全解包）`events-pull` `events-after` `wiki-raw` `mcp`（逃生口）`capabilities` `env-info` | 超出基准的自有通道 |
 
 合计 52 个 CLI 子命令（45 基准 + 7 扩展）。
 

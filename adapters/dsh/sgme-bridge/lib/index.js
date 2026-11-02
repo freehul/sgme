@@ -2,10 +2,12 @@ import { createRequire } from "node:module";
 import Schema from "schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { Context, Service } from "@deepseek-ai/cordis";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, promises, readFileSync, writeFileSync } from "node:fs";
+import path, { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 //#region src/sgme-client.ts
 /**
 * 技能小节名归一化（供 skillGet 的 section 参数使用）。
@@ -680,6 +682,70 @@ var SgmeClient = class {
 			return null;
 		}
 		return data;
+	}
+	/**
+	* 目录版本（GET /v1/skills/catalog-version，Agent Key；D-59 一级缓存短路）。
+	*
+	* 失败返回 null（旧版服务端 / 技能模块未启用）——缓存层按「未知」降级，
+	* 不阻塞技能获取。
+	*/
+	async skillCatalogVersion() {
+		const [data, err] = await this.get("/v1/skills/catalog-version", "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] skillCatalogVersion failed: ${err}`);
+			return null;
+		}
+		return data?.catalog_version ?? null;
+	}
+	/** 单技能清单（GET /v1/skills/{name}/manifest，Agent Key；D-59 二级比对）。失败返回 null。 */
+	async skillManifest(name) {
+		const [data, err] = await this.get(`/v1/skills/${encodeURIComponent(name)}/manifest`, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] skillManifest failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/**
+	* 技能完整包（GET /v1/skills/{name}/package，Agent Key；T-281 跨机通道）。
+	*
+	* 二进制下载，不走 JSON 解析；非 2xx 由返回的 status 表达（404/405 = 服务端未
+	* 部署包通道，调用方回退服务端 materialize）。超时 300s（大技能包）。
+	*/
+	async skillPackage(name) {
+		const url = `${this.baseUrl}/v1/skills/${encodeURIComponent(name)}/package`;
+		try {
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), Math.max(this.timeoutMs, 3e5));
+			const resp = await fetch(url, {
+				method: "GET",
+				headers: { "X-API-Key": this.agentKey },
+				signal: ctrl.signal
+			});
+			clearTimeout(timer);
+			if (!resp.ok) {
+				const text = await resp.text().catch(() => "");
+				return {
+					status: resp.status,
+					error: `HTTP ${resp.status}: ${text.slice(0, 200)}`
+				};
+			}
+			const data = Buffer.from(await resp.arrayBuffer());
+			const headers = {};
+			resp.headers.forEach((value, key) => {
+				headers[key.toLowerCase()] = value;
+			});
+			return {
+				status: resp.status,
+				data,
+				headers
+			};
+		} catch (e) {
+			return {
+				status: 0,
+				error: `fetch error: ${e instanceof Error ? e.message : String(e)}`
+			};
+		}
 	}
 	/**
 	* 写入/覆盖技能（PUT /v1/admin/skills/{name}，Admin Key；SKILL.md 全文自动解析 frontmatter）。
@@ -3370,6 +3436,379 @@ function formatRelatedMemories(results) {
 	}).join("\n");
 }
 //#endregion
+//#region src/skill-cache.ts
+/**
+* skill-cache.ts — SGME 技能落盘缓存（设计 5.2.1 / D-59，任务 T-406）。
+*
+* 与 Python 真源 ``adapters/_shared/skill_cache.py`` **同语义移植**（语言不同无法
+* 逐字节共用；改动需双端同步，``CACHE_PROTOCOL_VERSION`` 与清单文件名由
+* ``tests/test_skill_cache_sync.py`` 校验同值）。
+*
+* 两级失效：
+*   1. 目录级：GET /v1/skills/catalog-version 与本地 ``.sgme-catalog.json`` 比对，
+*      相同则本次会话不再逐个比对（进程内只拉一次）；
+*   2. 单技能：GET /v1/skills/{name}/manifest 的 ``package_sha256`` 与本地
+*      ``.sgme-manifest.json`` 的 ``content_hash`` 比对，相同直接用本地副本（零包传输）。
+*   3. 未命中才 GET /v1/skills/{name}/package：按包内 MANIFEST.sha256 逐文件校验 +
+*      文件集双向对照 + 响应头对账，全部通过后在 ``.<name>.fetch-*`` 临时目录组装，
+*      最后 rename **原子替换**（失败回滚、不留残件）。
+*
+* 降级纪律：目录/清单端点不可用（旧版服务端）视为「不可比」→ 直接拉包；
+* 只有包下载/校验失败才抛错。缓存是优化，不是正确性依赖。
+*
+* 不建全局技能缓存目录、不预热（设计 5.2.1「不建」）：落点永远由调用方给的 destDir 决定。
+*/
+/** 本地工作副本清单（放在技能目录内，随技能目录一起原子替换）。 */
+const MANIFEST_FILE = ".sgme-manifest.json";
+/** 目录级缓存状态（放在 stateDir，不放进技能目录）。 */
+const CATALOG_FILE = ".sgme-catalog.json";
+/** 包内清单文件名（归档根，与 <name>/ 平级）。 */
+const PACKAGE_MANIFEST = "MANIFEST.sha256";
+/** 缓存运行时错误（消息面向用户，不含密钥）。 */
+var SkillCacheError = class extends Error {
+	constructor(message) {
+		super(message);
+		this.name = "SkillCacheError";
+	}
+};
+/** HTTP 非 2xx：带状态码，调用方据此决定是否回退（404/405 = 端点未部署）。 */
+var HTTPStatusError = class extends SkillCacheError {
+	status;
+	constructor(status, message) {
+		super(message);
+		this.name = "HTTPStatusError";
+		this.status = status;
+	}
+};
+function sha256(data) {
+	return createHash("sha256").update(data).digest("hex");
+}
+function nowIso() {
+	return (/* @__PURE__ */ new Date()).toISOString();
+}
+/** 技能名校验：必须是单个路径组件（防经技能名逃逸落点目录）。 */
+function validateSkillName(name) {
+	const n = String(name ?? "").trim();
+	if (!n) throw new SkillCacheError("技能名不能为空");
+	if (/[/\\\r\n\0]/.test(n) || n === "." || n === "..") throw new SkillCacheError(`技能名非法（应为单个技能名、不含路径分隔符）：${JSON.stringify(n)}`);
+	return n;
+}
+/** 包内相对路径归一化 + 安全校验（拒绝绝对路径 / 盘符 / `..` / 空段）。 */
+function normalizeRel(rel) {
+	const p = String(rel ?? "").replace(/\\/g, "/");
+	if (!p || p.startsWith("/") || /^[A-Za-z]:/.test(p)) throw new SkillCacheError(`包内路径非法（拒绝）: ${JSON.stringify(rel)}`);
+	if (p.split("/").some((s) => s === "" || s === "." || s === "..")) throw new SkillCacheError(`包内路径非法（拒绝）: ${JSON.stringify(rel)}`);
+	return p;
+}
+function readCString(buf, start, len) {
+	const slice = buf.subarray(start, start + len);
+	const end = slice.indexOf(0);
+	return (end === -1 ? slice : slice.subarray(0, end)).toString("utf8");
+}
+/** PAX 扩展头里取 path=（长路径 / 非 ASCII 路径会被 Python tarfile 拆到 PAX 头）。 */
+function parsePaxPath(data) {
+	let offset = 0;
+	while (offset < data.length) {
+		const space = data.indexOf(32, offset);
+		if (space === -1) return null;
+		const len = Number.parseInt(data.subarray(offset, space).toString("ascii"), 10);
+		if (!Number.isFinite(len) || len <= 0) return null;
+		const record = data.subarray(offset, offset + len).toString("utf8");
+		const keyStart = record.indexOf(" ") + 1;
+		const eq = record.indexOf("=");
+		if (eq > keyStart) {
+			const key = record.slice(keyStart, eq);
+			const value = record.slice(eq + 1).replace(/\n$/, "");
+			if (key === "path") return value;
+		}
+		offset += len;
+	}
+	return null;
+}
+function readTarGz(raw) {
+	let tar;
+	try {
+		tar = gunzipSync(raw);
+	} catch (e) {
+		throw new SkillCacheError(`包解压失败（tar.gz 无效或截断）: ${e.message}`);
+	}
+	const entries = [];
+	let offset = 0;
+	let paxPath = null;
+	while (offset + 512 <= tar.length) {
+		const header = tar.subarray(offset, offset + 512);
+		if (header.every((b) => b === 0)) break;
+		const name = readCString(header, 0, 100);
+		const sizeText = readCString(header, 124, 12).trim();
+		const size = sizeText ? Number.parseInt(sizeText, 8) : 0;
+		if (!Number.isFinite(size) || size < 0) throw new SkillCacheError("包解压失败（tar 头非法）");
+		const type = header[156] === 0 ? "0" : String.fromCharCode(header[156]);
+		const prefix = readCString(header, 345, 155);
+		const fullName = prefix ? `${prefix}/${name}` : name;
+		const dataStart = offset + 512;
+		const dataEnd = dataStart + size;
+		if (dataEnd > tar.length) throw new SkillCacheError("包解压失败（tar 截断）");
+		const data = tar.subarray(dataStart, dataEnd);
+		if (type === "x") paxPath = parsePaxPath(data) ?? paxPath;
+		else if (type === "g") {} else if (type === "1" || type === "2") throw new SkillCacheError(`包内出现链接成员（不符合归档契约，拒绝）: ${fullName}`);
+		else if (type === "5") paxPath = null;
+		else if (type === "0") {
+			entries.push({
+				path: paxPath ?? fullName,
+				data: Buffer.from(data)
+			});
+			paxPath = null;
+		} else throw new SkillCacheError(`包内出现特殊成员（不符合归档契约，拒绝）: ${fullName}`);
+		offset = dataStart + Math.ceil(size / 512) * 512;
+	}
+	return entries;
+}
+function parsePackageManifest(raw) {
+	const entries = [];
+	for (const line of raw.toString("utf8").split(/\r?\n/)) {
+		if (!line.trim()) continue;
+		const sep = line.indexOf("  ");
+		if (sep === -1) throw new SkillCacheError(`包内 MANIFEST 行格式非法: ${JSON.stringify(line.slice(0, 80))}`);
+		const digest = line.slice(0, sep).trim().toLowerCase();
+		const rel = normalizeRel(line.slice(sep + 2));
+		if (digest.length !== 64) throw new SkillCacheError(`包内 MANIFEST 行格式非法: ${JSON.stringify(line.slice(0, 80))}`);
+		entries.push({
+			path: rel,
+			sha256: digest
+		});
+	}
+	if (entries.length === 0) throw new SkillCacheError("包内 MANIFEST 为空——拒绝落盘");
+	return entries;
+}
+/**
+* 两级失效的技能落盘缓存。
+*
+* @param transport 传输面（生产用 SgmeClient 适配；测试注入假实现）
+* @param stateDir  目录级状态（.sgme-catalog.json）落点；缺省时用 destDir 兜底
+*/
+var SkillCache = class {
+	transport;
+	stateDir;
+	catalogChecked = /* @__PURE__ */ new Map();
+	constructor(transport, stateDir) {
+		this.transport = transport;
+		this.stateDir = stateDir ? path.resolve(stateDir) : null;
+	}
+	catalogPath(stateDir) {
+		const dir = stateDir ?? this.stateDir;
+		return dir ? path.join(dir, CATALOG_FILE) : null;
+	}
+	async readCatalog(file) {
+		if (!file) return null;
+		try {
+			const data = JSON.parse(await promises.readFile(file, "utf8"));
+			return typeof data === "object" && data ? data : null;
+		} catch {
+			return null;
+		}
+	}
+	async writeCatalog(file, version) {
+		await promises.mkdir(path.dirname(file), { recursive: true });
+		const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+		await promises.writeFile(tmp, JSON.stringify({
+			catalog_version: version,
+			checked_at: nowIso()
+		}, null, 2) + "\n", "utf8");
+		await promises.rename(tmp, file);
+	}
+	/** 拉目录版本并与本地记录比对；返回 true = 有变化（需要做二级比对）。 */
+	async refreshCatalog(force = false) {
+		const file = this.catalogPath(null);
+		if (!file) throw new SkillCacheError("未指定 stateDir，无法做目录级缓存比对");
+		const local = await this.readCatalog(file);
+		const version = await this.transport.getCatalogVersion();
+		if (!version) throw new SkillCacheError("目录版本响应缺少 catalog_version");
+		if (!force && local?.catalog_version === version) return false;
+		await this.writeCatalog(file, version);
+		return true;
+	}
+	/**
+	* 目录级短路判定（同进程同 stateDir 只真的拉一次）。
+	*
+	* 返回 `{changed, version}`：changed=true 表示版本变了/未知（继续二级比对），
+	* version 是本次见到的服务端目录版本（拉不到时空串）。端点不可用按「未知」处理。
+	*/
+	async catalogChanged(stateDir) {
+		const key = path.resolve(stateDir);
+		const memo = this.catalogChecked.get(key);
+		if (memo !== void 0) return memo;
+		const file = this.catalogPath(key);
+		const local = await this.readCatalog(file);
+		let changed = true;
+		let version = "";
+		let wrote = false;
+		try {
+			version = await this.transport.getCatalogVersion() ?? "";
+			if (!version) changed = true;
+			else if (local?.catalog_version === version) changed = false;
+			else {
+				changed = true;
+				if (file) {
+					await this.writeCatalog(file, version);
+					wrote = true;
+				}
+			}
+		} catch {
+			changed = true;
+			version = "";
+		}
+		this.catalogChecked.set(key, wrote ? {
+			changed: false,
+			version
+		} : {
+			changed,
+			version
+		});
+		return {
+			changed,
+			version
+		};
+	}
+	/** 读本地 .sgme-manifest.json；缺失/损坏/名字不符返回 null。 */
+	async readManifest(name, destDir) {
+		try {
+			validateSkillName(name);
+		} catch {
+			return null;
+		}
+		const file = path.join(path.resolve(destDir), name, MANIFEST_FILE);
+		try {
+			const data = JSON.parse(await promises.readFile(file, "utf8"));
+			if (!data || data.name !== name || !Array.isArray(data.files)) return null;
+			return data;
+		} catch {
+			return null;
+		}
+	}
+	/** 本地文件自检：清单内文件都在且 sha256 未变（外部改动即失效）。 */
+	async filesIntact(target, manifest) {
+		if (manifest.files.length === 0) return false;
+		for (const item of manifest.files) {
+			if (!item || typeof item.path !== "string" || typeof item.sha256 !== "string") return false;
+			let rel;
+			try {
+				rel = normalizeRel(item.path);
+			} catch {
+				return false;
+			}
+			try {
+				if (sha256(await promises.readFile(path.join(target, rel))) !== item.sha256.toLowerCase()) return false;
+			} catch {
+				return false;
+			}
+		}
+		return true;
+	}
+	/**
+	* 保证 `<destDir>/<name>` 是服务端最新副本；返回落盘结果。
+	*
+	* 命中（目录级短路或单技能 package_sha256 相同且本地文件完好）时零包传输；
+	* 未命中才下载 + 校验 + 原子替换。`cached` 记录本次是否命中。
+	*/
+	async ensureSkill(name, destDir) {
+		const skill = validateSkillName(name);
+		const dest = path.resolve(destDir);
+		const target = path.join(dest, skill);
+		const local = await this.readManifest(skill, dest);
+		const intact = local ? await this.filesIntact(target, local) : false;
+		const catalog = await this.catalogChanged(dest);
+		const sameCatalog = catalog.version !== "" && local?.catalog_version === catalog.version;
+		if (intact && local && !catalog.changed && sameCatalog) return {
+			path: target,
+			sha256: local.content_hash,
+			files: local.files.length,
+			cached: true
+		};
+		const remote = await this.transport.getManifest(skill);
+		if (intact && local && remote && remote.package_sha256 === local.content_hash) return {
+			path: target,
+			sha256: local.content_hash,
+			files: local.files.length,
+			cached: true
+		};
+		return this.downloadAndInstall(skill, dest, remote, catalog.version);
+	}
+	/** 拉包 → 校验 → 临时目录组装 → 原子替换（失败回滚、不留残件）。 */
+	async downloadAndInstall(name, dest, remote, catalogVersion) {
+		const pkg = await this.transport.getPackage(name);
+		const entries = readTarGz(pkg.data);
+		const top = new Set(entries.map((e) => normalizeRel(e.path).split("/")[0]));
+		if (top.size !== 2 || !top.has(name) || !top.has("MANIFEST.sha256")) throw new SkillCacheError(`包顶层布局异常 ${JSON.stringify([...top].sort())}（期望 ${JSON.stringify([name, PACKAGE_MANIFEST])}）——拒绝落盘`);
+		const manifestEntry = entries.find((e) => normalizeRel(e.path) === PACKAGE_MANIFEST);
+		if (!manifestEntry) throw new SkillCacheError(`包内缺少 ${PACKAGE_MANIFEST}——拒绝落盘`);
+		const fileEntries = parsePackageManifest(manifestEntry.data);
+		const expected = new Set(fileEntries.map((e) => e.path));
+		const actual = new Set(entries.map((e) => normalizeRel(e.path)).filter((rel) => rel !== PACKAGE_MANIFEST).map((rel) => rel.slice(name.length + 1)));
+		const missing = [...expected].filter((p) => !actual.has(p));
+		const extra = [...actual].filter((p) => !expected.has(p));
+		if (missing.length || extra.length) throw new SkillCacheError(`包内文件集与 MANIFEST 不一致（缺 ${JSON.stringify(missing.slice(0, 3))} / 多 ${JSON.stringify(extra.slice(0, 3))}）——拒绝落盘`);
+		for (const e of fileEntries) {
+			const entry = entries.find((x) => normalizeRel(x.path) === `${name}/${e.path}`);
+			if (!entry || sha256(entry.data) !== e.sha256) throw new SkillCacheError(`包内文件 sha256 校验失败: ${e.path}——拒绝落盘`);
+		}
+		const aggregate = sha256(manifestEntry.data);
+		const headerHash = String(pkg.headers["x-skill-sha256"] ?? "").trim().toLowerCase();
+		if (headerHash && headerHash !== aggregate) throw new SkillCacheError("包聚合哈希与响应头 X-Skill-Sha256 不一致——拒绝落盘");
+		const headerFiles = String(pkg.headers["x-skill-files"] ?? "").trim();
+		if (headerFiles && headerFiles !== String(fileEntries.length)) throw new SkillCacheError("包文件数与响应头 X-Skill-Files 不一致——拒绝落盘");
+		const expectedSha = String(remote?.package_sha256 ?? "").trim().toLowerCase();
+		if (expectedSha && expectedSha !== aggregate) throw new SkillCacheError(`包聚合哈希与服务端 manifest.package_sha256 不一致——拒绝落盘: ${aggregate}`);
+		await promises.mkdir(dest, { recursive: true });
+		const tmpRoot = await promises.mkdtemp(path.join(dest, `.${name}.fetch-`));
+		const staged = path.join(tmpRoot, "staged");
+		try {
+			for (const entry of entries) {
+				const rel = normalizeRel(entry.path);
+				if (rel === "MANIFEST.sha256") continue;
+				const out = path.join(staged, rel);
+				await promises.mkdir(path.dirname(out), { recursive: true });
+				await promises.writeFile(out, entry.data);
+			}
+			const manifest = {
+				name,
+				version: remote?.version ?? "",
+				content_hash: aggregate,
+				files: fileEntries,
+				fetched_at: nowIso(),
+				catalog_version: catalogVersion
+			};
+			const stagedSkill = path.join(staged, name);
+			await promises.mkdir(stagedSkill, { recursive: true });
+			await promises.writeFile(path.join(stagedSkill, MANIFEST_FILE), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+			const target = path.join(dest, name);
+			let backup = null;
+			try {
+				await promises.rename(target, path.join(tmpRoot, ".previous"));
+				backup = path.join(tmpRoot, ".previous");
+			} catch (e) {
+				if (e.code !== "ENOENT") throw e;
+			}
+			try {
+				await promises.rename(stagedSkill, target);
+			} catch (e) {
+				if (backup) await promises.rename(backup, target);
+				throw new SkillCacheError(`落盘失败（已回滚原目录）: ${e.message}`);
+			}
+			return {
+				path: target,
+				sha256: aggregate,
+				files: fileEntries.length,
+				cached: false
+			};
+		} finally {
+			await promises.rm(tmpRoot, {
+				recursive: true,
+				force: true
+			}).catch(() => void 0);
+		}
+	}
+};
+//#endregion
 //#region src/tools.ts
 /**
 * tools.ts — memory_search / wiki_search 工具注册
@@ -5060,15 +5499,34 @@ function createRefineBatchTool(client) {
 		}
 	});
 }
-/** 创建 skill_materialize 工具（L3：字节保真落盘成真文件）。 */
+/**
+* 把 SgmeClient 适配成技能缓存传输层（D-59）。
+*
+* 目录/清单端点失败返回 null（缓存层按「未知」降级）；包下载失败抛
+* HTTPStatusError，供调用方区分「服务端未部署包通道」与真实错误。
+*/
+function skillCacheTransport(client) {
+	return {
+		getCatalogVersion: () => client.skillCatalogVersion(),
+		getManifest: (name) => client.skillManifest(name),
+		async getPackage(name) {
+			const r = await client.skillPackage(name);
+			if (r.status === 200 && r.data) return {
+				data: r.data,
+				headers: r.headers ?? {}
+			};
+			throw new HTTPStatusError(r.status, r.error ?? `HTTP ${r.status}`);
+		}
+	};
+}
+/** 创建 skill_materialize 工具（L3：字节保真落盘成真文件；D-59 本地缓存）。 */
 function createSkillMaterializeTool(client) {
 	return defineTool({
 		name: "skill_materialize",
 		description: [
-			"把 SGME 技能物化成真文件：字节保真写盘 dest_dir/<name>/SKILL.md，返回路径与 sha256。",
-			"⚠️ 落盘发生在 SGME **服务端**：dest_dir 是服务端可写路径、返回的 path 也是服务端路径。",
-			"SGME 与 agent 同机部署时可直接读该文件；跨机（如 agent 在 PC、SGME 在 NAS 容器）时",
-			"agent 本地拿不到产物，需两端共享挂载该目录才能访问——此时请改用 skill_get 取正文。"
+			"把 SGME 技能落盘为**本地**真文件：字节保真写盘 dest_dir/<name>/，返回本地路径与 sha256。",
+			"走技能库包通道 + 两级缓存（目录版本短路 + package_sha256 比对）：已是最新时零下载。",
+			"旧版 SGME 未部署包通道时自动回退服务端物化（此时 path 是服务端路径）。"
 		].join(" "),
 		parameters: {
 			name: {
@@ -5079,7 +5537,7 @@ function createSkillMaterializeTool(client) {
 			dest_dir: {
 				type: "string",
 				required: true,
-				description: "目标目录（技能会写到 <dest_dir>/<name>/SKILL.md）"
+				description: "目标目录（技能会写到 <dest_dir>/<name>/）"
 			}
 		},
 		output: {
@@ -5091,9 +5549,18 @@ function createSkillMaterializeTool(client) {
 		},
 		async execute(args, _exec) {
 			const a = args;
-			const resp = await client.skillMaterialize(a.name, a.dest_dir);
-			if (!resp) return `[skill_materialize 失败：技能不存在、dest_dir 非法或 Gateway 不可达（name="${a.name}"）]`;
-			return `[skill_materialize 已落盘（服务端路径）：${resp.path}\nsha256=${resp.sha256}]`;
+			try {
+				const result = await new SkillCache(skillCacheTransport(client), a.dest_dir).ensureSkill(a.name, a.dest_dir);
+				const hit = result.cached ? "（缓存命中，零下载）" : "";
+				return `[skill_materialize 已落盘（本地）：${result.path}\nsha256=${result.sha256}${hit}]`;
+			} catch (err) {
+				if (err instanceof HTTPStatusError && (err.status === 404 || err.status === 405)) {
+					const resp = await client.skillMaterialize(a.name, a.dest_dir);
+					if (!resp) return `[skill_materialize 失败：技能不存在、dest_dir 非法或 Gateway 不可达（name="${a.name}"）]`;
+					return `[skill_materialize 已落盘（服务端路径，旧版回退）：${resp.path}\nsha256=${resp.sha256}]`;
+				}
+				return `[skill_materialize 失败：${err instanceof Error ? err.message : String(err)}]`;
+			}
 		}
 	});
 }

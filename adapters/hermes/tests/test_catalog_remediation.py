@@ -28,8 +28,10 @@ from adapters.hermes.tests.test_plugin import (  # noqa: F401
 
 # ---------- 审核意见 1：materialize 固定落盘根 ----------
 
-def test_materialize_locks_dest_dir_to_plugin_data_root():
-    """dest_dir 由插件固定注入（plugin-data 根），模型传值被拒绝。"""
+def test_materialize_locks_dest_dir_to_plugin_data_root(monkeypatch):
+    """回退路径（旧版 SGME 无包通道）：dest_dir 仍由插件固定注入，模型传值被拒绝。"""
+    import adapters.hermes as hermes_mod
+    monkeypatch.setattr(hermes_mod, "_skill_cache", None)  # 模拟包通道不可用
     p, fake = _provider(_Client(responses=[_Response(json_body={"path": "x", "sha256": "y"})]))
     p._hermes_home = "/tmp/fake-hermes-home"
 

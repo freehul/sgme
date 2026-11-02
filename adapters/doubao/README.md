@@ -32,7 +32,7 @@
 
 - 离线核对全量矩阵：`python scripts/sgme_client.py capabilities`（输出 49/49 覆盖表）。
 - 写侧/管理类（`skill-put` / `skill-delete` / `skill-rename` 服务端强制；`config-update` / `signal-clear` 有管理员 Key 时自动使用）走环境变量 `SGME_ADMIN_KEY`。
-- `skill_get` 支持 `--section` 章节取用；`skill_materialize` 返回 `path` + `sha256`（**落盘在 SGME 服务端文件系统**、返回的是服务端路径——同机调用可用；**跨机改用包通道 `fetch <name> <dest_dir>`**：下载 → `MANIFEST.sha256` 校验 → 安全解包，失败不留残件）。
+- `skill_get` 支持 `--section` 章节取用；`skill_materialize` 返回 `path` + `sha256`（**落盘在 SGME 服务端文件系统**、返回的是服务端路径——同机调用可用；**跨机改用包通道 `fetch <name> <dest_dir>`**：两级缓存（`catalog_version` 目录短路 + `package_sha256` 比对，命中零下载）→ 未命中才下载 → `MANIFEST.sha256` 校验 → 安全解包，失败不留残件）。
 
 ## 工作原理
 

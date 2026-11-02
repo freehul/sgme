@@ -132,7 +132,7 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 48 | credential_list | HTTP | `credential-list` |
 | 49 | credential_get | HTTP | `credential-get <name>`（⚠️ 值不得进入对话正文——标准姿势 sgme_cred.py run 注入） |
 
-扩展命令：`fetch <name> <dest_dir>`（跨机取技能完整包：下载 → MANIFEST 校验 → 安全解包；失败不留残件） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
+扩展命令：`fetch <name> <dest_dir>`（跨机取技能完整包：两级缓存（目录版本短路 + package_sha256 比对，命中零下载）→ 未命中才下载 → MANIFEST 校验 → 安全解包；失败不留残件） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
 
 ## 主动关怀守护（可选，默认不启用）
 

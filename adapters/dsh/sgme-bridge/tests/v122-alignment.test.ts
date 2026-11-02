@@ -633,8 +633,11 @@ describe('refine_batch tool', () => {
 })
 
 describe('skill_materialize tool', () => {
-  it('返回落盘路径与 sha256', async () => {
+  it('旧版服务端（包通道 404）→ 回退服务端物化，返回路径与 sha256', async () => {
     const client = makeMockClient({
+      skillCatalogVersion: vi.fn(async () => null),
+      skillManifest: vi.fn(async () => null),
+      skillPackage: vi.fn(async () => ({ status: 404, error: 'HTTP 404: not found' })),
       skillMaterialize: vi.fn(async () => ({ name: 'pdf', path: '/w/pdf/SKILL.md', sha256: 'deadbeef' })),
     })
     const tool = asToolLike(createSkillMaterializeTool(client))
@@ -645,7 +648,12 @@ describe('skill_materialize tool', () => {
   })
 
   it('失败时降级提示', async () => {
-    const client = makeMockClient({ skillMaterialize: vi.fn(async () => null) })
+    const client = makeMockClient({
+      skillCatalogVersion: vi.fn(async () => null),
+      skillManifest: vi.fn(async () => null),
+      skillPackage: vi.fn(async () => ({ status: 404, error: 'HTTP 404: not found' })),
+      skillMaterialize: vi.fn(async () => null),
+    })
     const tool = asToolLike(createSkillMaterializeTool(client))
     const result = (await tool.execute({ name: 'x', dest_dir: '/w' })) as string
     expect(result).toContain('skill_materialize 失败')
