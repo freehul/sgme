@@ -4,6 +4,7 @@
 import { onMounted, ref } from 'vue'
 import {
   approveMemory,
+  autoResolveReview,
   listPendingReview,
   rejectMemory,
   type ReviewItem,
@@ -87,6 +88,27 @@ function search() {
   load()
 }
 
+// 自动解决（D-30 超期保守直存）：批量放行超期低风险待审项，notes 追加「未经人工确认」标记
+const autoResolving = ref(false)
+const msg = ref('')
+
+async function runAutoResolve() {
+  if (!confirm('确认自动解决待审项？\n\n将按 D-30 规则批量放行超期未处理的低风险待审记忆（默认 7 天），并在备注追加「未经人工确认」标记，可溯源、可复查。')) return
+  autoResolving.value = true
+  error.value = ''
+  msg.value = ''
+  try {
+    const result = await autoResolveReview()
+    msg.value = `自动解决完成：本次消化 ${result.resolved} 条超期待审项。`
+    page.value = 1
+    await load()
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    autoResolving.value = false
+  }
+}
+
 function openApprove(item: ReviewItem) {
   approving.value = item
   approveNote.value = ''
@@ -143,10 +165,12 @@ function dimClass(d: string): string {
           <option v-for="d in dimOptions" :key="d.id" :value="d.id">{{ d.display_name }}（{{ d.id }}）</option>
         </select>
         <button @click="search">检索</button>
+        <button class="danger" :disabled="autoResolving" @click="runAutoResolve">自动解决</button>
       </div>
     </div>
 
     <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="msg" class="note-text">{{ msg }}</p>
     <p v-if="loading" class="empty">加载中…</p>
     <p v-else-if="!rows.length" class="empty">暂无待审候选。提炼产生 needs_review=1 的记忆后会出现在这里，放行后进入注入。</p>
 

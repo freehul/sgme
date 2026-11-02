@@ -152,6 +152,15 @@ watch(id, () => load(), { immediate: true })
         <p v-if="detail.memory.notes" class="note-text">备注: {{ detail.memory.notes }}</p>
       </div>
 
+      <!-- 拒绝详情（status=rejected）：reject_reason/rejected_at 随 GET /v1/memory/{id} 原样返回（DAO SELECT *） -->
+      <div v-if="detail.memory.status === 'rejected'" class="panel">
+        <h3>拒绝原因</h3>
+        <p class="note-text">{{ rawField('reject_reason') || '未填写' }}</p>
+        <div class="meta">
+          <span>拒绝时间: {{ rawField('rejected_at') ? fmtTs(rawField('rejected_at')) : '未填写' }}</span>
+        </div>
+      </div>
+
       <div class="panel">
         <h3>记忆质量 <span class="sub">SGME 2.0 元数据</span></h3>
         <div class="meta q-grid">
