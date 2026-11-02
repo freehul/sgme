@@ -25,6 +25,8 @@ export interface RoleCardData {
   post_history_instructions?: string | null
   character_book?: unknown
   extensions?: {
+    // 2.0 角色人生编辑器（SGME2.0-设计方案 V1.0 §4.2）：基线层（静态，工作台写定）
+    sgme_profile?: SgmeProfile
     sgme_care?: {
       greeting_templates?: string[]
       trigger_rules?: Record<string, string>
@@ -33,6 +35,16 @@ export interface RoleCardData {
   }
   created_at?: string
   updated_at?: string
+}
+
+// 基线层：传记/三观/爱好小习惯/语气音色 + 性格六槽位（呈现层，注入只用六槽位）
+// 槽位 key 按契约为中文（语言风格/情绪反应/价值观取舍/社交姿态/冲突处理/亲密表达）
+export interface SgmeProfile {
+  biography?: string
+  values?: string
+  hobbies?: string
+  voice?: string
+  personality_slots?: Record<string, string>
 }
 export interface RoleCard {
   spec: string
@@ -102,6 +114,43 @@ export interface AssembleResp {
 export function assembleRole(roleId: string, injectMode?: string) {
   const qs = injectMode ? `?inject_mode=${injectMode}` : ''
   return api.get<AssembleResp>(`/v1/admin/roles/${roleId}/assemble${qs}`)
+}
+
+// ---------- 演化层（2.0 §4.2，契约先行：后端并行开发，未上线时 404 按空态显示） ----------
+export type EvolutionKind = 'timeline' | 'feelings' | 'personality_changes' | 'values_changes'
+
+export interface EvolutionEntry {
+  id?: string | number
+  kind?: EvolutionKind
+  ts: string | null
+  content: string
+  trigger_ref?: string | null
+  [key: string]: unknown
+}
+
+// GET /v1/admin/roles/{role_id}/evolution → {timeline, feelings, personality_changes, values_changes}
+// 文件不存在也返回 200 空结构（契约）；404/网络错误由调用方 try/catch 显示
+export interface EvolutionResp {
+  timeline: EvolutionEntry[]
+  feelings: EvolutionEntry[]
+  personality_changes: EvolutionEntry[]
+  values_changes: EvolutionEntry[]
+}
+
+export function emptyEvolution(): EvolutionResp {
+  return { timeline: [], feelings: [], personality_changes: [], values_changes: [] }
+}
+
+export function getEvolution(roleId: string) {
+  return api.get<EvolutionResp>(`/v1/admin/roles/${roleId}/evolution`)
+}
+
+// 追加演化记录：POST body {kind, ...}；其余字段（content/trigger_ref 等）随 entry 透传
+export function appendEvolution(roleId: string, body: { kind: EvolutionKind } & Record<string, unknown>) {
+  return api.post<{ role_id: string; kind: EvolutionKind; status: string }>(
+    `/v1/admin/roles/${roleId}/evolution`,
+    body,
+  )
 }
 
 // ---------- 关怀信号（T-41 / ST-27 T-57） ----------
