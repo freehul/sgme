@@ -113,6 +113,37 @@ exemptions:
   append:
     hermes: sync_turn 每轮自动入库（含 tool 去重）；agent 手写 L0 会破坏查重与幂等语义
     dsh: session-sync 自动入库；手写 L0 破坏查重与幂等（T-168 定）
+  # D-67：技能候选池是**管理面**运维能力（转入/审核会决定技能库内容），
+  # 由 HTTP /v1/admin/skill-candidates 承担；agent 会话面不应替用户做入库决策，
+  # 故六个静态适配器统一豁免（Codex/Claude Code 动态代理仍完整透传，不影响管理面可用性）。
+  skill_candidate_pending:
+    hermes: 管理面审核队列，HTTP /v1/admin/skill-candidates/pending 承担；agent 会话不做入库决策
+    dsh: 同上（管理面，非会话面能力）
+    doubao: 同上（管理面，非会话面能力）
+    mimo: 同上（管理面，非会话面能力）
+    workbuddy: 同上（管理面，非会话面能力）
+    zcode: 同上（管理面，非会话面能力）
+  skill_candidate_list:
+    hermes: 管理面候选池查询，HTTP /v1/admin/skill-candidates 承担
+    dsh: 同上（管理面，非会话面能力）
+    doubao: 同上（管理面，非会话面能力）
+    mimo: 同上（管理面，非会话面能力）
+    workbuddy: 同上（管理面，非会话面能力）
+    zcode: 同上（管理面，非会话面能力）
+  skill_candidate_adopt:
+    hermes: 转入候选会写审核台账，属管理员动作；HTTP 管理端点承担
+    dsh: 同上（需 admin key 的管理动作）
+    doubao: 同上（需 admin key 的管理动作）
+    mimo: 同上（需 admin key 的管理动作）
+    workbuddy: 同上（需 admin key 的管理动作）
+    zcode: 同上（需 admin key 的管理动作）
+  skill_candidate_review:
+    hermes: 审核决策（accepted/ignored）决定技能库内容，属管理员动作；HTTP 管理端点承担
+    dsh: 同上（需 admin key 的管理动作）
+    doubao: 同上（需 admin key 的管理动作）
+    mimo: 同上（需 admin key 的管理动作）
+    workbuddy: 同上（需 admin key 的管理动作）
+    zcode: 同上（需 admin key 的管理动作）
 
 # ---------- 通配通道代偿 ----------
 # 形如：

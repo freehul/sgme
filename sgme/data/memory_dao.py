@@ -591,7 +591,59 @@ def list_memories_by_dimension(
     return [dict(r) for r in cur.fetchall()]
 
 
-# ---------- memory_vectors CRUD（v0.4 T9：向量检索索引） ----------
+# ---------- route 消费（2.0 D-67） ----------
+
+
+def list_memories_by_route(
+    conn: sqlite3.Connection,
+    route: str,
+    limit: int = 200,
+    after_memory_id: str | None = None,
+    include_rejected: bool = False,
+) -> list[dict]:
+    """按 route 游标分页取记忆（技能候选消费管道用）。
+
+    与 ``list_memories_by_dimension`` 的区别：不依赖维度标签（候选可能没打标签），
+    用 ``memory_id`` 升序游标保证大表分页不重复、不跳过，也不把全表读进内存。
+
+    Args:
+        conn: memory.db 连接。
+        route: 路由值（skill_candidate / wiki_candidate / memory）。
+        limit: 单批上限。
+        after_memory_id: 上一批最后一条的 memory_id（游标）；None = 从头。
+        include_rejected: 是否包含用户标记「不采用」的记忆（默认排除）。
+
+    Returns:
+        记忆字典列表，含 ``tags`` 与 ``dimensions`` 别名。
+    """
+    sql = "SELECT * FROM memories WHERE COALESCE(route, 'memory') = ?"
+    params: list = [route]
+    if not include_rejected:
+        sql += " AND status != 'rejected'"
+    if after_memory_id:
+        sql += " AND memory_id > ?"
+        params.append(after_memory_id)
+    sql += " ORDER BY memory_id ASC LIMIT ?"
+    params.append(int(limit))
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    if not rows:
+        return []
+    tag_map = tags_by_memory(conn, [r["memory_id"] for r in rows])
+    for row in rows:
+        row["tags"] = tag_map.get(row["memory_id"], [])
+        row["dimensions"] = row["tags"]
+    return rows
+
+
+def count_memories_by_route(conn: sqlite3.Connection, route: str) -> int:
+    """统计某个 route 下未拒绝的记忆数（候选池总量口径）。"""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM memories "
+        "WHERE COALESCE(route, 'memory') = ? AND status != 'rejected'",
+        (route,),
+    ).fetchone()
+    return int(row["n"])
+
 
 def upsert_vector(
     conn: sqlite3.Connection,

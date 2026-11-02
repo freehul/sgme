@@ -717,6 +717,35 @@ CREATE TABLE IF NOT EXISTS skill_meta (
   superseded_by TEXT,
   updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_skill_meta_status ON skill_meta(status);
+
+-- D-67：route=skill_candidate 记忆的消费台账（技能候选池）。
+-- 刻意**不写 skills 主表**：
+--   1) sync_index 的 delete 分支会把「源目录里没有」的技能行清掉，候选行会被误删；
+--   2) 候选正文进 skills_fts 会污染技能检索（还没审核的草稿不该被 skill_search 命中）。
+-- memory_id 唯一 = 幂等锚点：一条记忆只能消费一次；ignored 即「人工明确不要」。
+CREATE TABLE IF NOT EXISTS skill_candidates (
+  candidate_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id       TEXT NOT NULL UNIQUE,
+  name            TEXT NOT NULL,
+  description     TEXT NOT NULL DEFAULT '',
+  content         TEXT NOT NULL DEFAULT '',
+  category        TEXT,
+  tags            TEXT,
+  confidence      REAL NOT NULL DEFAULT 0.0,
+  status          TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'accepted', 'ignored', 'promoted')),
+  reason          TEXT,
+  note            TEXT,
+  reviewer        TEXT,
+  source          TEXT NOT NULL DEFAULT 'memory_route',
+  content_sha256  TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  reviewed_at     TEXT);
+CREATE INDEX IF NOT EXISTS idx_skill_candidates_status
+  ON skill_candidates(status, confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_candidates_sha
+  ON skill_candidates(content_sha256);
 """
 
 # FTS5 外部内容表 + 同步触发器（对称 wiki/fts.py 的 WIKI_FTS_DDL / TRIGGERS）

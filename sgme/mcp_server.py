@@ -627,6 +627,10 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "skill_file_get", "description": "读技能附件原文（references/scripts/assets）：库优先、未命中回退磁盘；二进制或超 64KiB 只回摘要并指路 HTTP 原字节通道"},
     {"name": "skill_file_put", "description": "写技能附件（references/scripts/assets 白名单；需管理员 Key）：SKILL.md 正文走 skill_put，附件走本工具"},
     {"name": "skill_lint", "description": "技能格式预检（只校验不入库）：skill_put 前先跑，返回 ok/errors/warnings/violations"},
+    {"name": "skill_candidate_pending", "description": "技能候选待消费列表（D-67）：route=skill_candidate 且尚未转入候选池的记忆，带置信度与筛选依据，供人工/LLM 审核"},
+    {"name": "skill_candidate_list", "description": "技能候选池列表（D-67）：按 status（pending/accepted/ignored/promoted）与 min_confidence 分页"},
+    {"name": "skill_candidate_adopt", "description": "把一条 skill_candidate 记忆转成技能候选（D-67，幂等；不写正式技能库，高置信 accepted、其余 pending）；需管理员 Key"},
+    {"name": "skill_candidate_review", "description": "审核技能候选（D-67）：accepted/ignored/pending/promoted，幂等；忽略后不再出现在待消费队列；需管理员 Key"},
     {"name": "credential_list", "description": "凭据列表（EP-11）：键名+元数据，不含值；需凭据模块已启用"},
     {"name": "credential_get", "description": "取凭据单值（EP-11）：⚠️ 值不得进入对话正文——标准姿势 sgme-cred run 注入；仅限必须显式查看场景"},
 )
@@ -1873,6 +1877,103 @@ def build_mcp_server():
             return json.dumps({"error": "skills 模块未启用"}, ensure_ascii=False)
         wiki_conn = _app_state.get("wiki_conn")
         data = _op_json(list_operation, cfg, wiki_conn, offset=offset, limit=limit)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def skill_candidate_pending(
+        limit: int = 20, offset: int = 0, min_confidence: float | None = None
+    ) -> str:
+        """技能候选待消费列表（D-67）：route=skill_candidate 且尚未转入候选池的记忆。"""
+        import json
+
+        from sgme.operations import skill_candidates as sc
+
+        data = _op_json(
+            sc.list_pending_route_memories,
+            _app_state.get("mem_conn"),
+            _app_state.get("skills_conn"),
+            limit=limit,
+            offset=offset,
+            min_confidence=min_confidence,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def skill_candidate_list(
+        status: str | None = None,
+        min_confidence: float | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        """技能候选池列表（D-67）：按状态/置信度分页。"""
+        import json
+
+        from sgme.operations import skill_candidates as sc
+
+        data = _op_json(
+            sc.list_skill_candidates,
+            _app_state.get("skills_conn"),
+            status=status,
+            min_confidence=min_confidence,
+            limit=limit,
+            offset=offset,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def skill_candidate_adopt(
+        memory_id: str,
+        status: str | None = None,
+        note: str | None = None,
+        ctx: Context | None = None,
+    ) -> str:
+        """把一条 skill_candidate 记忆转成技能候选（D-67，幂等；需管理员 Key）。"""
+        import json
+
+        from sgme.operations import skill_candidates as sc
+
+        ok, err = _require_admin(ctx)
+        if not ok:
+            return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
+        data = _op_json(
+            sc.adopt_skill_candidate,
+            _app_state.get("mem_conn"),
+            _app_state.get("skills_conn"),
+            memory_id,
+            status=status,
+            note=note,
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def skill_candidate_review(
+        memory_id: str,
+        decision: str,
+        note: str | None = None,
+        reviewer: str | None = None,
+        ctx: Context | None = None,
+    ) -> str:
+        """审核技能候选（D-67）：accepted/ignored/pending/promoted，幂等；需管理员 Key。"""
+        import json
+
+        from sgme.operations import skill_candidates as sc
+
+        ok, err = _require_admin(ctx)
+        if not ok:
+            return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
+        data = _op_json(
+            sc.review_skill_candidate,
+            _app_state.get("mem_conn"),
+            _app_state.get("skills_conn"),
+            memory_id,
+            decision,
+            note=note,
+            reviewer=reviewer,
+        )
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
