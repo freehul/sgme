@@ -62,9 +62,18 @@ class FakeTransport:
         self.catalog_missing = False
 
     def set_skill(self, name: str, files: dict[str, bytes], *, version: str = "1.0.0",
-                  tamper: bool = False) -> str:
+                  tamper: bool = False, manifest_sha: str | None = None) -> str:
+        """manifest_sha：``GET /manifest`` 返回的 package_sha256。
+
+        真实服务端该值 = DB 行打包 tar.gz 的哈希，而包内 ``MANIFEST.sha256`` 聚合值
+        来自文件系统打包——**两者口径不同、并不相等**。默认与聚合值相同只是为了让
+        老用例保持简单；``manifest_sha`` 用于模拟真实差异。
+        """
         data, sha = make_package(name, files, tamper=tamper)
-        self.skills[name] = {"version": version, "files": files, "package": data, "sha": sha}
+        self.skills[name] = {
+            "version": version, "files": files, "package": data, "sha": sha,
+            "manifest_sha": manifest_sha or sha,
+        }
         return sha
 
     def get_json(self, path: str):
@@ -83,7 +92,7 @@ class FakeTransport:
             return {
                 "name": name,
                 "version": skill["version"],
-                "package_sha256": skill["sha"],
+                "package_sha256": skill.get("manifest_sha") or skill["sha"],
                 "content_len": len(skill["files"]["SKILL.md"]),
                 "updated_at": "2026-11-02T00:00:00+08:00",
             }
@@ -295,3 +304,32 @@ def test_module_level_api_matches_contract(tmp_path, transport, monkeypatch):
     params = list(inspect.signature(sc.ensure_skill).parameters)
     assert params[:2] == ["name", "dest_dir"], "模块级 ensure_skill 签名必须与契约一致"
     assert list(inspect.signature(sc.refresh_catalog).parameters) == [] or "transport" in params
+
+
+def test_manifest_sha_differs_from_package_aggregate(tmp_path, transport):
+    """真实服务端：manifest.package_sha256（DB 行打包）≠ 包内 MANIFEST 聚合值（文件系统打包）。
+
+    回归 2026-11-02 修的 bug：缓存层曾拿 manifest 的值去验包聚合值，两者永不相等，
+    导致每次下载都被「拒绝落盘」，二级缓存也永不命中。正确口径：
+    - 下载完整性由响应头 X-Skill-Sha256（= 包聚合值）校验；
+    - manifest 的 sha 只用于「是否需要重拉」的比对，落进本地 manifest 的 remote_sha。
+    """
+    transport.set_skill("demo-skill", FILES_V1, manifest_sha="deadbeef" * 8)
+
+    cache = sc.SkillCache(transport, state_dir=tmp_path)
+    dest = cache.ensure_skill("demo-skill", tmp_path)
+
+    # 1) 不因两者不等而拒绝落盘
+    assert (dest / "SKILL.md").is_file()
+    assert cache.last_hit is False
+
+    # 2) 远端 sha 被记进本地 manifest（供下次二级比对）
+    manifest = json.loads((dest / sc.MANIFEST_FILE).read_text(encoding="utf-8"))
+    assert manifest["remote_sha"] == "deadbeef" * 8
+    assert manifest["content_hash"] == transport.skills["demo-skill"]["sha"]
+
+    # 3) 二级命中：清掉目录级状态后，远端 sha 未变 → 零包传输
+    (tmp_path / ".sgme-catalog.json").unlink(missing_ok=True)
+    before = transport.package_downloads
+    sc.SkillCache(transport, state_dir=tmp_path).ensure_skill("demo-skill", tmp_path)
+    assert transport.package_downloads == before, "远端 sha 未变不得重复下载"
