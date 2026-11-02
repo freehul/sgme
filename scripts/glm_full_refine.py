@@ -70,20 +70,54 @@ def find_trial(models: list[str]) -> list[str]:
     return [m for m in models if any(h in m for h in TRIAL_HINTS)]
 
 
+def quotas() -> list[dict]:
+    """读网关的订阅额度（跨机可用的权威来源）。
+
+    端点 ``/v1/magpie/quotas`` 返回每份订阅的 ``windows``（额度窗口）、
+    ``until``（到期时刻）、``renew``。这是判断"赠额到底生效没有"的正解——
+    模型清单里的 ``-Trial`` 条目是网关按订阅**生成**的，不是独立事实；
+    只看模型列表会把"还没刷新"误判成"没额度"，或反过来。
+    """
+    r = HTTP.get(f"{GLM_GATEWAY}/v1/magpie/quotas")
+    r.raise_for_status()
+    return r.json().get("data", [])
+
+
 def probe() -> dict:
-    """探测赠额是否就绪。
+    """探测赠额是否就绪：以额度窗口为准，模型清单只作辅证。
 
     Returns:
-        {"ready": bool, "trial": [...], "all": [...]}
+        {"ready": bool, "quota": [...], "trial": [...], "all": [...]}
     """
+    out = {"ready": False, "quota": [], "trial": [], "all": [], "error": None}
+
+    # 1. 权威判据：额度窗口（windows 非空 = 额度真的可用了）
     try:
-        models = list_models()
+        out["quota"] = quotas()
     except Exception as exc:
-        _log(f"网关不可达: {type(exc).__name__}: {exc}")
-        return {"ready": False, "trial": [], "all": [], "error": str(exc)}
-    trial = find_trial(models)
-    _log(f"模型 {len(models)} 个；Trial 条目 {len(trial)} 个: {trial or '（无）'}")
-    return {"ready": bool(trial), "trial": trial, "all": models}
+        _log(f"额度端点不可达: {type(exc).__name__}: {exc}")
+        out["error"] = str(exc)
+    live = []
+    for q in out["quota"]:
+        wins = q.get("windows") or []
+        if wins:
+            live.append(q)
+        _log(
+            f"订阅 {q.get('provider')}/{q.get('plan')}：窗口 {len(wins)} 个，"
+            f"到期 {q.get('until')}, renew={q.get('renew')}"
+        )
+    # 2. 辅证：模型清单里的 Trial 条目
+    try:
+        out["all"] = list_models()
+        out["trial"] = find_trial(out["all"])
+        _log(f"模型 {len(out['all'])} 个；Trial 条目: {out['trial'] or '（无）'}")
+    except Exception as exc:
+        _log(f"模型清单不可达: {type(exc).__name__}: {exc}")
+
+    out["ready"] = bool(live)
+    if out["ready"] and not out["trial"]:
+        _log("警告：额度窗口已开但模型清单没有 Trial 条目——网关可能需要重启刷新")
+    return out
 
 
 def smoke_trial(model: str) -> bool:
@@ -248,10 +282,13 @@ def main() -> None:
 
     info = probe()
     if not info["ready"]:
-        _log("Trial 条目未就绪——赠额可能还没生效（23:00 窗口）。退出。")
+        _log("额度窗口未开——赠额还没生效。退出。")
         sys.exit(2)
     if args.action == "probe":
         return
+    if not info["trial"]:
+        _log("额度窗口已开但模型清单无 Trial 条目，拒绝开跑（会扣付费额度）。")
+        sys.exit(4)
     if args.smoke and not smoke_trial(info["trial"][0]):
         _log("Trial 冒烟未通过，不开跑")
         sys.exit(3)
