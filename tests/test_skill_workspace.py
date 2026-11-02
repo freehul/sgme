@@ -227,8 +227,16 @@ def test_pull_refreshes_when_only_library_changed(library, tmp_path: Path) -> No
 
 
 def test_pull_creates_attachment_tables_when_absent(library, tmp_path: Path) -> None:
+    """老库可能没有附件两表（T-401 之前建的库）——pull 要能兜底重建。
+
+    T-401 起两表已并入 db.py 的 SKILLS_DDL，新库连接时即存在；
+    因此这里显式 DROP 来还原「老库缺表」场景，而不是依赖默认没有表。
+    """
     conn, _ = library
     seed_skill(conn, with_files=False)
+    for tbl in ("skill_files", "skill_revisions", "idx_skill_rev_name"):
+        conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+    conn.commit()
     tables = {
         r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }

@@ -1,0 +1,170 @@
+l1:
+  # B162（2026-09-10）：5000 → 6000。按生产免费链四批对照实测，5000 卡在超限拆分台阶上
+  # （1.5×5000=7500 字符即触发拆分，230 会话中 14% 被拆、5.03% 字符重复送入）；
+  # 抬到 6000 后拆分降至 6%、重复降至 1.26%、调用数 −15%，提取量差异在噪声内。
+  chunk_size: 6000
+  overlap: 1000
+answer:
+  enabled: true   # T-149：聚合答案/时序推理开关（/v1/answer 与 MCP answer 共用）
+l15:
+  prescreen:
+    enabled: true
+    vector_top_k: 50
+    dimension_top_n: 50
+    fallback: skip_conflict   # embed 不可达 → 跳过冲突检测直接 store（防全量召回烧钱）
+  # F1 近似查重（L1.5 P1）：落库前向量近似判定；命中进隔离表人工复核（不静默丢弃）
+  near_dup:
+    enabled: true
+    threshold: 0.92     # 首发保守示值（bigram 标定参照；向量口径首标定=观察期）
+    gray_zone: 0.85
+refine:
+  # 默认 false（= 新增/克隆安装的起点）：高频写入场景「每次 append 都提炼」浪费 token。
+  # ⚠️ 口径说明（ST-58/T-296，2026-10-17）：**本机生产态覆盖为 true**（ST-23⑥ 保底型——
+  # 不依赖 agent 自觉调 refine/trigger，append 即提炼），两者差异是刻意取舍而非漂移；
+  # 改这里或改生产值前请两边一起看。代码默认见 sgme/config.py::DEFAULT_REFINE_CONFIG。
+  refine_on_append: false
+  # 用户指定专用提炼 LLM（2026-08-18，T-53 免费托底）：
+  # 显式 override 优先于 agent 声明（resolve.py 策略规则 1）——dsh agent 曾注册
+  # agent_model=deepseek/deepseek-v4-flash 劫持提炼链（5279 次 deepseek 消耗），
+  # 此配置强制主链首模型；2026-08-29 随 9af882b zhipu 移出链同步改指 agnes（B121，
+  # 原值 provider: zhipu 已从 providers.yaml 删除，悬空 override 会被 resolve 静默跳过、劫持防线失效）。
+  llm_override:
+    provider: agnes
+    model: agnes-2.5-flash
+    max_tokens: 8192
+  batch_scan:
+    enabled: true
+    interval_min: 60   # 2026-08-20：10→60min，白天减少撞限流频率（会话结束 refine_trigger 仍即时提炼）
+l2:
+  max_scenes: 300
+  warn_thresholds:
+    yellow: 250
+    orange: 275
+    red: 300
+  prescreen:
+    enabled: true          # T-97 场景级向量预筛（2026-08-22）：向量 Top-K ∪ 热度 Top-N
+    vector_top_k: 30       # 语义相似场景召回上限（场景总量 ~271，30 足够 LLM 做 update/merge 判断）
+    heat_top_n: 20         # 高热度兜底（无向量覆盖的活跃场景不丢）
+    fallback: full_recall  # embed 不可达 → 回退固定 50 摘要（原行为，宁多勿漏）
+search:
+  vector:
+    # 出厂默认关闭 + 不写死端点（2026-09-11 B169）：向量端点属**部署态**配置——
+    # 各部署的 ollama/LM Studio 地址不同，硬编码会让陌生环境下开箱就指向不存在的地址。
+    # 部署时在可写覆盖层 config/sgme.yaml（$SGME_HOME/config，不入库）开启并填 base_url。
+    enabled: false
+    provider: local
+    model: bge-m3
+    base_url: ''      # 空 = 未配置；连通性探测返回「向量端点未配置」且不发告警（operations/health.py:113）
+    # api_key_env 留空——本地 Ollama 无需鉴权
+    fallbacks:
+      - provider: siliconflow   # 云端免费降级备用（同 1024 维，切换不重灌索引）
+        model: BAAI/bge-m3
+        base_url: https://api.siliconflow.cn/v1
+        api_key_env: SILICONFLOW_API_KEY
+  rrf:
+    k: 60
+backup:
+  enabled: true
+  schedule: 04:00
+  level: incremental
+  dir: data/backups
+  keep_full: 7
+  remote_dir: ''  # 异地目录（本机另一盘/NAS 挂载）；空 = 跳过。部署时用 SGME_BACKUP_REMOTE env 注入
+  raw_cold_days: 90
+wiki:
+  enabled: true
+# ST-36 Skills 管理模块（PR-7）：source_dirs=治理版写侧的 git 工作区（迁移件落盘处）
+# pattern: auto=热集自动加载 / manual=按需检索；budget=L0 常驻列表预算
+skills:
+  enabled: true
+  source_dirs:
+    # 读侧（索引/检索）两目录都扫、不存在的自动跳过：
+    # ./skills/ = 源码运行读仓库内 canonical skills；/app/cache/skills/ = Docker 镜像烘焙的同一份（git 仓）
+    # 写侧（skill_put/delete/rename/资产）只落「独立 git 技能仓」（T-220/T-221）：
+    # 容器内 → /app/cache/skills/；本机源码运行（./skills/ 嵌在仓库内、非独立仓）→ 报错且不落盘（写技能需另配 git 工作区）
+    - ./skills/
+    - /app/cache/skills/
+  budget: 40
+  # ST-45 资产配额：正文之外随技能分发的 references/ scripts/ assets/ 三类文件。
+  # 未配置时代码回落到 routes_skills_admin.DEFAULT_ASSET_*（同值）。
+  asset_quota:
+    max_file_bytes: 262144      # 单文件上限 256 KiB
+    max_total_bytes: 2097152    # 单技能资产合计上限 2 MiB
+    max_files: 100              # 单技能资产文件数上限
+  # T-281 跨机包通道配额（GET /v1/skills/{name}/package + /files/{relpath}）：
+  # **独立标定**——写侧 asset_quota 只覆盖三目录、且仅约束 API 写面；包通道是全量包
+  # （install.py / locales/** / package/** / corpus/** 等不在写侧覆盖内，git 直推也不受
+  # 写侧配额约束），按写侧同值做硬闸会直接拒绝合法存量技能（生产实测：nihaisha 整包
+  # 3.21 MiB / 108 文件）。
+  # 未配置时代码回落到 operations.skills.DEFAULT_PACKAGE_*（同值）；超限 → 400 明确报错。
+  package_quota:
+    max_file_bytes: 2097152     # 单文件上限 2 MiB
+    max_total_bytes: 8388608    # 整包合计上限 8 MiB
+    max_files: 512              # 整包文件数上限
+skills_hub:
+  enabled: true
+  path: ''
+  mode: copy
+  sync_policy: manual
+  remote:
+    source: ${SGME_SKILLS_HUB_REMOTE}
+    cache: ./cache/skills/
+    branch: main
+    conflict_policy: local_wins
+    timeout_s: 60
+    backup_refs: true
+logging:
+  level: INFO
+  format: console
+dream:
+  enabled: true
+  schedule: 03:00
+  max_files: 200
+  ttl_mark: true
+  archive_days: 90
+  report_dir: data/reports/
+care:
+  enabled: true
+  persona_max_chars: 2000
+scene_gc:
+  enabled: true
+  merge_threshold: 0.80     # 相似度 >= 0.80 的场景对入选合并
+  min_threshold: 0.70       # 兜底下限（候选不足时可降至此重算，当前未启用降级）
+  trigger_at: 275           # 仅当 active >= 此值才治理；与 l2.warn_thresholds.orange 一致
+  max_merges: 20            # 单次合并上限（防一次 LLM 烧太多；仍超限次日 Dream 继续压）
+
+# T-257（ST-55）：server 段安全加固键（出厂模板；与 config.py DEFAULT_SERVER_CONFIG 键全量一致）。
+# 缺省 = 观察期口径：封禁关（threshold=0 只计数不封）、无 key 限流开、体限开、审计开。
+server:
+  rate_limit_per_min: 120          # 既有：按 X-API-Key 取值（含无效 key）
+  cors_origins: []                 # 既有：浏览器跨源白名单；空 = 仅放行本机回环来源
+  ip_rate_limit_per_min: 60        # 无 key 请求按来源 IP 限流；0=关
+  auth_fail_threshold: 0           # 观察期缺省 0（只计数不封）；实测通过后转 20
+  auth_fail_window_sec: 300
+  ban_seconds: 900
+  ban_escalation: true             # 升级阶梯：逐次翻倍至 ban_max_seconds
+  ban_max_seconds: 3600
+  ban_reset_sec: 86400             # 升级阶梯归零窗口
+  trusted_proxies: []              # 可信代理 IP/CIDR；空 = 不信任转发头
+  max_body_bytes: 5242880          # 请求体上限 5MB；0=关
+  llm_route_limits:                # LLM 端点分钟限（HTTP 按 key）
+    /v1/answer: 10
+    /v1/admin/refine: 5
+    /v1/admin/dream: 5
+    /v1/admin/tier0: 5
+    /v1/wiki: 5
+    /v1/admin/skills: 5
+  llm_mcp_tool_limits:             # MCP 工具分钟限（按工具名）
+    answer: 10
+    refine_trigger: 5
+    refine_batch: 2
+    wiki_evolve_trigger: 5
+  security_log_keep_days: 90       # 审计保留天数；0=不清理
+
+# EP-11（T-272）：凭据模块（第四模块）——跨机共享「重要 KEY」（独立库 credentials.db，
+# 服务端 Fernet 加密；读=全部已注册 agent 平级、写/删/恢复=仅 admin；软删可恢复）。
+# 默认关（安全模块 opt-in）：启用后创建 data/credentials.db 并挂载 /v1/credentials。
+# ⚠️ 启用前须在可写覆盖层 config/.env 配置 SGME_CRED_KEY（Fernet 44 字符）；缺失/格式
+# 非法/与库内密文不匹配时**写路径拒绝**（绝不自动生成、绝不明文兜底）。
+credentials:
+  enabled: false

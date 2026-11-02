@@ -1,0 +1,566 @@
+"""operations/search.py：混合检索操作（v0.7 §7 operations 层样板模块）。
+
+承接入口
+--------
+- HTTP ``POST /v1/search``（routes_memory.search_memories，Agent Key）
+- MCP ``search`` 工具（mcp_server.search）
+
+三段式结构（照抄 health.py 样板）：
+1. 常量/私有工具（本模块内聚，不外泄）
+2. ``search(...) -> OperationResult`` 操作函数：显式接参，返回**协议无关的信息超集**
+3. ``http_payload(data)`` / ``mcp_payload(data)`` 投影函数：把超集裁剪成各入口的历史契约形态
+
+请求字段（v0.6 SearchRequest，HTTP 与 MCP 的并集）
+--------------------------------------------------
+- query: 检索词（HTTP 必填 str；MCP 必填 str）。**空串不报错**——
+  v0.6 行为是返回空结果（tests/test_server.py::test_search_empty_query_returns_empty）
+- scopes: 检索层列表，HTTP 缺省 ["memory","skills"]；MCP 缺省 ["memory"]（scopes 参数已开放，T-207 ②核实；"sessions" 层 T-207 ① 起支持正文 FTS）
+  - "memory" → 记忆池（FTS5 BM25 + 维度标签过滤 + 向量 + RRF + 溯源 trace）
+  - "wiki" / "scenes" → wiki 场景叙事文档（L2，FTS + LIKE 兜底 + 预留向量路）
+  - "wiki_pages" → wiki 知识库页面（wiki_pages 表，T-34 新增；FTS5 BM25 + LIKE 兜底，
+    wiki_conn 为 None / 检索失败 → 该层空结果，不影响其他层）
+  - "sessions" → L0 原始层会话（raw_files 索引，ST-33 新增；LIKE 子串匹配
+    元数据列 + 读盘正文摘要 best-effort，session_conn 为 None / 检索失败 →
+    该层空结果，不影响其他层）
+  - "skills" → 技能检索层（ST-36 M2，scope="skills"）：git 源 SKILL.md
+    （source_dirs；B114 起移除 wiki 桥接，技能不再经 wiki 索引）BM25 + 向量余弦
+    融合 0.6/0.4；模块未配置/禁用/该层失败 → 空结果，不影响其他层
+  - 未知 scope 值被**忽略**（v0.6 行为，不报错；
+    tests/test_server.py::test_search_no_memory_scope_returns_empty）
+- dimensions: 维度标签过滤（可选；match=any 至少命中一个 / match=all 全部命中）
+- match: 维度匹配语义，缺省 "any"
+- limit: 每层结果上限（HTTP 缺省 10；MCP 缺省 5，入口侧再 ``min(limit, 20)`` 封顶）
+- include_sources: 是否展开溯源 trace（缺省 True）
+
+响应结构（历史契约差异，v0.8 待统一，现在**不得**合并）
+------------------------------------------------------
+- HTTP：``{"results": [...], "meta": {"routes": [...], "rrf_k": 60}}``；
+  空结果时 ``meta`` 追加 ``note`` 可行动引导（T-143②，缺失模型 Key 时叠加申键说明）
+  - ``results``：先 memory 层后 wiki 层，按 scopes 顺序拼接
+  - ``meta.routes``：各结果 ``routes`` 的去重并集（保序），无命中时回退 ``["bm25"]``
+- MCP：``{"results": [...]}`` —— **没有 meta**，且只查 memory 层
+
+⚠️ ``meta.rrf_k`` 是 v0.6 路由里的**历史硬编码 60**（不读 cfg ``search.rrf.k``），
+本模块以常量 ``META_RRF_K`` 保留该行为，保证响应逐字节等价；
+统一为 cfg 取值属 v0.8 议题，届时删除本常量即可。
+
+异常翻译（与入口层 run_operation / _op_json 配合）
+--------------------------------------------------
+- 参数校验不通过（query 非字符串 / scopes 非字符串列表）→ 抛 ``InvalidArgs``
+  → ``ERR_INVALID_ARGS``（HTTP 400 / MCP error JSON），镜像 v0.6 pydantic 校验语义
+- 检索内部异常（sqlite 故障、检索函数抛错）→ ``OperationResult.fail(ERR_INTERNAL)``
+  → HTTP 500 / MCP error JSON。v0.6 时这类异常由全局异常处理器兜底为 500，
+  本模块统一收敛为 ``ERR_INTERNAL`` 错误码（状态码不变，错误形态归一）
+
+依赖：调 ``sgme.data.search``（search_memories / search_scenes）+ ``sgme.wiki.fts``
+（search_wiki_fts，扩展模块检索，同 operations/wiki.py 先例），engine 是禁区。
+副作用：检索为纯读路径（向量不可达时由业务层自动降级 BM25/LIKE）；唯一例外是
+T-252 记忆调用统计——memory 层命中记入 ``memory_usage_daily``（best-effort 全静默
+旁路，A2 政策放宽仅限本表，2026-10-10 用户批；见 operations/memory_usage.py）。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from sgme.data import search as search_mod
+from sgme.data import session_dao
+from sgme.operations.errors import ERR_INTERNAL, InvalidArgs, OperationResult
+from sgme.operations.llm import model_keys_notice
+from sgme.operations.memory_usage import record_memory_usage
+from sgme.operations.session import _resolve_raw_path as _resolve_l0_raw_path
+from sgme.wiki import fts as wiki_fts
+
+logger = logging.getLogger("sgme.operations.search")
+
+# HTTP meta.rrf_k 的历史硬编码值：v0.6 路由写死 60（不读 cfg search.rrf.k），
+# 为逐字节等价保留；v0.8 统一为 cfg 取值后删除本常量。
+META_RRF_K: int = 60
+
+# scopes 缺省值：与 v0.6 SearchRequest 的 pydantic 缺省一致（HTTP 侧）。
+# T-207 ② 评估结论（2026-09-25）：HTTP 默认**不纳入** "sessions"——sessions 层
+# 是 best-effort 读盘 + FTS，纳入默认会让每次 search 都读盘（开销↑），且 L0
+# 原文（未提炼流水）混入常规检索会稀释注入质量；按需显式 scopes=["sessions"]。
+DEFAULT_SCOPES: list[str] = ["memory", "skills"]
+
+# T-143②：搜索空结果的通用可行动引导（HTTP meta.note 用；缺失模型 Key 时
+# 由 _search_empty_note 叠加 model_keys_notice 申键说明，同 inject 的追加语义）。
+SEARCH_EMPTY_NOTE: str = (
+    "此检索无命中：可先通过 POST /v1/append 沉淀会话并触发提炼"
+    "（POST /v1/admin/refine/trigger），记忆落库后再检索；"
+    "或更换关键词 / 检查维度标签后重试。"
+)
+
+# 词边界守卫（ASCII 字母数字）：防别名替换误伤派生词（daemons 不触发 daemon）
+_WORD_BOUNDARY = r"(?<![A-Za-z0-9]){alias}(?![A-Za-z0-9])"
+
+
+def _search_empty_note(cfg: dict[str, Any]) -> str:
+    """拼装搜索空结果引导：通用检索提示 + （可选）模型 Key 缺失申键说明。
+
+    T-143②：空命中时 HTTP ``meta.note`` 带可行动引导；模型 Key 缺失时叠加
+    ``model_keys_notice``（与 inject 的 note 追加同源），齐全时只留检索自身
+    提示（零噪音）。
+    """
+    notice = model_keys_notice(cfg)
+    if not notice:
+        return SEARCH_EMPTY_NOTE
+    return f"{SEARCH_EMPTY_NOTE}\n{notice}"
+
+
+def normalize_query_terms(query: str, term_aliases: dict[str, str]) -> str:
+    """检索术语别名归一化（ST-19）：旧术语 → 标准术语，大小写/空格容忍。
+
+    实现为**查询扩展**而非纯替换：命中别名的词保留原文并追加标准术语
+    （如 ``daemon`` → ``daemon gateway``）。理由：纯替换会让「旧术语老记忆」
+    从此无法召回（回归），扩展则新老记忆双向可召回——旧术语查询命中新名记忆，
+    标准术语查询同样命中旧名记忆，且不含别名的查询逐字符不变。
+
+    规则：
+    - 词边界整体匹配：daemons / daemonize 等派生词不触发扩展
+    - 大小写容忍：别名匹配忽略大小写；注入的标准术语统一小写
+      （FTS5/LIKE 对 ASCII 大小写不敏感，等价匹配）
+    - 空格容忍：查询与别名内部连续空白折叠为单空格（SGME  Server 等价 SGME Server）
+    - 标准术语已在查询中 → 跳过注入（防重复）；同一标准术语只注入一次
+    - 不命中时行为不变：query 不含任何别名 → 原样返回（连大小写/空白都不动）
+
+    Args:
+        query: 原始检索词（可为空串）。
+        term_aliases: {旧术语: 标准术语} 映射（cfg['term_aliases']，来自
+            registry/term_aliases.yaml；为空/None 等价于不做归一化）。
+
+    Returns:
+        扩展后的检索词；无别名命中时返回原 query（逐字符不变）。
+    """
+    if not query or not term_aliases:
+        return query
+    out = _collapse_spaces(query)
+    changed = False
+    injected: set[str] = set()
+    for alias, canonical in term_aliases.items():
+        alias_key = _collapse_spaces(str(alias)).lower()
+        if not alias_key:
+            continue
+        canonical_key = _collapse_spaces(str(canonical)).lower()
+        if not canonical_key or canonical_key in injected:
+            continue
+        # 标准术语已在查询中 → 无需注入（防重复）
+        if re.search(_WORD_BOUNDARY.format(alias=re.escape(canonical_key)), out, re.IGNORECASE):
+            continue
+        pattern = re.compile(
+            _WORD_BOUNDARY.format(alias=re.escape(alias_key)), re.IGNORECASE
+        )
+
+        def _inject(match: re.Match, _canonical: str = canonical_key) -> str:
+            nonlocal changed
+            changed = True
+            return f"{match.group(0)} {_canonical}"
+
+        # 仅当别名实际命中才注入并记账（防同一标准术语重复注入，
+        # 同时不阻塞「本别名未命中、其他别名仍需注入」的路径）
+        if pattern.search(out):
+            out = pattern.sub(_inject, out)
+            injected.add(canonical_key)
+    # 无别名命中 → 返回原始 query（不命中时行为不变，逐字符等价）
+    return out if changed else query
+
+
+def _is_skill_page(tags: object) -> bool:
+    """页面是否 skill 标记（tags 为 JSON 字符串或列表，精确判断 'skill' in tags）。
+
+    双重编码防御（对齐 wiki_dao._parse_tags）：第一层 loads 得到 str 则再解一层。
+    """
+    if not tags:
+        return False
+    try:
+        val = json.loads(tags) if isinstance(tags, str) else tags
+        if isinstance(val, str):
+            val = json.loads(val)
+        return isinstance(val, list) and "skill" in val
+    except (TypeError, ValueError):
+        return False
+
+
+def _parse_wiki_tags(tags: object) -> list:
+    """wiki tags（可能双重编码的 JSON 字符串）→ list，供统一搜索返回。"""
+    if not tags:
+        return []
+    try:
+        val = json.loads(tags) if isinstance(tags, str) else tags
+        if isinstance(val, str):
+            val = json.loads(val)
+        return val if isinstance(val, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def _collapse_spaces(text: str) -> str:
+    """连续空白折叠为单空格（大小写/空格容忍的归一化前置）。"""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _search_wiki_pages(
+    wiki_conn: sqlite3.Connection | None,
+    query: str,
+    limit: int,
+) -> list[dict]:
+    """wiki 知识库页面检索层（T-34，scope="wiki_pages"）。
+
+    - 复用扩展模块 ``sgme.wiki.fts.search_wiki_fts``（FTS5 BM25 + LIKE 兜底，
+      同 operations/wiki.py 先例），不重复造轮子；
+    - **容错隔离**：wiki_conn 为 None（wiki 扩展未挂载/入口未注入）或检索
+      抛异常 → 返回空列表 + WARNING，不拖累 memory / scenes 层；
+    - 结果形状对齐 scenes 层（rank/source/title/content/routes），
+      source 标记 ``"wiki_pages"``，routes 标记 ``["wiki_fts"]``。
+    """
+    if wiki_conn is None:
+        return []
+    try:
+        # 排除 skill 标记页：B114（2026-08-28）已将技能从 wiki 迁出为
+        # source_dirs 的 SKILL.md，wiki 现零技能页；此过滤保留作防御（脏数据/
+        # 未来回写），不影响技能召回（技能走独立 skills scope，不经 wiki）。
+        # SQL 层下沉过滤（exclude_skill=True）。
+        rows = wiki_fts.search_wiki_fts(wiki_conn, query, limit=limit, exclude_skill=True)
+    except Exception as e:
+        logger.warning("wiki_pages 检索失败（该层空结果）: %s", e)
+        return []
+    # Python 层精确过滤保留作双保险（tags JSON 解析，防双重编码脏数据，2026-08-14 前科）。
+    rows = [r for r in rows if not _is_skill_page(r.get("tags"))]
+    return [
+        {
+            "rank": i + 1,
+            "source": "wiki_pages",
+            "page_id": r["page_id"],
+            "title": r["title"],
+            "content": r.get("snippet") or "",
+            "category": r.get("category") or None,
+            "tags": _parse_wiki_tags(r.get("tags")),
+            "routes": ["wiki_fts"],
+        }
+        for i, r in enumerate(rows)
+    ]
+
+
+def _snippet_from_raw_text(text: str, max_len: int = 200) -> str:
+    """从 L0 原文生成正文摘要：剥 frontmatter → 折叠空白 → 截断。
+
+    L0 文件结构为 ``--- frontmatter ---`` + 消息块（见
+    docs/design/SGME-L0文件格式-v0.1.md）。摘要取 frontmatter 之后的正文，
+    连续空白折叠为单空格后截断到 ``max_len`` 字符——单条结果只展示摘要，
+    全文走 ``GET /v1/sessions/{file_id}``（operations/session.py）。
+    """
+    body = text
+    if body.startswith("---"):
+        parts = body.split("\n---", 1)
+        if len(parts) == 2:
+            body = parts[1]
+    return re.sub(r"\s+", " ", body).strip()[:max_len]
+
+
+def _raw_snippet(
+    raw_dir: str | Path | None,
+    file_id: str,
+    stored_path: str | None,
+    max_len: int = 200,
+    query: str | None = None,
+) -> str:
+    """读取 L0 原文并生成正文摘要（**best-effort**，永不抛异常）。
+
+    - raw_dir 未配置（cfg 无 paths.raw_dir）→ 空串（检索不依赖读盘）；
+    - 路径越界（脏数据 file_id 含穿越片段）/ 文件缺失 / 读失败 → 空串，
+      结果仍返回元数据命中，不拖累检索（对称 wiki_pages 层的容错隔离）；
+    - T-207 ①：query 提供时改用「命中片段」——在原文中定位检索词并截取
+      前后窗口（未命中或片段提取失败回退固定开头摘要）。
+    """
+    if not raw_dir:
+        return ""
+    try:
+        path = _resolve_l0_raw_path(Path(raw_dir), file_id, stored_path)
+        if path is None or not path.is_file():
+            return ""
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if query:
+            from sgme.data.search import raw_fts as raw_fts_mod
+
+            body = text.split("---", 2)[-1] if text.startswith("---") else text
+            hit = raw_fts_mod.extract_hit_snippet(body, query, window=max_len // 2)
+            if hit:
+                return hit[:max_len]
+        return _snippet_from_raw_text(text, max_len)
+    except OSError:
+        return ""
+
+
+def _search_sessions(
+    session_conn: sqlite3.Connection | None,
+    query: str,
+    limit: int,
+    raw_dir: str | Path | None,
+) -> list[dict]:
+    """L0 原始层会话检索层（ST-33，scope="sessions"）。
+
+    - 检索委托 ``session_dao.search_raw_files``（LIKE 子串匹配 raw_files
+      元数据列，SQL 只存在于 data 层）；
+    - 结果装饰：source="sessions"，content 为读盘正文摘要（best-effort，
+      缺失/越界/读失败 → 空串）；
+    - **容错隔离**（对称 wiki_pages 层）：session_conn 为 None 或检索
+      抛异常 → 返回空列表 + WARNING，不拖累 memory / wiki 层。
+    """
+    if session_conn is None or not query or not query.strip():
+        return []
+    try:
+        rows = session_dao.search_raw_files(session_conn, query, limit=limit)
+    except Exception as e:
+        logger.warning("sessions 检索失败（该层空结果）: %s", e)
+        return []
+    return [
+        {
+            "rank": i + 1,
+            "source": "sessions",
+            "file_id": r["file_id"],
+            "session_key": r["session_key"],
+            "agent_id": r["agent_id"],
+            # T-207 ①：正文命中（matched_in=body）时用「query 命中片段」替代
+            # 固定前 200 字符——片段与检索词对齐才可读
+            "content": _raw_snippet(
+                raw_dir, r["file_id"], r.get("path"),
+                query=query if r.get("matched_in") == "body" else None,
+            ),
+            "started_at": r.get("started_at"),
+            "status": r.get("status"),
+            "matched_in": r.get("matched_in", "meta"),
+            "routes": ["l0_fts"] if r.get("matched_in") == "body" else ["l0_like"],
+        }
+        for i, r in enumerate(rows)
+    ]
+
+
+def _search_skills_layer(
+    cfg: dict[str, Any],
+    query: str,
+    limit: int,
+    skills_conn: sqlite3.Connection | None = None,
+) -> list[dict]:
+    """技能检索层（ST-36 M2，scope="skills"）：四级披露读侧接入统一搜索。
+
+    - 委托 ``operations.skills.search_skills``（BM25 + 向量余弦融合 0.6/0.4，
+      向量不可达自动降级纯 BM25——业务层已内建容错）；
+    - **容错隔离**（镜像 wiki_pages / sessions 层）：skills 未配置、模块禁用
+      或该层抛异常 → 返回空列表 + WARNING，不拖累其他层；
+    - 结果形状对齐各层惯例：rank/name/score/description/category/source/routes；
+      source 固定 ``"skills"``；routes 按融合路径标记 ``skills_bm25``（纯 BM25
+      或向量路空贡献）／ ``skills_rrf``（两路融合生效）。
+    """
+    if not query or not query.strip():
+        return []
+    # 模块未配置/禁用 → 该层直接空结果（不算故障，不刷 WARNING）
+    sc_section = (cfg or {}).get("skills")
+    if not isinstance(sc_section, dict) or not sc_section.get("enabled", True):
+        return []
+    try:
+        from sgme.operations.skills import search_skills as skills_search
+
+        # T-112：传 skills_conn 走库内检索（FTS5 + 持久化向量），None 时回退内存索引
+        hits = skills_search(query, cfg, None, limit=limit, skills_conn=skills_conn)
+    except Exception as e:
+        logger.warning("skills 层检索失败（该层空结果）: %s", e)
+        return []
+    out: list[dict] = []
+    for i, h in enumerate(hits):
+        out.append(
+            {
+                "rank": i + 1,
+                "name": h["name"],
+                "score": h.get("score"),
+                "description": h.get("description") or "",
+                "category": h.get("category") or None,
+                "source": "skills",
+                # 每条自带 routes（业务层判定融合路径：两路生效=skills_rrf）
+                "routes": h.get("_routes") or ["skills_bm25"],
+            }
+        )
+    return out
+
+
+def search(
+    mem_conn: sqlite3.Connection,
+    session_conn: sqlite3.Connection,
+    cfg: dict[str, Any],
+    *,
+    query: str,
+    scopes: list[str] | None = None,
+    dimensions: list[str] | None = None,
+    match: str = "any",
+    limit: int = 10,
+    include_sources: bool = True,
+    client: httpx.Client | None = None,
+    wiki_conn: sqlite3.Connection | None = None,
+    skills_conn: sqlite3.Connection | None = None,
+    agent_id: str | None = None,
+    caller: str | None = None,
+) -> OperationResult:
+    """混合检索：记忆池（BM25+向量+RRF）+ wiki 场景（L2）+ wiki 知识库页面
+    + L0 原始层会话（raw_files 索引，ST-33）+ 技能（git 源 SKILL.md，ST-36 M2，
+    B114 起不再经 wiki 桥接）。
+
+    签名刻意**只收业务依赖**（连接 + cfg + 检索参数），operations 层不认识
+    ``request.app.state`` 或 mcp 的 ``_app_state``（那是入口层的协议细节），
+    由入口层取出后显式传入——照抄 health.py 样板。
+
+    Args:
+        mem_conn: memory.db 连接（v0.7 三库拆分后 scenes 系列同在 memory.db，
+            故记忆池与 wiki 场景共用本连接）。
+        session_conn: session.db 连接（溯源 trace 查 raw_files 用）。
+        cfg: 运行时配置（向量检索开关 / RRF k 等，透传业务层）。
+        query: 检索词。空串**不报错**（v0.6 行为：返回空结果）。
+        scopes: 检索层列表；None → ["memory"]（pydantic 缺省语义）。
+            未知 scope 值被忽略（v0.6 行为），不报错。
+        dimensions: 维度标签过滤（可选）。
+        match: "any"=命中任一维度 / "all"=全部命中，缺省 any。
+        limit: 每层结果上限。
+        include_sources: 是否展开溯源 trace。
+        client: 可选 httpx 客户端（向量 embed 注入点；缺省 None = v0.6 行为）。
+        wiki_conn: wiki.db 连接（wiki_pages 层用）。None 或该层检索失败 →
+            空结果，不影响 memory / scenes 层（T-34：wiki 扩展不可用不拖累整体）。
+        agent_id: 请求方 agent 标识（T-140 多 Agent scope 过滤；缺省 None=不过滤）。
+        caller: 记忆调用统计（T-252）用的调用方标识；缺省 None → 回落 agent_id
+            （HTTP 按 key 反查链路复用），两者皆空 → 统计落 unknown。
+
+    Returns:
+        OperationResult(ok=True)，data 为协议无关信息超集：
+        - results: 合并结果列表（memory → wiki 场景 → wiki_pages → sessions，
+          按 scopes 顺序）
+        - routes: 各结果 routes 的去重并集（保序；可能为空列表）
+        - rrf_k: HTTP meta 用的 RRF k（历史硬编码 60，见模块 docstring）
+        - note: 零命中时才追加的空结果可行动引导（T-143②，含可选模型 Key
+          缺失申键说明；有命中时无该键）
+
+    Raises:
+        InvalidArgs: query 非字符串 / scopes 非字符串列表（→ ERR_INVALID_ARGS）。
+    """
+    # —— 参数校验（镜像 v0.6 pydantic 校验语义；空 query 除外：v0.6 返回空结果） ——
+    if not isinstance(query, str):
+        raise InvalidArgs("query 必须为字符串")
+    if scopes is None:
+        scopes = DEFAULT_SCOPES
+    if not isinstance(scopes, list) or not all(isinstance(s, str) for s in scopes):
+        raise InvalidArgs("scopes 必须为字符串列表")
+
+    # —— 检索术语别名归一化（ST-19）：旧术语查询 → 标准术语后检索 ——
+    # 统一在 operations 层（HTTP/MCP 唯一查询入口）做，data 层保持纯检索；
+    # 归一化后 FTS5/LIKE/向量三条路共用同一查询串，旧术语自动命中新名记忆。
+    query = normalize_query_terms(query, cfg.get("term_aliases") or {})
+
+    results: list[dict] = []
+    try:
+        # 层 1：memory 记忆池（BM25 + 向量 + RRF，v0.6 路由逐行等价）
+        if "memory" in scopes:
+            memory_layer = search_mod.search_memories(
+                mem_conn, session_conn,
+                query=query,
+                dimensions=dimensions,
+                match=match,
+                limit=limit,
+                include_sources=include_sources,
+                cfg=cfg,
+                client=client,
+                agent_id=agent_id,  # T-140：多 Agent scope（默认 None=不过滤）
+            )
+            results.extend(memory_layer)
+            # T-252：记忆调用统计（双源之一：检索命中）——A2 政策放宽**仅限本表**
+            # （2026-10-10 用户批）：search 链路可写 memory_usage_daily；
+            # 单次批量 upsert + 全静默（见 operations/memory_usage.py）。
+            # caller：显式 caller 参数优先（MCP 经 _usage_caller(ctx) 反查）——
+            # T-252 补；缺省回落 agent_id（HTTP 按 key 反查链路复用）；None → unknown。
+            record_memory_usage(
+                mem_conn,
+                [mid for r in memory_layer if (mid := r.get("memory_id"))],
+                "search",
+                caller or agent_id,
+            )
+        # 层 2：wiki 场景叙事文档（L2；"scenes" 为历史别名 scope，两者等价）
+        if "wiki" in scopes or "scenes" in scopes:
+            results.extend(
+                search_mod.search_scenes(
+                    mem_conn, query, limit=limit, cfg=cfg, client=client,
+                )
+            )
+        # 层 3：wiki 知识库页面（wiki_pages 表，T-34 新增）
+        # 容错隔离：wiki_conn 为 None 或检索失败 → 该层空结果 + WARNING，
+        # 不拖累 memory / scenes 层（wiki 扩展不可用≠整体搜索失败）。
+        if "wiki_pages" in scopes:
+            results.extend(_search_wiki_pages(wiki_conn, query, limit))
+        # 层 4：L0 原始层会话（raw_files 索引，ST-33 新增）
+        # 容错隔离（对称 wiki_pages 层）：session_conn 为 None 或检索失败
+        # → 该层空结果 + WARNING，不拖累 memory / wiki 层。正文摘要读盘
+        # 为 best-effort（_raw_snippet 永不抛异常）。
+        if "sessions" in scopes:
+            raw_dir = (cfg.get("paths") or {}).get("raw_dir")
+            results.extend(_search_sessions(session_conn, query, limit, raw_dir))
+        # 层 5：技能（ST-36 M2 四级披露读侧，scope="skills" 新增）
+        # 容错隔离（镜像 wiki_pages / sessions 层）：skills 未配置/禁用或
+        # 该层失败 → 空结果 + WARNING，不拖累其他层。
+        if "skills" in scopes:
+            results.extend(_search_skills_layer(cfg, query, limit, skills_conn))
+    except Exception as e:
+        # 检索内部错误 → ERR_INTERNAL（v0.6 由全局异常处理器兜底为 500，
+        # 状态码不变；错误码统一收敛到 operations 层）
+        return OperationResult.fail(ERR_INTERNAL, f"检索失败: {e}")
+
+    # —— 聚合实际命中的 routes（取并集、保序——v0.6 路由逐行等价） ——
+    routes_seen: list[str] = []
+    for r in results:
+        for rt in r.get("routes", []):
+            if rt not in routes_seen:
+                routes_seen.append(rt)
+
+    # —— T-143②：空结果附可行动引导（HTTP meta.note，MCP 不投影） ——
+    # 有命中的超集保持 v0.6 三键形态（info 超集契约冻结），不挂 note；
+    # 零命中才追加 note 键（拼装搜索引导 + 可选模型 Key 缺失申键说明）。
+    data: dict[str, Any] = {
+        "results": results,
+        "routes": routes_seen,
+        "rrf_k": META_RRF_K,
+    }
+    if not results:
+        data["note"] = _search_empty_note(cfg)
+
+    return OperationResult.succeed(data)
+
+
+def http_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """投影为 HTTP ``POST /v1/search`` 的历史契约形态（v0.6 逐字段等价）。
+
+    ``meta.routes`` 无命中时回退 ``["bm25"]``（v0.6 路由 ``routes_seen or ["bm25"]``）。
+    ``meta.note``（T-143②）：仅当空结果引导存在时追加（成功路径 meta 保持
+    历史两键契约不变）。
+    """
+    meta: dict[str, Any] = {
+        "routes": data["routes"] or ["bm25"],
+        "rrf_k": data["rrf_k"],
+    }
+    if data.get("note"):
+        meta["note"] = data["note"]
+    return {
+        "results": data["results"],
+        "meta": meta,
+    }
+
+
+def mcp_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """投影为 MCP ``search`` 工具的历史契约形态（v0.6 逐字段等价）。
+
+    与 http_payload 的差异：**无 meta**，且只查 memory 层（scope 由入口侧传
+    ``["memory"]``）——历史差异，v0.8 待统一。
+
+    不做 ``results[:limit]`` 二次切片：v0.6 的该切片因检索上限恒 ≤ limit
+    恒为无操作（``do_search(limit=min(limit,20))`` 返回 ≤ min(limit,20) 条，
+    恒 ≤ limit），等价保留。
+    """
+    return {"results": data["results"]}

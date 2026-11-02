@@ -1,0 +1,14 @@
+# SGME 检索术语别名表 v1（2026-08-11，ST-19）
+# 用途：检索层术语漂移归一化——查询端把旧术语（改名前的 daemon / SGME Server）
+#       归一化为标准术语（gateway）后再检索，解决旧术语查询召回错位。
+# ⚠️ 与 registry/aliases.yaml（维度别名表，L1 提取输出 → 注册表 id 归一化）语义不同，勿混用。
+# 维护：只增不删旧条目（YAML 种子文件铁律）；新术语别名按需追加。
+# 匹配规则（代码侧保证，无需在表内重复大小写/空格变体）：
+#   - 大小写容忍：daemon / DAEMON / Daemon 等价
+#   - 空格容忍：SGME Server / SGME  Server / sgme server 等价
+#   - 词边界匹配：daemons 等派生词不触发替换
+
+term_aliases:
+  # 改名 Gateway 前的旧服务名 → 标准术语 gateway
+  daemon: gateway
+  SGME Server: gateway

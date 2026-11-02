@@ -1,0 +1,17 @@
+name: work
+display_name: 工作模式
+memory_types: [goals, social, focus]  # 2026-08-18：projects/tasks 维度移除（项目池/待办池专用）
+token_budget: 600
+sections:
+  - title: "🎯 目标"
+    query:
+      dimensions: [goals]
+      match: any
+      ttl_filter: true
+      sort: updated_at DESC
+      limit: 5
+  - title: "👥 关键关系"
+    query:
+      dimensions: [social]
+      priority_min: 70
+      limit: 3

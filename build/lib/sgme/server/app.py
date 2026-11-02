@@ -1,0 +1,1328 @@
+"""server/app.py：FastAPI 应用装配 + 鉴权中间件 + 统一错误结构。
+
+鉴权分层（§6）：
+- Bearer 令牌（传输层）：env SGME_BEARER_TOKEN 设置则开启，默认关闭（localhost 旁路）
+- X-API-Key（契约层）：Admin Key 调 /v1/admin/*；Agent Key 调非 Admin 端点
+  - /v1/health 仅需 Bearer（若有），不强制 X-API-Key
+- 401 = Bearer 缺失/无效；403 = API Key 缺失/无效/无权限
+
+依赖注入：create_app() 接受可选 cfg/conns，便于测试隔离。
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import sqlite3
+import threading
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("sgme.server")
+
+from sgme import config as sgme_config
+from sgme import __version__  # FastAPI 文档页版本（单源 sgme.__version__，B123）
+from sgme import net_guard  # F-3：本机来源 / 默认 Key 守卫（HTTP 与 MCP 单一策略源）
+from sgme.data import db as db_mod
+from sgme.data import memory_dao
+from sgme.operations.llm import model_keys_notice
+
+
+# ---------- 统一错误结构 ----------
+
+def error_response(code: str, message: str, status_code: int, details: dict | None = None) -> JSONResponse:
+    """统一错误响应：{"error":{"code","message","details":{}}}。"""
+    body: dict[str, Any] = {"error": {"code": code, "message": message}}
+    if details:
+        body["error"]["details"] = details
+    return JSONResponse(status_code=status_code, content=body)
+
+
+# 错误码 → HTTP 状态映射
+ERROR_CODES = {
+    "ERR_INVALID_ARGS": 400,
+    "ERR_UNAUTHORIZED": 401,
+    "ERR_FORBIDDEN": 403,
+    "ERR_NOT_FOUND": 404,
+    "ERR_CONFLICT": 409,
+    "ERR_RATE_LIMITED": 429,
+    "ERR_INTERNAL": 500,
+    "ERR_LLM_UNAVAILABLE": 503,
+    "ERR_DISABLED": 409,  # T-149：模块被配置关闭（answer.enabled=false）
+    # ST-36 M3：技能写侧治理错误码
+    "ERR_LINT_FAILED": 400,
+    "ERR_DUPLICATE_SKILL": 409,
+    "ERR_NAME_CONFLICT": 409,
+    "ERR_REFERENCED_BY_USES": 409,
+}
+
+
+def api_error(code: str, message: str, details: dict | None = None) -> HTTPException:
+    """构造统一 HTTPException（带 error 结构）。"""
+    status = ERROR_CODES.get(code, 500)
+    return HTTPException(
+        status_code=status,
+        detail={"error": {"code": code, "message": message, **(details and {"details": details} or {})}},
+    )
+
+
+# ---------- 默认开发 Key 与来源限制（ST-22⑧） ----------
+
+DEFAULT_AGENT_KEY = "dev-agent-key-change-me"
+DEFAULT_ADMIN_KEY = "dev-admin-key-change-me"
+
+# 本机回环来源 / 默认开发 Key 守卫统一住在 sgme/net_guard.py（F-3，2026-09-24 深度审查）：
+# 原先 HTTP（本模块）与 MCP（mcp_server.ApiKeyMiddleware）各自实现「默认 Key 仅限本机」，
+# MCP 侧漏实现即策略漂移缺口；现收敛为单一策略源，两入口共用（入口层互不依赖，同依赖叶子模块）。
+_LOCALHOST_HOSTS = net_guard.LOCALHOST_HOSTS
+
+
+def _is_localhost_source(request: Request) -> bool:
+    """来源是否本机回环（T-262 改用解析后来源，K3 消费点 3）：
+
+    经 resolve_client_ip 按 trusted_proxies 解析 XFF 后判定（is_loopback_source）——
+    部署在可信代理后时以真实客户端来源为准，代理串内回环不作为豁免依据。
+    client 信息缺失且无 XFF → 按连接对端（空串）判定，安全侧失败。
+    """
+    client = getattr(request, "client", None)
+    peer = getattr(client, "host", None) if client else None
+    xff = request.headers.get("x-forwarded-for")
+    proxies = _resolve_trusted_proxies(request)
+    source = net_guard.resolve_client_ip(peer, xff, proxies)
+    return net_guard.is_loopback_source(source)
+
+
+def _resolve_trusted_proxies(request: Request) -> list:
+    """trusted_proxies 配置 → 网络对象列表（复用 SecurityGate 缓存解析，D6）。"""
+    from sgme.server.security import _cached_trusted_proxies
+
+    try:
+        raw = (request.app.state.cfg.get("server", {}) or {}).get("trusted_proxies") or []
+    except Exception:  # noqa: BLE001——cfg 缺失按空名单（不解析转发头）
+        return []
+    return _cached_trusted_proxies(raw)
+
+
+# ---------- operations 层 → HTTP 协议翻译（v0.7 §7） ----------
+
+def run_operation(op: Callable[..., Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
+    """调 operations 层操作并翻译为 HTTP 语义（所有路由共用，避免每个端点重写一遍）。
+
+    - 成功 → 返回 ``result.data``（路由可直接 return，或先做投影裁剪）
+    - ``ok=False`` / ``InvalidArgs`` / ``OperationError`` → 抛 ``api_error``，
+      错误码经 ERROR_CODES 映射为状态码（400 / 404 / 500 / 503）
+    - **其余异常不拦截**：保持 v0.6 行为，交给 app 的全局异常处理器兜底，
+      避免抽取 operations 反而改变了非预期错误的响应形态
+
+    Args:
+        op: operations 层操作函数，返回 OperationResult。
+        *args / **kwargs: 透传给操作函数的依赖与业务参数。
+
+    Returns:
+        操作成功时的 data 字典（None 时归一为 {}）。
+
+    Raises:
+        HTTPException: 操作失败时（由 api_error 构造）。
+    """
+    from sgme.operations.errors import InvalidArgs, OperationError
+
+    try:
+        result = op(*args, **kwargs)
+    except InvalidArgs as e:
+        raise api_error("ERR_INVALID_ARGS", e.message, e.details) from e
+    except OperationError as e:
+        raise api_error(e.error_code, e.message, e.details) from e
+
+    if not result.ok:
+        raise api_error(
+            result.error_code or "ERR_INTERNAL",
+            result.message or "操作失败",
+            result.details,
+        )
+    return result.data or {}
+
+
+# ---------- Agent Key 注册表 ----------
+
+class AgentKeyStore:
+    """Agent API Key 存储（内存 + 可选文件持久化）。
+
+    - admin_key / agent_key 来自 env 或默认 dev 值（启动时告警）
+    - register_agent: 签发新 Agent Key（管理员调用）
+    - is_admin / is_agent: 角色判定
+    """
+
+    def __init__(self, admin_key: str | None = None, agent_key: str | None = None, store_path: Path | None = None):
+        self.admin_key = admin_key or os.environ.get("SGME_ADMIN_KEY") or DEFAULT_ADMIN_KEY
+        self.agent_key = agent_key or os.environ.get("SGME_AGENT_KEY") or DEFAULT_AGENT_KEY
+        # 额外注册的 Agent Key（register 端点签发）
+        self._extra_agents: dict[str, dict] = {}
+        self._lock = threading.Lock()
+        self._store_path = store_path
+        if store_path and store_path.exists():
+            self._load_from_file()
+
+    def is_default_dev_key(self, key: str | None) -> bool:
+        """是否为默认开发 Key（未设置环境变量时的内置兜底值，ST-22⑧）。
+
+        判定只看 Key 取值本身：与默认兜底值相等的 Key 一律视为开发 Key
+        （即使运维恰好把环境变量设成了同值——那在语义上就是默认 Key）。
+        """
+        return key in (DEFAULT_AGENT_KEY, DEFAULT_ADMIN_KEY)
+
+    def agent_exists(self, agent_id: str) -> bool:
+        """agent_id 是否已注册（含 env 合成条目 default 与已签发 Key）。
+
+        供注册端点做去重：同一 agent_id 拒绝重复签发，避免 Key 无谓累加。
+        """
+        if agent_id == "default":
+            return True
+        with self._lock:
+            return any(
+                rec.get("agent_id") == agent_id
+                for rec in self._extra_agents.values()
+            )
+
+    def register_agent(self, agent_id: str, scope: list[str] | None = None,
+                       agent_model: str | None = None) -> str:
+        """签发新 Agent Key，返回明文 key（仅此一次返回）。
+
+        agent_model（T-43）：agent 声明的提炼模型，格式 ``provider/model``
+        （如 ``deepseek/deepseek-v4-flash``）——提炼动态链按此跟随 agent
+        当前 LLM；用户指定 refine.llm_override 后此值降为备用。
+        """
+        key = f"agt_{uuid.uuid4().hex}"
+        with self._lock:
+            self._extra_agents[key] = {
+                "agent_id": agent_id,
+                "scope": scope or [],
+                "role": "agent",
+                "agent_model": agent_model or "",
+            }
+            self._save_to_file()
+        return key
+
+    def is_admin(self, key: str | None) -> bool:
+        # T-261（S6）：常数时间比较，防时序侧信道（含非 ASCII 按「不匹配」处理）
+        return net_guard.const_eq(key, self.admin_key)
+
+    def is_agent(self, key: str | None) -> bool:
+        if key is None:
+            return False
+        # T-261（S6）：env 主/管理员 key 常数时间比较；
+        # agt_* 注册 key 走 _extra_agents 字典精确匹配——豁免声明：
+        # 随机 128-bit hex 无实际时序可挖，dict 哈希比较不构成可比对时序信道
+        if net_guard.const_eq(key, self.agent_key) or net_guard.const_eq(key, self.admin_key):
+            return True
+        with self._lock:
+            return key in self._extra_agents
+
+    def resolve_agent_id(self, key: str | None) -> str | None:
+        """按鉴权 Key 反查绑定的 agent_id（溯源兜底，2026-08-11 B35）。
+
+        语义：
+        - env 主 agent key → "default"（与 list_agents() 合成条目一致）
+        - admin key → "default"（管理员身份，无独立 agent_id）
+        - 注册 agt_* key → register_agent 绑定的 agent_id
+        - 未知 key / None → None（调用方保持原样）
+
+        用途：append 请求 body 未带 agent_id 时，用鉴权 key 映射兜底，
+        关掉「落 NULL/default 无法溯源」的口子（HTTP 通道）。
+        """
+        if key is None:
+            return None
+        # T-261（S6）：常数时间比较（与 is_agent 同口径）
+        if net_guard.const_eq(key, self.agent_key) or net_guard.const_eq(key, self.admin_key):
+            return "default"
+        with self._lock:
+            rec = self._extra_agents.get(key)
+            return rec.get("agent_id") if rec else None
+
+    def list_agents(self) -> list[dict]:
+        """内部用：列出全部 Key 记录。
+
+        🔴 返回值**含明文 Key**，仅限进程内使用（如 /v1/admin/stats 只取 agent_id/role）。
+        任何对外暴露的端点一律改用 list_agents_public()。
+        """
+        with self._lock:
+            base = [{"key": self.agent_key, "agent_id": "default", "role": "agent", "scope": []}]
+            for k, v in self._extra_agents.items():
+                base.append({"key": k, **v})
+            return base
+
+    @staticmethod
+    def _mask_key(key: str) -> str:
+        """Key 脱敏指纹：前 6 字符 + '…' + 后 2 字符。
+
+        🔴 绝不返回明文 Key，也不返回哈希全文。
+        过短的 Key（≤ 8 字符）无法安全截断，整体隐藏为 '…'。
+        """
+        if not key:
+            return ""
+        if len(key) <= 8:
+            return "…"
+        return f"{key[:6]}…{key[-2:]}"
+
+    def list_agents_public(self, *, include_default: bool = False) -> list[dict]:
+        """只读列出已注册 Agent（按 agent_id 聚合 + 脱敏）。
+
+        与 list_agents() 的**唯一正确对外形态**：绝不返回明文 API Key，
+        只给脱敏指纹 key_ref。纯只读，不改任何内部状态。
+
+        约定（与 SGME-接口契约 §5.2 严格一致）：
+        - 同一 agent_id 可持有多把 Key → 聚合为一条，key_count 反映把数，
+          scope 取并集（保序去重），registered_at 取最早值。
+        - endpoint 恒为 None：Agent 是 SGME 的客户端，SGME 从不反向呼叫 Agent，
+          因此 SGME 天然不持有 endpoint。字段位保留是为将来（SGME 记录 endpoint）
+          落地时无需升契约版本。
+        - status 恒为 "active"：revoke_agent 是硬删除，SGME 侧无 tombstone。
+        - 默认过滤合成条目 agent_id="default"（来自 env SGME_AGENT_KEY，
+          非真实注册项，且其 Key 就是共享 agent key）。
+
+        Args:
+            include_default: True 时保留 "default" 合成条目（仅供本地排障）。
+
+        Returns:
+            list[dict]，按 agent_id 升序。每条含
+            agent_id / role / scope / endpoint / status / registered_at /
+            key_count / key_ref。
+            **不含** last_seen_at —— 活跃度由路由层从 raw_files 聚合后注入。
+        """
+        with self._lock:
+            records: list[tuple[str, dict]] = []
+            if include_default:
+                records.append(
+                    (self.agent_key, {"agent_id": "default", "role": "agent", "scope": []})
+                )
+            records.extend((k, v) for k, v in self._extra_agents.items())
+
+            agg: dict[str, dict] = {}
+            for key, meta in records:
+                meta = meta or {}
+                agent_id = meta.get("agent_id") or ""
+                if not agent_id:
+                    continue  # 脏数据：无 agent_id 的记录直接跳过
+                if agent_id == "default" and not include_default:
+                    continue  # 过滤合成条目
+                entry = agg.get(agent_id)
+                if entry is None:
+                    agg[agent_id] = {
+                        "agent_id": agent_id,
+                        "role": meta.get("role") or "agent",
+                        "scope": list(meta.get("scope") or []),
+                        "agent_model": meta.get("agent_model") or "",
+                        "endpoint": None,
+                        "status": "active",
+                        "registered_at": meta.get("registered_at"),
+                        "key_count": 1,
+                        "key_ref": self._mask_key(key),
+                    }
+                    continue
+                # 同一 agent_id 的第 2..N 把 Key
+                entry["key_count"] += 1
+                for s in meta.get("scope") or []:
+                    if s not in entry["scope"]:
+                        entry["scope"].append(s)
+                if not entry.get("agent_model") and meta.get("agent_model"):
+                    entry["agent_model"] = meta["agent_model"]
+                reg = meta.get("registered_at")
+                if reg and (entry["registered_at"] is None or reg < entry["registered_at"]):
+                    entry["registered_at"] = reg
+
+            return [agg[aid] for aid in sorted(agg)]
+
+    def revoke_agent(self, agent_id: str) -> int:
+        """吊销指定 agent_id 的全部 Key（§6：注册中心支持随时删除/禁用）。
+
+        返回吊销的 Key 数量。default（env 主 key）不可吊销。
+        """
+        revoked = 0
+        with self._lock:
+            keys = [k for k, v in self._extra_agents.items() if v.get("agent_id") == agent_id]
+            for k in keys:
+                del self._extra_agents[k]
+                revoked += 1
+            if revoked:
+                self._save_to_file()
+        return revoked
+
+    def resolve_agent_model(self, agent_id: str | None) -> str | None:
+        """按 agent_id 查声明的提炼模型（provider/model；T-43）。
+
+        - default（env 主 key）与未注册 agent → None（提炼回退静态链）
+        - 注册 agent → 注册时声明的 agent_model（首把 Key 的非空值）
+        """
+        if not agent_id or agent_id == "default":
+            return None
+        with self._lock:
+            for v in self._extra_agents.values():
+                if v.get("agent_id") == agent_id and v.get("agent_model"):
+                    return v["agent_model"]
+        return None
+
+    def _save_to_file(self) -> None:
+        if not self._store_path:
+            return
+        import json
+        self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        self._store_path.write_text(json.dumps(self._extra_agents, ensure_ascii=False, indent=2), encoding="utf-8")
+        _restrict_file_permissions(self._store_path)
+
+    def _load_from_file(self) -> None:
+        if not self._store_path or not self._store_path.exists():
+            return
+        import json
+        try:
+            self._extra_agents = json.loads(self._store_path.read_text(encoding="utf-8"))
+        except Exception:
+            self._extra_agents = {}
+
+
+def _restrict_file_permissions(path: Path) -> None:
+    """收紧 agent_keys.json 文件权限：仅当前用户可读写（安全加固 2026-08-11）。
+
+    - Windows：icacls 去除继承 + 仅授权当前用户（NTFS 不支持 POSIX mode bits）
+    - POSIX：chmod 0600
+    失败仅告警不阻断（密钥文件本身已 gitignore，权限是纵深防御）。
+    """
+    import logging
+    import os
+    import subprocess
+
+    logger = logging.getLogger("sgme.server.app")
+    try:
+        if os.name == "nt":
+            user = os.environ.get("USERNAME", "")
+            if user:
+                proc = subprocess.run(
+                    ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(R,W)"],
+                    capture_output=True, text=True, errors="replace", timeout=15,
+                )
+                if proc.returncode != 0:
+                    logger.warning("agent_keys.json 权限收紧失败: %s", proc.stderr.strip() or proc.stdout.strip())
+        else:
+            path.chmod(0o600)
+    except Exception as e:
+        logger.warning("agent_keys.json 权限收紧异常（忽略）: %s", e)
+
+
+# ---------- 鉴权依赖 ----------
+
+def _get_app_state(request: Request) -> tuple[Request, Any]:
+    return request, request.app.state
+
+
+def require_bearer(request: Request) -> None:
+    """Bearer 令牌校验（若开启）。"""
+    bearer_token: str | None = getattr(request.app.state, "bearer_token", None)
+    if not bearer_token:
+        return  # 旁路关闭
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise api_error(
+            "ERR_UNAUTHORIZED",
+            "缺失 Bearer 令牌：请设置 SGME_BEARER_TOKEN 环境变量，并在请求头携带 Authorization: Bearer <token>",
+        )
+    token = auth[len("Bearer "):].strip()
+    # T-261（S6）：常数时间比较
+    if not net_guard.const_eq(token, bearer_token):
+        raise api_error(
+            "ERR_UNAUTHORIZED",
+            "Bearer 令牌无效：请核对请求头与 SGME_BEARER_TOKEN 环境变量是否一致",
+        )
+
+
+def _reject_default_key_from_remote(request: Request, key: str) -> None:
+    """默认开发 Key 仅限本机回环来源（ST-22⑧）：非本机来源直接 403 并引导换 Key。
+
+    - 默认 key（SGME_AGENT_KEY / SGME_ADMIN_KEY 未设置时的内置兜底值）+ 非本机 → 403
+    - 默认 key + 本机回环（127.0.0.1 / ::1 / localhost）→ 放行（本机开发工作流不受影响）
+    - 自定义 key（含 register_agent 签发的 agt_*）→ 不受限
+    """
+    store: AgentKeyStore = request.app.state.key_store
+    client = getattr(request, "client", None)
+    client_host = getattr(client, "host", None) if client else None
+    if not net_guard.is_default_key_from_remote(store, key, client_host):
+        return
+    raise api_error(
+        "ERR_FORBIDDEN",
+        "检测到默认开发 Key 来自非本机来源：远程调用禁止使用默认 Key。"
+        "请设置环境变量 SGME_AGENT_KEY / SGME_ADMIN_KEY 为自定义 Key 后重试"
+        "（本机 127.0.0.1 调用不受影响）",
+    )
+
+
+def require_agent_key(request: Request) -> str:
+    """Agent Key 校验（非 Admin 端点）。"""
+    require_bearer(request)
+    store: AgentKeyStore = request.app.state.key_store
+    key = request.headers.get("X-API-Key")
+    if not store.is_agent(key):
+        raise api_error(
+            "ERR_FORBIDDEN",
+            "缺失或无效的 X-API-Key：请携带 Agent Key"
+            "（环境变量 SGME_AGENT_KEY 或经 /v1/admin/agents 注册）",
+        )
+    _reject_default_key_from_remote(request, key or "")
+    return key or ""
+
+
+def require_admin_key(request: Request) -> str:
+    """Admin Key 校验（/v1/admin/* 端点）。"""
+    require_bearer(request)
+    store: AgentKeyStore = request.app.state.key_store
+    key = request.headers.get("X-API-Key")
+    if not store.is_admin(key):
+        raise api_error(
+            "ERR_FORBIDDEN",
+            "缺失或无权限的 X-API-Key：请携带管理员 Key（环境变量 SGME_ADMIN_KEY）",
+        )
+    _reject_default_key_from_remote(request, key or "")
+    return key or ""
+
+
+class UsageMiddleware:
+    """HTTP 调用统计中间件（T-163，2026-09-13，纯 ASGI 旁路）。
+
+    把 9910 全部请求记入 api_usage_daily（day × route 模板 × caller 聚合），
+    回答「哪些端点从未被调用 / 谁在调用」：
+    - 记录时机：响应头（http.response.start）发出时——SSE 长流也能即刻落库，
+      不必等流关闭；异常请求同样记录（调用事实与结果无关）
+    - name 归一化：优先 scope["route"].path（路由模板，如
+      /v1/admin/demands/{demand_id}）；FastAPI 内置 catch-all
+      （/{full_path:path}，捕获全部未匹配请求）归为 "(unmatched)"——
+      不可控输入（任意 404 路径）不得无界增长统计行数
+    - caller 反查：X-API-Key → AgentKeyStore.resolve_agent_id（env 主 key →
+      "default"；注册 agt_* key → 绑定 agent_id）；无 key → "anonymous"；
+      key 合法但无反查 → "unknown"
+    - 全静默：任何记录失败被吞掉，绝不改变响应或抛出（统计是旁路）
+    - 纯 ASGI（同 T-155 ApiKeyMiddleware 理由）：BaseHTTPMiddleware × SSE
+      长流是死锁高危组合；本中间件只读 scope、写一条 SQL，零桥接
+    """
+
+    def __init__(self, app, conn=None, key_store=None):
+        self.app = app
+        self._conn = conn
+        self._key_store = key_store
+
+    async def __call__(self, scope, receive, send):
+        if self._conn is None or scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        # T-174：caller 在请求进入时解析并写入 scope state——技能端点（请求处理中）
+        # 要用它补记，等到 response.start 再写就来不及了。
+        caller = self._resolve_caller(scope)
+        scope.setdefault("state", {})["usage_caller"] = caller
+        recorded = False
+
+        async def send_wrapper(message):
+            nonlocal recorded
+            if not recorded and message.get("type") == "http.response.start":
+                recorded = True
+                try:
+                    self._record(scope, caller, status=message.get("status"))
+                except Exception:
+                    pass  # 统计是旁路：任何失败不得影响响应
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+    def _resolve_caller(self, scope) -> str:
+        """X-API-Key → agent_id（env 主 key 落 default）；无 key → anonymous。"""
+        key = None
+        for h_name, h_value in scope.get("headers") or []:
+            if h_name == b"x-api-key":
+                key = h_value.decode("latin-1")
+                break
+        caller = None
+        if self._key_store is not None:
+            try:
+                caller = self._key_store.resolve_agent_id(key)
+            except Exception:
+                caller = None
+        if not caller:
+            caller = "anonymous" if key is None else "unknown"
+        return caller
+
+    def _record(self, scope, caller: str, status: int | None = None) -> None:
+        from sgme.operations.usage import record_usage
+
+        # name 归一化：路由模板（如 /v1/admin/demands/{demand_id}）。
+        # 未匹配请求统一归 "(unmatched)" 语义标记，防任意路径冲击统计行数
+        # （UUID 归一化的同一目的：不可控输入不得无界增长行数）。
+        # 两种等价形态都必须归一（2026-09-23 CI 首跑暴露口径分裂）：
+        #   ① ui/dist 存在 → SPA catch-all 命中 → route_path == "/{full_path:path}"
+        #   ② 干净 checkout（无 ui/dist → catch-all 未注册）→ 路由级 404/405 且 scope 无 route
+        route_path = getattr(scope.get("route"), "path", None)
+        if route_path == "/{full_path:path}" or (not route_path and status in (404, 405)):
+            name = "(unmatched)"
+        elif route_path:
+            name = route_path
+        else:
+            name = scope.get("path") or "?"
+        # caller 已在请求进入时解析（__call__ → _resolve_caller）：技能端点在请求
+        # 处理中就要用它补记 search/materialize 两层的 caller。
+        client = scope.get("client")
+        ip = client[0] if client else None
+        record_usage(self._conn, "http", name, caller, ip)
+        self._record_skill(scope, name, route_path, caller, ip)
+
+    def _record_skill(self, scope, name, route_path, caller, ip) -> None:
+        """T-174：技能消费统计（技能名维度）+ caller 透传给技能端点。
+
+        - 只记可由「路由模板 + 路径参数」推导的两层（digest / get）；
+          ``search``（要命中结果）与 ``materialize``（要请求体语义）由业务侧记，
+          同一次调用只产生一条记录（见 operations/skill_usage.py 埋点分工）
+        - 把 caller 写进 scope state：技能端点补记时可复用，免二次反查
+        - 全静默：统计是旁路，任何失败不得影响响应
+        """
+        try:
+            if self._conn is None:
+                return
+            from sgme.operations.skill_usage import (
+                extract_middleware_skill_call,
+                record_skill_usage,
+            )
+
+            scope.setdefault("state", {})["usage_caller"] = caller
+            parsed = extract_middleware_skill_call(route_path, scope.get("path_params"))
+            if parsed:
+                layer, skill = parsed
+                record_skill_usage(self._conn, layer, skill, caller, ip=ip)
+        except Exception:
+            pass  # 统计是旁路：任何失败不得影响响应
+
+
+# ---------- 后台定时任务（T12 Tier0 每日摘要 / T15 心跳） ----------
+
+async def daily_tier0_task(app) -> None:
+    """每日 00:00 UTC 触发 Tier0 摘要生成（独立 LLM 任务，失败不阻塞）。"""
+    from sgme.profile import tier0 as tier0_mod
+
+    while True:
+        now = datetime.now(timezone.utc)
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        wait_secs = (tomorrow - now).total_seconds()
+        await asyncio.sleep(wait_secs)
+        try:
+            summary = tier0_mod.generate_summary(app.state.mem_conn, app.state.cfg)
+            if summary:
+                tier0_mod.save_summary(summary)
+                logger.info("Tier0 摘要自动生成成功")
+            else:
+                logger.warning("Tier0 摘要生成失败（LLM 不可用）")
+        except Exception as e:
+            logger.exception("Tier0 定时任务异常: %s", e)
+
+
+async def heartbeat_task(app) -> None:
+    """每 10 分钟一次心跳检查，异常产 anomaly_warn。"""
+    from sgme.engine import health as health_mod
+
+    while True:
+        await asyncio.sleep(600)  # 10 分钟
+        try:
+            result = health_mod.check_heartbeat(
+                app.state.mem_conn, app.state.session_conn, app.state.cfg,
+            )
+            logger.info(
+                "心跳检查: ok=%s stalled=%s",
+                result.get("heartbeat_ok"), result.get("stalled"),
+            )
+        except Exception as e:
+            logger.exception("心跳任务异常: %s", e)
+        # T-128：维度注册表周期性一致性复核（与启动期同源，防漏停用复发）
+        try:
+            _yaml_ids = app.state.cfg.get("_yaml_dimension_ids")
+            if _yaml_ids:
+                from sgme.data import memory_dao as _mdao
+                _dr = _mdao.check_dimension_consistency(app.state.mem_conn, _yaml_ids)
+                if not _dr["consistent"]:
+                    logger.warning("维度注册表不一致（周期复核，T-128）: %s", _dr)
+                    try:
+                        from sgme.operations.health import publish_dimension_anomaly
+                        publish_dimension_anomaly(app.state.mem_conn, _dr)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("维度一致性周期 anomaly_warn 发布失败（不阻塞）: %s", e)
+        except Exception as e:
+            logger.exception("维度一致性周期复核异常: %s", e)
+
+
+async def update_check_task(app) -> None:
+    """ST-34：定时刷新版本检测缓存（间隔 = config update_check.interval_hours）。
+
+    首次检查由 health 首次调用时同步完成（get_cached）；本任务只负责按
+    interval_hours 周期 refresh 缓存，失败静默降级（update_check 内部已吞异常）。
+    """
+    from sgme.operations import update_check as update_check_mod
+    from sgme.operations.health import SGME_VERSION
+
+    while True:
+        uc = (app.state.cfg.get("update_check") or {})
+        interval_hours = uc.get("interval_hours", 24)
+        await asyncio.sleep(interval_hours * 3600)
+        try:
+            result = update_check_mod.refresh(SGME_VERSION, app.state.cfg)
+            logger.info(
+                "版本检测刷新: update_available=%s latest=%s",
+                result.get("update_available"), result.get("latest_version"),
+            )
+        except Exception as e:
+            logger.exception("版本检测任务异常: %s", e)
+
+
+def _start_batch_scan_scheduler(app) -> None:
+    """启动 Batch 兜底扫描定时器（ST-23② 保底型；refine.batch_scan.enabled=true 时）。
+
+    线程模式（engine/batch_scan.py，与 Dream/backup_scheduler 同构）而非 asyncio
+    任务：提炼链路为同步阻塞调用（LLM/embedding），放事件循环会卡死整个服务；
+    daemon 线程 + 幂等 ensure_scheduler，间隔/开关经 /v1/admin/config 可配。
+    enabled=false 不启动（运行中改 false 则到点跳过执行）。
+    """
+    from sgme.engine import batch_scan as batch_scan_mod
+
+    refine_cfg = app.state.cfg.get("refine", {}) or {}
+    bs = refine_cfg.get("batch_scan", {}) or {}
+    if not bs.get("enabled", True):
+        logger.info("Batch 兜底扫描未启用（refine.batch_scan.enabled=false）")
+        return
+    batch_scan_mod.ensure_scheduler(
+        app.state.cfg,
+        data_dir=getattr(app.state, "data_dir", None),
+    )
+
+
+def _start_backup_scheduler(app) -> None:
+    """启动每日自动备份定时器（T-209；backup.enabled=true 时）。
+
+    线程模式（engine/backup_scheduler.py，与 Dream/batch_scan 同构）而非 asyncio：
+    daemon 线程 + 幂等 ensure_scheduler，开关经 /v1/admin/config 可配。
+    enabled=false 不启动（运行中改 false 则到点跳过执行）。
+    此前唯一拉起点在 POST /v1/admin/backup——容器重启后若无人调备份接口，
+    调度线程永不创建、每日 04:00 备份静默失效（B117 修 Dream / 观察项 G-7 同源）。
+    """
+    from sgme.engine import backup_scheduler as backup_sched_mod
+
+    backup_cfg = app.state.cfg.get("backup", {}) or {}
+    if not backup_cfg.get("enabled", True):
+        logger.info("每日自动备份未启用（backup.enabled=false）")
+        return
+    backup_sched_mod.ensure_scheduler(
+        app.state.cfg,
+        data_dir=getattr(app.state, "data_dir", None),
+    )
+
+
+# ---------- 应用工厂 ----------
+
+def _start_raw_fts_background_rebuild(app) -> None:
+    """后台补建 raw 正文索引（T-207 ①，daemon 线程，启动零阻塞）。
+
+    - init_raw_fts 只建表（毫秒级）；存量文件的分词索引在这里补齐
+      （1225 文件 × 分词，分钟级，不挡健康检查与首批请求）；
+    - rebuild 幂等（body_hash 判重），重启重跑只补增量；
+    - 任何异常只 WARNING：正文检索不可用时 sessions 层退回元数据 LIKE。
+    """
+    def _rebuild() -> None:
+        try:
+            from sgme import config as sgme_config
+            from sgme.data import db as db_mod
+            from sgme.data.search import raw_fts as raw_fts_mod
+
+            raw_dir = Path(str(sgme_config.RAW_DIR))
+            conn = db_mod.connect_session(Path(app.state.data_dir))
+            try:
+                raw_fts_mod.rebuild_raw_fts(conn, raw_dir, incremental=True)
+            finally:
+                conn.close()
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger("sgme.server.app").warning(
+                "raw_fts 后台重建失败（sessions 正文检索降级）: %s", e
+            )
+
+    threading.Thread(target=_rebuild, name="raw-fts-rebuild", daemon=True).start()
+
+
+def _vector_warmup(
+    skills_ops,
+    cfg: dict,
+    skills_conn: sqlite3.Connection,
+    wiki_conn: sqlite3.Connection | None,
+    *,
+    sleep=None,
+) -> int:
+    """向量预热循环（T-112；2026-10-29 修：连续 3 轮零嵌入即停）。
+
+    每轮嵌 10 条，直到 pending_embed 归零。⚠️ 嵌入后端不可用（如 Ollama
+    未启动）时 sync_index 静默返回 embedded=0——原实现无「无进展」退出，
+    会空转到 499 轮上限、每秒刷一行 stdout（约 8 分钟），串扰其它输出；
+    现连续 3 轮零嵌入即停，剩余条目待下次启动续补。返回实际轮数。
+    """
+    import time
+
+    if sleep is None:
+        sleep = time.sleep
+    stall = 0
+    round_no = 0
+    for round_no in range(1, 500):  # 上限防死循环：403 条约需 41 轮
+        try:
+            r = skills_ops.sync_index(cfg, skills_conn, wiki_conn, max_embed=10)
+            data = (r.data if hasattr(r, "data") else None) or {}
+            pending = int(data.get("pending_embed") or 0)
+            embedded = int(data.get("embedded") or 0)
+        except Exception as e:
+            print(f"[SGME skills] 向量预热中断（第 {round_no} 轮）: {e}")
+            return round_no
+        if embedded == 0 and pending == 0:
+            return round_no  # 已归零，静默结束
+        if embedded == 0:
+            stall += 1
+            if stall >= 3:
+                print(
+                    f"[SGME skills] 向量预热暂停（第 {round_no} 轮）："
+                    f"连续 3 轮零嵌入（嵌入后端不可用？），剩余 {pending} 条待下次启动续补"
+                )
+                return round_no
+        else:
+            stall = 0
+            print(f"[SGME skills] 向量预热第 {round_no} 轮：嵌入 {embedded} 条，剩余 {pending} 条")
+        if pending <= 0:
+            return round_no
+        sleep(1)
+    return round_no
+
+
+def create_app(
+    cfg: dict | None = None,
+    mem_conn: sqlite3.Connection | None = None,
+    session_conn: sqlite3.Connection | None = None,
+    wiki_conn: sqlite3.Connection | None = None,
+    data_dir: str | Path | None = None,
+    admin_key: str | None = None,
+    agent_key: str | None = None,
+    bearer_token: str | None = None,
+    agent_store_path: str | Path | None = None,
+    start_background_tasks: bool = False,
+    credentials_conn: sqlite3.Connection | None = None,
+) -> FastAPI:
+    """创建 FastAPI 应用实例。
+
+    测试可注入 cfg/mem_conn/session_conn/wiki_conn/credentials_conn 实现隔离（v0.7 三库；EP-11 加凭据库）；
+    生产由 __main__ 调用并自动初始化。
+    start_background_tasks=True 时启动 Tier0 每日摘要 + 心跳定时任务
+    （生产模式），并按 refine.batch_scan.enabled 拉起 Batch 兜底提炼定时器
+    （daemon 线程，engine/batch_scan.py）。
+    """
+    if cfg is None:
+        cfg = sgme_config.load_config()
+
+    # 初始化统一日志模块（v0.7 §12）：所有 sgme.* logger 走统一 handler
+    from sgme.log import setup as log_setup
+    log_cfg = cfg.get("logging", {})
+    log_setup(
+        level=log_cfg.get("level", "INFO"),
+        format=log_cfg.get("format", "console"),
+        output=log_cfg.get("output") or str(sgme_config.LOG_DIR / "sgme.log"),
+    )
+
+    # 连接：外部注入优先，否则按 data_dir 自动建
+    own_conns = False
+    if mem_conn is None or session_conn is None or wiki_conn is None:
+        own_conns = True
+        d = Path(data_dir) if data_dir else sgme_config.DATA_DIR
+        mem_conn, session_conn, wiki_conn = db_mod.init_databases(d)
+    else:
+        # 外部注入连接：调度器线程自建独立连接的目标目录（注入方负责正确性；
+        # 缺省回落全局 DATA_DIR——生产 __main__ 走自建分支，测试须显式传 data_dir）
+        d = Path(data_dir) if data_dir else sgme_config.DATA_DIR
+
+    # skills.db（T-112 技能索引持久化）：**仅当技能模块启用时才连库**——
+    # 不并入 init_databases 的三元组返回值（那会破坏所有既有解包点，v0.7 已踩过），
+    # 且模块禁用时核心零影响（对称 wiki 扩展模块的挂载方式）。
+    skills_conn: sqlite3.Connection | None = None
+    if (cfg.get("skills") or {}).get("enabled", False):
+        try:
+            skills_conn = db_mod.connect_skills(d)
+        except Exception as e:  # 建库失败不阻断启动，技能模块降级为内存索引
+            logger.warning("skills.db 连接失败（技能模块降级为内存索引）: %s", e)
+            skills_conn = None
+
+    # credentials.db（EP-11 凭据模块）：仅当模块启用时才连库（与 skills 同款边界；
+    # 禁用时核心零影响——不产生新库文件、路由不挂载）。连接失败**不降级**：
+    # 凭据是关键基础设施，启动即失败暴露问题（绝不明文兜底、绝不静默降级）。
+    if credentials_conn is None and (cfg.get("credentials") or {}).get("enabled", False):
+        from sgme.data import credentials_dao
+
+        credentials_conn = credentials_dao.connect_credentials(d)
+
+    # 启动时导入注册表（幂等；YAML 为种子，DB 为运行时真相）
+    memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
+    # T-128：维度注册表一致性校验（防 B81 漏停用的复发）
+    # 必须在 cfg["dimensions"] 被 DB 回刷前，用原始 YAML 维度集比较
+    _yaml_dim_ids = {d["id"] for d in cfg["dimensions"]}
+    _dim_report = memory_dao.check_dimension_consistency(mem_conn, _yaml_dim_ids)
+    cfg["_yaml_dimension_ids"] = _yaml_dim_ids  # 供心跳周期复核使用
+    if not _dim_report["consistent"]:
+        logger.warning("维度注册表与 YAML 不一致（T-128，启动期）: %s", _dim_report)
+        try:
+            from sgme.operations.health import publish_dimension_anomaly
+            publish_dimension_anomaly(mem_conn, _dim_report)
+        except Exception as e:  # noqa: BLE001 —— 信号发布必须健壮，禁止上抛
+            logger.warning("维度一致性 anomaly_warn 发布失败（不阻塞）: %s", e)
+    else:
+        logger.info(
+            "维度注册表一致性校验通过（%d 维度，DB active=%d）",
+            _dim_report["yaml_count"], _dim_report["db_active_count"],
+        )
+    # 从 DB 回刷 cfg["dimensions"]：包含 API 运行时新增/停用的维度，保证 L1 提示词与 DB 一致
+    cfg["dimensions"] = memory_dao.list_dimensions(mem_conn, active_only=True)
+
+    # 鉴权配置
+    bearer = bearer_token if bearer_token is not None else os.environ.get("SGME_BEARER_TOKEN")
+    store = AgentKeyStore(
+        admin_key=admin_key,
+        agent_key=agent_key,
+        # 缺省落盘 data/agent_keys.json——注册的 Agent key 服务重启后必须恢复
+        # （此前 store_path 从未接线 → 每次重启注册记录丢失，Agent 收到 403）
+        store_path=Path(agent_store_path) if agent_store_path else sgme_config.DATA_DIR / "agent_keys.json",
+    )
+    # ⚠️ 不把 bearer 写回 os.environ（B122 根修）：工厂函数污染进程全局状态，
+    # 泄漏到同进程后续测试/组件；bearer 经 app.state.bearer_token 传递，
+    # 外部部署契约 = 启动前设好 SGME_BEARER_TOKEN 环境变量（__main__/README）。
+
+    # dev 默认 key 告警
+    if store.admin_key == DEFAULT_ADMIN_KEY:
+        print(f"[SGME auth] 警告：使用默认 admin key（{DEFAULT_ADMIN_KEY}），生产请设置 SGME_ADMIN_KEY")
+    if store.agent_key == DEFAULT_AGENT_KEY:
+        print(f"[SGME auth] 警告：使用默认 agent key（{DEFAULT_AGENT_KEY}），生产请设置 SGME_AGENT_KEY")
+
+    # T-143①（2026-09-07）：模型 Key 缺失启动告警——未配 LLM key 时不再静默空转
+    # （before：append 成功但 refine 全链降级失败、inject/search 空结果，新手无从排查）。
+    # model_keys_notice 只列出缺失项（LLM 提炼链与向量 key 分开判）+ 申请指南路径，
+    # 全配齐时返回空字符串 → 零噪音；与 dev key 告警并列，均只在缺失时可见。
+    if (missing_key_notice := model_keys_notice(cfg)):
+        logger.warning("模型 Key 缺失告警：%s", missing_key_notice)
+
+    # 安全配置启动摘要（ST-55 / T-262，D6；供 §五 部署验证直接引用）
+    _sec = cfg.get("server", {}) or {}
+    logger.warning(
+        "安全配置摘要：封禁阈值=%s(0=观察期只计数) 失败窗口=%ss 基础封禁=%ss 封顶=%ss "
+        "升级=%s 无key限流=%s/min per-key限流=%s/min 体限=%sB(0=关) "
+        "可信代理=%s项 审计保留=%s天(0=不清理)",
+        _sec.get("auth_fail_threshold", 0), _sec.get("auth_fail_window_sec", 300),
+        _sec.get("ban_seconds", 900), _sec.get("ban_max_seconds", 3600),
+        _sec.get("ban_escalation", True), _sec.get("ip_rate_limit_per_min", 60),
+        _sec.get("rate_limit_per_min", 120), _sec.get("max_body_bytes", 0),
+        len(_sec.get("trusted_proxies", []) or []), _sec.get("security_log_keep_days", 0),
+    )
+    # 审计保留清理（Q4）：启动触发一次（keep_days=0 跳过；此后每日首写惰性触发）
+    try:
+        _keep = int(_sec.get("security_log_keep_days", 0) or 0)
+        if _keep > 0:
+            _n = app.state.security_log.cleanup_expired(_keep)
+            if _n:
+                logger.info("安全审计启动清理：%s 个过期日志文件", _n)
+    except Exception as _e:  # noqa: BLE001——清理失败不阻塞启动
+        logger.warning("安全审计启动清理失败（不影响启动）: %s", _e)
+
+    @asynccontextmanager
+    def _skills_bootstrap(
+        cfg: dict,
+        skills_conn: sqlite3.Connection,
+        wiki_conn: sqlite3.Connection | None,
+    ) -> None:
+        """skills.db 首次同步 + 向量分批预热（后台 daemon 线程，永不抛异常）。
+
+        两阶段：
+        1. 结构化同步（主表 + FTS + uses 图），跳过向量，秒级完成；
+        2. 循环补向量，每轮 10 条，直到 pending_embed 归零或连续失败。
+
+        ⚠️ 全程 try/except：技能索引是增强能力，任何失败都不能影响主服务。
+        """
+        from sgme.operations import skills as skills_ops
+
+        try:
+            # T-217：启动引导开启 FTS 缺行探测——历史写入绕过触发器造成的
+            # 「列表有、检索无」在每次启动自愈，无需人工 reindex。
+            r = skills_ops.sync_index(
+                cfg, skills_conn, wiki_conn, max_embed=0, embed=False, fts_check=True,
+            )
+            data = (r.data if hasattr(r, "data") else None) or {}
+            if data.get("fts_rebuilt"):
+                print("[SGME skills] 检出 FTS 索引缺行 → 已全量重建（T-217）")
+            print(
+                f"[SGME skills] 结构化同步：新增 {data.get('inserted', 0)} / "
+                f"更新 {data.get('updated', 0)} / 删除 {data.get('deleted', 0)} / "
+                f"未变 {data.get('unchanged', 0)}（共 {data.get('total', 0)}）"
+            )
+        except Exception as e:
+            print(f"[SGME skills] 结构化同步失败（技能模块降级）: {e}")
+            return
+
+        _vector_warmup(skills_ops, cfg, skills_conn, wiki_conn)
+        print("[SGME skills] 向量预热结束")
+
+    async def lifespan(app: FastAPI):
+        """应用生命周期：启动定时任务（生产模式）/ 关闭时释放自建连接。"""
+        # T-23② 安装清单（ST-23⑦ 服务发现落地）：生产模式启动即生成 ~/.sgme/install.json
+        if start_background_tasks:
+            try:
+                host = os.environ.get("SGME_HOST", "127.0.0.1")
+                port = int(os.environ.get("SGME_PORT", "9910"))
+                sgme_config.write_install_json(cfg, host=host, port=port)
+            except Exception as e:  # 不阻断启动：清单缺失不影响核心服务
+                print(f"[SGME install] 安装清单生成失败（不影响启动）: {e}")
+            asyncio.create_task(daily_tier0_task(app))
+            asyncio.create_task(heartbeat_task(app))
+            asyncio.create_task(update_check_task(app))
+            # T-163：接口调用统计保留期清理（400 天，失败不阻断启动）
+            try:
+                from sgme.data.usage_dao import prune_usage
+
+                prune_usage(mem_conn, keep_days=400)
+            except Exception as e:
+                print(f"[SGME usage] 调用统计清理失败（不影响启动）: {e}")
+            # T-251：记忆调用统计保留期清理（400 天，失败不阻断启动）
+            try:
+                from sgme.data.memory_usage_dao import prune_memory_usage
+
+                prune_memory_usage(mem_conn, keep_days=400)
+            except Exception as e:
+                print(f"[SGME memory usage] 记忆调用统计清理失败（不影响启动）: {e}")
+            _start_batch_scan_scheduler(app)
+            # ST-35 T-101：人格月度校准定时器（失败不阻断启动）
+            try:
+                from sgme.engine import persona_monthly
+                persona_monthly.ensure_scheduler(cfg, data_dir=d)
+            except Exception as e:
+                print(f"[SGME persona] 月度校准定时器启动失败（不影响启动）: {e}")
+            # B117（2026-08-28 治本）：Dream 夜间整理定时器。此前仅手动触发端点
+            # （/v1/admin/dream/trigger）接线，容器重启后 daemon 线程死亡且永不自动
+            # 复活，导致 dream 流水线自 08-15 停摆、scene_gc 从未执行、重复场景堆积
+            # （active 350 > max 300）。现与生产其余 scheduler 同款接入启动，按
+            # dream.schedule(03:00) 自动执行；失败不阻断启动。
+            try:
+                from sgme.engine import dream
+                dream.ensure_scheduler(cfg, data_dir=d)
+            except Exception as e:
+                print(f"[SGME dream] 夜间整理定时器启动失败（不影响启动）: {e}")
+            # T-209（2026-10-01）：每日自动备份定时器接入 lifespan。此前唯一拉起点
+            # 在 POST /v1/admin/backup（routes_backup.py），容器重启后无人调备份接口
+            # 则调度线程永不创建、每日 04:00 备份静默失效（B117 修 Dream / 观察项
+            # G-7 同源）。现与生产其余 scheduler 同款接入启动；失败不阻断启动。
+            try:
+                _start_backup_scheduler(app)
+            except Exception as e:
+                print(f"[SGME backup] 每日自动备份定时器启动失败（不影响启动）: {e}")
+            # T-112：skills.db 首次同步 + 向量后台预热（daemon 线程，失败不阻断启动）。
+            # 结构化同步快（403 条约 1-3 秒）；向量首次全量约 13 分钟（Ollama bge-m3
+            # 每批 10 条约 19 秒），故只补一小批后交由循环预热逐步补齐——期间
+            # 检索照常可用（FTS 全量立即生效，向量逐步生效，routes 标记随之变化）。
+            if skills_conn is not None:
+                threading.Thread(
+                    target=_skills_bootstrap,
+                    args=(cfg, skills_conn, wiki_conn),
+                    daemon=True,
+                    name="sgme-skills-bootstrap",
+                ).start()
+        yield
+        # Batch 兜底扫描定时器线程（daemon）：置位 stop 并 join（幂等，未启动无副作用）
+        try:
+            from sgme.engine import batch_scan as batch_scan_mod
+            batch_scan_mod.stop_scheduler(timeout=2.0)
+        except Exception:
+            pass
+        try:
+            from sgme.engine import persona_monthly
+            persona_monthly.stop_scheduler(timeout=2.0)
+        except Exception:
+            pass
+        # 每日自动备份定时器线程（daemon）：置位 stop 并 join（幂等，未启动无副作用）
+        try:
+            from sgme.engine import backup_scheduler as backup_sched_mod
+            backup_sched_mod.stop_scheduler(timeout=2.0)
+        except Exception:
+            pass
+        if own_conns:
+            db_mod.close(mem_conn)
+            db_mod.close(session_conn)
+            db_mod.close(wiki_conn)
+
+    app = FastAPI(title="SGME", version=__version__, docs_url="/docs", lifespan=lifespan)
+
+    # CORS：浏览器侧跨源访问控制（F-1 修复，2026-09-24 深度审查）。
+    # 原实现 allow_origins=["*"]（当时理由：TackMark 等 HTML 工具需跨源 fetch），
+    # 但通配 CORS + /v1/admin/keys 无鉴权端点 = 任意网页可跨源读取 admin/agent key。
+    # 现收敛为：默认仅放行本机回环来源（WebUI 同源、本机 HTML 工具不受影响）；
+    # 局域网/自定义来源须在 config server.cors_origins 显式登记（默认空表）。
+    # 鉴权仍由 X-API-Key 承担，本改动只关闭「任意来源可读」的浏览器通道。
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list((cfg.get("server", {}) or {}).get("cors_origins") or []),
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # 挂载应用状态
+    app.state.cfg = cfg
+    app.state.mem_conn = mem_conn
+    app.state.session_conn = session_conn
+    app.state.wiki_conn = wiki_conn
+    app.state.skills_conn = skills_conn  # T-112：技能模块禁用时为 None（读侧自动回退内存索引）
+    app.state.credentials_conn = credentials_conn  # EP-11：凭据模块禁用时为 None
+    app.state.data_dir = d  # 调度器线程自建独立连接的数据库目录（2026-08-11 连接隔离修复）
+    app.state.own_conns = own_conns
+    app.state.key_store = store
+    app.state.bearer_token = bearer
+    app.state.started_at = _now_iso()
+
+    # 凭据模块启动自检（EP-11 §三，K1）：主密钥缺失/非法/非空库探测失败 → 明确告警
+    # （不带密文/明文）；空库视为通过。写路径门禁在 operations 层逐次复核。
+    if credentials_conn is not None:
+        try:
+            from sgme.operations import credentials as credentials_ops
+
+            _ck = credentials_ops.check_master_key(credentials_conn)
+            if _ck["ok"]:
+                logger.info("凭据模块自检通过（主密钥就绪）")
+            else:
+                logger.warning(
+                    "凭据主密钥自检未通过（state=%s）——凭据写路径将拒绝；"
+                    "请在 config/.env 配置合法的 SGME_CRED_KEY（Fernet 44 字符）",
+                    _ck["state"],
+                )
+        except Exception as _e:  # noqa: BLE001 —— 自检失败不阻断启动（写路径另有门禁）
+            logger.warning("凭据模块自检异常（不影响启动）: %s", _e)
+
+    # ---- 安全状态与审计（ST-55 / T-262，方案 §2.2/§2.5）----
+    # HTTP/MCP 两入口共享同一实例（per-key 预算双入口同额、封禁互可见，S7）。
+    # 进程内存、重启清空（= 解封）；三个限流桶 SlidingWindowRateLimiter 同源共享。
+    from sgme.security_log import SecurityLog
+    from sgme.security_state import SecurityState
+    from sgme.server.ratelimit import SlidingWindowRateLimiter
+    from sgme.server.security import SecurityGate
+
+    app.state.security_state = SecurityState()
+    app.state.security_ip_limiter = SlidingWindowRateLimiter(limit_per_min=60)
+    app.state.security_key_limiter = SlidingWindowRateLimiter(limit_per_min=120)
+    app.state.security_tool_limiter = SlidingWindowRateLimiter(limit_per_min=120)
+    app.state.security_log = SecurityLog(
+        sgme_config.LOG_DIR,
+        keep_days=int((cfg.get("server", {}) or {}).get("security_log_keep_days", 0) or 0),
+    )
+
+    # 初始化 FTS5（search 模块）：记忆层 + 场景层（v5）+ raw 正文层（T-207 ①）
+    from sgme.data.search import init_fts, init_scenes_fts, raw_fts as raw_fts_mod
+    init_fts(mem_conn)
+    init_scenes_fts(mem_conn)
+    raw_fts_mod.init_raw_fts(session_conn)
+    _start_raw_fts_background_rebuild(app)
+
+    # 注册路由
+    from sgme.server.routes_memory import router as memory_router
+    from sgme.server.routes_admin import router as admin_router
+    from sgme.server.routes_events import router as events_router
+    from sgme.server.routes_backup import router as backup_router
+    from sgme.server.routes_config import router as config_router
+    from sgme.server.routes_registry import router as registry_router
+    from sgme.server.routes_prompts import router as prompts_router
+    from sgme.server.routes_ideas import router as ideas_router
+    from sgme.server.routes_review import router as review_router
+    from sgme.server.routes_ops import router as ops_router
+    from sgme.server.routes_llm import router as llm_router
+    # T-231：AI-INSTALL 在线文档（免 Key；索引 + 全文；远程 agent 无仓库亦可读）
+    from sgme.server.routes_onboarding import router as onboarding_router
+    # ST-36 M3：技能写侧管理端点（读侧 routes_skills.py 由并行代理挂载，合并时解冲突）。
+    # 必须先于 routes_admin 注册：同路径 PUT/DELETE 由治理版（门禁+查重）优先接管，
+    # 未命中路径（GET 列表/详情等）自然回落到后续路由器（FastAPI 按序匹配）。
+    from sgme.server.routes_skills_admin import router as skills_admin_router
+    app.include_router(skills_admin_router)
+    app.include_router(memory_router)
+    app.include_router(onboarding_router)
+    app.include_router(admin_router)
+    app.include_router(events_router)
+    app.include_router(backup_router)
+    app.include_router(config_router)
+    app.include_router(registry_router)
+    app.include_router(prompts_router)
+    app.include_router(ideas_router)
+    app.include_router(review_router)
+    app.include_router(ops_router)
+    app.include_router(llm_router)
+    # wiki 扩展模块（v0.7 §10；wiki.enabled=false 时不挂载）
+    if cfg.get("wiki", {}).get("enabled", True):
+        from sgme.wiki.routes import router as wiki_router
+        app.include_router(wiki_router)
+    # care 扩展模块（ST-25 角色层；care.enabled=false 时不挂载）
+    if cfg.get("care", {}).get("enabled", True):
+        from sgme.server.routes_care import router as care_router
+        app.include_router(care_router)
+    # persona 扩展模块（ST-35 人格洞察；persona.enabled=false 时不挂载）
+    if cfg.get("persona", {}).get("enabled", True):
+        from sgme.server.routes_persona import router as persona_router
+        app.include_router(persona_router)
+    # skills 读侧披露模块（ST-36 M2 四级披露；skills.enabled=false 时不挂载）
+    if cfg.get("skills", {}).get("enabled", True):
+        from sgme.server.routes_skills import router as skills_router
+        app.include_router(skills_router)
+
+    # credentials 凭据模块（EP-11；credentials.enabled=false 时不挂载 → 404）
+    if cfg.get("credentials", {}).get("enabled", False):
+        from sgme.server.routes_credentials import router as credentials_router
+        app.include_router(credentials_router)
+
+    # ---- WebUI 自动填充密钥端点（2026-08-13 用户需求）----
+    # 仅限**本机回环来源**可用（不要求 key 鉴权——前端首次打开无 key 无法鉴权，
+    # 需先拿到 key 才能自动填入，故以来源校验代替鉴权）。
+    # key 本就存于本机 config/.env，本机回环可信；远程来源一律 403（防泄漏）。
+    @app.get("/v1/admin/keys")
+    def webui_keys_probe(request: Request):
+        if not _is_localhost_source(request):
+            raise api_error(
+                "ERR_FORBIDDEN",
+                "密钥自动填充仅限本机回环来源（127.0.0.1/localhost）：远程访问请手动配置 key",
+            )
+        # F-1 纵深（2026-09-24）：来源地址是回环时 Host 头也必须是回环——
+        # 防 DNS rebinding：evil.com 解析到 127.0.0.1 时来源校验会被骗过，
+        # 但浏览器发出的 Host 头仍是 evil.com，据此拦截跨站读取。
+        if not net_guard.is_localhost_host_header(request.headers.get("host")):
+            raise api_error(
+                "ERR_FORBIDDEN",
+                "密钥自动填充仅限本机回环访问（Host 校验失败）："
+                "请使用 127.0.0.1 / localhost 访问本机服务",
+            )
+        store: AgentKeyStore = request.app.state.key_store
+        return {
+            "admin_key": store.admin_key,
+            "agent_key": store.agent_key,
+        }
+
+    # SecurityGate 安全门（ST-55 / T-262，§2.4）：注册在 RateLimit 之后 = 更外层。
+    # S7 装配口径（外→内）：Usage → RateLimit → SecurityGate → 体限 → 路由。
+    # 体限-鉴权相对位置已锁定（T-255）；断言不绿只准调本门位次保持最外。
+    app.add_middleware(
+        SecurityGate,
+        state=app.state.security_state,
+        ip_limiter=app.state.security_ip_limiter,
+        key_limiter=app.state.security_key_limiter,
+        tool_limiter=app.state.security_tool_limiter,
+        cfg_getter=lambda: getattr(app.state, "cfg", None),
+        log_dir=str(sgme_config.LOG_DIR),
+        entry="http",
+        log=app.state.security_log,
+    )
+
+    # 请求体上限（ST-55 / T-255，方案 §2.8-1）：框架原生中间件，本仓 starlette==1.6.0 内置，
+    # 签名 (app, max_body_size) 已复验。max_body_bytes<=0 = 不装配（显式关闭）。
+    # ⚠️ 陷阱（DS 实测，禁改用）：FastAPI(max_body_size=...) 构造参数与 app.max_body_size=…
+    # 属性赋值均被【静默忽略】——配置体限只能走本中间件。
+    # 413 形态（细节 9 校准）：中间件自产 text/plain "Content Too Large"（非 {"detail":…}
+    # JSON）——网关级拒绝，接受框架默认形态，I3 用例按此断言（tests/test_security.py）。
+    # chunked 生效条件（细节 10 校准）：中间件在 receive 流上计数、须端点读取请求体才触发；
+    # 不读 body 的路径不会 413，属预期行为。
+    # S7 装配顺序口径（§2.4，写死）：HTTP 侧注册序 RequestBodyLimit → SecurityGate
+    # → UsageMiddleware；add_middleware 后加者在【外层】
+    # （user_middleware.insert(0) + 逆序包裹，本仓已实证）。⇒ 外→内 = Usage →
+    # SecurityGate → 体限 → 路由。体限-鉴权相对位置已锁定，断言不绿只准调 SecurityGate 位次。
+    # （T-264 收口：RateLimitMiddleware 已移除，per-key 限流由 SecurityGate 的
+    # key_limiter 桶承接——按 X-API-Key 取值计桶含无效 key，D1 语义不变。）
+    max_body_bytes = int(cfg.get("server", {}).get("max_body_bytes", 0) or 0)
+    if max_body_bytes > 0:
+        from starlette.middleware.body_limit import RequestBodyLimitMiddleware
+
+        app.add_middleware(RequestBodyLimitMiddleware, max_body_size=max_body_bytes)
+
+    # T-163：接口调用统计（纯 ASGI 旁路；全静默，统计失败不影响请求）
+    app.add_middleware(UsageMiddleware, conn=mem_conn, key_store=store)
+
+    # MCP Server（同进程两协议出口：HTTP API + MCP streamable HTTP）
+    # 默认生产挂载；测试可通过 create_app(enable_mcp=False) 或 SGME_MCP_DISABLED=1 关闭
+    if not os.environ.get("SGME_MCP_DISABLED") == "1":
+        try:
+            from sgme.mcp_server import mount_mcp
+            mount_mcp(app)
+        except Exception as e:
+            logger.warning("MCP Server 启动失败（不影响 HTTP API）: %s", e)
+
+    # 统一异常处理
+    @app.exception_handler(HTTPException)
+    async def http_exc_handler(request: Request, exc: HTTPException):
+        if isinstance(exc.detail, dict) and "error" in exc.detail:
+            return JSONResponse(status_code=exc.status_code, content=exc.detail)
+        # 兜底：未结构化的 HTTPException（如 405 Method Not Allowed）按状态码映射统一错误码，
+        # 不再一律归 ERR_INTERNAL（ST-22④：错误码语义必须可行动）
+        fallback_codes = {
+            401: "ERR_UNAUTHORIZED",
+            403: "ERR_FORBIDDEN",
+            404: "ERR_NOT_FOUND",
+            405: "ERR_INVALID_ARGS",
+            429: "ERR_RATE_LIMITED",
+        }
+        code = fallback_codes.get(exc.status_code, "ERR_INTERNAL")
+        return error_response(code, f"请求处理失败: {exc.detail}", exc.status_code)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_handler(request: Request, exc: RequestValidationError):
+        """422 统一错误结构（ST-22④）：FastAPI 默认 ``{"detail":[...]}`` → ERR_INVALID_ARGS + 中文说明。
+
+        新增统一处理前，请求体校验失败返回 FastAPI 默认结构（无 ERR_* 前缀、无中文说明），
+        与全局 ``{"error":{code,message,details}}`` 结构不一致——本处理器补齐差异。
+        """
+        errors = []
+        for e in exc.errors():
+            loc = ".".join(str(x) for x in e.get("loc", []) if x != "body")
+            errors.append({"loc": loc, "msg": e.get("msg", ""), "type": e.get("type", "")})
+        return error_response(
+            "ERR_INVALID_ARGS",
+            "请求参数校验失败，请检查请求体字段（详见 details）",
+            422,
+            details={"errors": errors},
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_handler(request: Request, exc: Exception):
+        logger.exception("未处理异常: %s", exc)
+        return error_response(
+            "ERR_INTERNAL",
+            f"内部错误: {exc}（可查看服务日志 sgme.log 获取堆栈）",
+            500,
+        )
+
+    # WebUI 静态托管（SGME-WebUI设计-v0.1 §1）：ui/dist 存在即挂载
+    # SPA history 路由：非 /v1 的 GET 回 index.html；/v1/* 保持 API 契约
+    # Path 已在模块顶部导入；FileResponse/StaticFiles 在此局部导入避免污染顶部
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    _ui_dist = Path(__file__).resolve().parent.parent.parent / "ui" / "dist"
+    if _ui_dist.is_dir():
+        _assets = _ui_dist / "assets"
+        if _assets.is_dir():
+            app.mount("/assets", StaticFiles(directory=_assets), name="webui_assets")
+        _index = _ui_dist / "index.html"
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def _webui_spa(full_path: str):
+            # 非前端路径（API/文档/健康探测）不放行到 index.html
+            if full_path.startswith("v1/") or full_path in ("docs", "redoc", "openapi.json"):
+                raise HTTPException(status_code=404)
+            # index.html 必须 no-cache：SPA 的 HTML 若被浏览器启发式缓存，会引用旧
+            # 版 JS，导致新页面（roles/signals/dashboard 等）加载旧组件而空白
+            # （2026-08-13 三个页面空白根因修复）。assets 走 hash 文件名，可长缓存。
+            return FileResponse(_index, headers={"Cache-Control": "no-cache"})
+
+    return app
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
