@@ -135,9 +135,15 @@ def assemble_role(
     """
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     cfg = request.app.state.cfg
+    # D-65 隐私层：按鉴权 key 反查调用方 agent_id（不读请求体自称），
+    # 由 operations 层按角色卡 privacy_agents 白名单校验 → 越权 403。
+    agent_id = request.app.state.key_store.resolve_agent_id(
+        request.headers.get("X-API-Key")
+    )
     return run_operation(
         care_operation.assemble, role_id, mem_conn, cfg,
         inject_mode=inject_mode, render=render, user_name=user_name,
+        agent_id=agent_id,
     )
 
 

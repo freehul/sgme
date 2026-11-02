@@ -1628,6 +1628,7 @@ def build_mcp_server():
         inject_mode: str | None = None,
         render: bool = False,
         user_name: str | None = None,
+        ctx: Context | None = None,
     ) -> str:
         """装配角色沟通提示词（ST-29）：角色卡 system_prompt + care_policy + 画像。
 
@@ -1636,6 +1637,10 @@ def build_mcp_server():
         - render=True：替换 {{char}}/{{user}} 宏（user_name 缺省「你」）；
           **默认 False 保留宏**（老消费方兼容）。新接入请传 render=True，
           否则宏会原样进模型，用户可能看到「早安，{{user}}。」
+        - 隐私层（D-65）：调用方 agent_id 从鉴权 key 反查（MCP Context，**不接受
+          参数自称**）；角色卡 privacy_agents 白名单外 → {"error": "无权装配该角色..."}
+          并写 security_log 审计。直调（无请求上下文）反查不到身份（unknown/anonymous），
+          有白名单的角色按拒绝处理（fail-closed）。
         """
         import json
         import sqlite3
@@ -1644,9 +1649,12 @@ def build_mcp_server():
 
         mem_conn: sqlite3.Connection = _app_state["mem_conn"]
         cfg = _app_state["cfg"]
+        # 与 signal_claim/append 同款反查：ApiKeyMiddleware 落 request.state.api_key
+        caller = _usage_caller(ctx)
         data = _op_json(
             assemble_operation, role_id, mem_conn, cfg,
             inject_mode=inject_mode, render=render, user_name=user_name,
+            agent_id=caller,
         )
         if "error" in data:
             return json.dumps(data, ensure_ascii=False)

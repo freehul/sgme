@@ -23,6 +23,7 @@ from typing import Any
 # ---------- 统一错误码 ----------
 # 取值必须是 server/app.py::ERROR_CODES 的键，否则入口层会回落到 500。
 ERR_INVALID_ARGS = "ERR_INVALID_ARGS"        # → HTTP 400
+ERR_FORBIDDEN = "ERR_FORBIDDEN"              # → HTTP 403（D-65 角色隐私层越权）
 ERR_NOT_FOUND = "ERR_NOT_FOUND"              # → HTTP 404
 ERR_CONFLICT = "ERR_CONFLICT"                # → HTTP 409
 ERR_LLM_UNAVAILABLE = "ERR_LLM_UNAVAILABLE"  # → HTTP 503
