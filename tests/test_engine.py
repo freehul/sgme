@@ -428,7 +428,9 @@ def test_extract_l1_success(cfg):
     # v0.5 主模型已切云端：provider 名随配置首链（当前为 deepseek），不写死 lm-studio
     assert provider == cfg["llm"]["chains"]["refinement"][0]["provider"]
     assert meta["stage"] == "l1_extraction"
-    assert meta["version"].startswith("working-")
+    # 版本名随 manifest 的 active 而定：@working 时形如 "working-<sha8>"，钉版时为 "vNNN"。
+    # 2.0 上线（2026-11-02）起 l1_extraction 钉在 v019，故这里断言「非空且是已知形态」。
+    assert meta["version"] and (meta["version"].startswith("working-") or meta["version"].startswith("v"))
     assert meta["variant"] is None
 
 
@@ -651,7 +653,8 @@ def test_refine_file_records_l1_run_and_prompt_versions(raw_dir, mem_conn, sessi
     assert result.status == "refined"
     # prompt_versions 透传 L1 版本
     assert result.prompt_versions["l1_extraction"]["stage"] == "l1_extraction"
-    assert result.prompt_versions["l1_extraction"]["version"].startswith("working-")
+    _v = result.prompt_versions["l1_extraction"]["version"]
+    assert _v and (_v.startswith("working-") or _v.startswith("v"))
     assert result.prompt_versions["l1_extraction"]["variant"] is None
     # L1 refine_run 已记录（file_id = bucket_key）
     runs = RefineRunRecorder.list_by_stage(mem_conn, "l1_extraction")
