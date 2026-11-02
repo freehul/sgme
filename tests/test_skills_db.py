@@ -52,14 +52,66 @@ class TestSchema:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        assert {"skills", "skill_vectors", "skill_uses", "skill_sync_meta"} <= tables
+        assert {
+            "skills",
+            "skill_vectors",
+            "skill_uses",
+            "skill_sync_meta",
+            # T-401：技能包与生命周期表正式并入建表段
+            "skill_files",
+            "skill_revisions",
+            "skill_meta",
+        } <= tables
 
     def test_connect_is_idempotent(self, tmp_path):
         c1 = db_mod.connect_skills(tmp_path)
         c1.close()
         c2 = db_mod.connect_skills(tmp_path)  # 二次连接不应报错（FTS 虚表/触发器幂等）
+        # T-401：重复建表/迁移不报错，两表与索引就位
+        names = {r[0] for r in c2.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"skill_files", "skill_revisions", "skill_meta"} <= names
+        idx = {r[0] for r in c2.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert {"idx_skill_rev_name", "idx_skill_meta_status"} <= idx
         c2.close()
         assert (tmp_path / "skills.db").exists()
+
+    def test_ddl_rerun_idempotent(self, conn):
+        """同一连接重复执行 SKILLS_DDL（含 T-401 三表）不报错、列集合不变。"""
+        before = [r[1] for r in conn.execute("PRAGMA table_info(skill_uses)").fetchall()]
+        conn.executescript(db_mod.SKILLS_DDL)
+        conn.executescript(db_mod.SKILLS_DDL)
+        after = [r[1] for r in conn.execute("PRAGMA table_info(skill_uses)").fetchall()]
+        assert before == after
+        assert "strength" in after
+
+    def test_package_tables_schema_matches_dao(self, tmp_path):
+        """db.py 与 skill_package_dao.ensure_tables 的两表结构必须逐列一致。
+
+        两处 CREATE 是同一契约的两份副本（db.py 启动建表 / DAO 自建幂等），
+        任何一处改结构忘了同步都会在此炸掉。
+        """
+        from sgme.data import skill_package_dao
+
+        c1 = db_mod.connect_skills(tmp_path)
+        c2 = sqlite3.connect(":memory:")
+        c2.row_factory = sqlite3.Row
+        try:
+            skill_package_dao.ensure_tables(c2)
+
+            def _cols(c, table):
+                return [
+                    (r[1], (r[2] or "").upper(), r[3], r[4], r[5])
+                    for r in c.execute(f"PRAGMA table_info({table})").fetchall()
+                ]
+
+            for table in ("skill_files", "skill_revisions"):
+                assert _cols(c1, table) == _cols(c2, table), f"{table} 结构漂移"
+            for c in (c1, c2):
+                idx = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+                assert "idx_skill_rev_name" in idx
+        finally:
+            c1.close()
+            c2.close()
 
     def test_fts_table_created(self, conn):
         row = conn.execute(
@@ -367,6 +419,160 @@ class TestUsesGraph:
         skills_dao.replace_uses(conn, "a", ["c"])
         conn.commit()
         assert skills_dao.find_outgoing(conn, "a") == ["c"]
+
+
+# ---------- T-401：依赖强度（strong / weak） ----------
+
+
+class TestUsesStrength:
+    def test_default_strength_is_weak(self, conn):
+        """不传 strength 时落 'weak'（存量 frontmatter 只有名字清单，按最宽松语义）。"""
+        skills_dao.replace_uses(conn, "a", ["b", "c"])
+        conn.commit()
+        rows = conn.execute(
+            "SELECT dst, strength FROM skill_uses WHERE src='a' ORDER BY dst"
+        ).fetchall()
+        assert [(r["dst"], r["strength"]) for r in rows] == [
+            ("b", "weak"),
+            ("c", "weak"),
+        ]
+
+    def test_explicit_strong_recorded(self, conn):
+        skills_dao.replace_uses(conn, "a", ["b"], strength="strong")
+        conn.commit()
+        edges = skills_dao.find_incoming_edges(conn, "b")
+        assert edges == [{"src": "a", "strength": "strong"}]
+        # 兼容读接口不变（只给名字，不含强度）
+        assert skills_dao.find_incoming(conn, "b") == ["a"]
+
+    def test_illegal_strength_rejected_without_wiping_edges(self, conn):
+        """非法强度先校验后删边：既有依赖不得被半截清空。"""
+        skills_dao.replace_uses(conn, "a", ["b"])
+        conn.commit()
+
+        with pytest.raises(ValueError):
+            skills_dao.replace_uses(conn, "a", ["c"], strength="medium")
+        assert skills_dao.find_outgoing(conn, "a") == ["b"]  # 旧边原样保留
+
+    def test_legacy_db_migrated_to_weak(self, tmp_path):
+        """老库（skill_uses 无 strength 列）→ connect_skills 补列且存量边回填 'weak'。"""
+        db_path = tmp_path / "skills.db"
+        legacy = sqlite3.connect(str(db_path))
+        legacy.executescript(
+            """
+            CREATE TABLE skills (
+              name TEXT PRIMARY KEY, sha256 TEXT NOT NULL,
+              description TEXT NOT NULL DEFAULT '', description_seg TEXT,
+              category TEXT, tags TEXT, version TEXT, pattern TEXT,
+              source TEXT, origin_path TEXT, content TEXT NOT NULL,
+              content_seg TEXT, content_len INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT, synced_at TEXT);
+            CREATE TABLE skill_uses (
+              src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst));
+            INSERT INTO skill_uses (src, dst) VALUES ('a', 'b');
+            """
+        )
+        legacy.commit()
+        legacy.close()
+
+        c = db_mod.connect_skills(tmp_path)
+        try:
+            cols = [r[1] for r in c.execute("PRAGMA table_info(skill_uses)").fetchall()]
+            assert "strength" in cols
+            row = c.execute(
+                "SELECT strength FROM skill_uses WHERE src='a' AND dst='b'"
+            ).fetchone()
+            assert row is not None
+            assert row["strength"] == "weak"
+        finally:
+            c.close()
+        # 二次连接幂等（迁移函数重复执行不报错、值不变）
+        c = db_mod.connect_skills(tmp_path)
+        c.close()
+
+
+# ---------- T-401：生命周期状态（active / deprecated / tombstone） ----------
+
+
+class TestSkillLifecycle:
+    def test_unregistered_means_active(self, conn):
+        from sgme.data import skill_meta_dao
+
+        assert skill_meta_dao.get_status(conn, "ghost") is None
+        assert skill_meta_dao.get_meta(conn, "ghost") is None
+        assert skill_meta_dao.list_by_status(conn, "active") == []
+
+    def test_set_and_get(self, conn):
+        from sgme.data import skill_meta_dao as meta
+
+        row = meta.set_status(conn, "pdf", meta.STATUS_DEPRECATED)
+        assert row["name"] == "pdf"
+        assert row["status"] == "deprecated"
+        assert row["superseded_by"] is None
+        assert row["updated_at"]
+        assert meta.get_status(conn, "pdf") == "deprecated"
+
+    def test_upsert_same_name(self, conn):
+        """同名重复写：状态被覆盖，不新增行（幂等 upsert）。"""
+        from sgme.data import skill_meta_dao as meta
+
+        meta.set_status(conn, "pdf", meta.STATUS_DEPRECATED)
+        meta.set_status(conn, "pdf", meta.STATUS_ACTIVE)
+        assert meta.get_status(conn, "pdf") == "active"
+        assert conn.execute("SELECT COUNT(*) FROM skill_meta").fetchone()[0] == 1
+
+    def test_tombstone_records_successor(self, conn):
+        from sgme.data import skill_meta_dao as meta
+
+        row = meta.set_status(
+            conn, "old-skill", meta.STATUS_TOMBSTONE, superseded_by="new-skill"
+        )
+        assert row["status"] == "tombstone"
+        assert row["superseded_by"] == "new-skill"
+        got = meta.get_meta(conn, "old-skill")
+        assert got["superseded_by"] == "new-skill"
+
+    def test_list_by_status(self, conn):
+        from sgme.data import skill_meta_dao as meta
+
+        meta.set_status(conn, "b-skill", meta.STATUS_ACTIVE)
+        meta.set_status(conn, "a-skill", meta.STATUS_ACTIVE)
+        meta.set_status(conn, "c-skill", meta.STATUS_DEPRECATED)
+        active = meta.list_by_status(conn, meta.STATUS_ACTIVE)
+        assert [r["name"] for r in active] == ["a-skill", "b-skill"]
+        assert [r["status"] for r in active] == ["active", "active"]
+        assert [r["name"] for r in meta.list_by_status(conn, meta.STATUS_DEPRECATED)] == [
+            "c-skill"
+        ]
+        assert len(meta.list_by_status(conn, meta.STATUS_ACTIVE, limit=1)) == 1
+
+    @pytest.mark.parametrize("bad", ["archived", "ACTIVE", "", "deleted", None])
+    def test_illegal_status_rejected(self, conn, bad):
+        """白名单拒绝非法值：set_status / list_by_status 均 ValueError，库内零写入。"""
+        from sgme.data import skill_meta_dao as meta
+
+        with pytest.raises(ValueError):
+            meta.set_status(conn, "pdf", bad)
+        with pytest.raises(ValueError):
+            meta.list_by_status(conn, bad)
+        assert conn.execute("SELECT COUNT(*) FROM skill_meta").fetchone()[0] == 0
+
+    def test_table_check_constraint_blocks_raw_sql(self, conn):
+        """绕过 DAO 直接写 SQL 也被表级 CHECK 拦住（双保险）。"""
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO skill_meta (name, status, updated_at) VALUES ('x','archived','now')"
+            )
+
+    def test_invalid_names_rejected(self, conn):
+        from sgme.data import skill_meta_dao as meta
+
+        with pytest.raises(ValueError):
+            meta.set_status(conn, "  ", meta.STATUS_ACTIVE)
+        with pytest.raises(ValueError):
+            meta.get_status(conn, "")
+        with pytest.raises(ValueError):
+            meta.set_status(conn, "a", meta.STATUS_TOMBSTONE, superseded_by="a")
 
 
 # ---------- 同步水位 ----------
