@@ -154,6 +154,14 @@ compat:
   window_days: 90
   enforce: false           # 409：旧客户端打语义已变写端点时拒绝
   enforce_gone: false      # 410：场景层下线端点（9.6 之后开）
+cost_alert:
+  # P1-9（2026-11-04）：成本告警线——1.2x 提示 / 2x 告警；只告警不停服。
+  enabled: true
+  baseline_tokens: 10000000   # 首月估算基线（≈10M/月）；满 3 个完整月后自动滚动
+  warn_ratio: 1.2
+  alert_ratio: 2.0
+  auto_baseline: true
+  auto_after_months: 3
 migration:
   # D-55（2026-11-04）：迁移四阶段开关。
   # 阶段 2 双写：enabled=false 全量关闭（回滚点 R2）；agents 非空 = 按 agent 灰度

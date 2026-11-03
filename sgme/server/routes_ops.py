@@ -90,8 +90,14 @@ def llm_cost(
     span = _parse_days(days)
     empty_total = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
 
+    # P1-9（2026-11-04）：成本告警档位（只读；无账本时 available=False）
+    from sgme.engine import cost_alert
+
+    budget = cost_alert.budget_status(mem_conn, request.app.state.cfg)
+
     if not _table_exists(mem_conn, "llm_usage_daily"):
-        return {"items": [], "totals": empty_total, "days": span, "note": "用量账本尚未创建（无记账）"}
+        return {"items": [], "totals": empty_total, "days": span,
+                "budget": budget, "note": "用量账本尚未创建（无记账）"}
 
     rows = mem_conn.execute(
         """
@@ -122,4 +128,4 @@ def llm_cost(
         totals["completion_tokens"] += ct
         totals["calls"] += calls
 
-    return {"items": items, "totals": totals, "days": span}
+    return {"items": items, "totals": totals, "days": span, "budget": budget}

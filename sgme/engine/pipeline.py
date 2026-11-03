@@ -20,6 +20,7 @@ import threading
 import uuid
 from pathlib import Path
 
+from sgme.engine import cost_alert
 from sgme.migration import dual_write_enabled
 from sgme.engine import l15 as l15_mod
 from sgme.engine import refine as refine_mod
@@ -40,6 +41,14 @@ _ZERO_STATS = {
     "stored": 0, "skipped": 0, "updated": 0, "merged": 0, "archived": 0,
     "l15_error": None, "fallback": False, "supersession_rejected": 0,
 }
+
+
+def _evaluate_cost_alert(mem_conn: sqlite3.Connection, cfg: dict) -> None:
+    """P1-9：记账后评估成本告警（只告警不停服；失败不阻塞提炼）。"""
+    try:
+        cost_alert.evaluate_and_alert(mem_conn, cfg)
+    except Exception as e:  # noqa: BLE001 - 旁路职能，绝不改变主流程结果
+        logger.warning("成本告警评估失败（不影响提炼）: %s", e)
 
 
 def _apply_supersession_linkage_safe(
@@ -167,11 +176,12 @@ def persist_memories(
         stats["supersession_rejected"] = len(superseded)
         if superseded:
             logger.info(
-                "替代联动: %d 条旧主体记忆标记 rejected: %s",
+                "替代联动: %d 条旧主体记忆转 archived: %s",
                 len(superseded), superseded,
             )
         # L1.5 落库完成后：L2 场景聚合 + embedding + 信号（记忆已带 memory_id）
         refine_mod.finalize_refinement(refine_result, mem_conn, cfg)
+        _evaluate_cost_alert(mem_conn, cfg)
         return stats
     except Exception as e:
         # L1.5 异常 → 降级直存
@@ -187,6 +197,7 @@ def persist_memories(
         superseded = _apply_supersession_linkage_safe(mem_conn, refine_result.memories)
         stats["supersession_rejected"] = len(superseded)
         refine_mod.finalize_refinement(refine_result, mem_conn, cfg)
+        _evaluate_cost_alert(mem_conn, cfg)
         return stats
 
 
