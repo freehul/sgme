@@ -37,6 +37,9 @@ class RefineResult:
     # T-223：本次提炼时 raw 文件的 SHA-256（含未变场景），供落库成功后的
     # commit_refine 同步到 raw_files.content_hash；哈希计算失败为 None。
     content_hash: str | None = None
+    # 块级失败计数（2026-11-03）：>0 表示该文件内容有缺口，不得标 refined。
+    failed_chunks: int = 0
+    chunk_total: int = 0
 
 
 #: 自注入画像块（dsh/hermes 把 Tier0 画像当 user 消息写进原件时的标记）
@@ -211,6 +214,16 @@ def refine_file(
             sunk_refs_text=sunk_refs_text,
         )
         result.prompt_versions["l1_extraction"] = prompt_meta
+        # 块级失败（2026-11-03）：单块失败被 continue 吞掉，整份仍会标 refined →
+        # 静默缺内容。这里把失败数报到结果上，由 pipeline 的提交闸拦下（不推进游标）。
+        result.failed_chunks = int(prompt_meta.get("chunk_failures") or 0)
+        result.chunk_total = int(prompt_meta.get("chunk_total") or 0)
+        if result.failed_chunks:
+            result.anomaly_warn = True
+            logger.warning(
+                "L1 块级失败 %d/%d（file=%s）：内容有缺口，本次不推进游标，文件保持待重跑",
+                result.failed_chunks, result.chunk_total, file_id,
+            )
     except l1.RefineError as e:
         result.status = "error"
         result.error = str(e)

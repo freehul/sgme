@@ -269,6 +269,35 @@ def _fallback_direct_store(
             "l15_error": "fallback_direct_store", "fallback": True}
 
 
+def should_commit(result, max_ratio: float = 0.0) -> bool:
+    """块级失败的文件不得推进游标（2026-11-03）。
+
+    ``l1.extract_l1`` 单块失败只记 warning 后 continue；若不拦，整份文件照常
+    commit 并标 ``refined``，失败块的内容**永久静默丢失**（2026-11-02 实测
+    ed7c89fd 35% 块失败仍标 refined）。
+
+    - ``max_ratio=0.0``（默认）：任何失败块都拦住 → 文件保持 status=new 待重跑
+    - ``max_ratio>0``：允许该比例的缺口，仍打 anomaly_warn + 告警日志（显式接受）
+
+    老结果对象没有该字段时按干净处理（向后兼容）。
+    """
+    failed = int(getattr(result, "failed_chunks", 0) or 0)
+    if failed <= 0:
+        return True
+    total = int(getattr(result, "chunk_total", 0) or 0)
+    if total <= 0:
+        return False
+    return (failed / total) <= max_ratio
+
+
+def _chunk_failure_ratio(cfg: dict) -> float:
+    """读 refine.max_chunk_failure_ratio（缺省 0.0 = 零容忍）。"""
+    try:
+        return float(((cfg or {}).get("refine") or {}).get("max_chunk_failure_ratio", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def refine_one(
     file_id: str,
     mem_conn: sqlite3.Connection,
@@ -290,7 +319,9 @@ def refine_one(
     )
     # 落库成功（persist_memories 正常返回）之后才推进游标 + 内容哈希；
     # 无增量结果（memories 空）同样走这里收敛为 refined（T-223 设计选择）。
-    refine_mod.commit_refine(result, session_conn)
+    # 块级失败（2026-11-03）：内容有缺口 → 不推游标，文件保持 new 待重跑。
+    if should_commit(result, _chunk_failure_ratio(cfg)):
+        refine_mod.commit_refine(result, session_conn)
     return result, l15_stats
 
 
@@ -318,7 +349,9 @@ def refine_many(
                              agent_tag=_resolve_file_agent(session_conn, r.file_id))
             if r.memories else dict(_ZERO_STATS)
         )
-        refine_mod.commit_refine(r, session_conn)  # T-223：逐文件落库后推游标
+        # 块级失败（2026-11-03）：有缺口不推游标，文件保持 new 待重跑
+        if should_commit(r, _chunk_failure_ratio(cfg)):
+            refine_mod.commit_refine(r, session_conn)  # T-223：逐文件落库后推游标
         pairs.append((r, l15_stats))
     return pairs
 
@@ -355,7 +388,13 @@ def async_refine_worker(
             if result.memories:
                 persist_memories(result, mem_conn, cfg,
                                  agent_tag=_resolve_file_agent(session_conn, file_id))
-            refine_mod.commit_refine(result, session_conn)  # T-223
+            if should_commit(result, _chunk_failure_ratio(cfg)):
+                refine_mod.commit_refine(result, session_conn)  # T-223
+            else:
+                result.status = "partial"
+                logger.warning(
+                    "async refine file=%s 有 %d/%d 块失败，保持 status=new 待重跑",
+                    file_id, result.failed_chunks, result.chunk_total)
             logger.info("async refine file=%s status=%s", file_id, result.status)
         else:
             new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
@@ -368,7 +407,13 @@ def async_refine_worker(
                         # 此前漏传，T-140 多 Agent 隔离打标在异步默认路径静默缺失。
                         persist_memories(r, mem_conn, cfg,
                                          agent_tag=_resolve_file_agent(session_conn, rf["file_id"]))
-                    refine_mod.commit_refine(r, session_conn)  # T-223
+                    if should_commit(r, _chunk_failure_ratio(cfg)):
+                        refine_mod.commit_refine(r, session_conn)  # T-223
+                    else:
+                        r.status = "partial"
+                        logger.warning(
+                            "async refine 文件 %s 有 %d/%d 块失败，保持 status=new 待重跑",
+                            rf.get("file_id"), r.failed_chunks, r.chunk_total)
                     processed += 1
                 except Exception as e:
                     logger.warning("async refine 文件 %s 失败（继续下一文件）: %s", rf.get("file_id"), e)

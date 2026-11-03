@@ -468,6 +468,10 @@ DEFAULT_REFINE_CONFIG = {
     # 用户指定专用提炼 LLM 时填 {"provider": "...", "model": "...", "max_tokens": N}，
     # 此时 agent 声明模型降为备用。provider 必须在 providers.yaml 有连接。
     "llm_override": {},
+    # 块级失败容忍度（2026-11-03）：单块提炼失败时，整份文件是否还算提炼完成。
+    # 0.0（默认）= 零容忍，任何失败块都拦住提交、文件保持 status=new 待重跑；
+    # >0 = 允许该比例的缺口（仍打 anomaly_warn + 告警日志，属显式接受）。
+    "max_chunk_failure_ratio": 0.0,
 }
 
 # ST-39 T-139 Guardrail：敏感信息写前/召回后过滤层（顶层配置，pipeline 与 search 共用）

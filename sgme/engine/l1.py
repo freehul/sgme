@@ -839,6 +839,7 @@ def extract_l1(
     all_memories: list[dict] = []
     seen_contents: set[str] = set()
     chunk_metas: list[dict] = []
+    failed_chunks = 0
     for idx, chunk in enumerate(chunks):
         try:
             memories, _, meta = _extract_l1_chunk(
@@ -848,6 +849,9 @@ def extract_l1(
             )
             chunk_metas.append(meta)
         except RefineError as e:
+            # 2026-11-03 修复（全量提炼实测）：失败块必须计数并上报，否则整份
+            # 文件照常 commit 并标 refined → 静默缺内容（实测 35% 块丢失仍标 refined）
+            failed_chunks += 1
             logger.warning("L1 块 %d/%d 失败: %s", idx + 1, len(chunks), e)
             continue
         for m in memories:
@@ -855,7 +859,8 @@ def extract_l1(
             if key and key not in seen_contents:
                 seen_contents.add(key)
                 all_memories.append(m)
-    logger.info("L1 分块合并: 原始 %d 块 → 去重后 %d 条记忆", len(chunks), len(all_memories))
+    logger.info("L1 分块合并: 原始 %d 块 → 去重后 %d 条记忆（失败块 %d）",
+                len(chunks), len(all_memories), failed_chunks)
     if not all_memories and chunks:
         raise RefineError(f"L1 全部分块失败（{len(chunks)} 块）")
     # 合并版本元信息：全部块版本一致 → 用该版本；混合 → "chunked"（精确信息在 refine_runs）
@@ -867,6 +872,10 @@ def extract_l1(
             meta = {"stage": "l1_extraction", "version": "chunked", "variant": None, "chunks": chunk_metas}
     else:
         meta = {"stage": "l1_extraction", "version": "chunked", "variant": None, "chunks": []}
+    # 块级失败计数（2026-11-03）：调用方据此决定是否推进游标——有失败块的文件
+    # 内容不全，不允许标 refined（否则静默缺内容）。
+    meta["chunk_failures"] = failed_chunks
+    meta["chunk_total"] = len(chunks)
     return all_memories, "chunked", meta
 
 
