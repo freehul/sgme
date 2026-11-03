@@ -499,6 +499,7 @@ def _(self):
         ("十项校验脚本", *has("verify_migration", "def run")),
         ("校验报告目录", *exists("docs/migration")),
         ("注入回归对照器（#9）", *has("regression_inject", "def compare_results")),
+        ("#6 阶段感知门禁（--stage）", *has("verify_migration", "stage=args.stage")),
     ]
 
 

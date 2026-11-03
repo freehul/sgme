@@ -108,6 +108,7 @@ def run(
     out_dir: str | Path | None = None,
     strict: bool = False,
     export_unknown: bool = False,
+    stage: int = 0,
 ) -> dict:
     """执行十项校验，返回 report（含 checks / summary / 路径）。"""
     baseline_path = Path(baseline_path)
@@ -196,11 +197,17 @@ def run(
     pages = cwiki.get("wiki_pages") or 0
     revisions = cwiki.get("wiki_revisions")
     rev_note = ""
-    if revisions is not None and pages and revisions < pages:
-        rev_note = f"修订史缺页 {pages - revisions}（阶段 3 回填门禁，先告警）"
+    rev_missing = revisions is not None and bool(pages) and revisions < pages
+    if rev_missing:
+        # 设计 §9.4 #6：阶段 3 前判 WARN（给回填留窗口）；阶段 3 起必须 FAIL
+        if int(stage) >= 3:
+            rev_note = f"修订史缺页 {pages - revisions}（阶段 3 后为硬门禁 → FAIL）"
+        else:
+            rev_note = f"修订史缺页 {pages - revisions}（阶段 3 回填门禁，先告警）"
+    check6_fail = bool(wiki_diffs) or (rev_missing and int(stage) >= 3)
     checks.append(_check(
         6, "知识库（页数/九列/修订史/抽样）",
-        FAIL if wiki_diffs else (WARN if rev_note else PASS),
+        FAIL if check6_fail else (WARN if rev_note else PASS),
         "；".join(wiki_diffs + ([rev_note] if rev_note else [])) or "页数/九列/抽样均一致",
     ))
 
@@ -273,6 +280,7 @@ def run(
         "summary": summary,
         "unknown_scene_key": unknown_list[:200],
         "strict": strict,
+        "stage": int(stage),
     }
     if out_dir is None:
         out_dir = baseline_path.parent
@@ -291,7 +299,8 @@ def _render_md(report: dict) -> str:
     lines = [f"# SGME 2.0 迁移校验（{report['baseline']}）", ""]
     s = report["summary"]
     lines.append(
-        f"> 生成时间：{report['generated_at']} ｜ PASS {s['pass']} / FAIL {s['fail']} / "
+        f"> 生成时间：{report['generated_at']} ｜ 迁移阶段 {report.get('stage', 0)} ｜ "
+        f"PASS {s['pass']} / FAIL {s['fail']} / "
         f"WARN {s['warn']} / MANUAL {s['manual']} ｜ 口径：设计 §9.4 十项"
     )
     lines.append("")
@@ -316,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", default=None)
     ap.add_argument("--strict", action="store_true", help="WARN 也算失败")
     ap.add_argument("--export-unknown", action="store_true", help="导出 scene_key 未回填清单")
+    ap.add_argument("--stage", type=int, default=0,
+                    help="迁移阶段（0-4）；阶段 3 起修订史缺页由 WARN 升 FAIL（§9.4 #6）")
     args = ap.parse_args(argv)
 
     baseline = Path(args.baseline) if args.baseline else find_latest_baseline(
@@ -327,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     report = run(
         baseline, args.data_dir,
         out_dir=args.out_dir, strict=args.strict, export_unknown=args.export_unknown,
+        stage=args.stage,
     )
     s = report["summary"]
     print(

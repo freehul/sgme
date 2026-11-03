@@ -96,6 +96,18 @@ def test_unchanged_db_passes_machine_checks(tmp_path):
     assert (tmp_path / "verify").glob("2.0-迁移校验-*.md")
 
 
+def test_stage3_promotes_revision_gap_to_fail(tmp_path):
+    """§9.4 #6：阶段 3 起修订史缺页从 WARN 升 FAIL（阶段 3 前保持 WARN）。"""
+    data, baseline = _baseline(tmp_path)
+    pre = vm.run(baseline, data, out_dir=tmp_path / "verify-pre", stage=2)
+    assert _checks(pre)[6]["status"] == vm.WARN
+    post = vm.run(baseline, data, out_dir=tmp_path / "verify-post", stage=3)
+    checks = _checks(post)
+    assert checks[6]["status"] == vm.FAIL
+    assert "阶段 3 后为硬门禁" in checks[6]["detail"]
+    assert post["stage"] == 3 and post["summary"]["fail"] >= 1
+
+
 def test_content_change_fails_integrity(tmp_path):
     data, baseline = _baseline(tmp_path)
     conn = db.connect_memory(data)
