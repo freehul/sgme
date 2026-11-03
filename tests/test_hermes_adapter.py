@@ -1013,3 +1013,90 @@ def test_install_json_env_override(tmp_path, monkeypatch):
     assert hermes_install.install_json_path() == target
     assert hermes_install.write_install_json() == target
     assert target.exists()
+
+
+# ---------- 技能检索协议注入（2026-11-03：渐进式披露接线）----------
+
+class _FakeResp:
+    def __init__(self, status_code: int, body: dict):
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+class _ProtocolFakeClient:
+    """只服务 system_prompt_block 的两个端点：/v1/skills/coldstart 与 /v1/inject。"""
+
+    def __init__(self, protocol_body: str, protocol_status: int = 200):
+        self.protocol_body = protocol_body
+        self.protocol_status = protocol_status
+        self.calls: list[str] = []
+        self.is_closed = False      # _http() 会查这个属性
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls.append(url)
+        if url.endswith("/v1/skills/coldstart"):
+            return _FakeResp(self.protocol_status, {
+                "index": {"items": [{"name": "skill-registry-protocol",
+                                     "content": self.protocol_body}], "total": 1},
+                "hotset": [],
+                "manual": {"page_id": "p1", "title": "SGME操作手册", "content": "x" * 7000},
+            })
+        return _FakeResp(404, {})
+
+    def post(self, url, json=None, headers=None):
+        self.calls.append(url)
+        if url.endswith("/v1/inject"):
+            return _FakeResp(200, {"blocks": []})
+        return _FakeResp(404, {})
+
+
+def _protocol_provider(monkeypatch, protocol_body="| 以前、上次 | memory | `inject` |",
+                       protocol_status=200, enabled=True):
+    p = SGMEProvider(base_url="http://127.0.0.1:9910", agent_key="agent-key-x")
+    fake = _ProtocolFakeClient(protocol_body, protocol_status)
+    p._client = fake  # type: ignore[assignment]
+    p._available = True
+    p._probe_at = time.monotonic()
+    p._hermes_home = "/tmp/fake-hermes-home"
+    monkeypatch.setattr(p, "_role_prompt_block", lambda: "")
+    monkeypatch.setenv("SGME_INJECT_PROTOCOL", "1" if enabled else "0")
+    return p, fake
+
+
+def test_system_prompt_block_injects_skill_protocol(monkeypatch):
+    """system prompt 必须含技能检索协议——这是「知道 SGME 有技能库可搜」的唯一入口。
+
+    2026-11-03 前该接线缺失：system prompt 只有角色+画像，agent 因此从不知道
+    有 coding-discipline 这类技能可按需取。
+    """
+    p, fake = _protocol_provider(monkeypatch)
+    block = p.system_prompt_block()
+    assert "SGME 技能检索协议" in block
+    assert "`inject`" in block                      # 协议正文被拼进来
+    assert "SGME操作手册" not in block               # manual 7KB 不注入
+    assert any(u.endswith("/v1/skills/coldstart") for u in fake.calls)
+
+
+def test_system_prompt_block_protocol_disabled(monkeypatch):
+    """SGME_INJECT_PROTOCOL=0 → 不注入（可回退，避免改动不可逆）。"""
+    p, fake = _protocol_provider(monkeypatch, enabled=False)
+    assert "SGME 技能检索协议" not in p.system_prompt_block()
+    assert not any(u.endswith("/v1/skills/coldstart") for u in fake.calls)
+
+
+def test_system_prompt_block_protocol_failure_degrades(monkeypatch):
+    """coldstart 返回非 200 → 静默降级，不抛异常、不影响其它块。"""
+    p, _ = _protocol_provider(monkeypatch, protocol_status=500)
+    assert "SGME 技能检索协议" not in p.system_prompt_block()
+
+
+def test_skill_protocol_block_cached_per_session(monkeypatch):
+    """协议块每会话只拉一次（静态前缀，重复拉会拖慢启动）。"""
+    p, fake = _protocol_provider(monkeypatch)
+    p.system_prompt_block()
+    p.system_prompt_block()
+    n = sum(1 for u in fake.calls if u.endswith("/v1/skills/coldstart"))
+    assert n == 1

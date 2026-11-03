@@ -652,6 +652,9 @@ class SGMEProvider(MemoryProvider):
         # 角色块按会话重置（新会话重取服务端当前角色）
         self._role_block_cache = None
         self._role_block_fetched = False
+        # 技能检索协议块（每会话一次）：SGME 渐进式披露的入口
+        self._protocol_block_cache = None
+        self._protocol_block_fetched = False
         agent_context = kwargs.get("agent_context") or "primary"
         if agent_context != "primary":
             # 非 primary（cron/subagent）不写入，防画像污染
@@ -670,7 +673,18 @@ class SGMEProvider(MemoryProvider):
     # ---------- 注入（读方向） ----------
 
     def system_prompt_block(self) -> str:
-        """静态块（Tier0），进 system prompt：T-211 角色提示词 + 用户画像摘要。
+        """静态块（Tier0），进 system prompt：技能检索协议 + 角色提示词 + 用户画像摘要。
+
+        **技能检索协议（2026-11-03 补接线）**：拉 ``GET /v1/skills/coldstart``，
+        取其中的协议正片段（``index.items[].content``，≈3.5KB）拼在最前面。
+        这是 SGME 渐进式披露的入口——协议告诉 agent「记忆/知识/专业技能分别走
+        inject / wiki_search / skill_search→skill_get」，全量技能按需检索、不预载。
+
+        此前这一步**没接线**：system prompt 里只有角色与画像，agent 因此不知道
+        SGME 有技能库可搜——开发任务该加载的 coding-discipline 等从来没被想起过。
+        只注入协议、不注入 manual（后者 7.4KB，属按需查阅）。
+
+        ``hotset`` 设计上恒空（协议范式取代热集），不拼。
 
         角色块 = 服务端「当前角色」的 system_prompt（换皮不换芯——记忆与事实
         仍以记忆池为准）；未设置角色时与旧版一致（仅画像）。失败静默降级。
@@ -679,6 +693,9 @@ class SGMEProvider(MemoryProvider):
         if cli is None or not self._probe():
             return ""
         parts: List[str] = []
+        protocol_block = self._skill_protocol_block(cli)
+        if protocol_block:
+            parts.append(protocol_block)
         role_block = self._role_prompt_block()
         if role_block:
             parts.append(role_block)
@@ -706,6 +723,47 @@ class SGMEProvider(MemoryProvider):
         except Exception as e:
             logger.warning("sgme system_prompt_block 失败: %s", e)
         return "\n\n".join(parts)
+
+    def _skill_protocol_block(self, cli) -> str:
+        """技能检索协议块（每会话缓存一次；失败/关闭 → 空串）。
+
+        SGME 渐进式披露的**入口**：只注入协议本体（≈3.5KB），全量技能不预载，
+        由 agent 运行时 `skill_search → skill_digest → skill_get` 取用。
+
+        为什么必须注入：不注入时 system prompt 里只有角色与画像，agent 不知道
+        SGME 有技能库，于是开发任务该加载的 coding-discipline / git-pr-workflow
+        等**从来没被想起过**（2026-11-03 排查结论）。
+
+        开关：``SGME_INJECT_PROTOCOL=0`` 关闭（与其它 setting 同一解析口径）。
+        不注入 manual（7.4KB，属按需查阅）；hotset 设计上恒空。
+        """
+        if getattr(self, "_protocol_block_fetched", False):
+            return getattr(self, "_protocol_block_cache", None) or ""
+        # 防御：initialize() 之前被调用时属性还不存在（测试/早期调用路径），
+        # 用 getattr 兜底而不是直接崩。
+        self._protocol_block_fetched = True
+        flag = str(_resolve_setting("SGME_INJECT_PROTOCOL", "1")).strip().lower()
+        if flag in ("0", "false", "off", "no"):
+            self._protocol_block_cache = ""
+            return ""
+        try:
+            r = cli.get(
+                f"{self.base_url}/v1/skills/coldstart",
+                headers={"X-API-Key": self.agent_key},
+                timeout=10,
+            )
+            if r.status_code != 200:
+                return ""
+            items = ((r.json().get("index") or {}).get("items") or [])
+            bodies = [(it.get("content") or "").strip() for it in items]
+            block = "\n\n".join(b for b in bodies if b)
+            if block:
+                self._protocol_block_cache = (
+                    "# SGME 技能检索协议（常驻 · 按需取全文）\n\n" + block
+                )
+        except Exception as e:  # noqa: BLE001——协议注入失败不得影响会话启动
+            logger.warning("sgme 技能协议注入失败（降级为空）: %s", e)
+        return self._protocol_block_cache or ""
 
     def _role_prompt_block(self) -> str:
         """当前角色提示词块（每会话缓存一次；未设置/失败 → 空串）。
