@@ -1073,6 +1073,20 @@ def create_app(
 
     app = FastAPI(title="SGME", version=__version__, docs_url="/docs", lifespan=lifespan)
 
+    # D-58/D-64（2026-11-04）：兼容期守卫——capabilities 广告 + 409/410 处置。
+    # 默认全关（compat.enforce / enforce_gone），只在部署期显式开启后生效；
+    # 开启后：语义已变写端点对旧客户端返 409 + upgrade_hint；场景层下线端点返 410。
+    from sgme import compat as compat_mod
+
+    @app.middleware("http")
+    async def _compat_guard(request: Request, call_next):
+        decision = compat_mod.enforcement_decision(
+            request.method, request.url.path, request.headers, cfg
+        )
+        if decision is not None:
+            return JSONResponse(status_code=decision["status"], content=decision["body"])
+        return await call_next(request)
+
     # CORS：浏览器侧跨源访问控制（F-1 修复，2026-09-24 深度审查）。
     # 原实现 allow_origins=["*"]（当时理由：TackMark 等 HTML 工具需跨源 fetch），
     # 但通配 CORS + /v1/admin/keys 无鉴权端点 = 任意网页可跨源读取 admin/agent key。
@@ -1154,6 +1168,8 @@ def create_app(
     from sgme.server.routes_review import router as review_router
     from sgme.server.routes_ops import router as ops_router
     from sgme.server.routes_llm import router as llm_router
+    # D-58（2026-11-04）：GET /v1/capabilities（适配器能力广告）
+    from sgme.server.routes_capabilities import router as capabilities_router
     # T-231：AI-INSTALL 在线文档（免 Key；索引 + 全文；远程 agent 无仓库亦可读）
     from sgme.server.routes_onboarding import router as onboarding_router
     # ST-36 M3：技能写侧管理端点（读侧 routes_skills.py 由并行代理挂载，合并时解冲突）。
@@ -1173,6 +1189,7 @@ def create_app(
     app.include_router(review_router)
     app.include_router(ops_router)
     app.include_router(llm_router)
+    app.include_router(capabilities_router)
     # wiki 扩展模块（v0.7 §10；wiki.enabled=false 时不挂载）
     if cfg.get("wiki", {}).get("enabled", True):
         from sgme.wiki.routes import router as wiki_router

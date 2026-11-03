@@ -144,6 +144,14 @@ scene:
     desktop: [hermes, workbuddy]
     mobile: [doubao]
   default_class: other
+compat:
+  # D-58 / D-64（2026-11-04）：兼容期契约。
+  # 默认不强制；开启 enforce 前确认所有在用适配器都声明了 2.0 版本头。
+  api_family: "1.x"        # /v1/* 当前契约族（兼容期只增字段）
+  stable_since: ""         # 2.0 stable 上线日 YYYY-MM-DD；空 = 未上线
+  window_days: 90
+  enforce: false           # 409：旧客户端打语义已变写端点时拒绝
+  enforce_gone: false      # 410：场景层下线端点（9.6 之后开）
 care:
   enabled: true
   persona_max_chars: 2000

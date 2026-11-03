@@ -118,6 +118,8 @@ FILES = {
     "backfill_scene": ROOT / "scripts" / "backfill_scene_key.py",
     "backfill_wiki": ROOT / "scripts" / "backfill_wiki_2_0.py",
     "wiki_classify": S / "wiki_classify.py",
+    "compat": S / "compat.py",
+    "routes_capabilities": S / "server" / "routes_capabilities.py",
 }
 
 _cache: dict[str, str] = {}
@@ -458,11 +460,17 @@ def _(self):
     ]
 
 
-@check("D-58", "兼容期与旧适配器降级（capabilities.api_compat）", "planned")
+@check("D-58", "兼容期与旧适配器降级（capabilities.api_compat）", "partial")
 def _(self):
+    # 2026-11-04 落地：服务端 GET /v1/capabilities（schema_version/api_compat/
+    # catalog_version + 兼容期窗口 + 端点清单）+ 兼容期守卫（默认关）。
+    # 未落地 = 八适配器启动时读 capabilities 的自检（适配器侧，属 P1 分发批次）。
     return [
-        ("capabilities 端点", *has("app", "capabilities")),
-        ("api_compat 字段", *has("app", "api_compat")),
+        ("capabilities 端点注册", *has("app", "routes_capabilities")),
+        ("api_compat 字段", *has("compat", "api_compat")),
+        ("catalog_version 字段", *has("compat", "catalog_version")),
+        ("兼容期窗口计算", *has("compat", "def compat_phase")),
+        ("升级提示 upgrade_hint", *has("compat", "upgrade_hint")),
     ]
 
 
@@ -672,9 +680,17 @@ def _(self):
     ]
 
 
-@check("D-64", "兼容期 409 清单与 capabilities", "planned")
+@check("D-64", "兼容期 409 清单与 capabilities", "partial")
 def _(self):
-    return [("capabilities 端点", *has("app", "capabilities"))]
+    # 2026-11-04 落地：409 冲突清单 + 410 下线清单 + 守卫（enforce/enforce_gone 默认关，
+    # 部署期显式开启；旧客户端未声明 2.0 时 409 + upgrade_hint）。
+    # 未落地 = 9.6 场景层真正下线后才建议打开 enforce_gone。
+    return [
+        ("capabilities 端点", *has("routes_capabilities", "def capabilities")),
+        ("409 冲突清单", *has("compat", "CONFLICT_RULES")),
+        ("410 下线清单", *has("compat", "GONE_RULES")),
+        ("强制守卫开关", *has("compat", "enforce_gone")),
+    ]
 
 
 # ---------------------------------------------------------------------------

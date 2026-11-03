@@ -662,6 +662,39 @@ DEFAULT_TTL_CONFIG = {
 
 # D-53（2026-11-04）：scene_key 的「来源类」映射（D-8 可配）。
 # 八适配器里 coding 占 5/8 是有意收窄：来源类只作「证据多样性」骨架，题材差异由主维度承担。
+# D-58 / D-64（2026-11-04）：兼容期契约（capabilities + 409/410 处置）。
+# 默认**不强制**：现役八适配器尚未全部声明 2.0 版本头；enforce 是部署期显式决策。
+DEFAULT_COMPAT_CONFIG = {
+    "api_family": "1.x",   # /v1/* 当前契约族（2.0 兼容期保持 1.x 语义，只增字段）
+    "stable_since": "",    # 2.0 stable 上线日 YYYY-MM-DD；空 = 未上线（pre_stable）
+    "window_days": 90,     # 兼容期长度（设计：三个自然月）
+    "enforce": False,      # 409：旧客户端（未带版本头或 1）打到语义已变写端点时拒绝
+    "enforce_gone": False,  # 410：场景层下线端点（9.6 实装后才建议打开）
+}
+
+
+def _merge_compat_config(user_cfg: dict | None) -> dict:
+    """合并 compat 段（只认已知键）。"""
+    base = dict(DEFAULT_COMPAT_CONFIG)
+    if not isinstance(user_cfg, dict):
+        return base
+    for k, v in user_cfg.items():
+        if k not in base or v is None:
+            continue
+        if k in ("enforce", "enforce_gone"):
+            base[k] = bool(v)
+        elif k == "window_days":
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv > 0:
+                base[k] = iv
+        else:
+            base[k] = str(v).strip()
+    return base
+
+
 DEFAULT_SCENE_CONFIG = {
     "origin_class": {
         "coding": ["codex", "claude-code", "zcode", "mimo", "dsh"],
@@ -1573,6 +1606,8 @@ def load_config(
         "ttl": _merge_ttl_config(sgme_cfg.get("ttl")),
         # D-53（2026-11-04）：scene_key 来源类映射
         "scene": _merge_scene_config(sgme_cfg.get("scene")),
+        # D-58/D-64（2026-11-04）：兼容期契约（capabilities + 409/410）
+        "compat": _merge_compat_config(sgme_cfg.get("compat")),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
         "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
         # 2026-11-02 任务 B：角色离线生活注入闸（assemble 读 cfg["role_life"]）
