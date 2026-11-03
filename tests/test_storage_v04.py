@@ -94,12 +94,12 @@ def test_memory_v04_indexes(mem_conn):
 # ---------- schema 版本升级到 4 ----------
 
 def test_schema_version_is_current(mem_conn):
-    """schema_version = 当前 SCHEMA_VERSION（2026-11-04 起 v5 = 2.0 迁移阶段 1）。"""
-    assert db_mod.schema_version(mem_conn) == db_mod.SCHEMA_VERSION == 5
+    """schema_version = 当前 SCHEMA_VERSION（2026-11-04 起 v6 = D-56 收口）。"""
+    assert db_mod.schema_version(mem_conn) == db_mod.SCHEMA_VERSION
 
 
 def test_schema_version_wiki_is_current(wiki_conn):
-    assert db_mod.schema_version(wiki_conn) == db_mod.SCHEMA_VERSION == 5
+    assert db_mod.schema_version(wiki_conn) == db_mod.SCHEMA_VERSION
 
 
 # ---------- scenes CRUD ----------

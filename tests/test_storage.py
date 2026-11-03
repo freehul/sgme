@@ -84,8 +84,8 @@ def test_session_indexes_created(session_conn):
 
 
 def test_schema_version_recorded(mem_conn):
-    """schema_versions 登记当前版本（v5：2.0 迁移阶段 1 的生命周期五列/四表/优先级列）。"""
-    assert db_mod.schema_version(mem_conn) == db_mod.SCHEMA_VERSION == 5
+    """schema_versions 登记当前版本（v6：D-56 补 superseded_by）。"""
+    assert db_mod.schema_version(mem_conn) == db_mod.SCHEMA_VERSION
 
 
 def test_init_databases_idempotent(tmp_path):

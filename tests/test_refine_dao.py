@@ -34,9 +34,9 @@ def mem_conn(tmp_path):
 # ---------- schema v4 ----------
 
 def test_schema_version_is_current(mem_conn):
-    """SCHEMA_VERSION = 5（2.0 迁移阶段 1：生命周期五列 + 四表 + 维度优先级）。"""
-    assert db_mod.SCHEMA_VERSION == 5
-    assert db_mod.schema_version(mem_conn) == 5
+    """SCHEMA_VERSION 由 db 常量定义（v6：D-56 补 superseded_by）；不得在测试里写死。"""
+    assert db_mod.SCHEMA_VERSION >= 6
+    assert db_mod.schema_version(mem_conn) == db_mod.SCHEMA_VERSION
 
 
 def test_refine_runs_table_exists(mem_conn):
