@@ -180,15 +180,34 @@ def pick_for_injection(
     lookback_days: int = 7,
     now: datetime | None = None,
     consume: bool = True,
+    daily_stable: bool = True,
 ) -> dict[str, Any] | None:
     """挑一条可注入的生活事件（**永远不含秘密**），选完即消费。
 
     频率闸：当日已注入数 >= daily_max → None；只看 lookback_days 内的事；
     同一事件注入过就不再给（injected_at is null 是硬条件）。
+
+    ``daily_stable``（2026-11-03 冲突处置 C-1）：装配每轮都跑，生活块拼在
+    system_prompt 尾部；若每轮取新值，尾部动态内容会持续破坏前缀缓存（与 D-69
+    「人格层=稳定前缀」冲突）。故默认**按自然日固定**——当天已注入过的条目直接
+    复用，次日才换条目。设 False 回到「每轮取新条」的旧行为。
     """
     now = now or _now_utc()
     if daily_max <= 0:
         return None
+    if daily_stable:
+        day_start = _iso(now.replace(hour=0, minute=0, second=0, microsecond=0))
+        shown = conn.execute(
+            """select event_id, role_id, at, kind, content, mood, why_secret, is_secret,
+                      injected_at, shared_at, created_at
+                 from role_life_events
+                where role_id = ? and is_secret = 0 and injected_at >= ?
+                order by injected_at asc limit 1""",
+            (role_id, day_start),
+        ).fetchone()
+        if shown is not None:
+            # 当天已经给过 → 复用同一条（不再消费新条目，缓存稳定）
+            return _row_to_item(shown)
     if _injected_today(conn, role_id, now) >= daily_max:
         return None
     since = _iso(now - timedelta(days=max(1, int(lookback_days or 1))))

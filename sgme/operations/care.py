@@ -705,6 +705,8 @@ def _pick_life_block(
             role_id,
             daily_max=int(lc.get("daily_max", 2)),
             lookback_days=int(lc.get("lookback_days", 7)),
+            # C-1：默认按自然日固定同一条（保稳定前缀缓存），可配置回退
+            daily_stable=bool(lc.get("daily_stable", True)),
         )
         if not item:
             return None, ""

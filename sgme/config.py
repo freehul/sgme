@@ -360,6 +360,9 @@ DEFAULT_ROLE_LIFE_CONFIG = {
     "enabled": True,
     "daily_max": 2,
     "lookback_days": 7,
+    # 2026-11-03 冲突处置 C-1：生活块拼在 system_prompt 尾部，每轮变会破坏前缀缓存
+    # （与 D-69「人格层=稳定前缀」冲突）。默认按自然日固定同一条，次日才换。
+    "daily_stable": True,
 }
 
 # 备份段默认兜底（0.8 方案 B 每日自动备份；旧版 schedule cron 格式已升级为 HH:MM）
@@ -981,7 +984,7 @@ def _merge_role_life_config(user_cfg: dict | None) -> dict:
         for k, v in user_cfg.items():
             if v is None:
                 continue
-            if k == "enabled":
+            if k in ("enabled", "daily_stable"):
                 base[k] = bool(v)
             elif k in ("daily_max", "lookback_days"):
                 try:

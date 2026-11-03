@@ -125,21 +125,41 @@ def test_secret_shared_only_once(mem_conn):
 # ---------- 3. 频率闸 ----------
 
 def test_injection_not_repeated(mem_conn):
+    """daily_stable=False（每轮取新条）：同一条不会被给第二次。"""
     eid = role_life_dao.add_event(mem_conn, "butler", "去了趟旧书摊")
-    first = role_life_dao.pick_for_injection(mem_conn, "butler")
+    first = role_life_dao.pick_for_injection(mem_conn, "butler", daily_stable=False)
     assert first and first["event_id"] == eid
-    assert role_life_dao.pick_for_injection(mem_conn, "butler") is None
+    assert role_life_dao.pick_for_injection(mem_conn, "butler", daily_stable=False) is None
+
+
+def test_daily_stable_reuses_same_event_within_day(mem_conn):
+    """daily_stable=True（默认，C-1）：当天复用同一条，保 system_prompt 前缀缓存。"""
+    now = datetime.now(UTC)
+    for i in range(3):
+        role_life_dao.add_event(mem_conn, "butler", f"见闻{i}", at=_iso(now - timedelta(hours=i)))
+    first = role_life_dao.pick_for_injection(mem_conn, "butler", now=now)
+    assert first is not None
+    second = role_life_dao.pick_for_injection(mem_conn, "butler", now=now)
+    assert second is not None
+    assert first["event_id"] == second["event_id"]   # 同一天同一条
+    # 次日才换（额度与选条都重算）
+    tomorrow = now + timedelta(days=1)
+    nxt = role_life_dao.pick_for_injection(mem_conn, "butler", now=tomorrow)
+    assert nxt is not None and nxt["event_id"] != first["event_id"]
 
 
 def test_daily_max_gate(mem_conn):
     now = datetime.now(UTC)
     for i in range(3):
         role_life_dao.add_event(mem_conn, "butler", f"见闻{i}", at=_iso(now - timedelta(hours=i)))
-    assert role_life_dao.pick_for_injection(mem_conn, "butler", daily_max=1, now=now) is not None
-    assert role_life_dao.pick_for_injection(mem_conn, "butler", daily_max=1, now=now) is None
+    assert role_life_dao.pick_for_injection(
+        mem_conn, "butler", daily_max=1, now=now, daily_stable=False) is not None
+    assert role_life_dao.pick_for_injection(
+        mem_conn, "butler", daily_max=1, now=now, daily_stable=False) is None
     # 第二天额度恢复
     tomorrow = now + timedelta(days=1)
-    assert role_life_dao.pick_for_injection(mem_conn, "butler", daily_max=1, now=tomorrow) is not None
+    assert role_life_dao.pick_for_injection(
+        mem_conn, "butler", daily_max=1, now=tomorrow, daily_stable=False) is not None
 
 
 def test_lookback_window(mem_conn):
@@ -189,12 +209,24 @@ def test_assemble_respects_disable_switch(mem_conn, cfg, butler):
 
 
 def test_assemble_consumes_only_one_per_assembly(mem_conn, cfg, butler):
+    """C-1：默认 daily_stable → 同一天两次装配拿到同一条（缓存友好）。"""
     role_life_dao.add_event(mem_conn, "butler", "见闻甲")
     role_life_dao.add_event(mem_conn, "butler", "见闻乙")
     first = care_ops.assemble(butler, mem_conn, cfg)
     second = care_ops.assemble(butler, mem_conn, cfg)
     a = (first.data or {})["life_block"]["content"]
     b = (second.data or {})["life_block"]["content"]
+    assert a == b
+
+
+def test_assemble_rotates_when_daily_stable_off(mem_conn, cfg, butler):
+    """关掉 daily_stable → 回到每轮换一条的旧行为。"""
+    cfg = dict(cfg)
+    cfg["role_life"] = {**(cfg.get("role_life") or {}), "daily_stable": False}
+    role_life_dao.add_event(mem_conn, "butler", "见闻甲")
+    role_life_dao.add_event(mem_conn, "butler", "见闻乙")
+    a = (care_ops.assemble(butler, mem_conn, cfg).data or {})["life_block"]["content"]
+    b = (care_ops.assemble(butler, mem_conn, cfg).data or {})["life_block"]["content"]
     assert a != b
 
 
