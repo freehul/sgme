@@ -254,6 +254,42 @@ KEYS: 与该回答相关的 2 到 4 个关键词，用逗号分隔
 """
 
 
+# 2026-11-04（B283 / 设计 4.2）：基线层注入只喂「性格六槽位」（呈现层）。
+PROFILE_SLOT_ORDER = (
+    "语言风格", "情绪反应", "价值观取舍", "社交姿态", "冲突处理", "亲密表达",
+)
+
+
+def _profile_block_text(
+    data: dict[str, Any], cfg: dict[str, Any]
+) -> tuple[str | None, int]:
+    """构造「性格基线」文本块（六槽位）；空或关闭 → (None, 0)。
+
+    设计 4.2 明确：基线层（传记/三观/爱好/语气）是工作台写定材料，
+    **注入只用六槽位**（呈现层）；传记正文不进 prompt（避免把设定当事实说）。
+    """
+    pcfg = ((cfg.get("care") or {}).get("profile_inject") or {})
+    if not pcfg.get("enabled", True):
+        return None, 0
+    ext = (data.get("extensions") or {}).get("sgme_profile") or {}
+    slots = ext.get("personality_slots") or {}
+    lines: list[str] = []
+    for key in PROFILE_SLOT_ORDER:
+        val = str(slots.get(key) or "").strip()
+        if val:
+            lines.append(f"{key}：{val}")
+    if not lines:
+        return None, 0
+    try:
+        max_chars = int(pcfg.get("max_chars", 800))
+    except (TypeError, ValueError):
+        max_chars = 800
+    text = "【性格基线】\n" + "\n".join(lines)
+    if max_chars > 0 and len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "…"
+    return text, len(lines)
+
+
 def _book_entries_text(card: dict[str, Any]) -> str:
     """把 character_book 条目拼成提示词素材（无条目给占位说明）。"""
     book = (card.get("data") or {}).get("character_book") or {}
@@ -786,6 +822,16 @@ def assemble(
             res = inject_operation(mem_conn, cfg, mode=inject_mode)
             if res.ok:
                 profile_blocks = res.data.get("blocks", [])
+        # 2026-11-04（B283）：性格基线块（六槽位）——拼在 system_prompt 主文之后、
+        # 生活块之前（稳定前缀优先；同样走 system_prompt，八适配器零改动即可消费）。
+        profile_block, profile_slots_used = _profile_block_text(data, cfg)
+        if profile_block:
+            if render:
+                # 槽位里可能写了 {{user}}/{{char}}（用户自由输入）——render 时必须就地替换
+                profile_block = _render_macros(
+                    profile_block, str(data.get("name") or role_id), user_name
+                )
+            sys_prompt = f"{sys_prompt.rstrip()}\n\n{profile_block}"
         # 2026-11-02 任务 B：角色离线生活（可选块）。
         # 拼在 system_prompt **末尾**——位置即权重，且这样八个适配器零改动就能拿到
         # （写进独立字段的话，没人消费等于没做）。失败静默降级，绝不阻塞装配。
@@ -807,6 +853,9 @@ def assemble(
         "persona": persona,
         "profile_blocks": profile_blocks,
         "care_policy": care_policy,
+        # 2026-11-04（B283）：六槽位基线块（未启用/未写 → None；slots 计数供观测）
+        "profile_block": profile_block,
+        "profile_slots_used": profile_slots_used,
         # D-61（2026-11-04）：档位扁平暴露（缺省 silent），消费方按档位决定
         # 说话时机：silent=只记录 / session=聊天中带出 / push=关键信号才推。
         "care_level": roles_mod.get_care_level(card),

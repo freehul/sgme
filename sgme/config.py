@@ -350,6 +350,9 @@ ROLE_EVOLUTION_DIR = DATA_DIR / "role_evolution"
 DEFAULT_CARE_CONFIG = {
     "enabled": True,
     "persona_max_chars": 2000,   # persona 物化上限（TencentDB 方法论）
+    # 2026-11-04（B283）：角色基线层注入——只喂「性格六槽位」（设计 4.2：
+    # 呈现层，注入只用六槽位），预算内截断，空则不出块。
+    "profile_inject": {"enabled": True, "max_chars": 800},
 }
 
 # ---------- 2026-11-02 任务 B：角色离线生活（注入侧频率闸） ----------
