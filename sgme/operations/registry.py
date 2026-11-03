@@ -57,7 +57,8 @@ _VALID_VELOCITY = {"static", "dynamic"}
 DIMENSION_FIELD_KEYS = [
     "id", "display_name", "category", "time_velocity",
     "ttl_days", "description", "active", "created_at",
-    "boundaries",  # T-11：维度边界（vs 对照），随 DB 行暴露（表列序末尾）
+    "boundaries",  # T-11：维度边界（vs 对照），随 DB 行暴露
+    "priority",    # D-53（2026-11-04）：主维度选取优先级（表列序：boundaries 之后）
     "aliases",
 ]
 LIST_TOP_KEYS = ["total", "dimensions"]

@@ -33,10 +33,10 @@ def mem_conn(tmp_path):
 
 # ---------- schema v4 ----------
 
-def test_schema_version_is_4(mem_conn):
-    """SCHEMA_VERSION 升级到 4。"""
-    assert db_mod.SCHEMA_VERSION == 4
-    assert db_mod.schema_version(mem_conn) == 4
+def test_schema_version_is_current(mem_conn):
+    """SCHEMA_VERSION = 5（2.0 迁移阶段 1：生命周期五列 + 四表 + 维度优先级）。"""
+    assert db_mod.SCHEMA_VERSION == 5
+    assert db_mod.schema_version(mem_conn) == 5
 
 
 def test_refine_runs_table_exists(mem_conn):
@@ -87,7 +87,7 @@ def test_legacy_db_migration_adds_prompt_version(tmp_path):
         assert "prompt_version" in cols
         cols_arch = [r[1] for r in upgraded.execute("PRAGMA table_info(memory_archive)").fetchall()]
         assert "prompt_version" in cols_arch
-        assert db_mod.schema_version(upgraded) == 4
+        assert db_mod.schema_version(upgraded) == db_mod.SCHEMA_VERSION
         # 老数据行保留
         upgraded.execute(
             "INSERT INTO memories (memory_id, content, memory_type, priority, time_velocity, created_at, updated_at) "

@@ -54,8 +54,14 @@ def client(app):
     return TestClient(app)
 
 
-def test_ttl_disposition_empty_when_table_missing(client):
-    """审计表未创建 → 200 + 空 items + 零 total（不报错）。"""
+def test_ttl_disposition_empty_when_table_missing(client, app):
+    """审计表未创建 → 200 + 空 items + 零 total（不报错）。
+
+    2026-11-04：ttl_disposition 已进 MEMORY_DDL 正式建表（迁移阶段 1），
+    所以必须显式 DROP 才能重现「老库没这张表」的状态。
+    """
+    app.state.mem_conn.execute("DROP TABLE IF EXISTS ttl_disposition")
+    app.state.mem_conn.commit()
     r = client.get("/v1/admin/ops/ttl-disposition", headers=ADMIN_HEADERS)
     assert r.status_code == 200
     body = r.json()

@@ -469,6 +469,8 @@ class TestQACLIDryRun:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=str(PROJECT_ROOT),
             timeout=60,
         )
@@ -493,6 +495,8 @@ class TestQACLIDryRun:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=str(PROJECT_ROOT),
             timeout=60,
         )
@@ -525,6 +529,8 @@ class TestQACLIDryRun:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=str(PROJECT_ROOT),
             timeout=60,
         )
@@ -543,6 +549,8 @@ class TestQACLIDryRun:
             [sys.executable, "-m", "eval.run"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=str(PROJECT_ROOT),
             timeout=30,
         )

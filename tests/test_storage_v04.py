@@ -93,13 +93,13 @@ def test_memory_v04_indexes(mem_conn):
 
 # ---------- schema 版本升级到 4 ----------
 
-def test_schema_version_is_four(mem_conn):
-    """#33 + 中文分词 v0.3 升级后 schema_version = 4（v3 → v4：content_seg 列）。"""
-    assert db_mod.schema_version(mem_conn) == 4
+def test_schema_version_is_current(mem_conn):
+    """schema_version = 当前 SCHEMA_VERSION（2026-11-04 起 v5 = 2.0 迁移阶段 1）。"""
+    assert db_mod.schema_version(mem_conn) == db_mod.SCHEMA_VERSION == 5
 
 
-def test_schema_version_wiki_is_four(wiki_conn):
-    assert db_mod.schema_version(wiki_conn) == 4
+def test_schema_version_wiki_is_current(wiki_conn):
+    assert db_mod.schema_version(wiki_conn) == db_mod.SCHEMA_VERSION == 5
 
 
 # ---------- scenes CRUD ----------
@@ -563,9 +563,9 @@ def test_v2_migration_idempotent_on_existing_db(tmp_path):
         )
         versions = [r["version"] for r in cur.fetchall()]
         assert 1 in versions
-        assert 4 in versions
-        # 当前版本 = 4
-        assert db_mod.schema_version(conn2) == 4
+        assert db_mod.SCHEMA_VERSION in versions
+        # 当前版本 = SCHEMA_VERSION
+        assert db_mod.schema_version(conn2) == db_mod.SCHEMA_VERSION
     finally:
         conn2.close()
 
@@ -579,6 +579,6 @@ def test_v2_migration_scene_tables_idempotent(tmp_path):
         tables = set(db_mod.list_tables(c2))
         for t in ("scenes", "scene_memories", "scene_versions"):
             assert t in tables
-        assert db_mod.schema_version(c2) == 4
+        assert db_mod.schema_version(c2) == db_mod.SCHEMA_VERSION
     finally:
         c2.close()

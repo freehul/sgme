@@ -399,13 +399,13 @@ def test_manifest_missing_engine_render_works(prompts_root, monkeypatch):
     assert pv.version.startswith("working-")
 
 
-def test_fresh_init_schema_v4(tmp_path):
-    """全新库 init_databases → schema_version=4 + refine_runs 表 + prompt_version/content_seg 列。"""
+def test_fresh_init_schema_current(tmp_path):
+    """全新库 init_databases → schema_version=当前版本 + refine_runs 表 + prompt_version/content_seg 列。"""
     mem, session, wiki = db_mod.init_databases(tmp_path)
     try:
-        assert db_mod.schema_version(mem) == 4
-        assert db_mod.schema_version(session) == 4
-        assert db_mod.schema_version(wiki) == 4
+        assert db_mod.schema_version(mem) == db_mod.SCHEMA_VERSION
+        assert db_mod.schema_version(session) == db_mod.SCHEMA_VERSION
+        assert db_mod.schema_version(wiki) == db_mod.SCHEMA_VERSION
         tables = set(db_mod.list_tables(mem))
         assert "refine_runs" in tables
         cols = [r[1] for r in mem.execute("PRAGMA table_info(memories)").fetchall()]
@@ -423,7 +423,7 @@ def test_connect_memory_twice_idempotent(tmp_path):
     db_mod.close(c1)
     c2 = db_mod.connect_memory(tmp_path)
     try:
-        assert db_mod.schema_version(c2) == 4
+        assert db_mod.schema_version(c2) == db_mod.SCHEMA_VERSION
     finally:
         db_mod.close(c2)
 

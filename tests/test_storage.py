@@ -84,8 +84,8 @@ def test_session_indexes_created(session_conn):
 
 
 def test_schema_version_recorded(mem_conn):
-    """schema_versions 表登记了版本 4（中文检索分词 v0.3：content_seg 列）。"""
-    assert db_mod.schema_version(mem_conn) == 4
+    """schema_versions 登记当前版本（v5：2.0 迁移阶段 1 的生命周期五列/四表/优先级列）。"""
+    assert db_mod.schema_version(mem_conn) == db_mod.SCHEMA_VERSION == 5
 
 
 def test_init_databases_idempotent(tmp_path):
@@ -96,9 +96,9 @@ def test_init_databases_idempotent(tmp_path):
     w1.close()
     m2, s2, w2 = db_mod.init_databases(tmp_path)
     try:
-        assert db_mod.schema_version(m2) == 4
-        assert db_mod.schema_version(s2) == 4
-        assert db_mod.schema_version(w2) == 4
+        assert db_mod.schema_version(m2) == db_mod.SCHEMA_VERSION
+        assert db_mod.schema_version(s2) == db_mod.SCHEMA_VERSION
+        assert db_mod.schema_version(w2) == db_mod.SCHEMA_VERSION
     finally:
         m2.close()
         w2.close()
