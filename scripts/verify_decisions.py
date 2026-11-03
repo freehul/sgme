@@ -127,6 +127,7 @@ FILES = {
     "routes_memory": S / "server" / "routes_memory.py",
     "migration": S / "migration.py",
     "stage3": ROOT / "scripts" / "migrate_stage3_backfill.py",
+    "regression_inject": S / "regression_inject.py",
 }
 
 _cache: dict[str, str] = {}
@@ -495,6 +496,7 @@ def _(self):
         ("阶段 0 基线采集脚本", *has("migrate_baseline", "collect_memory")),
         ("十项校验脚本", *has("verify_migration", "def run")),
         ("校验报告目录", *exists("docs/migration")),
+        ("注入回归对照器（#9）", *has("regression_inject", "def compare_results")),
     ]
 
 
