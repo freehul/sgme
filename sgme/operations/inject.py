@@ -205,6 +205,35 @@ def _attach_anchor_block(
     return response
 
 
+def _attach_persona_block(
+    response: dict[str, Any], mem_conn: sqlite3.Connection, cfg: dict[str, Any]
+) -> dict[str, Any]:
+    """D-48（2026-11-04）：追加「性格参考」块（四条件闸门，失败不阻塞注入）。
+
+    此前该块只在 profile.inject.inject() 便捷函数里拼装，operations 主路径
+    （HTTP/MCP 共用）从未调用——等于生产注入看不到性格参考。本函数补上接线，
+    并强制走 persona_dao 的四条件闸门（多轮/跨天/多场景/来源可信）。
+    """
+    pcfg = cfg.get("persona") or {}
+    if not (pcfg.get("inject_block") or {}).get("enabled", True):
+        response.setdefault("stats", {})["persona_present"] = False
+        return response
+    try:
+        from sgme.profile.persona_block import build_persona_block
+
+        info = build_persona_block(mem_conn, gate=pcfg.get("gate"))
+    except Exception:  # noqa: BLE001 - 性格参考是附加块，失败绝不能拖垮注入
+        info = None
+    if not info:
+        response.setdefault("stats", {})["persona_present"] = False
+        return response
+    response.setdefault("blocks", []).append(info["block"])
+    stats = response.setdefault("stats", {})
+    stats["persona_present"] = True
+    stats["tokens_est"] = int(stats.get("tokens_est", 0)) + int(info.get("tokens", 0))
+    return response
+
+
 def inject(
     mem_conn: sqlite3.Connection,
     cfg: dict[str, Any],
@@ -292,6 +321,8 @@ def inject(
             response = _attach_last_mentions(response, mem_conn, cfg)
             # D-52 档 2/3：长期锚点块（独立预算，不与主块抢槽）
             response = _attach_anchor_block(response, mem_conn, cfg)
+            # D-48：性格参考块（四条件闸门）
+            response = _attach_persona_block(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（不参与空注入/回落 note 判断）
             response = _attach_coldstart_repair(response, history, already_repaired)
             return OperationResult.succeed(response)
@@ -349,6 +380,8 @@ def inject(
             response = _attach_last_mentions(response, mem_conn, cfg)
             # D-52 档 2/3：长期锚点块
             response = _attach_anchor_block(response, mem_conn, cfg)
+            # D-48：性格参考块（四条件闸门）
+            response = _attach_persona_block(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（同上）
             response = _attach_coldstart_repair(response, history, already_repaired)
             return OperationResult.succeed(response)

@@ -121,6 +121,9 @@ FILES = {
     "compat": S / "compat.py",
     "routes_capabilities": S / "server" / "routes_capabilities.py",
     "ui_roles_view": ROOT / "ui" / "src" / "views" / "care" / "RolesView.vue",
+    "persona_dao": S / "data" / "persona_dao.py",
+    "persona_block": S / "profile" / "persona_block.py",
+    "persona_extract": S / "engine" / "persona_extract.py",
 }
 
 _cache: dict[str, str] = {}
@@ -361,14 +364,21 @@ def _(self):
     ]
 
 
-@check("D-48", "人格沉淀四条件闸门（多轮/跨天/多场景/来源可信）", "planned")
+@check("D-48", "人格沉淀四条件闸门（多轮/跨天/多场景/来源可信）", "done")
 def _(self):
-    # 文档 §八第 6 条把「D-48 四条件闸门在 scene_key 上的实际通过率」列入测试验证队列，
-    # 但代码里只有 1.x 的 persona_block（confidence>=0.45 且 evidence>=3，ST-35），
-    # 四条件（多轮>=3 会话 / 跨天>=2 / COUNT(DISTINCT scene_key)>=2 / 来源可信）无实现 → 待施工。
+    # 2026-11-04 落地：persona_dao.four_condition_report（会话/跨天/多场景/来源可信
+    # 四项计数与失败原因）+ 结构化证据（persona_extract 写 memory_id/file_id/
+    # occurred_at/scene_key/derivation/modality）+ persona_block 注入前强制过闸门 +
+    # operations 注入主路径真接线 + 阈值可配（persona.gate）。
     return [
-        ("四条件闸门（scene_key 消费侧）", *has("profile_inject", "scene_key")),
-        ("多轮/跨天/多场景判据", *has("profile_inject", "多场景", "跨天")),
+        ("四条件判定", *has("persona_dao", "def four_condition_report")),
+        ("场景键消费（排除 unknown）", *has("persona_dao", "scene_key")),
+        ("跨天判定", *has("persona_dao", "occurred_at")),
+        ("来源可信/已发生过滤", *has("persona_dao", "CREDIBLE_DERIVATIONS")),
+        ("结构化证据写入", *has("persona_extract", "scene_key")),
+        ("注入前过闸门", *has("persona_block", "passes_four_conditions")),
+        ("operations 主路径接线", *has("inject_ops", "_attach_persona_block")),
+        ("阈值可配", *has("config", "DEFAULT_PERSONA_CONFIG")),
     ]
 
 

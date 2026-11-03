@@ -152,6 +152,17 @@ compat:
   window_days: 90
   enforce: false           # 409：旧客户端打语义已变写端点时拒绝
   enforce_gone: false      # 410：场景层下线端点（9.6 之后开）
+persona:
+  # D-48（2026-11-04）：人格沉淀四条件闸门——多轮>=3 会话 / 跨天>=2 / 多场景>=2 /
+  # 来源可信且已发生。阈值可配（D-8）；inject_block 控制「性格参考」块是否注入。
+  enabled: true
+  gate:
+    enabled: true
+    min_sessions: 3
+    min_days: 2
+    min_scenes: 2
+  inject_block:
+    enabled: true
 care:
   enabled: true
   persona_max_chars: 2000

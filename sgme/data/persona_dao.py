@@ -64,6 +64,89 @@ def _row_to_trait(row: sqlite3.Row) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# D-48 人格沉淀四条件闸门（2026-11-04）
+#
+# 同一特质进人格证据链须同时满足：
+#   ① 多轮 ≥3 会话（按 file_id 去重）
+#   ② 跨天 ≥2（按 occurred_at 的日期去重）
+#   ③ 多场景 ≥2（COUNT(DISTINCT scene_key)，排除 unknown/NULL）
+#   ④ 来源可信 + 已发生（derivation ∈ fact/reconstructed 且 modality == done）
+#
+# 「来源可信/已发生」只对**通过前三条的可用证据**计数：不可信条目（推测/玩笑/
+# 转述/计划）直接剔除，不让它们污染会话/天数/场景数。legacy 字符串证据
+# （1.x 的 "refine:<file_id>"）没有日期与场景字段，**无法证明** ②③ →
+# 一律不通过（与 §9.3 同口径：存量证据需新记忆补证）。
+# ---------------------------------------------------------------------------
+
+GATE_MIN_SESSIONS = 3
+GATE_MIN_DAYS = 2
+GATE_MIN_SCENES = 2
+CREDIBLE_DERIVATIONS = ("fact", "reconstructed")
+REQUIRED_MODALITY = "done"
+
+
+def structured_evidence(trait: dict[str, Any]) -> list[dict[str, Any]]:
+    """取结构化证据条目（dict）；1.x 字符串证据不参与四条件判定。"""
+    refs = trait.get("evidence_refs") or []
+    return [r for r in refs if isinstance(r, dict)]
+
+
+def four_condition_report(
+    trait: dict[str, Any],
+    *,
+    min_sessions: int = GATE_MIN_SESSIONS,
+    min_days: int = GATE_MIN_DAYS,
+    min_scenes: int = GATE_MIN_SCENES,
+) -> dict[str, Any]:
+    """四条件判定报告（只读；包含未通过原因与各项计数，供运维与测试）。"""
+    evidence = structured_evidence(trait)
+    credible = [
+        e
+        for e in evidence
+        if str(e.get("derivation") or "") in CREDIBLE_DERIVATIONS
+        and str(e.get("modality") or "") == REQUIRED_MODALITY
+    ]
+    sessions = {
+        str(e.get("file_id") or e.get("session_id") or "").strip()
+        for e in credible
+    }
+    sessions.discard("")
+    days: set[str] = set()
+    for e in credible:
+        ts = str(e.get("occurred_at") or e.get("recorded_at") or "")
+        if len(ts) >= 10:
+            days.add(ts[:10])
+    scenes = {
+        str(e.get("scene_key")).strip()
+        for e in credible
+        if e.get("scene_key") and str(e.get("scene_key")).strip() != "unknown"
+    }
+    reasons: list[str] = []
+    if len(sessions) < min_sessions:
+        reasons.append(f"会话 {len(sessions)}<{min_sessions}")
+    if len(days) < min_days:
+        reasons.append(f"跨天 {len(days)}<{min_days}")
+    if len(scenes) < min_scenes:
+        reasons.append(f"多场景 {len(scenes)}<{min_scenes}")
+    if not credible:
+        reasons.append("无可信已发生证据")
+    return {
+        "passed": not reasons,
+        "evidence": len(evidence),
+        "credible": len(credible),
+        "sessions": len(sessions),
+        "days": len(days),
+        "scenes": len(scenes),
+        "reasons": reasons,
+    }
+
+
+def passes_four_conditions(trait: dict[str, Any], **thresholds: int) -> bool:
+    """四条件闸门入口：True = 该特质可进人格证据链/注入块。"""
+    return bool(four_condition_report(trait, **thresholds)["passed"])
+
+
+# ---------------------------------------------------------------------------
 # persona_traits
 # ---------------------------------------------------------------------------
 
@@ -73,7 +156,7 @@ def upsert_trait(
     dimension: str,
     value: str,
     *,
-    evidence_ref: str | None = None,
+    evidence_ref: str | dict | None = None,
     scene_context: str = "general",
     source: str = "rule",
     confidence_step: float = 0.15,
@@ -125,6 +208,13 @@ def upsert_trait(
         return _row_to_trait(out)
     # 累积路径：计数 +1、置信度增长、证据追加
     refs = json.loads(row["evidence_refs"] or "[]")
+    if isinstance(evidence_ref, dict):
+        # D-48 结构化证据去重：同一 memory_id 反复提炼不重复计证（同一事实不算新证据）
+        mid = str(evidence_ref.get("memory_id") or "")
+        if mid and any(
+            isinstance(r, dict) and str(r.get("memory_id") or "") == mid for r in refs
+        ):
+            return _row_to_trait(row)
     if evidence_ref:
         refs.append(evidence_ref)
     new_conf = min(round(row["confidence"] + confidence_step, 4), 1.0)

@@ -1,6 +1,13 @@
-"""ST-35 T-101：性格参考块注入测试。"""
+"""ST-35 T-101：性格参考块注入测试。
+
+2026-11-04（D-48）起：注入默认走四条件闸门，种子证据必须是结构化证据
+（会话/日期/场景/来源/模态）；本文件按新契约补结构化证据，闸门本身在
+tests/test_persona_gate.py 单独覆盖。
+"""
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -16,12 +23,25 @@ def mem_conn(tmp_path):
     conn.close()
 
 
+def _gate_refs() -> list[dict]:
+    """D-48 通过闸门所需的最小结构化证据集（3 会话 / 2 天 / 2 场景 / 可信已发生）。"""
+    return [
+        {"memory_id": "m1", "file_id": "f1", "occurred_at": "2026-10-01T10:00:00Z",
+         "scene_key": "identity:coding", "derivation": "fact", "modality": "done"},
+        {"memory_id": "m2", "file_id": "f2", "occurred_at": "2026-10-02T10:00:00Z",
+         "scene_key": "family:desktop", "derivation": "fact", "modality": "done"},
+        {"memory_id": "m3", "file_id": "f3", "occurred_at": "2026-10-01T11:00:00Z",
+         "scene_key": "identity:coding", "derivation": "reconstructed", "modality": "done"},
+    ]
+
+
 def _seed(conn, dim, value, confidence, evidence):
     t = persona_dao.upsert_trait(conn, dim, value, evidence_ref="m0")
-    # 直接补足证据数与置信度（绕过逐条累积）
+    # 补结构化证据（过 D-48 闸门）+ 直接补足证据数与置信度（绕过逐条累积）
     conn.execute(
-        "UPDATE persona_traits SET confidence=?, evidence_count=? WHERE trait_id=?",
-        (confidence, evidence, t["trait_id"]),
+        "UPDATE persona_traits SET evidence_refs=?, confidence=?, evidence_count=? "
+        "WHERE trait_id=?",
+        (json.dumps(_gate_refs(), ensure_ascii=False), confidence, evidence, t["trait_id"]),
     )
     conn.commit()
     return t["trait_id"]

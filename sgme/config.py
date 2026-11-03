@@ -662,6 +662,53 @@ DEFAULT_TTL_CONFIG = {
 
 # D-53（2026-11-04）：scene_key 的「来源类」映射（D-8 可配）。
 # 八适配器里 coding 占 5/8 是有意收窄：来源类只作「证据多样性」骨架，题材差异由主维度承担。
+# D-48（2026-11-04）：人格沉淀四条件闸门与性格参考块注入。
+# 四条件 = 多轮≥3 会话 / 跨天≥2 / 多场景≥2 / 来源可信且已发生；阈值可配（D-8）。
+DEFAULT_PERSONA_CONFIG = {
+    "enabled": True,
+    "gate": {
+        "enabled": True,
+        "min_sessions": 3,
+        "min_days": 2,
+        "min_scenes": 2,
+    },
+    "inject_block": {"enabled": True},
+}
+
+
+def _merge_persona_config(user_cfg: dict | None) -> dict:
+    """合并 persona 段（enabled / gate / inject_block / rules）。"""
+    base = {
+        "enabled": True,
+        "gate": dict(DEFAULT_PERSONA_CONFIG["gate"]),
+        "inject_block": dict(DEFAULT_PERSONA_CONFIG["inject_block"]),
+    }
+    if not isinstance(user_cfg, dict):
+        return base
+    if isinstance(user_cfg.get("enabled"), bool):
+        base["enabled"] = user_cfg["enabled"]
+    if isinstance(user_cfg.get("rules"), list):
+        base["rules"] = user_cfg["rules"]
+    gate = user_cfg.get("gate")
+    if isinstance(gate, dict):
+        if isinstance(gate.get("enabled"), bool):
+            base["gate"]["enabled"] = gate["enabled"]
+        for k in ("min_sessions", "min_days", "min_scenes"):
+            v = gate.get(k)
+            if v is None:
+                continue
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv >= 1:
+                base["gate"][k] = iv
+    ib = user_cfg.get("inject_block")
+    if isinstance(ib, dict) and isinstance(ib.get("enabled"), bool):
+        base["inject_block"]["enabled"] = ib["enabled"]
+    return base
+
+
 # D-58 / D-64（2026-11-04）：兼容期契约（capabilities + 409/410 处置）。
 # 默认**不强制**：现役八适配器尚未全部声明 2.0 版本头；enforce 是部署期显式决策。
 DEFAULT_COMPAT_CONFIG = {
@@ -1608,6 +1655,9 @@ def load_config(
         "scene": _merge_scene_config(sgme_cfg.get("scene")),
         # D-58/D-64（2026-11-04）：兼容期契约（capabilities + 409/410）
         "compat": _merge_compat_config(sgme_cfg.get("compat")),
+        # D-48（2026-11-04）：人格沉淀四条件闸门（此前该段未进 load_config，
+        # 特质抽取一直用内置缺省；本次正式纳入配置面）
+        "persona": _merge_persona_config(sgme_cfg.get("persona")),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
         "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
         # 2026-11-02 任务 B：角色离线生活注入闸（assemble 读 cfg["role_life"]）

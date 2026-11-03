@@ -63,9 +63,13 @@ def extract_rules_config(cfg: dict) -> list[dict]:
 
 def _match_memories(
     memories: list[dict], rules: list[dict]
-) -> dict[str, dict[str, int]]:
-    """规则匹配：{dimension: {value: 命中次数}}。"""
-    hits: dict[str, dict[str, int]] = {}
+) -> dict[str, dict[str, list[dict]]]:
+    """规则匹配：{dimension: {value: [命中的记忆, ...]}}（每值最多 N 条）。
+
+    D-48（2026-11-04）：返回**记忆对象**而不是计数——四条件闸门需要每条证据的
+    会话/日期/场景/来源字段，计数无法支撑判定。同一记忆对同一值只记一次。
+    """
+    hits: dict[str, dict[str, list[dict]]] = {}
     for m in memories:
         content = m.get("content") or ""
         if not content:
@@ -78,11 +82,33 @@ def _match_memories(
                 val = v.get("value")
                 kws = v.get("keywords") or []
                 if any(kw in content for kw in kws):
-                    bucket = hits.setdefault(dim, {})
-                    # 单记忆单值只记一次（同一事实反复提及不算多证据）
-                    if bucket.get(val, 0) < MAX_EVIDENCE_PER_DIM_PER_RUN:
-                        bucket[val] = bucket.get(val, 0) + 1
+                    bucket = hits.setdefault(dim, {}).setdefault(val, [])
+                    if len(bucket) < MAX_EVIDENCE_PER_DIM_PER_RUN:
+                        bucket.append(m)
     return hits
+
+
+def _evidence_for(mem: dict, mem_conn, file_id: str) -> dict:
+    """构造结构化证据条目（D-48）：从落库行取权威字段，缺失回落 L2 字段。"""
+    mid = str(mem.get("memory_id") or "")
+    row = None
+    if mid:
+        row = mem_conn.execute(
+            "SELECT occurred_at, updated_at, scene_key, derivation, modality "
+            "FROM memories WHERE memory_id=?", (mid,)
+        ).fetchone()
+    occurred = (row["occurred_at"] if row else None) or mem.get("occurred_at") or mem.get("updated_at")
+    scene = (row["scene_key"] if row else None) or mem.get("scene_key") or ""
+    derivation = (row["derivation"] if row else None) or mem.get("derivation") or ""
+    modality = (row["modality"] if row else None) or mem.get("modality") or ""
+    return {
+        "memory_id": mid,
+        "file_id": str(file_id or ""),
+        "occurred_at": occurred or "",
+        "scene_key": str(scene or ""),
+        "derivation": str(derivation or ""),
+        "modality": str(modality or ""),
+    }
 
 
 def extract_and_store(
@@ -113,12 +139,12 @@ def extract_and_store(
     try:
         for dim, values in hits.items():
             stats["traits_touched"] += 1
-            for val, count in values.items():
-                for _ in range(count):
-                    # 溯源：file_id 级别即可（同批多记忆命中同一值合并为一条证据链节点）
+            for val, hit_memories in values.items():
+                for mem in hit_memories:
+                    # D-48：结构化证据（会话/日期/场景/来源/模态）——四条件闸门的输入
                     persona_dao.upsert_trait(
                         mem_conn, dim, val,
-                        evidence_ref=f"refine:{file_id}",
+                        evidence_ref=_evidence_for(mem, mem_conn, file_id),
                         scene_context="general",
                         source="rule",
                     )

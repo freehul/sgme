@@ -26,6 +26,7 @@ def build_persona_block(
     scene_context: str | None = None,
     min_confidence: float = MIN_CONFIDENCE,
     min_evidence: int = MIN_EVIDENCE,
+    gate: dict | None = None,
 ) -> dict[str, Any] | None:
     """构建性格参考 block。
 
@@ -44,6 +45,19 @@ def build_persona_block(
     )
     # 证据数门槛在 confidence 过滤后二次过滤（list_traits 只支持置信度参数）
     traits = [t for t in traits if t["evidence_count"] >= min_evidence]
+    # D-48（2026-11-04）：四条件闸门——多轮≥3 会话 / 跨天≥2 / 多场景≥2 / 来源可信且已发生。
+    # 计数代理（evidence_count）不再单独构成人格证据；未通过四条件的特质不注入。
+    gate_cfg = gate or {}
+    if gate_cfg.get("enabled", True):
+        traits = [
+            t for t in traits
+            if persona_dao.passes_four_conditions(
+                t,
+                min_sessions=int(gate_cfg.get("min_sessions", 3)),
+                min_days=int(gate_cfg.get("min_days", 2)),
+                min_scenes=int(gate_cfg.get("min_scenes", 2)),
+            )
+        ]
     # 跨维度去重：每维度只取置信度最高的一条
     by_dim: dict[str, dict] = {}
     for t in traits:
