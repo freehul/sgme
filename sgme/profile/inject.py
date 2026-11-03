@@ -82,6 +82,10 @@ def query_section(
         exclude_memory_types=("forget_request",),
         # 2.0 D-66：他人事实不进本人画像（存量 NULL/unknown 按本人对待）
         subject_filter=("self",),
+        # 2.0 D-52/3.6（2026-11-04）：注入可见性谓词 + 锚点档剥离 + 失效断言退出
+        lifecycle_active=True,
+        exclude_anchor=True,
+        exclude_valid_expired=True,
     )
     # 记录注入统计（best-effort：失败不打断注入主流程）
     # T-203 G1：priority_min 已下推 SQL，此处 results 即最终注入集，统计不再虚高
@@ -178,6 +182,66 @@ def build_inject_blocks(
     }
 
 
+# ---------- 锚点块（D-52 档 2/3）----------
+
+
+ANCHOR_TITLE = "长期记忆（锚点块）"
+
+
+def build_anchor_block(mem_conn: sqlite3.Connection, anchor_cfg: dict | None = None) -> dict | None:
+    """构建长期锚点块（inject_tier='anchor' 的记忆不进主块，只进这里）。
+
+    设计 §3.3.1：预算 = 注入总预算 15%（默认 2000 token 下约 300 token ≈ 3–5 条摘要），
+    M 降序 → last_recalled_at 降序 → 超预算截断，并**显式标注未展开条数**
+    （D-47 同款：不许静默省略）。返回 None = 无锚点记忆或开关关闭。
+    """
+    cfg = anchor_cfg or {}
+    if not bool(cfg.get("enabled", True)):
+        return None
+    max_items = int(cfg.get("max_items", 5) or 5)
+    where = (
+        "m.status='active' AND m.inject_tier='anchor' "
+        "AND (m.lifecycle IS NULL OR m.lifecycle='active') "
+        "AND COALESCE(m.needs_review, 0)=0 AND COALESCE(m.route, 'memory')='memory' "
+        "AND (m.subject IS NULL OR m.subject='unknown' OR lower(m.subject)='self')"
+    )
+    rows = mem_conn.execute(
+        f"""
+        SELECT m.memory_id, m.content, m.meaning_anchor, s.last_recalled_at
+        FROM memories m
+        LEFT JOIN memory_stats s ON s.memory_id = m.memory_id
+        WHERE {where}
+        ORDER BY COALESCE(m.meaning_anchor, 0) DESC,
+                 COALESCE(s.last_recalled_at, '') DESC
+        LIMIT ?
+        """,
+        (max_items,),
+    ).fetchall()
+    if not rows:
+        return None
+    total = int(
+        mem_conn.execute(f"SELECT COUNT(*) FROM memories m WHERE {where}").fetchone()[0]
+    )
+    items: list[dict] = []
+    for r in rows:
+        content = str(r["content"] or "")
+        summary = content if len(content) <= 80 else content[:80] + "…"
+        item: dict = {"content": summary, "memory_id": r["memory_id"]}
+        if r["meaning_anchor"] is not None:
+            item["meaning_anchor"] = round(float(r["meaning_anchor"]), 3)
+        items.append(item)
+    block: dict = {
+        "title": ANCHOR_TITLE,
+        "kind": "anchor",
+        "items": items,
+        "present": True,
+    }
+    if total > len(items):
+        # D-47 同款诚实标注：截断必须可见
+        block["note"] = f"另有 {total - len(items)} 条长期记忆未展开，可按需检索"
+    return block
+
+
 # ---------- 完整注入 ----------
 
 def inject(
@@ -207,4 +271,23 @@ def inject(
             result["stats"]["persona_present"] = False
     except Exception:
         result["stats"]["persona_present"] = False
+    # D-52 档 2/3：锚点块（独立预算；失败不阻塞注入）
+    try:
+        from sgme.config import DEFAULT_INJECT_CONFIG
+
+        anchor_cfg = dict(DEFAULT_INJECT_CONFIG.get("anchor") or {})
+    except Exception:
+        anchor_cfg = {"enabled": True, "max_items": 5}
+    try:
+        anchor_block = build_anchor_block(mem_conn, anchor_cfg)
+        if anchor_block is not None:
+            result["blocks"].append(anchor_block)
+            result["stats"]["anchor_present"] = True
+            result["stats"]["anchor_items"] = len(anchor_block["items"])
+            if anchor_block.get("note"):
+                result["stats"]["anchor_note"] = anchor_block["note"]
+        else:
+            result["stats"]["anchor_present"] = False
+    except Exception:
+        result["stats"]["anchor_present"] = False
     return result

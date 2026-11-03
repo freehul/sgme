@@ -123,6 +123,19 @@ dream:
   ttl_mark: true
   archive_days: 90
   report_dir: data/reports/
+ttl:
+  # D-52 / D-50（2026-11-04）：TTL 到期五档处置与意义锚。
+  # 阈值用分位而非绝对分（9.11.4：等权 M 的 p10–max 仅 0.268–0.865）。
+  disposition:
+    enabled: true             # 关 = 回退 1.x 到期写 status=expired
+    renew_max: 2              # 续期上限（累计 <=3 个 TTL 周期）
+    tier_high_ratio: 0.67     # M 分位 >= 该值 -> 续期（未达上限）/ 锚点块
+    tier_low_ratio: 0.33      # M 分位 < 该值 -> 休眠（30 天后转归档）
+    sleep_days: 30
+    legacy_renew_periods: 1   # 旧到期日超出近 1 个 TTL 周期的存量跳过续期档
+  meaning_anchor:
+    enabled: true             # 梦境任务先回填 meaning_anchor
+    refresh_days: 1
 care:
   enabled: true
   persona_max_chars: 2000

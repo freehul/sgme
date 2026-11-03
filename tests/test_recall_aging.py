@@ -177,7 +177,8 @@ def test_ensure_ttl_disposition_table_creates_schema(mem_conn):
     ).fetchone()
     assert row is not None
     cols = {r[1] for r in mem_conn.execute("PRAGMA table_info(ttl_disposition)")}
-    assert cols == {"id", "memory_id", "disposition", "m_score", "renew_count",
+    # 2026-11-04：D-73 加固来源列 reason 随迁移阶段 1 进正式表
+    assert cols == {"id", "memory_id", "disposition", "reason", "m_score", "renew_count",
                     "old_expire_at", "new_expire_at", "created_at"}
 
 

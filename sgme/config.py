@@ -366,6 +366,13 @@ DEFAULT_INJECT_CONFIG = {
         "days": 7,         # 候选窗口：最近 7 天 updated_at
         "char_budget": 70, # 预算 60-100 token/轮 ≈ 40-70 汉字，超预算截断到 1 条
     },
+    # D-52 档 2/3：长期锚点块（inject_tier='anchor' 的记忆不进主块，只进锚点块）。
+    # 预算口径 = 注入总预算 × budget_ratio（设计 15%），条数上限 max_items 兜底。
+    "anchor": {
+        "enabled": True,
+        "max_items": 5,
+        "budget_ratio": 0.15,
+    },
 }
 
 
@@ -389,6 +396,27 @@ def _merge_inject_config(user_cfg: dict | None) -> dict:
                     continue
                 if iv > 0:
                     base["last_mentions"][k] = iv
+    an = user_cfg.get("anchor")
+    if isinstance(an, dict):
+        for k, v in an.items():
+            if k not in base["anchor"] or v is None:
+                continue
+            if k == "enabled":
+                base["anchor"][k] = bool(v)
+            elif k == "max_items":
+                try:
+                    iv = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if iv > 0:
+                    base["anchor"][k] = iv
+            elif k == "budget_ratio":
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 < fv <= 1.0:
+                    base["anchor"][k] = fv
     return base
 
 
@@ -611,6 +639,56 @@ DEFAULT_DREAM_CONFIG = {
     "report_dir": "data/reports/",
     "purge_expired": False,  # T-205 v0.4②：expired 出池归档（默认关，灰度）
 }
+
+
+# D-52 / D-50（2026-11-04）：TTL 到期五档处置与意义锚 M 的运行参数。
+# 分档阈值用**分位**而非绝对分：9.11.4 实测等权 M 的 p10–max 仅 0.268–0.865，
+# 旧绝对阈值 0.80 / 0.50 会把 86% 打成一档（三档严重不均衡）。
+DEFAULT_TTL_CONFIG = {
+    "disposition": {
+        "enabled": True,          # 五档处置（关 = 回退 1.x 「到期写 status=expired」）
+        "renew_max": 2,           # 续期上限（累计 ≤3 个 TTL 周期）
+        "tier_high_ratio": 0.67,  # 高档分位（M 分位 ≥ 该值 → 续期/锚点）
+        "tier_low_ratio": 0.33,   # 低档分位（M 分位 < 该值 → 休眠）
+        "sleep_days": 30,         # 休眠 30 天后转 archived
+        "legacy_renew_periods": 1,  # 旧到期日超出「近 1 个 TTL 周期」的存量跳过续期档（防续期跑步机）
+    },
+    "meaning_anchor": {
+        "enabled": True,          # 梦境任务先回填 meaning_anchor（D-50）
+        "refresh_days": 1,        # 至少每 N 天重算一次（NULL 行随时补）
+    },
+}
+
+
+def _merge_ttl_config(user_cfg: dict | None) -> dict:
+    """合并 ttl 段默认值与用户配置（只认已知键，未知键不落到运行期）。"""
+    base = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_TTL_CONFIG.items()}
+    if not isinstance(user_cfg, dict):
+        return base
+    for section in ("disposition", "meaning_anchor"):
+        usr = user_cfg.get(section)
+        if not isinstance(usr, dict):
+            continue
+        for k, v in usr.items():
+            if k not in base[section] or v is None:
+                continue
+            if k == "enabled":
+                base[section][k] = bool(v)
+            elif k in ("renew_max", "sleep_days", "legacy_renew_periods", "refresh_days"):
+                try:
+                    iv = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if iv >= 0:
+                    base[section][k] = iv
+            else:  # 分位比例
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 < fv < 1.0:
+                    base[section][k] = fv
+    return base
 
 
 def _read_yaml(path: Path) -> Any:
@@ -1458,6 +1536,8 @@ def load_config(
         "agent_scope": _merge_agent_scope_config(sgme_cfg.get("agent_scope")),
         "server": sgme_cfg.get("server", dict(DEFAULT_SERVER_CONFIG)),
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
+        # D-52/D-50（2026-11-04）：TTL 五档与意义锚参数（梦境与注入两侧读）
+        "ttl": _merge_ttl_config(sgme_cfg.get("ttl")),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
         "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
         # 2026-11-02 任务 B：角色离线生活注入闸（assemble 读 cfg["role_life"]）

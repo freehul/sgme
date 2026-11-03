@@ -182,6 +182,29 @@ def _attach_last_mentions(
     return response
 
 
+def _attach_anchor_block(
+    response: dict[str, Any], mem_conn: sqlite3.Connection, cfg: dict[str, Any]
+) -> dict[str, Any]:
+    """D-52 档 2/3：追加长期锚点块（inject_tier='anchor'，独立预算，失败不阻塞）。"""
+    anchor_cfg = (cfg.get("inject") or {}).get("anchor") or {}
+    try:
+        from sgme.profile.inject import build_anchor_block
+
+        block = build_anchor_block(mem_conn, anchor_cfg)
+    except Exception:  # noqa: BLE001 - 锚点块是兜底可见性，失败绝不能拖垮注入
+        block = None
+    if block is None:
+        response.setdefault("stats", {})["anchor_present"] = False
+        return response
+    response.setdefault("blocks", []).append(block)
+    stats = response.setdefault("stats", {})
+    stats["anchor_present"] = True
+    stats["anchor_items"] = len(block.get("items") or [])
+    if block.get("note"):
+        stats["anchor_note"] = block["note"]
+    return response
+
+
 def inject(
     mem_conn: sqlite3.Connection,
     cfg: dict[str, Any],
@@ -267,6 +290,8 @@ def inject(
                 response = _attach_fallback_note(response, fallback_mode)
             # D-70：记忆回指块（画像块末尾；默认 off）
             response = _attach_last_mentions(response, mem_conn, cfg)
+            # D-52 档 2/3：长期锚点块（独立预算，不与主块抢槽）
+            response = _attach_anchor_block(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（不参与空注入/回落 note 判断）
             response = _attach_coldstart_repair(response, history, already_repaired)
             return OperationResult.succeed(response)
@@ -322,6 +347,8 @@ def inject(
             response = _attach_key_missing_note(_attach_empty_note(response), cfg)
             # D-70：记忆回指块（默认 off）
             response = _attach_last_mentions(response, mem_conn, cfg)
+            # D-52 档 2/3：长期锚点块
+            response = _attach_anchor_block(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（同上）
             response = _attach_coldstart_repair(response, history, already_repaired)
             return OperationResult.succeed(response)

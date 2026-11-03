@@ -109,6 +109,9 @@ FILES = {
     "adapter_parity": ROOT / "scripts" / "adapter_parity.py",
     "parity_map": ROOT / "scripts" / "adapter_parity_map.yaml",
     "migrate_baseline": ROOT / "scripts" / "migrate_2_0_baseline.py",
+    "backfill_anchor": ROOT / "scripts" / "backfill_meaning_anchor.py",
+    "meaning_anchor_mod": S / "engine" / "meaning_anchor.py",
+    "ttl_disp": S / "engine" / "ttl_disposition.py",
 }
 
 _cache: dict[str, str] = {}
@@ -360,28 +363,36 @@ def _(self):
     ]
 
 
-@check("D-50", "意义锚 M（四主料 + 三加分项，先等权跑分布）", "planned")
+@check("D-50", "意义锚 M（四主料 + 三加分项，先等权跑分布）", "partial")
 def _(self):
+    # 2026-11-04：按 9.11.5「方案 B」落地 v2 公式（维度先验方向修正 + 零成本内容信号 +
+    # 分位阈值）。未落地 = 权重表仍需人工抽 20 条回归后定稿（9.11.5：等权版区分力不成立）。
     return [
         ("meaning_anchor 列", *has("db", "meaning_anchor")),
-        ("M 计算实现", *has("dream", "meaning_anchor")),
+        ("M 计算实现（compute_m）", *has("meaning_anchor_mod", "def compute_m")),
+        ("内容侧零成本信号", *has("meaning_anchor_mod", "def content_signal")),
+        ("分位阈值 tier_thresholds", *has("meaning_anchor_mod", "def tier_thresholds")),
+        ("回填脚本", *has("backfill_anchor", "def main")),
     ]
 
 
-@check("D-52", "TTL 到期 0-4 五档处置", "planned")
+@check("D-52", "TTL 到期 0-4 五档处置", "done")
 def _(self):
-    # 2026-11-04：五列已随迁移阶段 1 建出（结构面就位），但五档**判定逻辑**仍未实现
-    # ——梦境仍走 1.x「到期 → status='expired'」，没有 M 计算、没有续期/锚点块分支。
-    # 故状态保持 planned：结构断言全过 + 逻辑断言未过 = 待施工（与文档一致）。
+    # 2026-11-04 落地：engine/ttl_disposition.py（闸门 A/B + 0–4 档 + 休眠转归档），
+    # 阈值按分位（9.11.4/9.11.5），到期不再写 status='expired'；
+    # 注入侧 inject_tier 分档 + 锚点块（profile/inject.build_anchor_block）。
     return [
         ("lifecycle 列", *has("db", "lifecycle")),
         ("ttl_renew_count 列", *has("db", "ttl_renew_count")),
         ("ttl_renewed_at 列", *has("db", "ttl_renewed_at")),
         ("inject_tier 列", *has("db", "inject_tier")),
         ("meaning_anchor 列", *has("db", "meaning_anchor")),
-        # 五档判定链（未落地）：梦境按 meaning_anchor 分档 + 注入侧读 inject_tier
-        ("梦境五档判定（M 分档 / 续期）", *has("dream", "meaning_anchor")),
+        ("五档处置引擎", *has("ttl_disp", "def dispose")),
+        ("闸门 A 失效断言", *has("ttl_disp", "valid_expired")),
+        ("休眠转归档", *has("ttl_disp", "def archive_sleeping")),
+        ("梦境接线（先回填 M 再处置）", *has("dream", "ttl_disposition.dispose")),
         ("注入侧按 inject_tier 分档", *has("profile_inject", "inject_tier")),
+        ("锚点块构建", *has("profile_inject", "def build_anchor_block")),
     ]
 
 

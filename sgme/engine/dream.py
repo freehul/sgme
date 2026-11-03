@@ -545,7 +545,29 @@ def _run_dream_locked(
     signal_purged_count = 0
     if ttl_mark:
         try:
-            expired_count = _mark_expired_ttl(mem_conn)
+            ttl_cfg = cfg.get("ttl") or {}
+            disp_cfg = ttl_cfg.get("disposition") or {}
+            if bool(disp_cfg.get("enabled", True)):
+                # D-52/D-50（2026-11-04）：先回填意义锚（只补 NULL，幂等），再五档处置，
+                # 最后把休眠满 sleep_days 的记忆转 archived。到期不再写 status='expired'。
+                from sgme.engine import meaning_anchor, ttl_disposition
+
+                if bool((ttl_cfg.get("meaning_anchor") or {}).get("enabled", True)):
+                    anchor_stats = meaning_anchor.recompute(mem_conn, only_null=True)
+                    logger.info("Dream 意义锚回填: %s 条", anchor_stats.get("count"))
+                disp_stats = ttl_disposition.dispose(mem_conn, cfg)
+                archived_extra = ttl_disposition.archive_sleeping(
+                    mem_conn, int(disp_cfg.get("sleep_days", 30) or 30)
+                )
+                # 兼容旧报告口径：expired_count 记「本轮退出注入」的条数（休眠 + 失效断言）
+                expired_count = int(disp_stats.get("sleeping", 0)) + int(
+                    disp_stats.get("valid_expired", 0)
+                )
+                logger.info(
+                    "Dream TTL 五档: %s（休眠转归档 %s 条）", disp_stats, archived_extra
+                )
+            else:
+                expired_count = _mark_expired_ttl(mem_conn)
         except Exception as e:
             logger.exception("Dream TTL 主动标记失败（该阶段中止）: %s", e)
             stage_errors.append(f"TTL 主动标记失败: {e}")

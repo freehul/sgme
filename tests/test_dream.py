@@ -333,12 +333,17 @@ def test_run_dream_same_day_upsert(conns, cfg):
 # ---------- 4. 生命周期：TTL 主动标记 + 冷归档 ----------
 
 def test_run_dream_ttl_mark(conns, cfg):
-    """验收 4a：超 TTL 的 active 动态维度记忆 → expired（rejected_at/reject_reason）。"""
+    """验收 4a（2.0 D-52 口径）：超 TTL 的 active 动态维度记忆走五档处置。
+
+    与 1.x 的关键差异：**不再写 status=expired**（D-46 三轴分离）——到期只写
+    lifecycle / inject_tier / ttl_disposition 三处；1.x 行为由配置项
+    ttl.disposition.enabled=false 回退（见 _mark_expired_ttl 的既有单测）。
+    """
     mem_conn, session_conn, _ = conns
     _seed_memory(mem_conn, memory_id="m-old-dynamic", ttl_days=1,
-                 updated_at="2020-01-01T00:00:00Z")            # 超期 → 应标记
+                 updated_at="2020-01-01T00:00:00Z")            # 超期 → 应处置
     _seed_memory(mem_conn, memory_id="m-static", ttl_days=None,
-                 updated_at="2020-01-01T00:00:00Z")            # 静态维度 → 不标记
+                 updated_at="2020-01-01T00:00:00Z")            # 静态维度 → 不处置
     _seed_memory(mem_conn, memory_id="m-rejected", ttl_days=1,
                  updated_at="2020-01-01T00:00:00Z", status="rejected")  # 非 active → 跳过
     _seed_memory(mem_conn, memory_id="m-fresh", ttl_days=1,
@@ -346,14 +351,24 @@ def test_run_dream_ttl_mark(conns, cfg):
 
     summary = dream_mod.run_dream(mem_conn, session_conn, cfg)
 
-    assert summary["expired_count"] == 1
     old = _memory_row(mem_conn, "m-old-dynamic")
-    assert old["status"] == "expired"
-    assert old["reject_reason"] == "dream_ttl_expired"
-    assert old["rejected_at"] is not None
+    assert old["status"] == "active", "2.0 起 TTL 到期不改质量轴（status）"
+    assert old["reject_reason"] is None
+    assert old["lifecycle"] in ("active", "sleeping"), "必须被五档处置过"
+    audits = [
+        r[0] for r in mem_conn.execute(
+            "SELECT disposition FROM ttl_disposition WHERE memory_id='m-old-dynamic'"
+        ).fetchall()
+    ]
+    assert audits, "产生处置就必须写审计行（ttl_disposition）"
+    assert set(audits) <= {"renewed", "anchor", "sleeping"}
+    assert _memory_row(mem_conn, "m-static")["lifecycle"] is None
     assert _memory_row(mem_conn, "m-static")["status"] == "active"
     assert _memory_row(mem_conn, "m-rejected")["status"] == "rejected"
+    assert _memory_row(mem_conn, "m-fresh")["lifecycle"] is None
     assert _memory_row(mem_conn, "m-fresh")["status"] == "active"
+    # expired_count 在 2.0 口径下 = 本轮「退出注入」条数（休眠 + 失效断言）
+    assert isinstance(summary["expired_count"], int)
 
 
 def test_run_dream_ttl_mark_disabled(conns, cfg):

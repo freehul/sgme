@@ -123,6 +123,7 @@ def record_disposition(
     new_expire_at: str | None,
     m_score: float = 0.0,
     renew_count: int = 0,
+    reason: str | None = None,
 ) -> None:
     """写一条 TTL 处置审计（谁因何被判定为何种去向，逐次留痕）。
 
@@ -135,6 +136,7 @@ def record_disposition(
         new_expire_at: 处置后过期时刻（ISO；可 None）。
         m_score: 记忆活跃度分（M 分；缺省 0.0）。
         renew_count: 累计续期次数（缺省 0）。
+        reason: 处置来源（D-73 召回加固记 'recall_reinforced'；D-52 五档留空）。
 
     Raises:
         ValueError: disposition 不在合法集合内（含大小写不符）。
@@ -148,10 +150,11 @@ def record_disposition(
     conn.execute(
         """
         INSERT INTO ttl_disposition
-          (memory_id, disposition, m_score, renew_count, old_expire_at, new_expire_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+          (memory_id, disposition, reason, m_score, renew_count,
+           old_expire_at, new_expire_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (memory_id, disposition, float(m_score), int(renew_count),
+        (memory_id, disposition, reason, float(m_score), int(renew_count),
          old_expire_at, new_expire_at, _now_iso()),
     )
     conn.commit()

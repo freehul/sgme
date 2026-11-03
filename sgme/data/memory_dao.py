@@ -540,6 +540,9 @@ def list_memories_by_dimension(
     routes: Iterable[str] | None = None,
     exclude_memory_types: Iterable[str] | None = None,
     subject_filter: Iterable[str] | None = None,
+    lifecycle_active: bool = False,
+    exclude_anchor: bool = False,
+    exclude_valid_expired: bool = False,
 ) -> list[dict]:
     """按维度过滤记忆（模板查询用，纯 SQL 零 LLM）。
 
@@ -560,6 +563,13 @@ def list_memories_by_dimension(
       主题**保留可回溯但不主动提**；默认 None 不过滤（检索/管理面仍可见）。
     - subject_filter（2.0 D-66）：注入侧传 ("self",)——他人事实不进本人画像；
       存量/未标注记忆 subject 为 NULL 或 'unknown'，按「本人」对待（不误伤存量）。
+    - lifecycle_active（2.0 D-52/3.6，2026-11-04）：注入侧传 True——统一可见性谓词
+      （lifecycle IS NULL OR lifecycle='active'）：休眠/归档不注入，但检索与回溯
+      始终保留（D-44 两种删除除外）。睡眠/归档只作用于注入与人格证据。
+    - exclude_anchor（2.0 D-52 档 2/3）：注入主块传 True——inject_tier='anchor' 的
+      长期记忆不进主块（进锚点块），避免过时状态霸占主注入槽。
+    - exclude_valid_expired（2.0 D-52 闸门 A）：注入侧传 True——modality 为
+      planned/wished 且 valid_to 已过的断言退出注入（保留检索与回溯）。
     """
     dims = list(dimension_ids)
     if not dims:
@@ -575,7 +585,12 @@ def list_memories_by_dimension(
     # 用户纠错「不采用」的记忆不参与候选池（2026-08-06）
     sql += " AND m.status != 'rejected'"
     if not include_expired:
-        sql += " AND (m.ttl_days IS NULL OR julianday(m.updated_at) > julianday('now') - m.ttl_days)"
+        # D-52（2026-11-04）：TTL 起算改用 COALESCE(ttl_renewed_at, updated_at)
+        # ——续期基准列只影响「到期判定」，不动 updated_at（记录时刻/热度证据）
+        sql += (
+            " AND (m.ttl_days IS NULL OR julianday(COALESCE(m.ttl_renewed_at, m.updated_at))"
+            " > julianday('now') - m.ttl_days)"
+        )
     if time_window_start:
         sql += " AND m.updated_at > ?"
         params.append(time_window_start)
@@ -595,6 +610,18 @@ def list_memories_by_dimension(
         et = tuple(exclude_memory_types)
         sql += f" AND COALESCE(m.memory_type, '') NOT IN ({','.join('?' * len(et))})"
         params.extend(et)
+    if lifecycle_active:
+        # 3.6 唯一口径：不许按 1.x 惯性只写 status='active'
+        sql += " AND (m.lifecycle IS NULL OR m.lifecycle='active')"
+    if exclude_anchor:
+        sql += " AND COALESCE(m.inject_tier, 'full') != 'anchor'"
+    if exclude_valid_expired:
+        # 闸门 A：失效的计划/愿望退出注入（检索与回溯保留）
+        sql += (
+            " AND NOT (COALESCE(m.modality, 'unknown') IN ('planned','wished')"
+            " AND m.valid_to IS NOT NULL AND m.valid_to != ''"
+            " AND julianday(m.valid_to) < julianday('now'))"
+        )
     if subject_filter:
         # D-66：只留指定主体；NULL / 'unknown' 视为本人（不误伤存量与未标注记忆）
         sf = tuple(subject_filter)
