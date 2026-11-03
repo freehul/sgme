@@ -387,6 +387,13 @@ def finalize_refinement(
         return
 
     # L2 场景聚合（记忆已带 memory_id，_ensure_persisted 直接复用）
+    # D-53 冻结开关（2026-11-03）：2.0 取消场景层，最终四表冻结只读。但当前生产仍跑
+    # 1.x 链路、场景功能在用，**默认保持开启**（不擅自改变现网行为）；迁移阶段 1 完成后
+    # 把 l2.scene_aggregate.enabled 置 false 即可停写，无需改代码。
+    scene_enabled = bool(((cfg or {}).get("l2") or {}).get("scene_aggregate", {}).get("enabled", True))
+    if not scene_enabled:
+        logger.debug("L2 场景聚合已冻结（l2.scene_aggregate.enabled=false），跳过: %s", file_id)
+        return
     # #33：bucket_ctx 携带 file_id（A/B 分流）；l2_result.prompt_meta 透传
     try:
         l2_result = l2.aggregate(
