@@ -114,3 +114,66 @@ def test_default_config_is_zero_tolerance():
 
     assert DEFAULT_REFINE_CONFIG["max_chunk_failure_ratio"] == 0.0
 
+
+# ---------- 集成：refine_one / refine_many 真的不推游标 ----------
+
+def _fake_result(file_id, failed, total):
+    r = RefineResult(file_id=file_id)
+    r.failed_chunks, r.chunk_total = failed, total
+    return r
+
+
+def _patch_pipeline(monkeypatch, failed, total):
+    """替换 refine_file / persist / commit，返回 commit 调用计数。"""
+    from sgme.engine import refine as refine_mod
+
+    calls = {"commit": 0, "persist": 0}
+
+    def fake_refine_file(file_id, *a, **k):
+        return _fake_result(file_id, failed, total)
+
+    monkeypatch.setattr(refine_mod, "refine_file", fake_refine_file)
+    monkeypatch.setattr(refine_mod, "commit_refine",
+                        lambda *a, **k: calls.__setitem__("commit", calls["commit"] + 1))
+    monkeypatch.setattr(pipeline, "persist_memories",
+                        lambda *a, **k: calls.__setitem__("persist", calls["persist"] + 1) or dict(pipeline._ZERO_STATS))
+    monkeypatch.setattr(pipeline, "_resolve_file_agent", lambda *a, **k: None)
+    return calls
+
+
+def test_refine_one_skips_commit_when_chunks_failed(monkeypatch):
+    """有块失败 → 不推游标（文件保持 new），状态标 partial。"""
+    calls = _patch_pipeline(monkeypatch, failed=2, total=10)
+    result, _stats = pipeline.refine_one("f1", None, None, {})
+    assert calls["commit"] == 0
+    assert result.status == "partial"
+
+
+def test_refine_one_commits_when_clean(monkeypatch):
+    calls = _patch_pipeline(monkeypatch, failed=0, total=10)
+    result, _stats = pipeline.refine_one("f1", None, None, {})
+    assert calls["commit"] == 1
+    assert result.status == "refined"
+
+
+def test_refine_one_honours_ratio_config(monkeypatch):
+    """配置容忍 5% 时，10 块里坏 1 块可提交。"""
+    calls = _patch_pipeline(monkeypatch, failed=1, total=10)
+    pipeline.refine_one("f1", None, None, {"refine": {"max_chunk_failure_ratio": 0.05}})
+    assert calls["commit"] == 0          # 10% > 5%，拦住
+    calls2 = _patch_pipeline(monkeypatch, failed=1, total=100)
+    pipeline.refine_one("f1", None, None, {"refine": {"max_chunk_failure_ratio": 0.05}})
+    assert calls2["commit"] == 1         # 1% ≤ 5%，放行
+
+
+def test_refine_many_skips_commit_for_failed_file(monkeypatch):
+    from sgme.engine import refine as refine_mod
+
+    calls = _patch_pipeline(monkeypatch, failed=3, total=10)
+    monkeypatch.setattr(refine_mod, "refine_batch",
+                        lambda *a, **k: [_fake_result("f1", 3, 10), _fake_result("f2", 0, 10)])
+    pairs = pipeline.refine_many(10, None, None, {})
+    assert [r.status for r, _ in pairs] == ["partial", "refined"]
+    assert calls["commit"] == 1          # 只有干净的那个推游标
+
+

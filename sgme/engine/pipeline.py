@@ -322,6 +322,10 @@ def refine_one(
     # 块级失败（2026-11-03）：内容有缺口 → 不推游标，文件保持 new 待重跑。
     if should_commit(result, _chunk_failure_ratio(cfg)):
         refine_mod.commit_refine(result, session_conn)
+    else:
+        result.status = "partial"
+        logger.warning("refine_one file=%s 有 %d/%d 块失败，保持 status=new 待重跑",
+                       file_id, result.failed_chunks, result.chunk_total)
     return result, l15_stats
 
 
@@ -352,6 +356,10 @@ def refine_many(
         # 块级失败（2026-11-03）：有缺口不推游标，文件保持 new 待重跑
         if should_commit(r, _chunk_failure_ratio(cfg)):
             refine_mod.commit_refine(r, session_conn)  # T-223：逐文件落库后推游标
+        else:
+            r.status = "partial"
+            logger.warning("refine_many file=%s 有 %d/%d 块失败，保持 status=new 待重跑",
+                           r.file_id, r.failed_chunks, r.chunk_total)
         pairs.append((r, l15_stats))
     return pairs
 
