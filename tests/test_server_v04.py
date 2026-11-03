@@ -598,7 +598,21 @@ def test_refine_trigger_async_returns_immediately(client, monkeypatch, path):
         assert "trigger-async" in resp.headers.get("x-sgme-deprecation-note", "")
     else:
         assert "deprecation" not in resp.headers
-    # 不等待后台线程（测试隔离），仅验证立即返回语义
+    # 等后台提炼收尾（2026-11-03 修）：daemon 线程没有句柄可 join，
+    # 原注释写「不等待」——但后台线程会继续消耗共享的 mock client 并写同一个库，
+    # 后续两个 refine 用例（publishes_memory_updated / creates_l2_scenes）因此随机失败。
+    # 提炼链路一旦变慢（本次新增了分位/审计等查询）就会稳定复现。
+    # 这里改为轮询文件状态收尾，只等待、不改变断言（立即返回语义仍由上面三行保证）。
+    import time as _time
+
+    deadline = _time.time() + 15
+    while _time.time() < deadline:
+        row = session_conn.execute(
+            "SELECT status FROM raw_files WHERE file_id=?", (fid,)
+        ).fetchone()
+        if row and row[0] not in ("new",):
+            break
+        _time.sleep(0.05)
 
 
 def test_refine_trigger_async_legacy_path_marked_deprecated(client):

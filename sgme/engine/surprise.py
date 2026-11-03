@@ -24,6 +24,9 @@ CONFIDENCE_MIN_SAMPLES = 30
 # 默认比对池大小：取最近 300 条（D-78）
 SAMPLE_LIMIT = 300
 
+# 分位分布采样上限（最近 N 条已算过分的同类记忆）
+PERCENTILE_SAMPLE_LIMIT = 500
+
 # 英文/数字段：小写化后按空格切；中文段：滑窗 2-gram
 _EN_RE = re.compile(r"[a-z0-9]+")
 _ZH_RE = re.compile(r"[\u4e00-\u9fff]+")
@@ -160,11 +163,15 @@ def _percentile_of(
     返回值：(分位 或 None, 分布样本数)。样本数 < ``CONFIDENCE_MIN_SAMPLES`` 时返回
     None——冷启动期不能拿十几条样本算分位，否则前几条记忆的分位永远 0/0.5/1。
     """
+    # 采样上限：分位只需分布形状，不必扫全表。落库是热路径，全表扫会把每次
+    # INSERT 拖到几十毫秒以上（实测还会拉长异步提炼窗口、与后续测试抢库）。
     sql = "SELECT surprise FROM memories WHERE status='active' AND surprise IS NOT NULL"
     params: list = []
     if memory_type is not None:
         sql += " AND memory_type=?"
         params.append(memory_type)
+    sql += " ORDER BY updated_at DESC LIMIT ?"
+    params.append(PERCENTILE_SAMPLE_LIMIT)
     rows = conn.execute(sql, params).fetchall()
     vals = [float(r[0]) for r in rows if r[0] is not None]
     n = len(vals)
