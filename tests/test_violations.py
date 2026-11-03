@@ -135,11 +135,11 @@ def test_violation_persisted_truncated(card, cfg, fake_llm):
     assert long_reply.startswith(first["snippet"])
 
 
-# ---------- ④ 阈值触发：同会话 ≥2 → constraint；当日 ≥3 → anomaly_warn ----------
+# ---------- ④ 第三级阈值：**仅观测不生效**（用户 2026-10-30 拍板）----------
+# 原设计：同会话 ≥2 → constraint；当日 ≥3 → anomaly_warn。
+# 现况：只统计进 observed，constraint 恒 null、不发告警。
 
-def test_threshold_constraint_and_anomaly(card, conns, cfg, fake_llm):
-    import sqlite3
-
+def test_threshold_observed_but_not_enforced(card, conns, cfg, fake_llm):
     mem_conn = conns[0]
     fake_llm(GOOD_REWRITE)
 
@@ -149,28 +149,32 @@ def test_threshold_constraint_and_anomaly(card, conns, cfg, fake_llm):
         ).fetchone()[0]
 
     before = warns()
+
     r1 = care_operation.guard_reply(
         "butler", BAD_REPLY, cfg, session_id="s1", mem_conn=mem_conn, now=NOW,
     )
-    assert r1.data["constraint"] is None  # 首条不触发
+    assert r1.data["constraint"] is None
     assert r1.data["warned"] is False
+    assert r1.data["observed"]["session_count"] == 1
+    assert r1.data["observed"]["over_session_threshold"] is False
 
     r2 = care_operation.guard_reply(
         "butler", BAD_REPLY, cfg, session_id="s1", mem_conn=mem_conn, now=NOW,
     )
-    assert r2.data["constraint"] is not None  # 同会话第 2 次 → 更正约束
+    # 达到原阈值也不生效：只记观测值
+    assert r2.data["observed"]["session_count"] == 2
+    assert r2.data["observed"]["over_session_threshold"] is True
+    assert r2.data["constraint"] is None
     assert r2.data["warned"] is False
 
     r3 = care_operation.guard_reply(
         "butler", BAD_REPLY, cfg, session_id="s1", mem_conn=mem_conn, now=NOW,
     )
-    assert r3.data["warned"] is True  # 当日第 3 次 → 告警
-    assert warns() == before + 1
-    row = mem_conn.execute(
-        "SELECT type, source FROM signal_events "
-        "WHERE type='anomaly_warn' ORDER BY rowid DESC LIMIT 1"
-    ).fetchone()
-    assert row[1] == "role_guard"
+    assert r3.data["observed"]["day_count"] == 3
+    assert r3.data["observed"]["over_daily_threshold"] is True
+    assert r3.data["warned"] is False      # 不发告警
+    assert r3.data["constraint"] is None   # 不加约束
+    assert warns() == before              # 事件表零新增
 
 
 # ---------- ⑤ 不写 memory.db（memories 表零新增） ----------

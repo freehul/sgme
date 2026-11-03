@@ -385,7 +385,13 @@ REWRITE_PROMPT = """你是角色「{role_name}」的对话质检员。下面这�
 原句：{reply}
 """
 
+# 第三级阈值（D-77③）：**当前仅观测不生效**，判定值与阈值保留给后续启用。
+# 用户 2026-10-30 拍板：首版只做 ①软拦截 + ②记录，③硬后果只统计不生效。
+VIOLATION_SESSION_THRESHOLD = 2  # 同类同会话累计达此值 → 原设计附加更正约束
+VIOLATION_DAILY_THRESHOLD = 3    # 同类当日累计达此值 → 原设计发布 anomaly_warn
+
 # 第三级：同类越界同会话 ≥2 后，附加给该会话后续回复的约束（供 agent 拼进上下文）
+# ⚠️ 当前未启用（见上）；保留文案供启用时直接复用，不要删。
 SESSION_CORRECTION_CONSTRAINT = (
     "本会话已出现同类越界。后续回复若涉及该内容，必须先作更正或收回，"
     "不得重复同一表述，也不要为此反复道歉。"
@@ -415,14 +421,15 @@ def guard_reply(
     client: Any = None,
     now: str | None = None,
 ) -> OperationResult:
-    """D-77 越界三级后果：软拦截（改写一次）→ 记录（角色卡）→ 硬后果（约束/告警）。
+    """D-77 越界三级后果：软拦截（改写一次）→ 记录（角色卡）→ 硬后果（**仅观测**）。
 
     - 未命中任何禁用项 → 原样返回（不记录、不写盘、零 LLM）
     - 命中 → ①记录到 ``extensions.sgme_violations``（原句截断 60 字）→
       ②LLM 改写一次并返回改写后的回复
-    - 同类同会话累计 ≥2 → 返回 ``constraint``（该会话后续回复须更正/收回）
-    - 同类当日累计 ≥3 → 发布 ``anomaly_warn``（``mem_conn`` 为空则只记日志）
-    - **隔离铁律**：越界只写角色卡；``mem_conn`` 仅用于告警信号通道，
+    - **③硬后果仅观测不生效**（用户 2026-10-30 拍板：首版只做 ①②，③只做统计观察）：
+      仍统计同会话 / 当日次数并放进返回体 ``observed``，但 ``constraint`` 恒为 null、
+      不发 ``anomaly_warn``。两周后按 ``extensions.sgme_violations`` 实际分布再定阈值与启用方式。
+    - **隔离铁律**：越界只写角色卡；``mem_conn`` 预留告警信号通道（当前不发布），
       不触碰 memories/raw/edges（角色越界不是用户事实）
     - 角色不存在 → ERR_NOT_FOUND；reply 为空 → ERR_INVALID_ARGS；
       LLM 不可用 → ERR_INTERNAL（不降级直发越界原句）
@@ -464,32 +471,37 @@ def guard_reply(
         if isinstance(e, llm_provider.LLMUnavailable):
             return OperationResult.fail(ERR_INTERNAL, f"LLM 不可用: {e}")
         return OperationResult.fail(ERR_INTERNAL, f"越界改写失败: {e}")
-    # ③硬后果：阈值判定（读回最新卡，含刚落盘的记录）
+    # ③硬后果：**仅观测不生效**（用户 2026-10-30 拍板）。阈值判定保留为观测数据：
+    # 既不返回 constraint，也不发 anomaly_warn；两周后按 violations 实际分布再定启用方式。
     fresh = roles_mod.get_role(_roles_dir(), role_id) or card
     day_start = (now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))[:10] + "T00:00:00Z"
-    constraint = None
-    warned = False
-    worst_kind = None
+    observed: dict[str, Any] = {"session_count": 0, "day_count": 0, "kind": None}
     for kind in kinds:
-        if session_id and roles_mod.count_violations(
-            fresh, kind, session_id=session_id,
-        ) >= 2:
-            constraint = SESSION_CORRECTION_CONSTRAINT
+        if session_id:
+            observed["session_count"] = max(
+                observed["session_count"],
+                roles_mod.count_violations(fresh, kind, session_id=session_id),
+            )
         day_count = roles_mod.count_violations(fresh, kind, since_iso=day_start)
-        if day_count >= 3:
-            worst_kind, warned = kind, True
-            break
-    if warned:
-        _publish_violation_anomaly(mem_conn, role_id, worst_kind, day_count)
+        if day_count > observed["day_count"]:
+            observed["day_count"], observed["kind"] = day_count, kind
+    observed["over_session_threshold"] = (
+        observed["session_count"] >= VIOLATION_SESSION_THRESHOLD
+    )
+    observed["over_daily_threshold"] = observed["day_count"] >= VIOLATION_DAILY_THRESHOLD
     logger.info(
-        "越界拦截: %s（kinds=%s，%s%s）", role_id, kinds,
-        "附带更正约束" if constraint else "仅改写", "，已告警" if warned else "",
+        "越界拦截: %s（kinds=%s，已改写；观测：同会话 %d 次 / 当日 %d 次，未生效）",
+        role_id, kinds, observed["session_count"], observed["day_count"],
     )
     return OperationResult.succeed({
         "role_id": role_id, "status": "rewritten",
         "reply": rewritten, "original": text, "kinds": kinds,
-        "rewritten": True, "constraint": constraint,
-        "warned": warned, "provider": provider_name,
+        "rewritten": True,
+        # D-77③ 未启用：约束与告警恒不触发，只留观测值
+        "constraint": None,
+        "warned": False,
+        "observed": observed,
+        "provider": provider_name,
     })
 
 
