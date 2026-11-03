@@ -101,6 +101,17 @@ const TRIGGER_HINTS: Record<string, string> = {
   goal_stagnant: '目标停滞', major_decision: '重大决策',
 }
 
+// ---------- D-61（2026-11-04）：关怀三档（按角色独立配置；新角色默认 silent） ----------
+const CARE_LEVEL_OPTIONS = [
+  { value: 'silent', label: '静默关怀（只记录不推送）' },
+  { value: 'session', label: '会话内关怀（聊天中自然带出）' },
+  { value: 'push', label: '主动推送（关键信号才推）' },
+] as const
+const careLevel = ref<'silent' | 'session' | 'push'>('silent')
+const careLevelLabel = computed(
+  () => CARE_LEVEL_OPTIONS.find((o) => o.value === careLevel.value)?.label || '静默关怀',
+)
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -160,6 +171,8 @@ async function select(id: string) {
     form.system_prompt = d.system_prompt ?? ''
     form.post_history_instructions = d.post_history_instructions ?? ''
     fillProfileForms(d)
+    // D-61：档位随角色卡载入（缺省 = 静默，老卡零迁移）
+    careLevel.value = d.extensions?.sgme_care?.care_level ?? 'silent'
     // persona（404 = 未生成）
     try {
       const p = await getPersona(id)
@@ -199,6 +212,35 @@ async function saveProfile() {
     await load()
     await select(selectedId.value)
     msg.value = '人设已保存（基线层 + 性格六槽位）'
+  } catch (e) {
+    msg.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+// ---------- D-61 关怀档位保存（按角色独立；改动即保存） ----------
+async function saveCareLevel() {
+  if (!selectedId.value || !detail.value) return
+  busy.value = true
+  msg.value = ''
+  try {
+    const data: RoleCardData = {
+      ...detail.value,
+      name: detail.value.name,
+      description: detail.value.description,
+    }
+    data.extensions = {
+      ...(detail.value.extensions || {}),
+      sgme_care: {
+        ...(detail.value.extensions?.sgme_care || {}),
+        care_level: careLevel.value,
+      },
+    }
+    await saveRole(selectedId.value, data)
+    await load()
+    await select(selectedId.value)
+    msg.value = `关怀档位已设为「${careLevelLabel.value}」`
   } catch (e) {
     msg.value = e instanceof ApiError ? e.message : String(e)
   } finally {
@@ -556,6 +598,21 @@ onMounted(load)
           <span class="meta">更新 {{ fmtTs(detail.updated_at) }} · 创建 {{ fmtTs(detail.created_at) }}</span>
         </div>
         <p class="desc">{{ detail.description }}</p>
+        <!-- D-61 关怀三档：按角色独立设置（默认静默）；改动即保存 -->
+        <div class="care-level-row">
+          <label>关怀档位</label>
+          <select v-model="careLevel" :disabled="busy" @change="saveCareLevel">
+            <option v-for="o in CARE_LEVEL_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+          <span class="care-level-note">当前：{{ careLevelLabel }}</span>
+        </div>
+        <!-- D-61：管家类「就医/安全」提醒只做首次接入推荐提示，不默认开启 -->
+        <p
+          v-if="careLevel === 'silent' && detail.extensions?.sgme_care?.trigger_rules?.medical_day"
+          class="care-level-hint"
+        >
+          检测到就医类触发规则：建议对本角色开通「主动推送」（就医/安全类），当前仍为静默——不会自动推送。
+        </p>
         <div v-if="detail.extensions?.sgme_care" class="care-line">
           <span class="tag">主动关怀：{{ detail.extensions.sgme_care.greeting_templates?.length || 0 }} 条问候模板</span>
           <span v-for="(d, k) in detail.extensions.sgme_care.trigger_rules" :key="k" class="tag">
@@ -795,6 +852,10 @@ onMounted(load)
 .base-card .meta { font-size: var(--fs-xs); color: var(--text-muted); margin-left: auto; }
 .desc { font-size: var(--fs-sm); color: var(--text); margin: var(--space-2) 0; white-space: pre-wrap; }
 .care-line { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: var(--space-2); }
+.care-level-row { display: flex; align-items: center; gap: 8px; margin: var(--space-2) 0; font-size: var(--fs-sm); }
+.care-level-row select { padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
+.care-level-note { color: var(--text-muted); font-size: var(--fs-xs); }
+.care-level-hint { margin: 0 0 var(--space-2); font-size: var(--fs-xs); color: var(--warning, #d48806); }
 .edit-form { margin-top: var(--space-3); }
 .center { text-align: center; padding: var(--space-6); }
 </style>

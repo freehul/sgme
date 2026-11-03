@@ -7,6 +7,8 @@ export interface RoleItem {
   name: string
   description: string
   updated_at: string | null
+  /** D-61（2026-11-04）：关怀档位（silent/session/push）——按角色独立配置，新角色默认 silent */
+  care_level?: 'silent' | 'session' | 'push'
 }
 export interface RoleListResp {
   roles: RoleItem[]
@@ -31,6 +33,8 @@ export interface RoleCardData {
       greeting_templates?: string[]
       trigger_rules?: Record<string, string>
       frequency?: Record<string, unknown>
+      /** D-61：关怀档位（三档；缺省视为 silent） */
+      care_level?: 'silent' | 'session' | 'push'
     }
   }
   created_at?: string

@@ -77,6 +77,15 @@ def create_role(role_id: str, data: dict[str, Any]) -> OperationResult:
     ``data`` 为 CC V2 的 data 段（name/description 必填）；操作层负责包装
     spec/spec_version 顶层（协议翻译，文件格式即 CC V2 完整结构）。
     """
+    # D-61（2026-11-04）：新角色默认「静默关怀」——档位按角色独立配置，
+    # 无全局默认档；用户在工作台按角色调整。显式传入 care_level 时以其为准
+    #（save_role 的校验会拒绝非法值）。
+    data = dict(data or {})
+    ext = dict(data.get("extensions") or {})
+    care = dict(ext.get("sgme_care") or {})
+    care.setdefault("care_level", roles_mod.CARE_LEVEL_DEFAULT)
+    ext["sgme_care"] = care
+    data["extensions"] = ext
     card = roles_mod.normalize_role_card({"data": data})
     try:
         roles_mod.save_role(_roles_dir(), role_id, card)
@@ -798,6 +807,9 @@ def assemble(
         "persona": persona,
         "profile_blocks": profile_blocks,
         "care_policy": care_policy,
+        # D-61（2026-11-04）：档位扁平暴露（缺省 silent），消费方按档位决定
+        # 说话时机：silent=只记录 / session=聊天中带出 / push=关键信号才推。
+        "care_level": roles_mod.get_care_level(card),
         "life_block": life_block,
     })
 

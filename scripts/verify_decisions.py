@@ -120,6 +120,7 @@ FILES = {
     "wiki_classify": S / "wiki_classify.py",
     "compat": S / "compat.py",
     "routes_capabilities": S / "server" / "routes_capabilities.py",
+    "ui_roles_view": ROOT / "ui" / "src" / "views" / "care" / "RolesView.vue",
 }
 
 _cache: dict[str, str] = {}
@@ -474,12 +475,19 @@ def _(self):
     ]
 
 
-@check("D-61", "关怀档位按角色配置（静默/会话内/主动推送）", "planned")
+@check("D-61", "关怀档位按角色配置（静默/会话内/主动推送）", "done")
 def _(self):
-    # 角色卡目前只有 greeting_templates / trigger_rules / frequency，没有「档位」语义字段
-    hit = any(k in src("care_ops") for k in ("care_level", "frequency_level", "care_tier"))
-    return [("角色卡档位字段（care_level / frequency_level）", hit,
-             f"{rel('care_ops')}: 未找到档位字段")]
+    # 2026-11-04 落地：角色卡 extensions.sgme_care.care_level 三值 + 校验 + 新角色默认
+    # silent + 装配/列表扁平暴露 + 角色工作台下拉（管家就医类只给推荐提示，不默认开启）。
+    return [
+        ("角色卡档位三值", *has("care_roles", "CARE_LEVELS")),
+        ("非法档位拒绝", *has("care_roles", "care_level 非法")),
+        ("新角色默认静默", *has("care_ops", "CARE_LEVEL_DEFAULT")),
+        ("装配暴露档位", *has("care_ops", "get_care_level")),
+        ("列表暴露档位", *has("care_roles", '"care_level": get_care_level')),
+        ("工作台档位下拉", *has("ui_roles_view", "CARE_LEVEL_OPTIONS")),
+        ("管家就医类推荐提示（不默认开启）", *has("ui_roles_view", "medical_day")),
+    ]
 
 
 @check("D-62", "知识库自动关联与自动分类", "partial")

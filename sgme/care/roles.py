@@ -44,7 +44,15 @@ PRIVACY_FIELD = "privacy_agents"
 # save_role 维护的时间戳键（读回再保存时必须合法，否则既有卡 upsert 必失败）
 TIMESTAMP_FIELDS = ("created_at", "updated_at")
 # 关怀策略扩展键（extensions.sgme_care，供消费方读取）
-CARE_EXT_KEYS = ("greeting_templates", "trigger_rules", "frequency")
+# D-61（2026-11-04）：care_level 三档按角色独立配置（无全局默认档）；新角色默认 silent。
+CARE_LEVELS = ("silent", "session", "push")
+CARE_LEVEL_DEFAULT = "silent"
+CARE_LEVEL_LABELS = {
+    "silent": "静默关怀（只记录不推送）",
+    "session": "会话内关怀（聊天中自然带出）",
+    "push": "主动推送（关键信号才推）",
+}
+CARE_EXT_KEYS = ("greeting_templates", "trigger_rules", "frequency", "care_level")
 
 # ---------- 活人化角色基线层（设计文档 4.2 / 前端契约） ----------
 
@@ -154,6 +162,12 @@ def validate_role_card(data: dict[str, Any]) -> list[str]:
                                 f"extensions.sgme_care 多余键: {k}"
                                 f"（允许: {CARE_EXT_KEYS}）"
                             )
+                    level = care.get("care_level")
+                    if level is not None and level not in CARE_LEVELS:
+                        errors.append(
+                            f"extensions.sgme_care.care_level 非法: {level!r}"
+                            f"（允许: {CARE_LEVELS}）"
+                        )
             profile = ext.get(PROFILE_EXT_KEY)
             if profile is not None:
                 errors.extend(_validate_profile(profile))
@@ -207,8 +221,21 @@ def ensure_roles_dir(roles_dir: Path) -> None:
     (roles_dir / _ARCHIVE_DIR).mkdir(parents=True, exist_ok=True)
 
 
+def get_care_level(card: dict[str, Any] | None) -> str:
+    """读取角色卡关怀档位（D-61）。
+
+    缺省/未知值一律回落 default silent——**不猜用户意图**：老卡没有该字段时
+    等价于「静默关怀」（只记录不推送），符合「默认不打扰」的拍板。
+    """
+    data = (card or {}).get("data") or {}
+    ext = data.get("extensions") or {}
+    care = ext.get("sgme_care") if isinstance(ext, dict) else None
+    level = care.get("care_level") if isinstance(care, dict) else None
+    return level if level in CARE_LEVELS else CARE_LEVEL_DEFAULT
+
+
 def list_roles(roles_dir: Path) -> list[dict[str, Any]]:
-    """角色卡列表（轻量：role_id/name/description/updated_at）。"""
+    """角色卡列表（轻量：role_id/name/description/updated_at/care_level）。"""
     ensure_roles_dir(roles_dir)
     out: list[dict[str, Any]] = []
     for f in sorted(roles_dir.glob("*.json")):
@@ -220,6 +247,7 @@ def list_roles(roles_dir: Path) -> list[dict[str, Any]]:
                 "name": d.get("name", f.stem),
                 "description": d.get("description", ""),
                 "updated_at": d.get("updated_at"),
+                "care_level": get_care_level(card),
             })
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("角色卡读取失败 %s: %s", f.name, e)
