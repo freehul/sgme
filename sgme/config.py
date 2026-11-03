@@ -436,6 +436,8 @@ DEFAULT_BACKUP_CONFIG = {
     "level": "incremental",    # incremental / full / monthly
     "dir": "data/backups",     # 本地快照目录（既有契约字段，operations/backup 读取）
     "keep_full": 7,            # full 快照轮转保留份数
+    # D-44 ③（2026-11-04）：增量快照按天保留（本机备份最长 30 天的前提）
+    "keep_incremental_days": 30,
     "remote_dir": "",          # 异地目录（本机另一盘/NAS 挂载），空 = 跳过
     "raw_cold_days": 90,       # 原始层冷归档阈值（保留）
 }

@@ -23,11 +23,12 @@ from __future__ import annotations
 
 import gzip
 import logging
+import re
 import shutil
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sgme import config as sgme_config
@@ -292,16 +293,43 @@ def create_snapshot(
     }
 
 
+_SNAP_TS_RE = re.compile(r"(\d{8})_(\d{6})")
+_SNAP_KIND_RE = re.compile(r"(?:^|_)(incremental|full|monthly)_\d{8}_\d{6}_")
+
+
+def _snapshot_kind(name: str) -> str | None:
+    """从目录名识别快照类型（兼容 daily_ 等前缀；pre_restore_ 永不轮转）。"""
+    if name.startswith("pre_restore_"):
+        return None
+    m = _SNAP_KIND_RE.search(name)
+    return m.group(1) if m else None
+
+
+def _snapshot_dt(name: str) -> datetime | None:
+    """从目录名解析快照时间（无时间戳/非法 → None，视为不可判定）。"""
+    m = _SNAP_TS_RE.search(name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
 def rotate_snapshots(
     backup_dir: str | Path,
     keep_full: int = 7,
     keep_monthly: int | None = None,
+    keep_incremental_days: int | None = 30,
 ) -> dict:
-    """按 level 分类轮转快照，保留最近 N 份。
+    """按 level 分类轮转快照。
 
     - full：保留最近 keep_full 份
     - monthly：keep_monthly=None 表示不轮转（∞）
-    - incremental / pre_restore_*：不轮转（全部保留）
+    - incremental：**D-44 ③（2026-11-04）——按天保留 keep_incremental_days 天
+      （默认 30），过期删除；None = 不轮转（旧行为）。此前 1.x 只轮转 full，
+      增量快照永久保留，「本机备份最长 30 天」不成立。**
+    - pre_restore_*：永不轮转（恢复前自动备份需保留）
     - 返回 {removed: [...], kept: [...]}
     """
     backup_dir = Path(backup_dir)
@@ -319,13 +347,8 @@ def rotate_snapshots(
         # pre_restore_ 前缀的快照不轮转
         if name.startswith("pre_restore_"):
             continue
-        if name.startswith("incremental_"):
-            cat = "incremental"
-        elif name.startswith("full_"):
-            cat = "full"
-        elif name.startswith("monthly_"):
-            cat = "monthly"
-        else:
+        cat = _snapshot_kind(name)
+        if cat is None:
             continue
         categories.setdefault(cat, []).append(d)
 
@@ -341,8 +364,19 @@ def rotate_snapshots(
         elif cat == "monthly":
             limit = keep_monthly  # None = 全部保留
         else:
-            # incremental 不轮转
-            limit = None
+            # incremental：D-44 ③ 按天保留（默认 30 天）
+            if not keep_incremental_days:
+                limit = None
+            else:
+                cutoff = datetime.now() - timedelta(days=int(keep_incremental_days))
+                for d in dirs:
+                    ts = _snapshot_dt(d.name)
+                    if ts is not None and ts < cutoff:
+                        shutil.rmtree(d, ignore_errors=True)
+                        removed.append(d.name)
+                    else:
+                        kept.append(d.name)
+                continue
 
         if limit is None:
             # 不轮转，全部保留

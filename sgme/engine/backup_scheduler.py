@@ -69,6 +69,7 @@ def _run_backup(cfg: dict[str, Any], mem_conn, session_conn, wiki_conn, creds_co
     backup_cfg = cfg.get("backup", {}) or {}
     level = backup_cfg.get("level", "incremental")
     keep_full = int(backup_cfg.get("keep_full", DEFAULT_KEEP_FULL))
+    keep_incremental_days = int(backup_cfg.get("keep_incremental_days", 30))
     remote_dir = backup_cfg.get("remote_dir") or None
     # T-228：相对路径基于 USER_ROOT 解析（与手动备份 operations/backup 同口径），
     # 不再按进程 CWD——Docker WORKDIR=/app 时快照曾落容器层而非 /data 卷。
@@ -83,8 +84,13 @@ def _run_backup(cfg: dict[str, Any], mem_conn, session_conn, wiki_conn, creds_co
         conn_pair=(mem_conn, session_conn, wiki_conn, creds_conn),
         id_prefix="daily_",
     )
-    # 2) 轮转（full 保留 keep_full 份；incremental/pre_restore 不轮转）
-    rotated = backup_manager.rotate_snapshots(backup_dir, keep_full=keep_full)
+    # 2) 轮转（full 保留 keep_full 份；incremental 按 D-44 ③ 保留 30 天；
+    #    pre_restore 永不轮转）
+    rotated = backup_manager.rotate_snapshots(
+        backup_dir,
+        keep_full=keep_full,
+        keep_incremental_days=keep_incremental_days,
+    )
     # 3) 异地推送（remote_dir 为空 = 跳过；失败仅记录不阻塞）
     remote = backup_manager.push_remote(snap["path"], remote_dir)
     return {

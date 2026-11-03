@@ -27,6 +27,7 @@ from sgme.operations.health import health as health_operation
 from sgme.operations.health import http_payload as health_http_payload
 from sgme.operations.memory import get_http_payload as memory_get_http_payload
 from sgme.operations.memory import get_memory as get_memory_operation
+from sgme.operations.memory import delete_memory as delete_memory_operation
 from sgme.operations.memory import reject_memory as reject_memory_operation
 from sgme.operations.memory import unreject_memory as unreject_memory_operation
 from sgme.operations.append import append_l0 as append_l0_operation
@@ -288,6 +289,41 @@ def unreject_memory(
     """
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     return run_operation(unreject_memory_operation, mem_conn, memory_id)
+
+
+# ---------- POST /v1/memory/{memory_id}/delete（D-44 / D-54 两态删除） ----------
+
+@router.post("/v1/memory/{memory_id}/delete")
+def delete_memory(
+    memory_id: str,
+    request: Request,
+    body: dict | None = None,
+    key: str = Depends(require_agent_key),
+):
+    """删除两态（D-44）：logical（默认，可恢复）/ purge（不可恢复）。
+
+    - body: {"mode": "logical"|"purge", "reason": "...", "confirm": "彻底删除"}
+    - agent key 只能 logical；purge 必须 admin key + 确认词（WebUI 现场确认的
+      服务端强制面），且结果带「剩余副本」清单（备份/L0 原件）。
+    """
+    body = body or {}
+    mode = str(body.get("mode") or "logical")
+    store: AgentKeyStore = request.app.state.key_store
+    is_admin = store.is_admin(key)
+    if mode == "purge" and not is_admin:
+        raise api_error(
+            "ERR_FORBIDDEN", "彻底删除只能由管理员触发（agent 只能逻辑删除）"
+        )
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    return run_operation(
+        delete_memory_operation, mem_conn, memory_id,
+        mode=mode,
+        reason=body.get("reason"),
+        triggered_by="user",
+        agent_id=store.resolve_agent_id(key),
+        admin=is_admin,
+        confirm_phrase=body.get("confirm"),
+    )
 
 
 # ---------- GET /v1/sessions/{file_id} ----------

@@ -47,12 +47,29 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from sgme.operations.errors import ERR_INTERNAL, ERR_NOT_FOUND, OperationResult
+from sgme.operations.errors import (
+    ERR_FORBIDDEN,
+    ERR_INTERNAL,
+    ERR_INVALID_ARGS,
+    ERR_NOT_FOUND,
+    OperationResult,
+)
 from sgme.data import memory_dao
 
 # 「不采用」的缺省理由：v0.6 写在 routes_memory.reject_memory 内联表达式里
 # （``(body or {}).get("reason") or "用户纠错"``），v0.7 收敛到此单点常量。
 DEFAULT_REJECT_REASON: str = "用户纠错"
+
+# D-44 / D-54（2026-11-04）：删除两态。
+DELETE_MODE_LOGICAL = "logical"
+DELETE_MODE_PURGE = "purge"
+LOGICAL_DELETE_REASON = "user_delete"
+PURGE_CONFIRM_PHRASE = "彻底删除"
+# 结果页必须诚实列出「删不干净的副本」（D-44 ③）
+PURGE_REMAINING_COPIES: tuple[str, ...] = (
+    "本机备份快照（增量最长保留 30 天；可用 --purge-backups 二次确认后清理）",
+    "L0 原件（原件永不删；段落 redact 需人工执行，本次未改动）",
+)
 
 # MCP ``memory_get`` 的历史「不存在」文案：**固定串、不带 memory_id**。
 # 与 HTTP 的 ``记忆不存在: {id}`` 是既有差异，v0.8 统一后删除本常量。
@@ -208,3 +225,90 @@ def unreject_memory(mem_conn: sqlite3.Connection, memory_id: str) -> OperationRe
     if not ok:
         return _not_found(memory_id)
     return OperationResult.succeed({"memory_id": memory_id, "status": "active"})
+
+
+# ---------- 操作 4：删除两态（D-44 / D-54） ----------
+
+def delete_memory(
+    mem_conn: sqlite3.Connection,
+    memory_id: str,
+    *,
+    mode: str = DELETE_MODE_LOGICAL,
+    reason: str | None = None,
+    triggered_by: str = "user",
+    agent_id: str | None = None,
+    admin: bool = False,
+    confirm_phrase: str | None = None,
+) -> OperationResult:
+    """删除两态（D-44）：logical（默认，可恢复）/ purge（不可恢复）。
+
+    纪律（D-54）：
+    - agent 只能 logical；purge 必须 admin，且入口层要求用户在现场确认 →
+      操作层同时校验 admin 与确认词「彻底删除」，两道都过才执行；
+    - SGME 内部任何自动动作（TTL/归档/梦境/保留策略）永不调用本函数；
+    - 逻辑删除：status='rejected' + reject_reason='user_delete'，数据完整保留；
+    - 彻底删除：物理清主表/归档/子表/边，审计只留删除事件 + 删除前快照
+      （deletion_audit），结果带「剩余副本」清单（备份/L0 原件）。
+    """
+    if mode not in (DELETE_MODE_LOGICAL, DELETE_MODE_PURGE):
+        return OperationResult.fail(
+            ERR_INVALID_ARGS, f"非法 mode: {mode!r}（只允许 logical / purge）"
+        )
+    row = memory_dao.get_memory(mem_conn, memory_id)
+    if row is None:
+        return _not_found(memory_id)
+
+    if mode == DELETE_MODE_LOGICAL:
+        final_reason = reason or LOGICAL_DELETE_REASON
+        if row.get("status") == "rejected" and row.get("reject_reason") == final_reason:
+            # 幂等：重复逻辑删除不再刷审计
+            return OperationResult.succeed({
+                "memory_id": memory_id,
+                "status": "deleted",
+                "mode": DELETE_MODE_LOGICAL,
+                "recoverable": True,
+            })
+        ok = memory_dao.reject_memory(mem_conn, memory_id, final_reason)
+        if not ok:
+            return _not_found(memory_id)
+        memory_dao.record_deletion_audit(
+            mem_conn,
+            memory_id=memory_id,
+            mode=DELETE_MODE_LOGICAL,
+            triggered_by=triggered_by,
+            agent_id=agent_id,
+            reason=final_reason,
+        )
+        return OperationResult.succeed({
+            "memory_id": memory_id,
+            "status": "deleted",
+            "mode": DELETE_MODE_LOGICAL,
+            "reason": final_reason,
+            "recoverable": True,
+        })
+
+    # purge
+    if not admin:
+        return OperationResult.fail(
+            ERR_FORBIDDEN,
+            "彻底删除只能由管理员在 WebUI 现场确认后触发（agent 不得自行 purge）",
+        )
+    if (confirm_phrase or "").strip() != PURGE_CONFIRM_PHRASE:
+        return OperationResult.fail(
+            ERR_INVALID_ARGS,
+            f"彻底删除需输入确认词「{PURGE_CONFIRM_PHRASE}」",
+        )
+    purged = memory_dao.purge_memory(
+        mem_conn, memory_id,
+        triggered_by=triggered_by, agent_id=agent_id, reason=reason,
+    )
+    if purged is None:
+        return _not_found(memory_id)
+    return OperationResult.succeed({
+        "memory_id": memory_id,
+        "status": "purged",
+        "mode": DELETE_MODE_PURGE,
+        "recoverable": False,
+        "content_sha256": purged["content_sha256"],
+        "remaining_copies": list(PURGE_REMAINING_COPIES),
+    })

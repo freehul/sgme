@@ -124,6 +124,7 @@ FILES = {
     "persona_dao": S / "data" / "persona_dao.py",
     "persona_block": S / "profile" / "persona_block.py",
     "persona_extract": S / "engine" / "persona_extract.py",
+    "routes_memory": S / "server" / "routes_memory.py",
 }
 
 _cache: dict[str, str] = {}
@@ -345,13 +346,18 @@ def _(self):
     return r
 
 
-@check("D-44", "删除两态 + 备份 30 天边界", "planned")
+@check("D-44", "删除两态 + 备份 30 天边界", "partial")
 def _(self):
-    # 文档 §3.8 明写 2.0 要加「增量快照保留 30 天 + --purge-backups」，
-    # 当前备份轮转仍是 1.x 口径（增量快照永久保留）→ 待施工。
+    # 2026-11-04 落地：逻辑删除（rejected + user_delete + 审计事件）；彻底删除
+    # （清主表/归档/子表/边 + 审计快照 + 剩余副本清单）；增量快照按天 30 天轮转
+    # （修 1.x 只轮转 full、增量永久保留的缺陷）。
+    # 未落地 = L0 原件段落 redact、--purge-backups 脚本、WebUI 双按钮/二次确认页。
     return [
         ("增量快照保留期开关", *has("backup_manager", "keep_incremental_days")),
         ("逻辑删除原因标记 user_delete", *has("memory_ops", "user_delete")),
+        ("彻底删除物理清理", *has("memory_dao", "def purge_memory")),
+        ("结果页剩余副本清单", *has("memory_ops", "PURGE_REMAINING_COPIES")),
+        ("审计留快照与内容哈希", *has("memory_dao", "content_sha256")),
     ]
 
 
@@ -430,12 +436,17 @@ def _(self):
     ]
 
 
-@check("D-54", "两态删除的边界与入口（逻辑/彻底 + deletion_audit）", "planned")
+@check("D-54", "两态删除的边界与入口（逻辑/彻底 + deletion_audit）", "partial")
 def _(self):
+    # 2026-11-04 落地：delete_memory(mode=logical|purge)；agent 只能 logical
+    # （HTTP 403）；purge 需 admin + 确认词「彻底删除」；审计写 deletion_audit；
+    # 内部自动动作不调用。未落地 = WebUI 双按钮/二次确认页与结果页、MCP 工具面。
     return [
         ("deletion_audit 事件表", *has("db", "deletion_audit")),
-        ("内存操作层彻底删除入口", *has("memory_ops", "purge")),
-        ("内存操作层删除审计", *has("memory_ops", "deletion_audit")),
+        ("操作层两态入口", *has("memory_ops", "def delete_memory")),
+        ("agent 越权拒绝", *has("memory_ops", "ERR_FORBIDDEN")),
+        ("彻底删除确认词", *has("memory_ops", "PURGE_CONFIRM_PHRASE")),
+        ("HTTP 入口按 mode 校验 admin", *has("routes_memory", "is_admin")),
     ]
 
 

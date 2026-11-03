@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -426,6 +427,104 @@ def unreject_memory(
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
+def record_deletion_audit(
+    conn: sqlite3.Connection,
+    *,
+    memory_id: str,
+    mode: str,
+    triggered_by: str,
+    agent_id: str | None = None,
+    reason: str | None = None,
+    content_sha256: str | None = None,
+    snapshot_json: str | None = None,
+) -> None:
+    """写一条删除审计（D-44/D-54）：logical 只留事件，purge 带删除前快照。"""
+    conn.execute(
+        "INSERT INTO deletion_audit "
+        "(memory_id, mode, triggered_by, agent_id, reason, content_sha256, "
+        " snapshot_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (memory_id, mode, triggered_by, agent_id, reason, content_sha256,
+         snapshot_json, _now_iso()),
+    )
+    conn.commit()
+
+
+def purge_memory(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    *,
+    triggered_by: str = "user",
+    agent_id: str | None = None,
+    reason: str | None = None,
+) -> dict | None:
+    """彻底删除一条记忆（D-44 ②）：清主表/归档/子表/边 + 审计留事件与快照。
+
+    - 只由用户显式触发（操作层与入口层负责「admin + 现场确认」校验，本层不判断）；
+    - 原件（L0 raw）与备份**不在本函数清除**——结果页必须诚实列出剩余副本；
+    - FTS 由 memories_ad 触发器同步删除（外部内容表）；
+    - 返回 {"snapshot": ..., "content_sha256": ...}；不存在返回 None（幂等）。
+    """
+    row = conn.execute("SELECT * FROM memories WHERE memory_id=?", (memory_id,)).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT * FROM memory_archive WHERE memory_id=?", (memory_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    tags = [
+        r["dimension_id"]
+        for r in conn.execute(
+            "SELECT dimension_id FROM memory_tags WHERE memory_id=?", (memory_id,)
+        ).fetchall()
+    ]
+    sources = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT source_ref, source_type FROM memory_sources WHERE memory_id=?",
+            (memory_id,),
+        ).fetchall()
+    ]
+    snapshot = {"memory": dict(row), "tags": tags, "sources": sources}
+    content = row["content"] or ""
+    content_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    snapshot_json = json.dumps(snapshot, ensure_ascii=False)
+    now = _now_iso()
+    with _TXN_LOCK:
+        try:
+            conn.execute("BEGIN")
+            for table in ("memory_vectors", "memory_stats", "memory_tags",
+                          "memory_sources", "memory_pages"):
+                if _has_table(conn, table):
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE memory_id=?", (memory_id,)
+                    )
+            if _has_table(conn, "memory_edges"):
+                conn.execute(
+                    "DELETE FROM memory_edges WHERE from_id=? OR to_id=?",
+                    (memory_id, memory_id),
+                )
+            conn.execute("DELETE FROM memory_archive WHERE memory_id=?", (memory_id,))
+            conn.execute("DELETE FROM memories WHERE memory_id=?", (memory_id,))
+            conn.execute(
+                "INSERT INTO deletion_audit "
+                "(memory_id, mode, triggered_by, agent_id, reason, content_sha256, "
+                " snapshot_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (memory_id, "purge", triggered_by, agent_id, reason, content_sha,
+                 snapshot_json, now),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {"snapshot": snapshot, "content_sha256": content_sha}
 
 
 def update_memory_content(

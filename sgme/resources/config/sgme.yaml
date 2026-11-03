@@ -69,6 +69,8 @@ backup:
   level: incremental
   dir: data/backups
   keep_full: 7
+  # D-44 ③（2026-11-04）：增量快照按天保留（默认 30 天，0/空 = 不轮转）
+  keep_incremental_days: 30
   remote_dir: ''  # 异地目录（本机另一盘/NAS 挂载）；空 = 跳过。部署时用 SGME_BACKUP_REMOTE env 注入
   raw_cold_days: 90
 wiki:
