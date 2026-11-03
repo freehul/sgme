@@ -150,6 +150,30 @@ def batch_backfill(conn: sqlite3.Connection, limit: int = 1000) -> dict:
     return {"computed": computed, "low_confidence": low_confidence}
 
 
+def _percentile_of(
+    conn: sqlite3.Connection,
+    memory_type: str | None,
+    value: float,
+) -> tuple[float | None, int]:
+    """把绝对惊讶度映射成「同类型内分位」（D-78 要求）。
+
+    返回值：(分位 或 None, 分布样本数)。样本数 < ``CONFIDENCE_MIN_SAMPLES`` 时返回
+    None——冷启动期不能拿十几条样本算分位，否则前几条记忆的分位永远 0/0.5/1。
+    """
+    sql = "SELECT surprise FROM memories WHERE status='active' AND surprise IS NOT NULL"
+    params: list = []
+    if memory_type is not None:
+        sql += " AND memory_type=?"
+        params.append(memory_type)
+    rows = conn.execute(sql, params).fetchall()
+    vals = [float(r[0]) for r in rows if r[0] is not None]
+    n = len(vals)
+    if n < CONFIDENCE_MIN_SAMPLES:
+        return None, n
+    below = sum(1 for v in vals if v < value)
+    return round(below / n, 6), n
+
+
 def compute_for_store(
     conn,
     content: str | None,
@@ -157,6 +181,14 @@ def compute_for_store(
     sample_limit: int = 150,
 ) -> float | None:
     """落库钩子：算一条新记忆的惊讶度分数（D-78 接线点）。
+
+    **D-78 口径**：库里存的是**同类型内分位**（0–1），不是绝对相似度——
+    绝对值的含义随类型差异漂移（同一句话在「事实」池里不意外，在「经验」池里很意外），
+    跨类型不可比，没法给 D-50 当先验、也没法给 D-29 合并闸当判据。
+
+    实现分两步：先用绝对 ``1 − max_jaccard`` 定位，再映射到同类型已存分位的分布。
+    同类型样本 < ``CONFIDENCE_MIN_SAMPLES``（冷启动）时**退回绝对值**——此时算分位
+    没有统计意义；混合期（绝对值 + 分位）里绝对值占比会随样本增长自然稀释。
 
     **旁路语义**：任何异常都返回 None，绝不阻塞落库——惊讶度是排序先验，
     没有它记忆照样该存。``sample_limit`` 取 150 而非默认 300：落库是热路径，
@@ -168,7 +200,15 @@ def compute_for_store(
             # 空内容没有"惊讶"可言：返回 None（= 未计算），而不是 1.0 冒充最高惊讶
             return None
         res = compute_surprise(conn, text, memory_type, sample_limit=sample_limit)
-        return res.get("surprise")
+        absolute = float(res.get("surprise") or 0.0)
+        pct, n = _percentile_of(conn, memory_type, absolute)
+        if pct is None:
+            logger.debug(
+                "惊讶度分位样本不足（同类型 %d 条 < %d），存绝对值 %.4f",
+                n, CONFIDENCE_MIN_SAMPLES, absolute,
+            )
+            return absolute
+        return pct
     except Exception as exc:  # noqa: BLE001——先验计算失败不得影响存储
         logger.warning("惊讶度计算失败（不阻塞落库）: %s", exc)
         return None
