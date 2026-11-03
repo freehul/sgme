@@ -89,16 +89,35 @@ function buildPackage(
 
 // ---------- 假传输层 ----------
 
+/**
+ * 假服务端。
+ *
+ * 两套哈希口径分开建模（对齐真实服务端，2026-11-03 实测）：
+ * - `sha`：包内 MANIFEST.sha256 的聚合哈希 = 响应头 X-Skill-Sha256 = 本地 content_hash；
+ * - `remoteSha`：GET /v1/skills/{name}/manifest 的 package_sha256（服务端对 DB 行
+ *   确定性打包的缓存指纹），**与聚合哈希永不相等**。
+ *
+ * 旧 mock 把两者设成同值，掩盖了「拿 package_sha256 比 content_hash 永不命中」的缺陷
+ * （2026-11-03 修复：清单另记 remote_sha 才能做二级比对）。
+ */
 class FakeTransport implements SkillCacheTransport {
   catalog = 'cat-v1'
-  skills = new Map<string, { files: Record<string, Buffer>; data: Buffer; sha: string; version: string }>()
+  skills = new Map<string, { files: Record<string, Buffer>; data: Buffer; sha: string; remoteSha: string; version: string }>()
   catalogRequests = 0
   manifestRequests = 0
   packageDownloads = 0
 
   setSkill(name: string, files: Record<string, Buffer>, opts: { tamper?: boolean; version?: string } = {}): void {
+    const version = opts.version ?? '1.0.0'
     const built = buildPackage(name, files, opts)
-    this.skills.set(name, { files, data: built.data, sha: built.sha, version: opts.version ?? '1.0.0' })
+    this.skills.set(name, {
+      files,
+      data: built.data,
+      sha: built.sha,
+      // 服务端指纹（不透明）：同一技能同版本恒等，与包字节/MANIFEST 聚合哈希无关
+      remoteSha: sha256(Buffer.from(`server-package:${name}:${version}`, 'utf8')),
+      version,
+    })
   }
 
   async getCatalogVersion(): Promise<string | null> {
@@ -110,7 +129,8 @@ class FakeTransport implements SkillCacheTransport {
     this.manifestRequests += 1
     const s = this.skills.get(name)
     if (!s) return null
-    return { name, version: s.version, package_sha256: s.sha, content_len: 1, updated_at: '2026-11-02T00:00:00+08:00' }
+    // 真实服务端语义：package_sha256 不是包聚合哈希
+    return { name, version: s.version, package_sha256: s.remoteSha, content_len: 1, updated_at: '2026-11-02T00:00:00+08:00' }
   }
 
   async getPackage(name: string): Promise<{ data: Buffer; headers: Record<string, string> }> {
@@ -154,6 +174,9 @@ describe('SkillCache（dsh / D-59）', () => {
     expect(manifest.name).toBe('demo-skill')
     expect(manifest.version).toBe('1.0.0')
     expect(manifest.content_hash).toBe(r.sha256)
+    // 两套哈希口径分开记录：content_hash=包聚合，remote_sha=服务端不透明指纹
+    expect(manifest.content_hash).not.toBe(manifest.remote_sha)
+    expect(manifest.remote_sha).toBe(t.skills.get('demo-skill')?.remoteSha)
     expect(manifest.files.map((f: { path: string }) => f.path).sort()).toEqual(['SKILL.md', 'scripts/run.py'])
     expect(manifest.fetched_at).toBeTruthy()
   })
@@ -183,6 +206,29 @@ describe('SkillCache（dsh / D-59）', () => {
     expect(again.cached).toBe(true)
     expect(t.packageDownloads).toBe(1)
     expect(t.manifestRequests).toBe(2)
+  })
+
+  // 2026-11-03 回归：服务端 package_sha256 是 DB 行打包指纹，**不是**包内
+  // MANIFEST.sha256 的聚合哈希。旧实现拿它与 content_hash/aggregate 比 → 首次落盘必抛
+  // 「拒绝落盘」、二次恒不命中（缓存形同虚设）。修法是清单另记 remote_sha 做二级比对。
+  it('回归：manifest.package_sha256 ≠ 包聚合哈希时，首次可落盘且二次零下载命中', async () => {
+    const dir = await tmpDir()
+    const t = new FakeTransport()
+    t.setSkill('demo-skill', FILES)
+
+    const first = await new SkillCache(t, dir).ensureSkill('demo-skill', dir)
+    expect(first.cached).toBe(false)
+    expect(t.packageDownloads).toBe(1)
+    const remoteSha = t.skills.get('demo-skill')?.remoteSha
+    expect(remoteSha).toBeTruthy()
+    expect(remoteSha).not.toBe(t.skills.get('demo-skill')?.sha)
+
+    // 强制造走二级（单技能）比对：目录状态缺失 → 只能靠 remote_sha 短路
+    await fsp.rm(path.join(dir, CATALOG_FILE))
+    const again = await new SkillCache(t, dir).ensureSkill('demo-skill', dir)
+    expect(again.cached).toBe(true)
+    expect(t.packageDownloads).toBe(1)  // 零包传输
+    expect(t.manifestRequests).toBe(2)  // 二次仍拉 manifest（二级比对入口）
   })
 
   it('本地文件被外部改动 → 重新拉取恢复', async () => {
@@ -233,7 +279,7 @@ describe('SkillCache（dsh / D-59）', () => {
     const dir = await tmpDir()
     const t = new FakeTransport()
     const evil = buildTarGz([{ path: '../escape.txt', data: Buffer.from('bad') }])
-    t.skills.set('demo-skill', { files: {}, data: evil, sha: '0'.repeat(64), version: '1' })
+    t.skills.set('demo-skill', { files: {}, data: evil, sha: '0'.repeat(64), remoteSha: '0'.repeat(64), version: '1' })
     await expect(new SkillCache(t, dir).ensureSkill('demo-skill', dir)).rejects.toThrow(SkillCacheError)
     expect((await fsp.readdir(dir)).filter((n) => n.startsWith('.demo-skill.fetch-'))).toEqual([])
   })

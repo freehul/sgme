@@ -9,7 +9,13 @@
  *   1. 目录级：GET /v1/skills/catalog-version 与本地 ``.sgme-catalog.json`` 比对，
  *      相同则本次会话不再逐个比对（进程内只拉一次）；
  *   2. 单技能：GET /v1/skills/{name}/manifest 的 ``package_sha256`` 与本地
- *      ``.sgme-manifest.json`` 的 ``content_hash`` 比对，相同直接用本地副本（零包传输）。
+ *      ``.sgme-manifest.json`` 的 ``remote_sha`` 比对，相同直接用本地副本（零包传输）。
+ *
+ * ⚠️ 两套哈希口径不同、永不相等（2026-11-03 实测，Python 真源同款修正）：
+ *   - ``package_sha256``：服务端对技能 DB 行确定性打包的**不透明缓存指纹**，
+ *     只用于「是否同一份远端包」的比对，落盘时记进本清单的 ``remote_sha``；
+ *   - ``content_hash``（= 响应头 X-Skill-Sha256）：包内 MANIFEST.sha256 的聚合哈希，
+ *     用于逐文件校验，不能拿去和 package_sha256 比（比了缓存永不命中且首次必拒绝落盘）。
  *   3. 未命中才 GET /v1/skills/{name}/package：按包内 MANIFEST.sha256 逐文件校验 +
  *      文件集双向对照 + 响应头对账，全部通过后在 ``.<name>.fetch-*`` 临时目录组装，
  *      最后 rename **原子替换**（失败回滚、不留残件）。
@@ -70,7 +76,13 @@ export interface SkillFileEntry {
 export interface SkillLocalManifest {
   name: string
   version: string
+  /** 包内 MANIFEST.sha256 的聚合哈希（= 响应头 X-Skill-Sha256，逐文件校验用）。 */
   content_hash: string
+  /**
+   * 落盘时见到的服务端 ``package_sha256``（**不透明缓存指纹**，非聚合哈希）。
+   * 二级比对（缓存命中）只认它；旧清单缺该字段时按空串处理 → 保守重下（自愈）。
+   */
+  remote_sha: string
   files: SkillFileEntry[]
   fetched_at: string
   /** 落盘时见到的服务端目录版本：只在该版本下才允许一级短路（防旧副本误判最新）。 */
@@ -373,7 +385,9 @@ export class SkillCache {
       return { path: target, sha256: local.content_hash, files: local.files.length, cached: true }
     }
     const remote = await this.transport.getManifest(skill)
-    if (intact && local && remote && remote.package_sha256 === local.content_hash) {
+    // 二级比对：远端 package_sha256 只能与本地记录的 remote_sha 比（同为服务端指纹）；
+    // 拿 content_hash 比 → 口径不同、永不相等，缓存形同虚设（2026-11-03 修复）。
+    if (intact && local && remote && (remote.package_sha256 ?? '') === (local.remote_sha ?? '')) {
       return { path: target, sha256: local.content_hash, files: local.files.length, cached: true }
     }
     return this.downloadAndInstall(skill, dest, remote, catalog.version)
@@ -426,10 +440,9 @@ export class SkillCache {
     if (headerFiles && headerFiles !== String(fileEntries.length)) {
       throw new SkillCacheError('包文件数与响应头 X-Skill-Files 不一致——拒绝落盘')
     }
-    const expectedSha = String(remote?.package_sha256 ?? '').trim().toLowerCase()
-    if (expectedSha && expectedSha !== aggregate) {
-      throw new SkillCacheError(`包聚合哈希与服务端 manifest.package_sha256 不一致——拒绝落盘: ${aggregate}`)
-    }
+    // 注意：这里**不**拿 manifest.package_sha256 与 aggregate 对账——两者口径不同
+    // （服务端 DB 行打包指纹 vs 包内 MANIFEST 聚合哈希），比对必误报「拒绝落盘」。
+    // package_sha256 只落进清单的 remote_sha 供下次二级比对（2026-11-03 修复）。
 
     await fsp.mkdir(dest, { recursive: true })
     const tmpRoot = await fsp.mkdtemp(path.join(dest, `.${name}.fetch-`))
@@ -446,6 +459,8 @@ export class SkillCache {
         name,
         version: remote?.version ?? '',
         content_hash: aggregate,
+        // 服务端指纹（不透明）：下次二级比对用它，不能用 aggregate 代替
+        remote_sha: String(remote?.package_sha256 ?? '').trim().toLowerCase(),
         files: fileEntries,
         fetched_at: nowIso(),
         catalog_version: catalogVersion,

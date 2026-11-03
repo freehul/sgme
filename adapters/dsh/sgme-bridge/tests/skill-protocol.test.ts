@@ -61,18 +61,18 @@ describe('registerSkillProtocolSection', () => {
     await registerSkillProtocolSection(ctx, makeClient(coldstart(PROTOCOL_TEXT)) as never)
 
     expect(sections).toHaveLength(1)
-    expect(sections[0].name).toBe(SKILL_PROTOCOL_SECTION)
-    expect(sections[0].order).toBe(SKILL_PROTOCOL_ORDER)
-    expect(sections[0].text).toContain('技能检索协议')
-    expect(sections[0].text).toContain('框架、工具链')   // 路由表被拼进来
+    expect(sections[0]!.name).toBe(SKILL_PROTOCOL_SECTION)
+    expect(sections[0]!.order).toBe(SKILL_PROTOCOL_ORDER)
+    expect(sections[0]!.text).toContain('技能检索协议')
+    expect(sections[0]!.text).toContain('框架、工具链')   // 路由表被拼进来
   })
 
   it('不注入 manual（7.4KB 属按需查阅，不能进常驻前缀）', async () => {
     const { ctx, sections } = makeCtx()
     await registerSkillProtocolSection(ctx, makeClient(coldstart(PROTOCOL_TEXT)) as never)
 
-    expect(sections[0].text).not.toContain('SGME操作手册')
-    expect(sections[0].text).not.toContain('XXXX')
+    expect(sections[0]!.text).not.toContain('SGME操作手册')
+    expect(sections[0]!.text).not.toContain('XXXX')
   })
 
   it('协议正文为空时降级为不注入（老服务端未内联正文）', async () => {

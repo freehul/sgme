@@ -3246,7 +3246,12 @@ function adapterFailureChunk(error, signal) {
 *   agent/inbox/spliced 中只有用户消息，无 SGME 画像）→ 本次修复。
 * - 注入时机：首个 step（step === 1）注入一次，之后不再重复（避免每轮污染上下文）。
 *
-* 契约对齐：POST /v1/inject（Agent Key，mode + custom_filter 二选一）
+* D-72 冷场修复（2026-11-03 接线）：首步注入完成后，仅当本地廉价启发式判定可能冷场时，
+* 额外探测一次 /v1/inject（带 history + already_repaired），响应含
+* ``kind="coldstart_repair"`` 块则把修补提示作为一条 user 消息注入；同一会话最多修补 1 次，
+* 普通长对话**零额外请求**（保持前缀缓存纪律）。
+*
+* 契约对齐：POST /v1/inject（Agent Key，mode + custom_filter 二选一；可选 history/already_repaired）
 */
 /** 拼接事件提醒文本（摘要化，2026-08-20 修复）。
 *
@@ -3279,6 +3284,61 @@ function sameContextPayload(left, right) {
 	const r = right;
 	return JSON.stringify(l.content) === JSON.stringify(r.content) && JSON.stringify(l.source) === JSON.stringify(r.source);
 }
+/** 判据 1 阈值：最近 2 条用户消息都 ≤6 字符且不含问号（镜像服务端 conversation_state）。 */
+const COLD_SHORT_USER_LEN = 6;
+/** 寒暄词表：完全匹配或只差标点（镜像服务端 GREETING_FILLERS）。 */
+const COLD_GREETING_FILLERS = /* @__PURE__ */ new Set([
+	"嗯",
+	"哦",
+	"好的",
+	"好",
+	"随便",
+	"都行",
+	"是吗",
+	"哈哈",
+	"在吗"
+]);
+/** 去首尾标点与空白（对应 Python _strip_punct：只差标点视为同一词）。 */
+function stripPunct(text) {
+	return text.replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "");
+}
+/**
+* 本地廉价冷场启发式：只决定「值不值得向服务端探测」，**最终判据在服务端**。
+*
+* 镜像服务端可离线判定的两条判据（第三条 assistant_monologue 需统计均值且易误判，
+* 交给服务端）：① 最近 2 条 user 消息都 ≤6 字符且不含问号；② 最近 user 消息命中寒暄词表。
+*/
+function looksLikeColdStart(history) {
+	const users = history.filter((m) => m.role === "user").map((m) => m.content);
+	const lastTwo = users.slice(-2);
+	if (lastTwo.length === 2 && lastTwo.every((c) => c.length <= COLD_SHORT_USER_LEN && !c.includes("?") && !c.includes("？"))) return true;
+	const lastUser = users.at(-1) ?? "";
+	return COLD_GREETING_FILLERS.has(lastUser) || COLD_GREETING_FILLERS.has(stripPunct(lastUser));
+}
+/** 从 payload.messages 构造发给服务端的 history（最近 ≤8 条，只留 user/assistant 文本）。 */
+function buildColdRepairHistory(messages) {
+	const out = [];
+	for (const m of messages) {
+		if (!m || typeof m !== "object") continue;
+		const msg = m;
+		if (msg.source?.kind === "dsh-sgme") continue;
+		const role = msg.role;
+		if (role !== "user" && role !== "assistant") continue;
+		const text = extractMessageText(msg.content);
+		if (!text) continue;
+		out.push({
+			role,
+			content: text
+		});
+	}
+	return out.slice(-8);
+}
+/** 从 inject 响应里取冷场修复提示文本（kind=coldstart_repair 块的 items[].content 拼接）。 */
+function extractColdstartRepairHint(profile) {
+	const block = profile?.blocks?.find((b) => b.kind === "coldstart_repair");
+	if (!block) return void 0;
+	return (block.items ?? []).map((item) => typeof item?.content === "string" ? item.content : "").filter((t) => t.trim().length > 0).join("\n").trim() || void 0;
+}
 /**
 * 注册画像首步注入（agent/pre-step middleware）。
 *
@@ -3294,6 +3354,8 @@ function registerContextInjection(ctx, client, config) {
 	let profileCache = null;
 	let fetching = null;
 	let injected = false;
+	let coldRepaired = false;
+	let coldProbeUserText = "";
 	/** 预拉取画像 + 相关记忆（turn/start 触发，失败不置位，下轮重试）。 */
 	const prefetch = (projectHint) => {
 		if (fetching) return;
@@ -3335,6 +3397,39 @@ function registerContextInjection(ctx, client, config) {
 					kind: "enter",
 					messages: [evMsg, ...decision.messages]
 				};
+			}
+		}
+		if (injected && !coldRepaired) {
+			const history = buildColdRepairHistory(payload.messages ?? []);
+			const lastUserText = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
+			if (lastUserText && lastUserText !== coldProbeUserText && looksLikeColdStart(history)) {
+				coldProbeUserText = lastUserText;
+				try {
+					const hint = extractColdstartRepairHint(await client.inject({
+						mode: config.injectMode,
+						history,
+						already_repaired: coldRepaired
+					}));
+					if (hint) {
+						coldRepaired = true;
+						const repairMsg = createUserMessage({
+							content: [{
+								type: "text",
+								text: hint
+							}],
+							source: { kind: "dsh-sgme" }
+						});
+						if (!decision.messages.some((m) => sameContextPayload(m, repairMsg))) {
+							ctx.logger.info(`[SGME 冷场修复] 已注入修补提示（step ${payload.step}）`);
+							return {
+								kind: "enter",
+								messages: [...decision.messages, repairMsg]
+							};
+						}
+					}
+				} catch (e) {
+					ctx.logger.warn(`[SGME 冷场修复失败] ${e instanceof Error ? e.message : String(e)}`);
+				}
 			}
 		}
 		if (injected) return decision;
@@ -3523,7 +3618,13 @@ function formatRelatedMemories(results) {
 *   1. 目录级：GET /v1/skills/catalog-version 与本地 ``.sgme-catalog.json`` 比对，
 *      相同则本次会话不再逐个比对（进程内只拉一次）；
 *   2. 单技能：GET /v1/skills/{name}/manifest 的 ``package_sha256`` 与本地
-*      ``.sgme-manifest.json`` 的 ``content_hash`` 比对，相同直接用本地副本（零包传输）。
+*      ``.sgme-manifest.json`` 的 ``remote_sha`` 比对，相同直接用本地副本（零包传输）。
+*
+* ⚠️ 两套哈希口径不同、永不相等（2026-11-03 实测，Python 真源同款修正）：
+*   - ``package_sha256``：服务端对技能 DB 行确定性打包的**不透明缓存指纹**，
+*     只用于「是否同一份远端包」的比对，落盘时记进本清单的 ``remote_sha``；
+*   - ``content_hash``（= 响应头 X-Skill-Sha256）：包内 MANIFEST.sha256 的聚合哈希，
+*     用于逐文件校验，不能拿去和 package_sha256 比（比了缓存永不命中且首次必拒绝落盘）。
 *   3. 未命中才 GET /v1/skills/{name}/package：按包内 MANIFEST.sha256 逐文件校验 +
 *      文件集双向对照 + 响应头对账，全部通过后在 ``.<name>.fetch-*`` 临时目录组装，
 *      最后 rename **原子替换**（失败回滚、不留残件）。
@@ -3800,7 +3901,7 @@ var SkillCache = class {
 			cached: true
 		};
 		const remote = await this.transport.getManifest(skill);
-		if (intact && local && remote && remote.package_sha256 === local.content_hash) return {
+		if (intact && local && remote && (remote.package_sha256 ?? "") === (local.remote_sha ?? "")) return {
 			path: target,
 			sha256: local.content_hash,
 			files: local.files.length,
@@ -3831,8 +3932,6 @@ var SkillCache = class {
 		if (headerHash && headerHash !== aggregate) throw new SkillCacheError("包聚合哈希与响应头 X-Skill-Sha256 不一致——拒绝落盘");
 		const headerFiles = String(pkg.headers["x-skill-files"] ?? "").trim();
 		if (headerFiles && headerFiles !== String(fileEntries.length)) throw new SkillCacheError("包文件数与响应头 X-Skill-Files 不一致——拒绝落盘");
-		const expectedSha = String(remote?.package_sha256 ?? "").trim().toLowerCase();
-		if (expectedSha && expectedSha !== aggregate) throw new SkillCacheError(`包聚合哈希与服务端 manifest.package_sha256 不一致——拒绝落盘: ${aggregate}`);
 		await promises.mkdir(dest, { recursive: true });
 		const tmpRoot = await promises.mkdtemp(path.join(dest, `.${name}.fetch-`));
 		const staged = path.join(tmpRoot, "staged");
@@ -3848,6 +3947,7 @@ var SkillCache = class {
 				name,
 				version: remote?.version ?? "",
 				content_hash: aggregate,
+				remote_sha: String(remote?.package_sha256 ?? "").trim().toLowerCase(),
 				files: fileEntries,
 				fetched_at: nowIso(),
 				catalog_version: catalogVersion
