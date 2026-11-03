@@ -28,7 +28,8 @@ class TestMatchMemories:
             [{"content": "用户坚守原件永不删底线"}], rules
         )
         assert "decision_style" in hits
-        assert hits["decision_style"]["原则先于利益"] == 1
+        # D-48（2026-11-04）：返回命中记忆列表（不再是计数），供四条件闸门取证据字段
+        assert len(hits["decision_style"]["原则先于利益"]) == 1
 
     def test_no_hit(self, mem_conn):
         hits = persona_extract._match_memories(
@@ -43,7 +44,7 @@ class TestMatchMemories:
             mems,
             [{"dimension": "d", "values": [{"value": "v", "keywords": ["沉没成本"]}]}],
         )
-        assert hits["d"]["v"] == persona_extract.MAX_EVIDENCE_PER_DIM_PER_RUN
+        assert len(hits["d"]["v"]) == persona_extract.MAX_EVIDENCE_PER_DIM_PER_RUN
 
 
 class TestExtractAndStore:
@@ -59,9 +60,13 @@ class TestExtractAndStore:
         vals = {t["value"] for t in traits}
         assert "计划驱动" in vals
         assert "真实高于效率" in vals
-        # 溯源可查
+        # 溯源可查（D-48：结构化证据 dict，含 memory_id/file_id 与会话/场景字段）
         t = [t for t in traits if t["value"] == "计划驱动"][0]
-        assert t["evidence_refs"] == ["refine:f-1"]
+        refs = t["evidence_refs"]
+        assert isinstance(refs[0], dict)
+        assert refs[0]["memory_id"] == "m1"
+        assert refs[0]["file_id"] == "f-1"
+        assert set(refs[0]) >= {"occurred_at", "scene_key", "derivation", "modality"}
 
     def test_disabled(self, mem_conn):
         r = _result([{"memory_id": "m1", "content": "沉没成本不参与决策"}])
