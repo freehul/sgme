@@ -29,7 +29,9 @@ from pathlib import Path
 from sgme import config
 
 # 独立库版本线（label credentials_v1）：新库无历史包袱，不共用三库的全局版本号
-SCHEMA_VERSION = 1
+# v2（2026-11-04 · SGME 2.0 迁移阶段 1）：补 scope / cred_type / expires_at /
+# last_used_at 四列（D-37 扩展位；写读接线随 v1.1 落地，本阶段只保证结构存在）
+SCHEMA_VERSION = 2
 
 # ---------- DDL（方案 §三：credentials + credential_audit + (key_name, at) 索引） ----------
 
@@ -43,7 +45,11 @@ CREATE TABLE IF NOT EXISTS credentials (
   deleted_at   TEXT,
   created_at   TEXT NOT NULL,
   updated_at   TEXT NOT NULL,
-  updated_by   TEXT NOT NULL);
+  updated_by   TEXT NOT NULL,
+  scope        TEXT,      -- 访问范围（D-37 扩展位：agent 可读 / admin-only）
+  cred_type    TEXT,      -- 凭据类型（D-37 扩展位：api_key / token / password / file）
+  expires_at   TEXT,      -- 过期时间（D-37 扩展位；NULL = 不过期）
+  last_used_at TEXT);     -- 最近使用时间（D-37 扩展位；读端触达时更新）
 CREATE TABLE IF NOT EXISTS credential_audit (
   id       INTEGER PRIMARY KEY,
   key_name TEXT NOT NULL,
@@ -86,6 +92,11 @@ def connect_credentials(data_dir: str | Path | None = None) -> sqlite3.Connectio
     d = Path(data_dir) if data_dir else config.DATA_DIR
     conn = _connect(d / "credentials.db")
     conn.executescript(CREDENTIALS_DDL)
+    # 2.0 迁移阶段 1（2026-11-04）：老库补 D-37 四列（ALTER 幂等，1.x 读写零影响）
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(credentials)").fetchall()]
+    for col in ("scope", "cred_type", "expires_at", "last_used_at"):
+        if cols and col not in cols:
+            conn.execute(f"ALTER TABLE credentials ADD COLUMN {col} TEXT")
     conn.executescript(_SCHEMA_VERSIONS_DDL)
     cur = conn.execute(
         "SELECT version FROM schema_versions WHERE version=?", (SCHEMA_VERSION,)

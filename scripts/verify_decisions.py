@@ -81,6 +81,7 @@ FILES = {
     "recall_aging": S / "engine" / "recall_aging.py",
     "conversation_state": S / "engine" / "conversation_state.py",
     "inject_ops": S / "operations" / "inject.py",
+    "wiki_ops": S / "operations" / "wiki.py",
     "review_ops": S / "operations" / "review.py",
     "memory_ops": S / "operations" / "memory.py",
     "profile_inject": S / "profile" / "inject.py",
@@ -107,6 +108,7 @@ FILES = {
     # 仓库级脚本/配置（决策断言需要，仍走同一套 has() 口径）
     "adapter_parity": ROOT / "scripts" / "adapter_parity.py",
     "parity_map": ROOT / "scripts" / "adapter_parity_map.yaml",
+    "migrate_baseline": ROOT / "scripts" / "migrate_2_0_baseline.py",
 }
 
 _cache: dict[str, str] = {}
@@ -368,12 +370,18 @@ def _(self):
 
 @check("D-52", "TTL 到期 0-4 五档处置", "planned")
 def _(self):
+    # 2026-11-04：五列已随迁移阶段 1 建出（结构面就位），但五档**判定逻辑**仍未实现
+    # ——梦境仍走 1.x「到期 → status='expired'」，没有 M 计算、没有续期/锚点块分支。
+    # 故状态保持 planned：结构断言全过 + 逻辑断言未过 = 待施工（与文档一致）。
     return [
         ("lifecycle 列", *has("db", "lifecycle")),
         ("ttl_renew_count 列", *has("db", "ttl_renew_count")),
         ("ttl_renewed_at 列", *has("db", "ttl_renewed_at")),
         ("inject_tier 列", *has("db", "inject_tier")),
         ("meaning_anchor 列", *has("db", "meaning_anchor")),
+        # 五档判定链（未落地）：梦境按 meaning_anchor 分档 + 注入侧读 inject_tier
+        ("梦境五档判定（M 分档 / 续期）", *has("dream", "meaning_anchor")),
+        ("注入侧按 inject_tier 分档", *has("profile_inject", "inject_tier")),
     ]
 
 
@@ -417,9 +425,12 @@ def _(self):
 
 @check("D-57", "迁移校验十项（全绿才准切读）", "planned")
 def _(self):
-    # 设计报告落 docs/migration/2.0-迁移校验-YYYYMMDD.md（9.4 末）；9.2 结论：0/10 脚本化
+    # 2026-11-04：阶段 0 基线采集器已落地（scripts/migrate_2_0_baseline.py），
+    # 但 §9.4 十项**校验**尚未脚本化（无 verify_migration.py / 无校验报告）→ 仍待施工。
     return [
-        ("迁移校验报告目录", *exists("docs/migration")),
+        ("阶段 0 基线采集脚本", *has("migrate_baseline", "collect_memory")),
+        ("迁移报告目录", *exists("docs/migration")),
+        ("十项校验脚本", *exists("scripts/verify_migration.py")),
     ]
 
 
@@ -441,9 +452,15 @@ def _(self):
 
 @check("D-62", "知识库自动关联与自动分类", "planned")
 def _(self):
+    # 2026-11-04 迁移阶段 1 只建出修订史/分类两表（结构面）；D-62 的三层关联与自动
+    # 分类**均未接线**（operations/wiki.py 无分类/关联逻辑，只有 2026-08 的手工脚本）
+    # → 结构断言过、接线断言未过 = 待施工（与文档一致）。
     return [
         ("wiki_revisions 表", *has("db", "wiki_revisions")),
         ("wiki_categories 表", *has("db", "wiki_categories")),
+        ("写入侧自动分类接线", *has("wiki_ops", "auto_classify")),
+        ("三层关联建议区块", *has("wiki_ops", "related_pages")),
+        ("未分类占比告警", *has("wiki_ops", "uncategorized")),
     ]
 
 

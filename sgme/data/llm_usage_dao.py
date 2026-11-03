@@ -23,21 +23,15 @@ import sqlite3
 
 
 def ensure_table(conn: sqlite3.Connection) -> None:
-    """建 llm_usage_daily 账本表（CREATE TABLE IF NOT EXISTS，幂等）。"""
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS llm_usage_daily (
-          day TEXT NOT NULL,
-          provider TEXT NOT NULL,
-          model TEXT NOT NULL,
-          stage TEXT NOT NULL,
-          prompt_tokens INTEGER DEFAULT 0,
-          completion_tokens INTEGER DEFAULT 0,
-          calls INTEGER DEFAULT 0,
-          PRIMARY KEY (day, provider, model, stage)
-        )
-        """
-    )
+    """建 llm_usage_daily 账本表（CREATE TABLE IF NOT EXISTS，幂等）。
+
+    DDL 真源在 `sgme/data/db.py:LLM_USAGE_DAILY_DDL»（2026-11-04 起该表纳入
+    2.0 迁移阶段 1 的表清单，见设计 §9.2）；本函数只做兜底建表，避免同一张表
+    两处定义漂移。ensure 语义不变：老库缺表时调用方仍能自愈。
+    """
+    from sgme.data.db import LLM_USAGE_DAILY_DDL
+
+    conn.executescript(LLM_USAGE_DAILY_DDL)
     conn.commit()
 
 

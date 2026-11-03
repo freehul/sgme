@@ -103,6 +103,7 @@ exports/skills-migration-preview/
 /docs/decisions/
 /docs/eval/
 /docs/plans/
+/docs/migration/
 /docs/reviews/
 /docs/QA_评测基线_验收报告.md
 /docs/QA_提示词版本管理_验收报告.md

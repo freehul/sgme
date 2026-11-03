@@ -69,21 +69,25 @@ def upsert_dimension(conn: sqlite3.Connection, dim: dict) -> None:
     conn.execute(
         """
         INSERT INTO dimension_registry
-          (id, display_name, category, time_velocity, ttl_days, description, active, created_at, boundaries)
-        VALUES (?,?,?,?,?,?,1,?,?)
+          (id, display_name, category, time_velocity, ttl_days, description, active,
+           created_at, boundaries, priority)
+        VALUES (?,?,?,?,?,?,1,?,?,?)
         ON CONFLICT(id) DO UPDATE SET
           display_name=excluded.display_name,
           category=excluded.category,
           time_velocity=excluded.time_velocity,
           ttl_days=excluded.ttl_days,
           description=excluded.description,
-          boundaries=excluded.boundaries
+          boundaries=excluded.boundaries,
+          priority=excluded.priority
           -- active 不在此更新：保留 DB 现值（停用维度重启不复活）
         """,
         (
             dim["id"], dim["display_name"], dim["category"],
             dim["time_velocity"], dim["ttl_days"], dim["description"], _now_iso(),
             dim.get("boundaries"),
+            # D-53 R1：主维度选取按 priority 升序；YAML 未声明时留 NULL（最低优先级）
+            dim.get("priority"),
         ),
     )
 

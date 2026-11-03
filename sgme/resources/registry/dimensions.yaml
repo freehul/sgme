@@ -7,12 +7,15 @@
 #   time_velocity 默认变更频率（static | dynamic），记忆级可覆盖
 #   ttl_days      动态维度默认 TTL，基于 updated_at 起算（update/merge 续期）；null = 不过期
 #   description   边界定义（含 vs 对照）
+#   priority      主维度选取优先级（D-53 R1，2026-11-04）：数值越小越靠近身份锚；
+#                 1.x 的 memory_tags 无主维度概念，2.0 用此值 + 来源类生成 scene_key
 # 扩展：新增维度 = 注册表加行 + 别名表加行 + 打标即可，无需 schema 迁移
 
 dimensions:
   # ── 静态/慢变（月~年，time_velocity=static，无 TTL）──
   - id: identity
     display_name: 身份
+    priority: 10
     category: 静态
     time_velocity: static
     ttl_days: null
@@ -21,6 +24,7 @@ dimensions:
 
   - id: family
     display_name: 家庭
+    priority: 20
     category: 静态
     time_velocity: static
     ttl_days: null
@@ -29,6 +33,7 @@ dimensions:
 
   - id: social
     display_name: 社交
+    priority: 30
     category: 静态
     time_velocity: static
     ttl_days: null
@@ -37,6 +42,7 @@ dimensions:
 
   - id: values
     display_name: 价值观
+    priority: 40
     category: 静态
     time_velocity: static
     ttl_days: null
@@ -45,6 +51,7 @@ dimensions:
 
   - id: skills
     display_name: 能力
+    priority: 45
     category: 静态
     time_velocity: static
     ttl_days: null
@@ -53,6 +60,7 @@ dimensions:
 
   - id: tech_stack
     display_name: 技术栈
+    priority: 80
     category: 静态
     time_velocity: static
     ttl_days: null
@@ -62,6 +70,7 @@ dimensions:
   # ── 偏好/模式（周~月，按慢变处理 time_velocity=static，无 TTL）──
   - id: preferences
     display_name: 偏好
+    priority: 60
     category: 偏好
     time_velocity: static
     ttl_days: null
@@ -70,6 +79,7 @@ dimensions:
 
   - id: habits
     display_name: 习惯
+    priority: 70
     category: 偏好
     time_velocity: static
     ttl_days: null
@@ -78,6 +88,7 @@ dimensions:
 
   - id: environment
     display_name: 环境
+    priority: 90
     category: 偏好
     time_velocity: static
     ttl_days: null
@@ -97,6 +108,7 @@ dimensions:
   # ── 动态/快变（天~周，time_velocity=dynamic，默认 TTL）──
   - id: focus
     display_name: 关注
+    priority: 110
     category: 动态
     time_velocity: dynamic
     ttl_days: 30
@@ -106,6 +118,7 @@ dimensions:
 # projects/tasks 维度已移除（2026-08-18 用户定：项目池 project_meta / 待办池 demands 为专用落地点）
   - id: goals
     display_name: 目标
+    priority: 100
     category: 动态
     time_velocity: dynamic
     ttl_days: 90
@@ -114,6 +127,7 @@ dimensions:
 
   - id: status
     display_name: 状态
+    priority: 120
     category: 动态
     time_velocity: dynamic
     ttl_days: 7
@@ -123,6 +137,7 @@ dimensions:
   # ── 创意池（0.8 ST-14；长期保存，无 TTL，靠 admin API 人工修正）──
   - id: ideas
     display_name: 创意
+    priority: 130
     category: 动态
     time_velocity: dynamic
     ttl_days: null

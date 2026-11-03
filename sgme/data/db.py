@@ -34,7 +34,12 @@ from sgme import config
 logger = logging.getLogger("sgme.data.db")
 
 # 当前 schema 版本（每次 DDL 变更 +1）
-SCHEMA_VERSION = 4
+# v5（2026-11-04 · SGME 2.0 迁移阶段 1「加列」）：memories/memory_archive 补
+# lifecycle / ttl_renew_count / ttl_renewed_at / inject_tier / meaning_anchor 五列；
+# dimension_registry 补 priority（D-53 R1 主维度选取）；新增 ttl_disposition（正式表，
+# 含 reason）/ deletion_audit / rule_sync_ledger / rule_sync_daily 四表。
+# 口径见 docs/design/SGME2.0-设计方案-V1.0.md §9.2 阶段 1。
+SCHEMA_VERSION = 5
 
 # memory.db 建表 DDL（v1 基础六表 + v2 向量/信号表 + v3 refine_runs/prompt_version + v4 content_seg）
 MEMORY_DDL = """
@@ -42,7 +47,9 @@ CREATE TABLE IF NOT EXISTS dimension_registry (
   id TEXT PRIMARY KEY, display_name TEXT NOT NULL, category TEXT NOT NULL,
   time_velocity TEXT NOT NULL DEFAULT 'static', ttl_days INTEGER,
   description TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
-  boundaries TEXT);  -- T-11：维度边界（vs 对照消歧说明），YAML→DB 不再静默丢弃
+  boundaries TEXT,  -- T-11：维度边界（vs 对照消歧说明），YAML→DB 不再静默丢弃
+  priority INTEGER);  -- D-53 R1（2026-11-04）：主维度选取用，数值越小越靠近身份锚
+                      -- （身份 10 / 家庭 20 / ... / 创意 130；种子值见 resources/registry/dimensions.yaml）
 CREATE TABLE IF NOT EXISTS dimension_alias (
   alias TEXT PRIMARY KEY, dimension_id TEXT NOT NULL REFERENCES dimension_registry(id));
 CREATE TABLE IF NOT EXISTS memories (
@@ -52,13 +59,22 @@ CREATE TABLE IF NOT EXISTS memories (
   prompt_version TEXT, content_seg TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   rejected_at TEXT, reject_reason TEXT,
-  occurred_at TEXT);   -- v0.5：记忆对应会话事件的真实发生时刻（vs created_at=提炼落库时刻）
+  occurred_at TEXT,   -- v0.5：记忆对应会话事件的真实发生时刻（vs created_at=提炼落库时刻）
+  -- ---- 2.0 三轴分离（D-46）与时效五档（D-52）载体（迁移阶段 1，2026-11-04）----
+  lifecycle TEXT,                       -- active / sleeping / archived；NULL 按注入谓词兜底视为 active
+  ttl_renew_count INTEGER NOT NULL DEFAULT 0,  -- 续期次数（D-52 上限 2 次）
+  ttl_renewed_at TEXT,                  -- 上次续期时间锚（旧到期日）
+  inject_tier TEXT,                     -- full / summary / anchor / none
+  meaning_anchor REAL);                 -- D-50 意义锚 M（NULL = 未计算，存量不编造分数）
 CREATE TABLE IF NOT EXISTS memory_archive (
   memory_id TEXT PRIMARY KEY, content TEXT NOT NULL, memory_type TEXT NOT NULL,
   priority INTEGER NOT NULL, time_velocity TEXT NOT NULL, ttl_days INTEGER,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, agent_tag TEXT,
   prompt_version TEXT, archived_at TEXT NOT NULL, superseded_by TEXT,
-  occurred_at TEXT);
+  occurred_at TEXT,
+  -- 归档表同步补齐 2.0 五列（归档链要能还原全字段，口径同 memories）
+  lifecycle TEXT, ttl_renew_count INTEGER NOT NULL DEFAULT 0, ttl_renewed_at TEXT,
+  inject_tier TEXT, meaning_anchor REAL);
 CREATE TABLE IF NOT EXISTS memory_tags (
   memory_id TEXT NOT NULL REFERENCES memories(memory_id),
   dimension_id TEXT NOT NULL REFERENCES dimension_registry(id),
@@ -199,6 +215,75 @@ CREATE INDEX IF NOT EXISTS idx_quarantine_matched ON near_dup_quarantine(matched
 CREATE INDEX IF NOT EXISTS idx_quarantine_status ON near_dup_quarantine(status);
 """
 
+# ============ SGME 2.0 迁移阶段 1：正式表与审计表 DDL（2026-11-04）============
+# 独立常量（照 DEMANDS_DDL 先例）：由 connect_memory 的 _migrate_2_0_tables 显式
+# executescript 建表，既能覆盖新库、也能覆盖「schema_versions 已有记录但表缺失」的半迁移库。
+MEMORY_2_0_TABLES_DDL = """
+-- ttl_disposition：D-52 五档处置审计（0 valid_expired / 1 renewed / 2 anchor / 3 降档 /
+-- 4 sleeping→archived）。只有**产生处置**才写行（未到期不记账——3 万+ 条全量记账
+-- 会把审计表撑成噪声）；reason 承载 D-73 召回加固来源（recall_reinforced）。
+CREATE TABLE IF NOT EXISTS ttl_disposition (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id TEXT,
+  disposition TEXT,
+  reason TEXT,
+  m_score REAL,
+  renew_count INTEGER,
+  old_expire_at TEXT,
+  new_expire_at TEXT,
+  created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_ttl_disp_mem ON ttl_disposition(memory_id, created_at DESC);
+
+-- deletion_audit：D-54 两态删除审计（logical 可恢复 / purge 彻底删除）。
+-- snapshot_json 为 purge 前的完整行快照 —— 与 D-44「增量快照保留 30 天」配套，
+-- 保留期内可人工恢复；agent key 只能 logical，purge 必须 admin + 用户在 WebUI 现场确认。
+CREATE TABLE IF NOT EXISTS deletion_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('logical','purge')),
+  triggered_by TEXT NOT NULL,
+  agent_id TEXT,
+  reason TEXT,
+  content_sha256 TEXT,
+  snapshot_json TEXT,
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_deletion_audit_mem ON deletion_audit(memory_id, created_at DESC);
+
+-- rule_sync_ledger / rule_sync_daily：规则版本账本（3.5）——只检测版本一致性，
+-- 不读 agent 本地文件内容；日表保留 90 天（与 security_log_keep_days 同口径）。
+CREATE TABLE IF NOT EXISTS rule_sync_ledger (
+  agent_id TEXT PRIMARY KEY,
+  rule_version_seen TEXT,
+  last_receipt_at TEXT,
+  lag_sessions INTEGER DEFAULT 0,
+  updated_at TEXT);
+CREATE TABLE IF NOT EXISTS rule_sync_daily (
+  date_label TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  rule_version_seen TEXT,
+  current_version TEXT,
+  lag_sessions INTEGER DEFAULT 0,
+  status TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (date_label, agent_id));
+CREATE INDEX IF NOT EXISTS idx_rule_sync_daily_date ON rule_sync_daily(date_label, agent_id);
+"""
+
+# LLM 用量按天账本（D-63 / §7.2）。2026-11-04 起纳入迁移链（§9.2 阶段 1 表清单第 5 张），
+# 定义从 llm_usage_dao 上移到本模块作**唯一真源**，DAO 的 ensure_table 直接复用——
+# 避免「同一张表两处 DDL」漂移（§9.2 实际进度：llm_usage_daily 此前为懒建、不在迁移链）。
+LLM_USAGE_DAILY_DDL = """
+CREATE TABLE IF NOT EXISTS llm_usage_daily (
+  day TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  prompt_tokens INTEGER DEFAULT 0,
+  completion_tokens INTEGER DEFAULT 0,
+  calls INTEGER DEFAULT 0,
+  PRIMARY KEY (day, provider, model, stage));
+"""
+
 # session.db 建表 DDL（v0.7 新建，B1）：引擎调度状态库
 # raw_files 由 wiki.db 迁入；refine_cursor 为 v0.7 新增（A3：阶段 1 只建表，不写 DAO、不接调度）
 SESSION_DDL = """
@@ -242,8 +327,43 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
   description_seg TEXT,
   author TEXT,
   status TEXT DEFAULT 'active',
-  supersedes TEXT);
+  supersedes TEXT,
+  -- ---- 知识库 2.0 九列（D-62 / §5.1 · 迁移阶段 1，2026-11-04）----
+  page_type TEXT DEFAULT 'topic',        -- 页型：entity / topic / log / index
+  headline TEXT,                          -- 标题行 ≤30 字（空时确定性回退）
+  content_hash TEXT,                      -- 内容指纹（去重 / 变更检测）
+  heat_score REAL DEFAULT 0,              -- 热度三件：heat_score + last_recalled_at + view_count
+  last_recalled_at TEXT,
+  view_count INTEGER NOT NULL DEFAULT 0,
+  dirty INTEGER NOT NULL DEFAULT 0,       -- 实体页聚合脏标记（梦境重生成驱动）
+  updated_by TEXT,                        -- user / agent_<id> / system（与草稿态挂钩）
+  my_notes TEXT);                         -- 我的笔记列：重生成永不触碰
 CREATE INDEX IF NOT EXISTS idx_wiki_pages_updated ON wiki_pages(updated_at DESC);
+-- 注意：page_type / content_hash 的索引不放这里——老库 executescript 先于迁移执行，
+-- 建索引会撞「no such column」；改由 _migrate_wiki_2_0_columns 在 ALTER 之后建。
+
+-- 修订史（append-only）：每次变更留内容快照 + 变更类型 + 作者 + 一行摘要。
+-- 与技能库 skill_revisions 同款思路；不引入 git（单人自用，库内修订史更轻）。
+CREATE TABLE IF NOT EXISTS wiki_revisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  page_id TEXT NOT NULL,
+  revision_no INTEGER NOT NULL,
+  title TEXT,
+  content TEXT NOT NULL,
+  change_kind TEXT NOT NULL DEFAULT 'update',   -- create / update / merge / rollback
+  author TEXT,
+  summary TEXT,
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_wiki_rev_page ON wiki_revisions(page_id, revision_no DESC);
+
+-- 分类注册表（≤10 一级类；未命中回退「未分类」并告警，D-62 不许静默）
+CREATE TABLE IF NOT EXISTS wiki_categories (
+  name TEXT PRIMARY KEY,
+  display_name TEXT,
+  sort_order INTEGER DEFAULT 100,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_wiki_cat_order ON wiki_categories(sort_order);
 
 CREATE TABLE IF NOT EXISTS wiki_links (
   source_id TEXT,
@@ -574,6 +694,10 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_mem_valid_period(conn)
     _migrate_refine_runs_elapsed_ms(conn)
     _migrate_memory_2_0_columns(conn)
+    # 2.0 迁移阶段 1（2026-11-04）：生命周期五列 + 维度优先级 + 四张正式表
+    _migrate_memory_lifecycle_columns(conn)
+    _migrate_dim_priority(conn)
+    _migrate_2_0_tables(conn)
     _migrate_memory_pages_table(conn)
     _migrate_role_life_table(conn)
     return conn
@@ -608,6 +732,7 @@ def connect_wiki(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _ensure_schema(conn, WIKI_DDL, SCHEMA_VERSION, "wiki_v4")
     _migrate_ingest_tasks_table(conn)
     _migrate_wiki_page_columns(conn)
+    _migrate_wiki_2_0_columns(conn)
     _migrate_wiki_evolve_table(conn)
     return conn
 
@@ -1393,6 +1518,142 @@ def _migrate_memory_2_0_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl_type}")
     # 场景标签索引（D-53：只有一个标签，但检索/聚合要按它过滤）
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mem_scene ON memories(scene_key, memory_id)")
+    conn.commit()
+
+
+def _migrate_memory_lifecycle_columns(conn: sqlite3.Connection) -> None:
+    """老库迁移（2026-11-04 · 迁移阶段 1）：memories/memory_archive 补 2.0 生命周期五列。
+
+    依据 `SGME2.0-设计方案-V1.0.md` D-46（三轴分离）/ D-50（意义锚 M）/ D-52（时效五档）：
+
+    - ``lifecycle``：生命周期轴（active / sleeping / archived），与质量轴 ``status``、
+      来源轴 ``derivation/modality`` 正交——2.0 起 TTL 到期**不再**写 ``status='expired'``
+    - ``ttl_renew_count`` / ``ttl_renewed_at``：D-52 档 1 续期（上限 2 次）的计数与时间锚
+    - ``inject_tier``：注入档位（full / summary / anchor / none），档 2 锚点块用它
+    - ``meaning_anchor``：D-50 意义锚 M（首轮梦境回填；NULL = 未计算，存量不编造分数）
+
+    回填按 §9.3「专则优先于通则」：``status='expired'`` → sleeping + inject_tier='none'
+    （1.x 把 TTL 到期错塞进质量轴，故 status 原值不动）；归档表存量 → archived；
+    其余 → active。只在 NULL 上回填，重复调用幂等。
+    """
+    new_cols = (
+        ("lifecycle", "TEXT"),
+        ("ttl_renew_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("ttl_renewed_at", "TEXT"),
+        ("inject_tier", "TEXT"),
+        ("meaning_anchor", "REAL"),
+    )
+    added = False
+    for table in ("memories", "memory_archive"):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if not cols:  # 表不存在 → 交给 DDL 建表负责
+            continue
+        for col, ddl_type in new_cols:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl_type}")
+                added = True
+    # 回填只在「本次真的补了列」时跑（否则每次启动都全表 UPDATE 3 万行）；
+    # 专则优先（§9.3）：① expired 专则 ② 归档表 ③ 通用默认。
+    # 新库由 DDL 带列、不走本分支：写入侧未判定时 lifecycle 留 NULL，
+    # 注入谓词 (lifecycle IS NULL OR lifecycle='active') 视为 active（§3.6）。
+    if added:
+        conn.execute(
+            "UPDATE memories SET lifecycle='sleeping', inject_tier='none' "
+            "WHERE lifecycle IS NULL AND status='expired'"
+        )
+        conn.execute("UPDATE memories SET lifecycle='active' WHERE lifecycle IS NULL")
+        conn.execute(
+            "UPDATE memory_archive SET lifecycle='archived' WHERE lifecycle IS NULL"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mem_lifecycle ON memories(lifecycle, memory_id)"
+    )
+    conn.commit()
+
+
+def _migrate_dim_priority(conn: sqlite3.Connection) -> None:
+    """老库迁移（2026-11-04）：dimension_registry 补 priority 列（D-53 R1 主维度选取）。
+
+    种子值写在 ``sgme/resources/registry/dimensions.yaml``（D-8 可配），启动时由
+    ``memory_dao.import_registry`` 幂等 upsert；此处只保证列存在。未登记优先级的
+    维度留 NULL，scene_key 规则把它当最低优先级（与 R3 兜底一致，不虚增信息）。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(dimension_registry)").fetchall()]
+    if cols and "priority" not in cols:
+        conn.execute("ALTER TABLE dimension_registry ADD COLUMN priority INTEGER")
+        conn.commit()
+
+
+def _migrate_2_0_tables(conn: sqlite3.Connection) -> None:
+    """老库迁移（2026-11-04）：显式建 2.0 四表（ttl_disposition / deletion_audit / rule_sync_*）。
+
+    MEMORY_2_0_TABLES_DDL 独立成常量（照 DEMANDS_DDL 先例），由本函数 executescript；
+    覆盖「schema_versions 已记录但表缺失」的半迁移库。幂等（IF NOT EXISTS）。
+    """
+    conn.executescript(MEMORY_2_0_TABLES_DDL)
+    conn.executescript(LLM_USAGE_DAILY_DDL)
+    # 旧懒建表（engine/recall_aging.ensure_ttl_disposition_table）没有 reason 列
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(ttl_disposition)").fetchall()]
+    if cols and "reason" not in cols:
+        conn.execute("ALTER TABLE ttl_disposition ADD COLUMN reason TEXT")
+    conn.commit()
+
+
+def _migrate_wiki_2_0_columns(conn: sqlite3.Connection) -> None:
+    """老库迁移（2026-11-04 · 迁移阶段 1）：知识库 2.0 九列 + 修订史/分类两表（§5.1 / D-62）。
+
+    九列：page_type（页型）/ headline（标题行）/ content_hash（指纹）/ 热度三件
+    （heat_score + last_recalled_at + view_count）/ dirty（脏标记）/ updated_by /
+    my_notes（我的笔记列，重生成永不触碰）。两表：wiki_revisions（append-only 修订史）
+    与 wiki_categories（≤10 一级类注册表）。
+
+    只补结构不动存量内容：page_type 用 DDL 默认 'topic'（回填与 306 页 skill/* 划界
+    属阶段 3，见 §9.2 阶段 3）；content_hash 留 NULL 由写入侧首次落库时补。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(wiki_pages)").fetchall()]
+    if cols:
+        new_cols = (
+            ("page_type", "TEXT DEFAULT 'topic'"),
+            ("headline", "TEXT"),
+            ("content_hash", "TEXT"),
+            ("heat_score", "REAL DEFAULT 0"),
+            ("last_recalled_at", "TEXT"),
+            ("view_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("dirty", "INTEGER NOT NULL DEFAULT 0"),
+            ("updated_by", "TEXT"),
+            ("my_notes", "TEXT"),
+        )
+        for col, ddl_type in new_cols:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE wiki_pages ADD COLUMN {col} {ddl_type}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(page_type, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wiki_pages_hash ON wiki_pages(content_hash)"
+        )
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS wiki_revisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          page_id TEXT NOT NULL,
+          revision_no INTEGER NOT NULL,
+          title TEXT,
+          content TEXT NOT NULL,
+          change_kind TEXT NOT NULL DEFAULT 'update',
+          author TEXT,
+          summary TEXT,
+          created_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_wiki_rev_page ON wiki_revisions(page_id, revision_no DESC);
+        CREATE TABLE IF NOT EXISTS wiki_categories (
+          name TEXT PRIMARY KEY,
+          display_name TEXT,
+          sort_order INTEGER DEFAULT 100,
+          is_default INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT);
+        CREATE INDEX IF NOT EXISTS idx_wiki_cat_order ON wiki_categories(sort_order);
+        """
+    )
     conn.commit()
 
 
