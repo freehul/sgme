@@ -228,6 +228,8 @@ _EXTRA_COLUMNS: tuple[str, ...] = (
     "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
     # D-78 惊讶度先验（0-1）：NULL = 未计算，存量记忆不编造
     "surprise",
+    # D-68 软遗忘：正文不带 topic，靠这两列回溯「忘了什么」
+    "forget_topic", "forget_kind",
 )
 
 
@@ -532,6 +534,8 @@ def list_memories_by_dimension(
     priority_min: int = 0,
     exclude_review: bool = False,
     routes: Iterable[str] | None = None,
+    exclude_memory_types: Iterable[str] | None = None,
+    subject_filter: Iterable[str] | None = None,
 ) -> list[dict]:
     """按维度过滤记忆（模板查询用，纯 SQL 零 LLM）。
 
@@ -548,6 +552,10 @@ def list_memories_by_dimension(
     - routes（2.0 D-67）：只取这些 route 的记忆。注入侧传 ("memory",)——`skill_candidate`
       （可复用经验，该进技能库）与 `wiki_candidate`（该进知识库）**不得污染画像**；
       1.x 存量记忆 route 为 NULL，按 memory 对待（COALESCE）。默认 None 不过滤。
+    - exclude_memory_types（2.0 D-68）：注入侧传 ("forget_request",)——用户要求遗忘的
+      主题**保留可回溯但不主动提**；默认 None 不过滤（检索/管理面仍可见）。
+    - subject_filter（2.0 D-66）：注入侧传 ("self",)——他人事实不进本人画像；
+      存量/未标注记忆 subject 为 NULL 或 'unknown'，按「本人」对待（不误伤存量）。
     """
     dims = list(dimension_ids)
     if not dims:
@@ -578,6 +586,19 @@ def list_memories_by_dimension(
         rt = tuple(routes)
         sql += f" AND COALESCE(m.route, 'memory') IN ({','.join('?' * len(rt))})"
         params.extend(rt)
+    if exclude_memory_types:
+        # D-68：遗忘请求保留可回溯但不主动提（注入/人格证据一律排除）
+        et = tuple(exclude_memory_types)
+        sql += f" AND COALESCE(m.memory_type, '') NOT IN ({','.join('?' * len(et))})"
+        params.extend(et)
+    if subject_filter:
+        # D-66：只留指定主体；NULL / 'unknown' 视为本人（不误伤存量与未标注记忆）
+        sf = tuple(subject_filter)
+        sql += (
+            " AND (m.subject IS NULL OR m.subject = 'unknown'"
+            f" OR lower(m.subject) IN ({','.join('?' * len(sf))}))"
+        )
+        params.extend(sf)
     if match == "all":
         sql += " GROUP BY m.memory_id HAVING COUNT(DISTINCT t.dimension_id)=?"
         params.append(len(dims))

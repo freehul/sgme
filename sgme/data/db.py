@@ -1379,6 +1379,10 @@ def _migrate_memory_2_0_columns(conn: sqlite3.Connection) -> None:
         # D-78 惊讶度先验（0-1）：NULL = 未计算（存量记忆不编造分数，
         # 填满等于给存量凭空加强惊讶度——与 D-52 意义锚回填同款纪律）
         ("surprise", "REAL"),
+        # D-68 软遗忘：正文刻意不带 topic（防被忘内容在检索/注入时重新浮现），
+        # 「忘了什么」只能靠这两列回溯；NULL = 非遗忘请求
+        ("forget_topic", "TEXT"),
+        ("forget_kind", "TEXT"),
     )
     for table in ("memories", "memory_archive"):
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]

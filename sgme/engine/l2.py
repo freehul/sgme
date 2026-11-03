@@ -620,6 +620,17 @@ def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: d
         from sgme.engine.surprise import compute_for_store
 
         surprise = compute_for_store(mem_conn, m.get("content"), m.get("memory_type"))
+        # 2.0 元数据 + D-68 遗忘字段：兜底路径与 pipeline 主路径口径必须一致，
+        # 否则「L1.5 失败 → 直存」会丢掉 route/subject/forget，注入过滤随之失效。
+        extra = {
+            k: m[k] for k in (
+                "type", "subject", "certainty", "derivation", "modality", "route",
+                "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
+                "forget_topic", "forget_kind",
+            ) if m.get(k) is not None
+        }
+        if surprise is not None:
+            extra["surprise"] = surprise
         mid = memory_dao.insert_memory(
             mem_conn,
             content=m["content"],
@@ -633,7 +644,7 @@ def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: d
             created_at=m.get("created_at"),
             updated_at=m.get("updated_at"),
             occurred_at=m.get("occurred_at"),
-            extra={"surprise": surprise} if surprise is not None else None,
+            extra=extra or None,
         )
         m["memory_id"] = mid
     return memories

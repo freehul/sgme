@@ -24,7 +24,12 @@ from sgme.prompts import BucketCtx, PromptStore
 logger = logging.getLogger("sgme.engine.l1")
 
 # 记忆类型白名单
-VALID_MEMORY_TYPES = {"persona", "episodic", "instruction", "fact"}
+# forget_request：D-68 软遗忘请求的专用类型（原设计文档写 instruction，代码消费侧
+# —— dream / recall_aging 的「遗忘豁免」——一律判 forget_request，以代码为准统一）。
+VALID_MEMORY_TYPES = {"persona", "episodic", "instruction", "fact", "forget_request"}
+
+# forget.topic 超长告警线（D-68 八轮拍板：**不设字数上限**，保留原长入库，超长只告警）
+FORGET_TOPIC_WARN_CHARS = 40
 VALID_TIME_VELOCITY = {"static", "dynamic"}
 
 # ---------- 2.0 schema 护栏（D-66/67/68 落地前置，2026-10-29 实测驱动） ----------
@@ -323,7 +328,8 @@ def _normalize_fact_type(raw: Any, memory_type: str, modality: Any) -> str:
         return "想法"
     if memory_type == "episodic":
         return "经验"
-    if memory_type == "instruction":
+    if memory_type in ("instruction", "forget_request"):
+        # 遗忘请求是用户下的**约束**（D-68）：七值里落「约束」，不落「事实」
         return "约束"
     return "事实"
 
@@ -375,7 +381,14 @@ def _enforce_forget_content(
         return content, None  # 空占位（模型习惯性填写）不是遗忘请求
     import hashlib
 
-    topic = topic_raw[:40]
+    topic = topic_raw
+    if len(topic) > FORGET_TOPIC_WARN_CHARS:
+        # D-68 八轮拍板：不设字数上限——**不截断**，只告警（截断会让「忘了什么」失真，
+        # 事后无从回溯）。topic 不进正文（见下），只落 forget_topic 列。
+        logger.warning(
+            "forget.topic 超长（%d 字 > %d），保留原长入库（D-68 不设上限）: %s",
+            len(topic), FORGET_TOPIC_WARN_CHARS, topic[:60],
+        )
     kind = kind_raw if kind_raw in {"preference", "event", "detail"} else "detail"
     cjk = sum(1 for ch in content if "\u4e00" <= ch <= "\u9fff")
     zh = cjk * 2 >= max(1, sum(1 for ch in content if ch.isalnum()))
@@ -505,6 +518,10 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
         memory_type=memory_type,
         forget_raw=item.get("forget"),
     )
+    if forget:
+        # D-68：遗忘请求必须落专用类型，否则 dream / recall_aging 的「遗忘豁免」
+        # （判 memory_type == "forget_request"）永远不会命中——豁免曾是死代码。
+        memory_type = "forget_request"
     return {
         "content": content,
         "dimensions": [str(x) for x in dims],  # 归一化前的原始标签
@@ -522,7 +539,11 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
         "modality": _normalize_enum(item.get("modality"), VALID_MODALITY, "unknown"),
         "route": item.get("route") if item.get("route") in VALID_ROUTES else None,
         "occurred_at": item.get("occurred_at") if isinstance(item.get("occurred_at"), str) else None,
+        # D-68：遗忘请求的「忘了什么」必须可回溯——正文刻意不带 topic（写进正文会在
+        # 检索/注入时重新浮现被忘内容），故 topic/kind 单独落列，别再丢在内存里。
         "forget": forget,
+        "forget_topic": (forget or {}).get("topic"),
+        "forget_kind": (forget or {}).get("kind"),
     }
 
 

@@ -259,7 +259,8 @@ def _fallback_direct_store(
             prompt_version=prompt_version,
             extra={k: m[k] for k in ("type", "subject", "certainty", "derivation",
                                     "modality", "route", "feeling", "trait", "scene_key",
-                                    "needs_review", "l2_facts_json") if m.get(k) is not None},
+                                    "needs_review", "l2_facts_json",
+                                    "forget_topic", "forget_kind") if m.get(k) is not None},
             # 记忆 → 知识页/技能 关联（降级直存路径同样要挂，否则 L1.5 失败时索引全丢）
             sunk_refs=m.get("_sunk_refs"),
         )
