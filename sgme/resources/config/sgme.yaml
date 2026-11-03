@@ -136,6 +136,14 @@ ttl:
   meaning_anchor:
     enabled: true             # 梦境任务先回填 meaning_anchor
     refresh_days: 1
+scene:
+  # D-53（2026-11-04）：scene_key 的「来源类」映射（coding/desktop/mobile/other）。
+  # 未登记的 agent → default_class。coding 占 5/8 是有意收窄（见设计 3.0.2）。
+  origin_class:
+    coding: [codex, claude-code, zcode, mimo, dsh]
+    desktop: [hermes, workbuddy]
+    mobile: [doubao]
+  default_class: other
 care:
   enabled: true
   persona_max_chars: 2000

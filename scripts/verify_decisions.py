@@ -113,6 +113,8 @@ FILES = {
     "meaning_anchor_mod": S / "engine" / "meaning_anchor.py",
     "ttl_disp": S / "engine" / "ttl_disposition.py",
     "verify_migration": ROOT / "scripts" / "verify_migration.py",
+    "scene_key_mod": S / "data" / "scene_key.py",
+    "backfill_scene": ROOT / "scripts" / "backfill_scene_key.py",
 }
 
 _cache: dict[str, str] = {}
@@ -397,12 +399,18 @@ def _(self):
     ]
 
 
-@check("D-53", "场景层取消（scene_key 替代聚合）", "planned")
+@check("D-53", "场景层取消（scene_key 替代聚合）", "partial")
 def _(self):
+    # 2026-11-04：scene_key 规则（data/scene_key.py）+ 落库钩子（memory_dao.insert_memory）
+    # + 存量回填脚本 + 优先级列全部落地；未落地 = 1.x 场景四表冻结只读与端点下线（9.6），
+    # 属迁移阶段，故 partial（已落地部分断言必须全过）。
     return [
         ("scene_key 列", *has("db", "scene_key")),
-        ("scene_key 赋值点", *has("l2_extract", "scene_key")),
+        ("场景键规则模块", *has("scene_key_mod", "def build_scene_key")),
+        ("落库钩子写 scene_key", *has("memory_dao", "scene_key_mod.build_scene_key")),
+        ("维度优先级列", *has("db", "priority INTEGER")),
         ("场景聚合冻结开关", *has("refine", "scene_aggregate")),
+        ("存量回填脚本", *has("backfill_scene", "def run")),
     ]
 
 

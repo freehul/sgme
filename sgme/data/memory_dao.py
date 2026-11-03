@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -19,6 +20,9 @@ from typing import Any, Iterable
 
 from sgme.segment import segment
 from sgme.data import db as db_mod
+from sgme.data import scene_key as scene_key_mod
+
+logger = logging.getLogger("sgme.data.memory_dao")
 
 # T-222（2026-09-30 深度审查 P0-1）：memories 写路径的显式事务互斥锁。
 #
@@ -298,6 +302,18 @@ def insert_memory(
     c_at = created_at or _now_iso()
     u_at = updated_at or c_at
     o_at = occurred_at or c_at
+    # 维度标签可能是生成器：先固化，下面 scene_key 计算与标签写入都要用
+    dimension_ids = list(dimension_ids)
+    # D-53（2026-11-04）：scene_key = 主维度 : 来源类，在**落库同一事务前**算好写入。
+    # 调用方显式给了 scene_key（如测试夹具）则尊重；计算失败不阻塞落库（增强字段）。
+    extra = dict(extra or {})
+    if not extra.get("scene_key"):
+        try:
+            extra["scene_key"] = scene_key_mod.build_scene_key(
+                dimension_ids, agent_tag, scene_key_mod.load_priorities(conn)
+            )
+        except Exception:  # noqa: BLE001 - 场景键是增强字段，失败只降级为 NULL
+            logger.warning("scene_key 计算失败（该记忆场景键留空）", exc_info=True)
     # 2.0 扩展列从 _EXTRA_COLUMNS 常量生成——**不要再手写列清单**：
     # 2026-11-01 加 surprise 列时，硬编码的 26 个占位符与 12 个 extra 值对不上，
     # 直接 ProgrammingError（binding 数不符）。由常量推导可永久免疫。

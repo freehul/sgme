@@ -660,6 +660,39 @@ DEFAULT_TTL_CONFIG = {
 }
 
 
+# D-53（2026-11-04）：scene_key 的「来源类」映射（D-8 可配）。
+# 八适配器里 coding 占 5/8 是有意收窄：来源类只作「证据多样性」骨架，题材差异由主维度承担。
+DEFAULT_SCENE_CONFIG = {
+    "origin_class": {
+        "coding": ["codex", "claude-code", "zcode", "mimo", "dsh"],
+        "desktop": ["hermes", "workbuddy"],
+        "mobile": ["doubao"],
+    },
+    "default_class": "other",
+}
+
+
+def _merge_scene_config(user_cfg: dict | None) -> dict:
+    """合并 scene 段（origin_class 全量替换语义：给了就按用户表，缺类保留默认）。"""
+    base = {
+        "origin_class": {},  # 不直接复用默认 dict，避免调用方原地修改污染默认值
+        "default_class": DEFAULT_SCENE_CONFIG["default_class"],
+    }
+    for cls, tokens in DEFAULT_SCENE_CONFIG["origin_class"].items():
+        base["origin_class"][cls] = list(tokens)
+    if not isinstance(user_cfg, dict):
+        return base
+    dc = user_cfg.get("default_class")
+    if isinstance(dc, str) and dc.strip():
+        base["default_class"] = dc.strip()
+    oc = user_cfg.get("origin_class")
+    if isinstance(oc, dict):
+        for cls, tokens in oc.items():
+            if isinstance(tokens, list):
+                base["origin_class"][str(cls)] = [str(t) for t in tokens if str(t).strip()]
+    return base
+
+
 def _merge_ttl_config(user_cfg: dict | None) -> dict:
     """合并 ttl 段默认值与用户配置（只认已知键，未知键不落到运行期）。"""
     base = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_TTL_CONFIG.items()}
@@ -1538,6 +1571,8 @@ def load_config(
         "dream": sgme_cfg.get("dream", _merge_dream_config(None)),
         # D-52/D-50（2026-11-04）：TTL 五档与意义锚参数（梦境与注入两侧读）
         "ttl": _merge_ttl_config(sgme_cfg.get("ttl")),
+        # D-53（2026-11-04）：scene_key 来源类映射
+        "scene": _merge_scene_config(sgme_cfg.get("scene")),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
         "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
         # 2026-11-02 任务 B：角色离线生活注入闸（assemble 读 cfg["role_life"]）
