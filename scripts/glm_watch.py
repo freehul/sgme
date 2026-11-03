@@ -22,7 +22,8 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-GW = os.environ.get("GLM_GATEWAY", "http://10.126.126.3:13425")
+# 网关地址一律从环境变量取（数据卫生：不在代码里写死内网地址）
+GW = os.environ.get("GLM_GATEWAY", "http://127.0.0.1:3425")
 MODEL = os.environ.get("GLM_TARGET_MODEL", "zcode/GLM-5.3-Flash-Trial")
 INTERVAL = int(os.environ.get("WATCH_INTERVAL", "300"))
 NEED_OK = int(os.environ.get("WATCH_NEED_OK", "3"))
