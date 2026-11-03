@@ -327,7 +327,12 @@ def records_to_items(
             "memory_type": rec.get("memory_type"),
             "priority": rec.get("priority"),
             "occurred_at": rec.get("occurred_at"),
-            "facts": [],
+            # 2026-11-03 修复：原这里硬编码 ``facts: []`` 且不带 supersedes，
+            # 导致 2.0 解析链（默认开启）把 L1 解析出的原子事实三元组与替代意图
+            # **全部丢掉**——supersession 联动与 facts 落库在 2.0 路径上静默失效
+            # （1.x 委托路径的记录本来就带这两个键，白白被这里清空）。
+            "facts": rec.get("facts") or [],
+            "supersedes": rec.get("supersedes") or [],
         }
         # 路由优先取记录级（parse 时已判来源），其次 extra 里的拆分路由
         route = rec.get("route") or extra.get("route")
