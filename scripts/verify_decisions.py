@@ -125,6 +125,8 @@ FILES = {
     "persona_block": S / "profile" / "persona_block.py",
     "persona_extract": S / "engine" / "persona_extract.py",
     "routes_memory": S / "server" / "routes_memory.py",
+    "migration": S / "migration.py",
+    "stage3": ROOT / "scripts" / "migrate_stage3_backfill.py",
 }
 
 _cache: dict[str, str] = {}
@@ -450,23 +452,37 @@ def _(self):
     ]
 
 
-@check("D-55", "迁移四阶段（加列→双写→回填→切读）", "planned")
+@check("D-55", "迁移四阶段（加列→双写→回填→切读）", "partial")
 def _(self):
-    # 2026-11-03 修正：旧断言 has(config, "read_mode") 命中的是 guardrail 的
-    # read_mode（与迁移无关）→ 假阳性。改断言「migration 配置段 + dual_write 开关」
-    # 同时存在；9.2「实际进度」明写阶段 2–4 未开工（无 migration.dual_write），
-    # 当前 0/2 → 与文档 planned 一致。
+    # 2026-11-04 落地：阶段 2 双写灰度（migration.dual_write.agents；关闭时
+    # memory_dao.insert_memory(write_2_0=False) 不落 2.0 字段）+ 阶段 3 回填编排
+    # （scripts/migrate_stage3_backfill.py：supersession 收口 / meaning_anchor /
+    # scene_key+unknown 清单 / 知识库）+ 阶段 4 切读（legacy/shadow/new，
+    # operations/inject 按 read_mode 决定谓词与锚点块）。
+    # 未落地 = 生产回填实跑、双写 7 天观察、shadow 差异率实测 ≤1%。
     return [
         ("migration 配置段", *has("config", '"migration"')),
-        ("双写开关 migration.dual_write", *has("config", "dual_write")),
+        ("双写开关 migration.dual_write", *has("migration", "dual_write")),
+        ("双写灰度判定", *has("migration", "def dual_write_enabled")),
+        ("写入侧门控", *has("memory_dao", "write_2_0")),
+        ("切读模式", *has("inject_ops", "def _read_filters")),
+        ("shadow 只记录不服务", *has("inject_ops", "shadow")),
+        ("阶段 3 回填编排", *has("stage3", "backfill_scene_key.py")),
     ]
 
 
-@check("D-56", "存量 NULL 语义（lifecycle/meaning_anchor/scene_key 回填）", "planned")
+@check("D-56", "存量 NULL 语义（lifecycle/meaning_anchor/scene_key 回填）", "partial")
 def _(self):
+    # 2026-11-04 落地：supersession 收口落到新写入（mark_superseded：
+    # lifecycle='archived' + superseded_by，不写 status）+ 存量收口函数
+    # close_supersession_rejected（解析「替代记忆 <id>」，缺指针进清单）
+    # + 阶段 3 编排（含 unknown 清单导出）。未落地 = 生产存量实跑。
     return [
         ("lifecycle 列（回填载体）", *has("db", "lifecycle")),
         ("迁移配置段", *has("config", '"migration"')),
+        ("supersession 写侧收口", *has("memory_dao", "def mark_superseded")),
+        ("存量收口解析", *has("memory_dao", "SUPERSESSION_REASON_MARK")),
+        ("unknown 清单导出", *has("stage3", "export-unknown")),
     ]
 
 

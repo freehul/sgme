@@ -622,6 +622,8 @@ def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: d
         surprise = compute_for_store(mem_conn, m.get("content"), m.get("memory_type"))
         # 2.0 元数据 + D-68 遗忘字段：兜底路径与 pipeline 主路径口径必须一致，
         # 否则「L1.5 失败 → 直存」会丢掉 route/subject/forget，注入过滤随之失效。
+        from sgme.migration import dual_write_enabled
+
         extra = {
             k: m[k] for k in (
                 "type", "subject", "certainty", "derivation", "modality", "route",
@@ -647,6 +649,8 @@ def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: d
             # D-43：兜底路径同样写断言有效期，否则降级直存时闸门 A 依旧空转
             valid_to=m.get("valid_to"),
             extra=extra or None,
+            # D-55 阶段 2：双写灰度（关闭时 2.0 新字段不落库）
+            write_2_0=dual_write_enabled(cfg, m.get("agent_tag")),
         )
         m["memory_id"] = mid
     return memories

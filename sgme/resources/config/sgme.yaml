@@ -154,6 +154,16 @@ compat:
   window_days: 90
   enforce: false           # 409：旧客户端打语义已变写端点时拒绝
   enforce_gone: false      # 410：场景层下线端点（9.6 之后开）
+migration:
+  # D-55（2026-11-04）：迁移四阶段开关。
+  # 阶段 2 双写：enabled=false 全量关闭（回滚点 R2）；agents 非空 = 按 agent 灰度
+  dual_write:
+    enabled: true
+    agents: []
+  # 阶段 4 切读：legacy（1.x 读口径）| shadow（只算差异不服务）| new（2.0 读口径）
+  read_mode: new
+  shadow:
+    enabled: true
 persona:
   # D-48（2026-11-04）：人格沉淀四条件闸门——多轮>=3 会话 / 跨天>=2 / 多场景>=2 /
   # 来源可信且已发生。阈值可配（D-8）；inject_block 控制「性格参考」块是否注入。

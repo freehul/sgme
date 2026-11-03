@@ -278,6 +278,7 @@ def insert_memory(
     valid_to: str | None = None,
     extra: dict | None = None,
     sunk_refs: Iterable[dict] | None = None,
+    write_2_0: bool = True,
 ) -> str:
     """插入一条记忆 + 标签 + 溯源。
 
@@ -308,7 +309,13 @@ def insert_memory(
     # D-53（2026-11-04）：scene_key = 主维度 : 来源类，在**落库同一事务前**算好写入。
     # 调用方显式给了 scene_key（如测试夹具）则尊重；计算失败不阻塞落库（增强字段）。
     extra = dict(extra or {})
-    if not extra.get("scene_key"):
+    # D-55 阶段 2（2026-11-04）：migration.dual_write 关闭时新写入不落 2.0 字段。
+    # 判据由调用方（带 cfg）传入；本层不做配置读取（data 层无 cfg 依赖）。
+    if not write_2_0:
+        from sgme.migration import STAGE2_FIELDS
+
+        extra = {k: v for k, v in extra.items() if k not in STAGE2_FIELDS}
+    if write_2_0 and not extra.get("scene_key"):
         try:
             extra["scene_key"] = scene_key_mod.build_scene_key(
                 dimension_ids, agent_tag, scene_key_mod.load_priorities(conn)
@@ -411,6 +418,82 @@ def reject_memory(
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def mark_superseded(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    superseded_by: str,
+) -> bool:
+    """D-56（2026-11-04）：supersession 收口——lifecycle='archived' + 替代指针。
+
+    2.0 起 supersession 不再塞进质量轴（不写 status='rejected'）：旧值退出注入/召回
+    由生命周期轴表达，status 保持 active；superseded_by 保留替代链。
+    """
+    cur = conn.execute(
+        "UPDATE memories SET lifecycle='archived', superseded_by=? "
+        "WHERE memory_id=?",
+        (superseded_by, memory_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+SUPERSESSION_REASON_MARK = "替代记忆 "
+
+
+def close_supersession_rejected(
+    conn: sqlite3.Connection,
+    *,
+    apply: bool = False,
+) -> dict:
+    """D-56（2026-11-04）：存量 supersession 收口（1.x 把替代错塞进质量轴）。
+
+    对象：status='rejected' 且 reject_reason 含「supersession 联动」的行（§9.3 实测
+    10,122 条）。收口规则：status 恢复 active + lifecycle='archived' +
+    superseded_by 从原因串解析（缺指针 → NULL 并进清单，不猜）。真用户拒绝的
+    rejected 行（原因不含该标记）不动。
+
+    信号量：apply=False 只统计（dry-run）；apply=True 落库。
+    返回 {"total","with_pointer","missing_pointer":[...],"applied"}。
+    """
+    rows = conn.execute(
+        "SELECT memory_id, reject_reason FROM memories "
+        "WHERE status='rejected' AND reject_reason LIKE '%supersession 联动%'"
+    ).fetchall()
+    parsed: list[tuple[str, str | None]] = []
+    for row in rows:
+        reason = row["reject_reason"] or ""
+        idx = reason.rfind(SUPERSESSION_REASON_MARK)
+        pointer = None
+        if idx >= 0:
+            tail = reason[idx + len(SUPERSESSION_REASON_MARK):].strip()
+            pointer = tail.rstrip("）) ") or None
+        parsed.append((row["memory_id"], pointer))
+    missing = [mid for mid, ptr in parsed if not ptr]
+    applied = 0
+    if apply and parsed:
+        with _TXN_LOCK:
+            try:
+                conn.execute("BEGIN")
+                for mid, ptr in parsed:
+                    conn.execute(
+                        "UPDATE memories SET status='active', lifecycle='archived', "
+                        "superseded_by=?, rejected_at=NULL, reject_reason=NULL "
+                        "WHERE memory_id=?",
+                        (ptr, mid),
+                    )
+                    applied += 1
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+    return {
+        "total": len(parsed),
+        "with_pointer": len(parsed) - len(missing),
+        "missing_pointer": missing,
+        "applied": applied,
+    }
 
 
 def unreject_memory(

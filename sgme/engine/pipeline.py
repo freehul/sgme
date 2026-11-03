@@ -20,6 +20,7 @@ import threading
 import uuid
 from pathlib import Path
 
+from sgme.migration import dual_write_enabled
 from sgme.engine import l15 as l15_mod
 from sgme.engine import refine as refine_mod
 from sgme.prompts import BucketCtx
@@ -265,6 +266,8 @@ def _fallback_direct_store(
                                     "forget_topic", "forget_kind") if m.get(k) is not None},
             # 记忆 → 知识页/技能 关联（降级直存路径同样要挂，否则 L1.5 失败时索引全丢）
             sunk_refs=m.get("_sunk_refs"),
+            # D-55 阶段 2：双写灰度（关闭时 2.0 新字段不落库）
+            write_2_0=dual_write_enabled(cfg, m.get("agent_tag")),
         )
         m["memory_id"] = mid  # 写回，供 L2 场景关联
         stored += 1

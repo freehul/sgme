@@ -39,7 +39,7 @@ logger = logging.getLogger("sgme.data.db")
 # dimension_registry 补 priority（D-53 R1 主维度选取）；新增 ttl_disposition（正式表，
 # 含 reason）/ deletion_audit / rule_sync_ledger / rule_sync_daily 四表。
 # 口径见 docs/design/SGME2.0-设计方案-V1.0.md §9.2 阶段 1。
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # memory.db 建表 DDL（v1 基础六表 + v2 向量/信号表 + v3 refine_runs/prompt_version + v4 content_seg）
 MEMORY_DDL = """
@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS memories (
   ttl_renew_count INTEGER NOT NULL DEFAULT 0,  -- 续期次数（D-52 上限 2 次）
   ttl_renewed_at TEXT,                  -- 上次续期时间锚（旧到期日）
   inject_tier TEXT,                     -- full / summary / anchor / none
-  meaning_anchor REAL);                 -- D-50 意义锚 M（NULL = 未计算，存量不编造分数）
+  meaning_anchor REAL,                  -- D-50 意义锚 M（NULL = 未计算，存量不编造分数）
+  superseded_by TEXT);                  -- D-56（schema v6）：替代指针；2.0 起 supersession 走 lifecycle='archived' + 本列，不再写 status='rejected'
 CREATE TABLE IF NOT EXISTS memory_archive (
   memory_id TEXT PRIMARY KEY, content TEXT NOT NULL, memory_type TEXT NOT NULL,
   priority INTEGER NOT NULL, time_velocity TEXT NOT NULL, ttl_days INTEGER,
@@ -1544,6 +1545,8 @@ def _migrate_memory_lifecycle_columns(conn: sqlite3.Connection) -> None:
         ("ttl_renewed_at", "TEXT"),
         ("inject_tier", "TEXT"),
         ("meaning_anchor", "REAL"),
+        # D-56（schema v6，2026-11-04）：supersession 收口指针（归档表早已有，memories 补上）
+        ("superseded_by", "TEXT"),
     )
     added = False
     for table in ("memories", "memory_archive"):

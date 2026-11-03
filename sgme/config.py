@@ -664,6 +664,13 @@ DEFAULT_TTL_CONFIG = {
 
 # D-53（2026-11-04）：scene_key 的「来源类」映射（D-8 可配）。
 # 八适配器里 coding 占 5/8 是有意收窄：来源类只作「证据多样性」骨架，题材差异由主维度承担。
+def _merge_migration_config(user_cfg: dict | None) -> dict:
+    """D-55（2026-11-04）：迁移阶段开关（默认值/合并逻辑的单一实现在 sgme.migration）。"""
+    from sgme.migration import migration_cfg
+
+    return migration_cfg({"migration": user_cfg or {}})
+
+
 # D-48（2026-11-04）：人格沉淀四条件闸门与性格参考块注入。
 # 四条件 = 多轮≥3 会话 / 跨天≥2 / 多场景≥2 / 来源可信且已发生；阈值可配（D-8）。
 DEFAULT_PERSONA_CONFIG = {
@@ -1660,6 +1667,8 @@ def load_config(
         # D-48（2026-11-04）：人格沉淀四条件闸门（此前该段未进 load_config，
         # 特质抽取一直用内置缺省；本次正式纳入配置面）
         "persona": _merge_persona_config(sgme_cfg.get("persona")),
+        # D-55（2026-11-04）：迁移阶段开关（阶段 2 双写 / 阶段 4 切读）
+        "migration": _merge_migration_config(sgme_cfg.get("migration")),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
         "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
         # 2026-11-02 任务 B：角色离线生活注入闸（assemble 读 cfg["role_life"]）

@@ -264,7 +264,7 @@ def test_inject_pipeline_error_is_internal(conns, cfg, monkeypatch):
     # Arrange：monkeypatch 查询引擎抛运行时错误
     mem_conn, _session_conn, _ = conns
 
-    def _boom(mem_conn, section, dimensions):
+    def _boom(mem_conn, section, dimensions, **kwargs):
         raise RuntimeError("模拟查询引擎崩溃")
 
     monkeypatch.setattr("sgme.profile.inject.query_section", _boom)

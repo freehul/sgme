@@ -6,7 +6,7 @@
 覆盖：
 - L1 解析透传 supersedes（str / list / 缺省 / 非法类型）
 - refine_file 归一化透传 supersedes（L0 会话 → L1 mock 输出）
-- apply_supersession_linkage：声明替代 → 旧主体记忆 reject（原因含替代者 + 溯源链）
+- apply_supersession_linkage：声明替代 → 旧主体记忆 lifecycle='archived' + superseded_by（D-56 收口，不改 status）
 - 无声明 / 主体未命中 / 已 rejected / 本批新记忆 → 行为不变
 - pipeline.persist_memories 接线：stats.supersession_rejected
 
@@ -176,8 +176,8 @@ def test_refine_file_preserves_supersedes(raw_dir, mem_conn, session_conn, cfg):
 
 # ---------- apply_supersession_linkage ----------
 
-def test_linkage_rejects_old_subject_memories(mem_conn):
-    """声明替代 → 旧主体 X 相关记忆标记 rejected，原因含替代者与溯源链。"""
+def test_linkage_archives_old_subject_memories(mem_conn):
+    """声明替代 → 旧主体 X 相关记忆 lifecycle='archived' + superseded_by（D-56）。"""
     old_id = _insert_existing(mem_conn, "AIXM 项目使用 Vue 3 开发", ["tech_stack"])
     new_mem = {
         "memory_id": "new-1",
@@ -197,10 +197,10 @@ def test_linkage_rejects_old_subject_memories(mem_conn):
     rejected = l15_mod.apply_supersession_linkage(mem_conn, [new_mem])
     assert rejected == [old_id]
     old = memory_dao.get_memory(mem_conn, old_id)
-    assert old["status"] == "rejected"
-    # 原因含替代者 Y（新记忆内容）与溯源链（新记忆 memory_id）
-    assert "SGME" in old["reject_reason"]
-    assert new_id in old["reject_reason"]
+    # D-56：替代语义走生命周期轴，不写质量轴
+    assert old["lifecycle"] == "archived"
+    assert old["status"] == "active"
+    assert old["superseded_by"] == new_id
     # 新记忆自身不受影响
     new_row = memory_dao.get_memory(mem_conn, new_id)
     assert new_row["status"] == "active"
@@ -292,7 +292,8 @@ def test_linkage_multiple_subjects_and_memories(mem_conn):
     rejected = l15_mod.apply_supersession_linkage(mem_conn, [new_mem])
     assert sorted(rejected) == sorted([old_a, old_b, old_c])
     for mid in (old_a, old_b, old_c):
-        assert memory_dao.get_memory(mem_conn, mid)["status"] == "rejected"
+        row = memory_dao.get_memory(mem_conn, mid)
+        assert row["lifecycle"] == "archived" and row["status"] == "active"
 
 
 def test_linkage_case_insensitive_and_short_subject_ignored(mem_conn):
@@ -354,11 +355,11 @@ def test_persist_memories_supersession_linkage(monkeypatch, mem_conn, cfg):
     assert stats["stored"] == 1
     assert stats["supersession_rejected"] == 1
     assert finalized, "finalize_refinement 应被调用"
-    # 旧记忆已标记，原因含替代者 SGME 与溯源链
+    # D-56：旧记忆走生命周期轴（archived + 替代指针），质量轴保持 active
     old = memory_dao.get_memory(mem_conn, old_id)
-    assert old["status"] == "rejected"
-    assert "SGME" in old["reject_reason"]
-    assert new_mem["memory_id"] in old["reject_reason"]
+    assert old["lifecycle"] == "archived"
+    assert old["status"] == "active"
+    assert old["superseded_by"] == new_mem["memory_id"]
     # 新记忆正常 active（替代者记忆不被误伤）
     assert memory_dao.get_memory(mem_conn, new_mem["memory_id"])["status"] == "active"
 

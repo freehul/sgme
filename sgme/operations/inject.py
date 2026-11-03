@@ -40,6 +40,7 @@ operations/__init__.py 约定**不写** http_payload / mcp_payload，两端直�
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Any
 
@@ -53,6 +54,43 @@ from sgme.profile import tier0 as tier0_mod
 
 # mode 缺省回落目标（T-120：2026-08-30 接入实测定，daily 为最常用画像注入模式）
 DEFAULT_INJECT_MODE = "daily"
+
+logger = logging.getLogger("sgme.operations.inject")
+
+
+def _read_filters(cfg: dict[str, Any]) -> dict[str, bool]:
+    """D-55 阶段 4（2026-11-04）：按 migration.read_mode 决定读口径过滤器。
+
+    - new：2.0 读口径（生命周期谓词 / 排除锚点 / 排除有效期内到期）；
+    - legacy / shadow：1.x 读口径（三项全关，锚点块不挂）。
+    """
+    from sgme.migration import new_read_enabled
+
+    new_read = new_read_enabled(cfg)
+    return {
+        "lifecycle_active": new_read,
+        "exclude_anchor": new_read,
+        "exclude_valid_expired": new_read,
+    }
+
+
+def _attach_migration_blocks(
+    response: dict[str, Any], mem_conn: sqlite3.Connection, cfg: dict[str, Any]
+) -> dict[str, Any]:
+    """D-55 阶段 4：锚点块按 read_mode 服务；shadow 只算差异不服务。"""
+    from sgme.migration import new_read_enabled, read_mode, shadow_enabled
+
+    if new_read_enabled(cfg):
+        response = _attach_anchor_block(response, mem_conn, cfg)
+    elif shadow_enabled(cfg):
+        try:
+            shadow = _attach_anchor_block({"blocks": [], "stats": {}}, mem_conn, cfg)
+            items = sum(len(b.get("items") or []) for b in shadow.get("blocks", []))
+            logger.info("migration shadow：锚点块将新增 %d 项（未服务）", items)
+        except Exception:  # noqa: BLE001 - shadow 只观察，绝不阻塞
+            logger.warning("migration shadow 计算失败（忽略）", exc_info=True)
+    response.setdefault("stats", {})["read_mode"] = read_mode(cfg)
+    return response
 
 
 def _attach_key_missing_note(response: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
@@ -293,7 +331,7 @@ def inject(
             except template_mod.TemplateError as e:
                 return OperationResult.fail(ERR_INVALID_ARGS, f"模板加载失败: {e}")
             section_results = [
-                inject_mod.query_section(mem_conn, s, dimensions)
+                inject_mod.query_section(mem_conn, s, dimensions, **_read_filters(cfg))
                 for s in tmpl.get("sections", [])
             ]
             # T-252：记忆调用统计（双源之二：画像注入）——section_results 即注入集
@@ -319,8 +357,8 @@ def inject(
                 response = _attach_fallback_note(response, fallback_mode)
             # D-70：记忆回指块（画像块末尾；默认 off）
             response = _attach_last_mentions(response, mem_conn, cfg)
-            # D-52 档 2/3：长期锚点块（独立预算，不与主块抢槽）
-            response = _attach_anchor_block(response, mem_conn, cfg)
+            # D-52 档 2/3 + D-55 阶段 4：锚点块按 read_mode 服务
+            response = _attach_migration_blocks(response, mem_conn, cfg)
             # D-48：性格参考块（四条件闸门）
             response = _attach_persona_block(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（不参与空注入/回落 note 判断）
@@ -344,9 +382,12 @@ def inject(
                     )
             match = cf.get("match", "any")
             limit = cf.get("limit", 10)
+            rf = _read_filters(cfg)
             results = memory_dao.list_memories_by_dimension(
                 mem_conn, dims, match=match, limit=limit,
-                include_expired=False,
+                include_expired=not rf["exclude_valid_expired"],
+                # D-55 阶段 4：read_mode=legacy/shadow 时不做 2.0 生命周期谓词
+                lifecycle_active=rf["lifecycle_active"],
                 # 2.0 D-67：技能/知识候选不进画像（与 profile/inject 口径一致）
                 routes=("memory",),
             )
@@ -378,8 +419,8 @@ def inject(
             response = _attach_key_missing_note(_attach_empty_note(response), cfg)
             # D-70：记忆回指块（默认 off）
             response = _attach_last_mentions(response, mem_conn, cfg)
-            # D-52 档 2/3：长期锚点块
-            response = _attach_anchor_block(response, mem_conn, cfg)
+            # D-52 档 2/3 + D-55 阶段 4：锚点块按 read_mode 服务
+            response = _attach_migration_blocks(response, mem_conn, cfg)
             # D-48：性格参考块（四条件闸门）
             response = _attach_persona_block(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（同上）

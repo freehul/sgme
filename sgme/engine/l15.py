@@ -28,6 +28,7 @@ from pathlib import Path
 
 from sgme import config
 from sgme.engine import json_repair, normalize
+from sgme.migration import dual_write_enabled
 from sgme.llm import chain as llm_chain
 from sgme.llm import provider as llm_provider
 from sgme.prompts import BucketCtx, PromptStore
@@ -922,6 +923,7 @@ def _store_memory(
     dimensions: list[dict],
     source_ref: str | None = None,
     prompt_version: str | None = None,
+    write_2_0: bool = True,
 ) -> str:
     """store 动作：INSERT 新记忆。"""
     ttl = _backfill_ttl(
@@ -958,6 +960,8 @@ def _store_memory(
         extra=extra,
         # 记忆 → 知识页/技能 关联（提炼阶段按会话内沉淀痕迹挂，零 LLM）
         sunk_refs=new_mem.get("_sunk_refs"),
+        # D-55 阶段 2：双写灰度开关（关闭时不落 2.0 新字段）
+        write_2_0=write_2_0,
     )
 
 
@@ -968,9 +972,13 @@ def _update_memory(
     dimensions: list[dict],
     source_ref: str | None = None,
     prompt_version: str | None = None,
+    write_2_0: bool = True,
 ) -> str:
     """update 动作：归档候选行 + INSERT 新记忆。"""
-    new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
+    new_id = _store_memory(
+        mem_conn, new_mem, dimensions, source_ref,
+        prompt_version=prompt_version, write_2_0=write_2_0,
+    )
     memory_dao.archive_memory(mem_conn, candidate_id, superseded_by=new_id)
     return new_id
 
@@ -983,6 +991,7 @@ def _merge_memory(
     dimensions: list[dict],
     source_ref: str | None = None,
     prompt_version: str | None = None,
+    write_2_0: bool = True,
 ) -> str:
     """merge 动作：INSERT 合并行 + 归档所有命中候选。
 
@@ -1010,7 +1019,10 @@ def _merge_memory(
         "updated_at": max_updated,
         "occurred_at": max_occurred,
     }
-    new_id = _store_memory(mem_conn, merged_mem, dimensions, source_ref, prompt_version=prompt_version)
+    new_id = _store_memory(
+        mem_conn, merged_mem, dimensions, source_ref,
+        prompt_version=prompt_version, write_2_0=write_2_0,
+    )
     # 归档所有命中候选
     for cid in candidate_ids:
         memory_dao.archive_memory(mem_conn, cid, superseded_by=new_id)
@@ -1111,8 +1123,9 @@ def apply_supersession_linkage(
                 if cand["memory_id"] in seen:
                     continue
                 seen.add(cand["memory_id"])
-                reason = _build_reject_reason(new_mem.get("content", ""), new_id)
-                if memory_dao.reject_memory(mem_conn, cand["memory_id"], reason):
+                # D-56（2026-11-04）：supersession 收口——lifecycle='archived' +
+                # superseded_by 指针，**不写 status='rejected'**（质量轴不承载替代语义）。
+                if memory_dao.mark_superseded(mem_conn, cand["memory_id"], new_id):
                     rejected.append(cand["memory_id"])
     return rejected
 
@@ -1353,7 +1366,11 @@ def resolve_conflicts(
                 result.skipped.append(i)
                 _rec(i, "skip", "近似重复隔离")
                 continue
-            new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
+            new_id = _store_memory(
+                mem_conn, new_mem, dimensions, source_ref,
+                prompt_version=prompt_version,
+                write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
+            )
             new_mem["memory_id"] = new_id
             result.stored.append(new_id)
             stored_n += 1
@@ -1525,7 +1542,11 @@ def resolve_conflicts(
             if _quarantine_if_near_dup(mem_conn, new_mem, cfg, result, source_ref):  # L1.5 F1（T1.6）
                 result.skipped.append(i)
                 continue
-            new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
+            new_id = _store_memory(
+                mem_conn, new_mem, dimensions, source_ref,
+                prompt_version=prompt_version,
+                write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
+            )
             new_mem["memory_id"] = new_id  # 写回，供 L2 场景关联
             result.stored.append(new_id)
         elif action == "skip":
@@ -1547,7 +1568,11 @@ def resolve_conflicts(
                 if _quarantine_if_near_dup(mem_conn, new_mem, cfg, result, source_ref):  # L1.5 F1（T1.6）
                     result.skipped.append(i)
                     continue
-                new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
+                new_id = _store_memory(
+                mem_conn, new_mem, dimensions, source_ref,
+                prompt_version=prompt_version,
+                write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
+            )
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
         elif action == "merge":
@@ -1567,7 +1592,11 @@ def resolve_conflicts(
                 if _quarantine_if_near_dup(mem_conn, new_mem, cfg, result, source_ref):  # L1.5 F1（T1.6）
                     result.skipped.append(i)
                     continue
-                new_id = _store_memory(mem_conn, new_mem, dimensions, source_ref, prompt_version=prompt_version)
+                new_id = _store_memory(
+                mem_conn, new_mem, dimensions, source_ref,
+                prompt_version=prompt_version,
+                write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
+            )
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
 

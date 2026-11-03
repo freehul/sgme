@@ -43,6 +43,10 @@ def query_section(
     mem_conn: sqlite3.Connection,
     section: dict,
     dimensions: list[dict],
+    *,
+    lifecycle_active: bool = True,
+    exclude_anchor: bool = True,
+    exclude_valid_expired: bool = True,
 ) -> list[dict]:
     """执行单个 section 的查询（纯 SQL，零 LLM）。
 
@@ -83,9 +87,11 @@ def query_section(
         # 2.0 D-66：他人事实不进本人画像（存量 NULL/unknown 按本人对待）
         subject_filter=("self",),
         # 2.0 D-52/3.6（2026-11-04）：注入可见性谓词 + 锚点档剥离 + 失效断言退出
-        lifecycle_active=True,
-        exclude_anchor=True,
-        exclude_valid_expired=True,
+        # D-55 阶段 4（2026-11-04）：read_mode=legacy/shadow 时由调用方传 False，
+        # 回退 1.x 读口径（三项全关），实现秒级切回。
+        lifecycle_active=lifecycle_active,
+        exclude_anchor=exclude_anchor,
+        exclude_valid_expired=exclude_valid_expired,
     )
     # 记录注入统计（best-effort：失败不打断注入主流程）
     # T-203 G1：priority_min 已下推 SQL，此处 results 即最终注入集，统计不再虚高
