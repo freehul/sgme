@@ -69,6 +69,7 @@ TOTAL_DECISIONS = 73
 FILES = {
     "db": S / "data" / "db.py",
     "memory_dao": S / "data" / "memory_dao.py",
+    "wiki_dao": S / "data" / "wiki_dao.py",
     "memory_stats_dao": S / "data" / "memory_stats_dao.py",
     "llm_usage_dao": S / "data" / "llm_usage_dao.py",
     "l1": S / "engine" / "l1.py",
@@ -115,6 +116,8 @@ FILES = {
     "verify_migration": ROOT / "scripts" / "verify_migration.py",
     "scene_key_mod": S / "data" / "scene_key.py",
     "backfill_scene": ROOT / "scripts" / "backfill_scene_key.py",
+    "backfill_wiki": ROOT / "scripts" / "backfill_wiki_2_0.py",
+    "wiki_classify": S / "wiki_classify.py",
 }
 
 _cache: dict[str, str] = {}
@@ -471,17 +474,20 @@ def _(self):
              f"{rel('care_ops')}: 未找到档位字段")]
 
 
-@check("D-62", "知识库自动关联与自动分类", "planned")
+@check("D-62", "知识库自动关联与自动分类", "partial")
 def _(self):
-    # 2026-11-04 迁移阶段 1 只建出修订史/分类两表（结构面）；D-62 的三层关联与自动
-    # 分类**均未接线**（operations/wiki.py 无分类/关联逻辑，只有 2026-08 的手工脚本）
-    # → 结构断言过、接线断言未过 = 待施工（与文档一致）。
+    # 2026-11-04 落地：7 类注册表 + 规则分类（wiki_classify）+ 写入侧接线（category_class 列，
+    # 兼容期不改 category）+ 修订史 append-only + 未分类占比统计 + 回填脚本（--migrate-category
+    # 显式切分类）。**未落地** = 三层关联（反向引用/相关页建议/实体页聚合）与 LLM 顺带分类。
     return [
         ("wiki_revisions 表", *has("db", "wiki_revisions")),
         ("wiki_categories 表", *has("db", "wiki_categories")),
-        ("写入侧自动分类接线", *has("wiki_ops", "auto_classify")),
-        ("三层关联建议区块", *has("wiki_ops", "related_pages")),
-        ("未分类占比告警", *has("wiki_ops", "uncategorized")),
+        ("自动分类结果列 category_class", *has("db", "category_class")),
+        ("分类规则模块", *has("wiki_classify", "def classify_category")),
+        ("写入侧分类接线", *has("wiki_dao", "wiki_classify.classify_category")),
+        ("修订史写入", *has("wiki_dao", "def add_revision")),
+        ("未分类占比统计", *has("wiki_dao", "def unclassified_stats")),
+        ("回填脚本（含显式切分类）", *has("backfill_wiki", "migrate_category")),
     ]
 
 

@@ -118,6 +118,11 @@ def update_page(
     ok = wiki_dao.update_page_content(
         conn, page_id, new_content,
         title=title, category=category, tags=tags, description=description,
+        # 知识库 2.0：append → merge（追加段自带来源标记）；整体替换 → update
+        change_kind="merge" if append else "update",
+        author=author or "agent",
+        updated_by=author or "agent",
+        summary=(f"追加经验（hash {entry_hash}）" if append else "整体替换正文"),
     )
     if not ok:
         return OperationResult.fail(ERR_INTERNAL, "页面更新失败")
@@ -179,6 +184,9 @@ def create_page(
         category=category, tags=tags,
         source_type=source_type, source_url=source_url, source_file=source_file,
         description=description, author=author, status=status, supersedes=supersedes,
+        # 知识库 2.0（D-62 / §5.1）：分类归一、页型/标题行/指纹、修订史首条快照
+        updated_by=author or "system",
+        revision_summary="页面创建（直接写入）",
     )
     result = {"page_id": page_id, "status": "updated" if exists else "created"}
     if superseded is not None:

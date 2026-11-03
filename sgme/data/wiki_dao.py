@@ -6,10 +6,13 @@ v0.7 三库拆分后本模块被清空（raw_files → session_dao，scenes 系�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
+
+from sgme import wiki_classify
 
 
 def _now_iso() -> str:
@@ -29,6 +32,80 @@ def _seg(text: str | None) -> str | None:
         return text
 
 
+# ---------- 知识库 2.0（D-62 / §5.1）：分类注册表 / 修订史 ----------
+
+def ensure_categories(conn: sqlite3.Connection) -> None:
+    """确保 7 类默认分类注册（INSERT OR IGNORE 幂等）。"""
+    now = _now_iso()
+    for name, display, sort_order in wiki_classify.DEFAULT_CATEGORIES:
+        conn.execute(
+            "INSERT OR IGNORE INTO wiki_categories "
+            "(name, display_name, sort_order, is_default, created_at) VALUES (?,?,?,1,?)",
+            (name, display, sort_order, now),
+        )
+
+
+def list_categories(conn: sqlite3.Connection) -> list[dict]:
+    """分类注册表（按 sort_order 升序）。"""
+    rows = conn.execute(
+        "SELECT name, display_name, sort_order, is_default FROM wiki_categories "
+        "ORDER BY sort_order, name"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _content_hash(text: str | None) -> str:
+    """内容指纹（sha256 前 16 位；去重/变更检测用）。"""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _next_revision_no(conn: sqlite3.Connection, page_id: str) -> int:
+    row = conn.execute(
+        "SELECT COALESCE(MAX(revision_no), 0) FROM wiki_revisions WHERE page_id=?", (page_id,)
+    ).fetchone()
+    return int(row[0]) + 1
+
+
+def add_revision(
+    conn: sqlite3.Connection,
+    page_id: str,
+    *,
+    title: str | None,
+    content: str,
+    change_kind: str = "update",
+    author: str | None = None,
+    summary: str | None = None,
+) -> int:
+    """追加一条修订史（append-only），返回 revision_no。不提交事务（调用方统一 commit）。"""
+    rev_no = _next_revision_no(conn, page_id)
+    conn.execute(
+        "INSERT INTO wiki_revisions "
+        "(page_id, revision_no, title, content, change_kind, author, summary, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (page_id, rev_no, title, content, change_kind, author, summary, _now_iso()),
+    )
+    return rev_no
+
+
+def unclassified_stats(conn: sqlite3.Connection, *, active_only: bool = True) -> dict:
+    """未分类占比（>5% 应告警，D-62 / D-47 不许静默）。
+
+    口径：category_class 为未分类或 NULL（未回填）都算未分类——回填后 NULL 应清零。
+    """
+    where = " WHERE status='active'" if active_only else ""
+    total = int(conn.execute(f"SELECT COUNT(*) FROM wiki_pages{where}").fetchone()[0])
+    if total == 0:
+        return {"total": 0, "unclassified": 0, "ratio": 0.0}
+    unc = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM wiki_pages{where}{' AND' if where else ' WHERE'} "
+            "(category_class IS NULL OR category_class = ?)",
+            (wiki_classify.UNCLASSIFIED,),
+        ).fetchone()[0]
+    )
+    return {"total": total, "unclassified": unc, "ratio": round(unc / total, 4)}
+
+
 # ---------- wiki_pages CRUD ----------
 
 def insert_page(
@@ -46,6 +123,10 @@ def insert_page(
     author: str | None = None,
     status: str | None = None,
     supersedes: str | None = None,
+    page_type: str | None = None,
+    updated_by: str | None = None,
+    write_revision: bool = True,
+    revision_summary: str | None = None,
 ) -> str:
     """插入 wiki 页面（按 page_id 幂等：已存在则更新内容与元数据）。
 
@@ -53,17 +134,37 @@ def insert_page(
     （多 agent 共享溯源，方案 v0.3 §5.1）。description_seg 由 _seg 计算。
     status 缺省 'active'。
 
+    知识库 2.0（D-62 / §5.1，2026-11-04）：
+    - 分类：category 入参按 7 类注册表归一（wiki_classify.classify_category）；
+      原始路径（如 research/dsh）保留为 tag origin_category:<raw>，不丢溯源；
+    - 页型 page_type：由分类/标题推断（entity / topic / log / index）；
+    - 标题行 headline：正文首行（≤30 字），空则回退 title；
+    - 内容指纹 content_hash：sha256 前 16 位；
+    - write_revision=True 时写一条 wiki_revisions（新建=create / 覆盖=update）；
+    - updated_by：user / agent_<id> / system（缺省回退 author）。
+
     Returns:
         page_id。
     """
     now = ingested_at or _now_iso()
+    ensure_categories(conn)
+    cls = wiki_classify.classify_category(category, title, content)
+    ptype = page_type or wiki_classify.page_type_for(cls, title)
+    head = wiki_classify.headline(content, title)
+    chash = _content_hash(content)
+    updater = updated_by or author or "system"
+    exists = (
+        conn.execute("SELECT 1 FROM wiki_pages WHERE page_id=?", (page_id,)).fetchone()
+        is not None
+    )
     conn.execute(
         """
         INSERT INTO wiki_pages (page_id, title, content, category, tags,
                                 source_type, source_url, source_file,
                                 ingested_at, updated_at, content_seg,
-                                description, description_seg, author, status, supersedes)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                description, description_seg, author, status, supersedes,
+                                page_type, category_class, headline, content_hash, updated_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(page_id) DO UPDATE SET
             title=excluded.title, content=excluded.content,
             category=excluded.category, tags=excluded.tags,
@@ -74,7 +175,12 @@ def insert_page(
             description_seg=excluded.description_seg,
             author=excluded.author,
             status=excluded.status,
-            supersedes=excluded.supersedes
+            supersedes=excluded.supersedes,
+            page_type=excluded.page_type,
+            category_class=excluded.category_class,
+            headline=excluded.headline,
+            content_hash=excluded.content_hash,
+            updated_by=excluded.updated_by
         """,
         (
             page_id, title, content, category,
@@ -83,8 +189,16 @@ def insert_page(
             now, now, _seg(content),
             description, _seg(description),
             author, status if status is not None else "active", supersedes,
+            ptype, cls, head, chash, updater,
         ),
     )
+    if write_revision:
+        add_revision(
+            conn, page_id, title=title, content=content,
+            change_kind="update" if exists else "create",
+            author=updater,
+            summary=revision_summary or ("页面更新" if exists else "页面创建"),
+        )
     conn.commit()
     return page_id
 
@@ -156,11 +270,22 @@ def update_page_content(
     category: str | None = None,
     tags: list[str] | None = None,
     description: str | None = None,
+    *,
+    change_kind: str = "update",
+    author: str | None = None,
+    updated_by: str | None = None,
+    write_revision: bool = True,
+    summary: str | None = None,
 ) -> bool:
     """更新页面内容与可选元数据（title/category/tags/description 传 None 表示不修改）。
 
     W1：description 显式传入时同步重算 description_seg（API 层 PATCH 默认不动
     description，本函数仅数据层能力）。
+
+    知识库 2.0（2026-11-04）：
+    - category 显式传入时按 7 类注册表归一（未传入保持原值，不静默改用户的分类）；
+    - page_type / headline / content_hash 每次更新都重算；
+    - write_revision=True 时追加修订史（change_kind：update / merge / rollback）。
     """
     cur = conn.execute(
         "SELECT title, category, tags, description FROM wiki_pages WHERE page_id=?",
@@ -172,24 +297,28 @@ def update_page_content(
     new_title = title if title is not None else row["title"]
     new_cat = category if category is not None else row["category"]
     new_tags = json.dumps(tags, ensure_ascii=False) if tags is not None else row["tags"]
-    if description is not None:
-        conn.execute(
-            """
-            UPDATE wiki_pages SET title=?, content=?, category=?, tags=?,
-                   updated_at=?, content_seg=?, description=?, description_seg=?
-            WHERE page_id=?
-            """,
-            (new_title, content, new_cat, new_tags, _now_iso(), _seg(content),
-             description, _seg(description), page_id),
-        )
-    else:
-        conn.execute(
-            """
-            UPDATE wiki_pages SET title=?, content=?, category=?, tags=?,
-                   updated_at=?, content_seg=?
-            WHERE page_id=?
-            """,
-            (new_title, content, new_cat, new_tags, _now_iso(), _seg(content), page_id),
+    cls = wiki_classify.classify_category(new_cat, new_title, content)
+    ptype = wiki_classify.page_type_for(cls, new_title)
+    head = wiki_classify.headline(content, new_title)
+    chash = _content_hash(content)
+    updater = updated_by or author or "system"
+    conn.execute(
+        """
+        UPDATE wiki_pages SET title=?, content=?, category=?, tags=?,
+               updated_at=?, content_seg=?,
+               description=COALESCE(?, description),
+               description_seg=COALESCE(?, description_seg),
+               page_type=?, category_class=?, headline=?, content_hash=?, updated_by=?
+        WHERE page_id=?
+        """,
+        (new_title, content, new_cat, new_tags, _now_iso(), _seg(content),
+         description, _seg(description) if description is not None else None,
+         ptype, cls, head, chash, updater, page_id),
+    )
+    if write_revision:
+        add_revision(
+            conn, page_id, title=new_title, content=content,
+            change_kind=change_kind, author=updater, summary=summary or "内容更新",
         )
     conn.commit()
     return True

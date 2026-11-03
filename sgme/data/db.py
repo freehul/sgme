@@ -330,6 +330,8 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
   supersedes TEXT,
   -- ---- 知识库 2.0 九列（D-62 / §5.1 · 迁移阶段 1，2026-11-04）----
   page_type TEXT DEFAULT 'topic',        -- 页型：entity / topic / log / index
+  category_class TEXT,                    -- D-62 自动分类结果（7 类之一）；category 保留原始路径
+                                          -- （兼容期不改 1.x 语义；阶段 3 可用 --migrate-category 切换）
   headline TEXT,                          -- 标题行 ≤30 字（空时确定性回退）
   content_hash TEXT,                      -- 内容指纹（去重 / 变更检测）
   heat_score REAL DEFAULT 0,              -- 热度三件：heat_score + last_recalled_at + view_count
@@ -1614,6 +1616,7 @@ def _migrate_wiki_2_0_columns(conn: sqlite3.Connection) -> None:
     if cols:
         new_cols = (
             ("page_type", "TEXT DEFAULT 'topic'"),
+            ("category_class", "TEXT"),
             ("headline", "TEXT"),
             ("content_hash", "TEXT"),
             ("heat_score", "REAL DEFAULT 0"),
@@ -1631,6 +1634,10 @@ def _migrate_wiki_2_0_columns(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_wiki_pages_hash ON wiki_pages(content_hash)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wiki_pages_class "
+            "ON wiki_pages(category_class, updated_at DESC)"
         )
     conn.executescript(
         """
