@@ -9,6 +9,7 @@
 | 能力 | 说明 |
 |---|---|
 | **画像自动注入** | `agent/pre-step` middleware：会话首步自动拉取 SGME 画像 + 相关记忆注入模型上下文（v2，2026-08-16 从"打日志"升级为真注入） |
+| **对话冷场修复** | D-72（v0.6.4）：首步注入后仅当本地启发式判定可能冷场（最近 2 条 user 均 ≤6 字无问号 / 寒暄词）时，附带会话 `history` 额外探测一次 `/v1/inject`；收到 `kind=coldstart_repair` 块则注入 1 条修补提示（同一会话最多 1 次；普通长对话零额外请求） |
 | **自动捕获** | session-sync 监听会话事件，每轮对话自动 `append` 落盘（零 LLM 成本） |
 | **记忆检索** | `memory_search` 检索 L1.5 标签化记忆池（带溯源） |
 | **知识库检索** | `wiki_search` 检索 L2 场景知识库（比记忆更精炼） |
@@ -154,7 +155,7 @@ syncOnTurnEnd: true
 - `wiki_evolve_trigger(session_key, min_rounds)` — 手动补触发自进化（每轮已自动触发）。
 
 **技能物化与写侧（4，v0.5.0 对齐 ST-36 M3）**
-- `skill_materialize(name, dest_dir)` — L3 字节保真落盘 `<dest_dir>/<name>/`，返回路径 + sha256（要按真文件路径执行脚本时用）；**落盘在 agent 本地**（D-59：走包通道 + 两级缓存，目录版本短路 + `package_sha256` 比对，命中零下载；旧版服务端自动回退服务端物化）。也可直接用包通道 `GET /v1/skills/{name}/package`（或 `skill_fetch.py --name <name> --dest <工作区>` 一键下载校验解包）；
+- `skill_materialize(name, dest_dir)` — L3 字节保真落盘 `<dest_dir>/<name>/`，返回路径 + sha256（要按真文件路径执行脚本时用）；**落盘在 agent 本地**（D-59：走包通道 + 两级缓存，目录版本短路 + 服务端 `package_sha256` 指纹比对——清单记作 `remote_sha`，与包内 MANIFEST 聚合哈希 `content_hash` 口径不同、不可互比；命中零下载；旧版服务端自动回退服务端物化）。也可直接用包通道 `GET /v1/skills/{name}/package`（或 `skill_fetch.py --name <name> --dest <工作区>` 一键下载校验解包）；
 - `skill_put(name, content, skip_limits)` — 写入/覆盖技能（过 lint 门禁 + 三层查重后落盘并提交技能源仓）；
 - `skill_delete(name, hard, force)` — 删除技能（默认软删；有入向引用需 force）；
 - `skill_rename(name, new_name)` — 墓碑制改名。

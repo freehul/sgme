@@ -186,6 +186,11 @@ export interface InjectRequest {
     match?: 'any' | 'all'
     limit?: number
   } | null
+  // ── D-72 对话冷场修复（2026-11-03 接线；首步注入不传，保持零额外成本）──
+  /** 会话历史（时间正序，{role,content}）：服务端据此判断冷场并追加修复提示块。 */
+  history?: Array<{ role: string; content: string }>
+  /** 修补闸：本会话冷场信号已修补过 → 服务端不再重复追加修复块（缺省 false）。 */
+  already_repaired?: boolean
 }
 
 /** /v1/inject 响应体。 */
@@ -208,6 +213,15 @@ export interface InjectBlock {
   title: string
   items: Array<Record<string, unknown>>
   present?: boolean             // Tier0 块独有
+  /**
+   * 块类型标记（D-72 起）：``coldstart_repair`` = 对话冷场修复提示。
+   * 普通记忆块无该字段；调用方据此识别修复块（修复提示不是记忆，别当画像渲染）。
+   */
+  kind?: string
+  /** 冷场原因（仅 coldstart_repair 块）：short_replies / assistant_monologue / greeting_filler。 */
+  reason?: string
+  /** 冷场判据信号（仅 coldstart_repair 块）：user_avg_len / assistant_avg_len / last_user_len。 */
+  signals?: Record<string, unknown>
 }
 
 /** /v1/append 请求体（AppendRequest）。 */
