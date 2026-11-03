@@ -115,7 +115,9 @@ def test_extract_l1_chunked_merges_dedup(cfg, monkeypatch):
     assert len(memories) == 3
     # 分块版本元信息：全部块同一版本 → 直接用该版本
     assert meta["stage"] == "l1_extraction"
-    assert meta["version"].startswith("working-")
+    # 2026-11-03：提示词已切 v019（提交 429be54），version 不再是 working- 前缀；
+    # 断言改为「非空版本标识」，避免每次换版都要改测试（换版由 prompts 目录自证）。
+    assert meta["version"] and not meta["version"].startswith("working-")
     assert meta["variant"] is None
 
 
