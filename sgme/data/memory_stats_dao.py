@@ -23,7 +23,7 @@ def _now_iso() -> str:
 
 
 def record_inject(conn: sqlite3.Connection, memory_id: str, injected_at: str | None = None) -> bool:
-    """记录一次注入：`last_injected_at = now()` 且 `recall_count += 1`（幂等 upsert）。
+    """记录一次注入：`last_injected_at = now`，**按不同自然日**给 `recall_count` 计数。
 
     Args:
         conn: memory.db 连接（memory_stats 与 memories 同库）。
@@ -34,6 +34,13 @@ def record_inject(conn: sqlite3.Connection, memory_id: str, injected_at: str | N
         True 表示统计已写入；False 表示 best-effort 失败（已记 WARNING，调用方不必处理）。
 
     Note:
+        **D-73 自然日去重（2026-11-03）**：原实现每次注入都 ``recall_count += 1``，
+        而 D-73 的幂律放大把 ``recall_count`` 当「被复习的天数」（间隔重复的
+        distinct_days）——同一轮对话里反复注入会把它刷爆，有效期被虚假放大到 3× 上限。
+        现在：同一自然日内的重复注入**只刷新 `last_injected_at`、不计数**；
+        跨日才 +1，并把 `last_recalled_at` 记为该次计入时刻（原先恒 NULL）。
+        自然日按 UTC 判（项目全链路 UTC，不做本地时区解释）。
+
         A2：本函数是 memory_stats 的**唯一**写入口。search 命中链路不得调用任何写函数。
     """
     ts = injected_at or _now_iso()
@@ -41,12 +48,21 @@ def record_inject(conn: sqlite3.Connection, memory_id: str, injected_at: str | N
         conn.execute(
             """
             INSERT INTO memory_stats (memory_id, last_recalled_at, recall_count, last_injected_at)
-            VALUES (?, NULL, 1, ?)
+            VALUES (?, ?, 1, ?)
             ON CONFLICT(memory_id) DO UPDATE SET
-              recall_count = COALESCE(memory_stats.recall_count, 0) + 1,
+              recall_count = CASE
+                WHEN date(memory_stats.last_injected_at) = date(excluded.last_injected_at)
+                THEN COALESCE(memory_stats.recall_count, 0)
+                ELSE COALESCE(memory_stats.recall_count, 0) + 1
+              END,
+              last_recalled_at = CASE
+                WHEN date(memory_stats.last_injected_at) = date(excluded.last_injected_at)
+                THEN memory_stats.last_recalled_at
+                ELSE excluded.last_injected_at
+              END,
               last_injected_at = excluded.last_injected_at
             """,
-            (memory_id, ts),
+            (memory_id, ts, ts),
         )
         conn.commit()
         return True

@@ -53,12 +53,26 @@ def test_record_inject_first_write(mem):
     assert stats["last_injected_at"] == "2026-08-20T00:00:00Z"
 
 
-def test_record_inject_idempotent_increment(mem):
+def test_record_inject_same_day_not_double_counted(mem):
+    """D-73 自然日去重：同一自然日重复注入只刷新时间，不加计数。"""
     memory_stats_dao.record_inject(mem, "m1", injected_at="2026-08-20T00:00:00Z")
     memory_stats_dao.record_inject(mem, "m1", injected_at="2026-08-20T01:00:00Z")
     stats = memory_stats_dao.get_stats(mem, "m1")
+    assert stats["recall_count"] == 1          # 同一天只算一次「被想起」
+    assert stats["last_injected_at"] == "2026-08-20T01:00:00Z"   # 注入时刻照常刷新
+    assert stats["last_recalled_at"] == "2026-08-20T00:00:00Z"   # 计入时刻停在当天首次
+
+
+def test_record_inject_cross_day_increments(mem):
+    """跨自然日才 +1，并把 last_recalled_at 推到该日（D-73 的 distinct_days 口径）。"""
+    memory_stats_dao.record_inject(mem, "m1", injected_at="2026-08-20T00:00:00Z")
+    memory_stats_dao.record_inject(mem, "m1", injected_at="2026-08-21T09:00:00Z")
+    stats = memory_stats_dao.get_stats(mem, "m1")
     assert stats["recall_count"] == 2
-    assert stats["last_injected_at"] == "2026-08-20T01:00:00Z"
+    assert stats["last_recalled_at"] == "2026-08-21T09:00:00Z"
+    # 同日再注入一次仍不计数
+    memory_stats_dao.record_inject(mem, "m1", injected_at="2026-08-21T23:00:00Z")
+    assert memory_stats_dao.get_stats(mem, "m1")["recall_count"] == 2
 
 
 def test_get_stats_missing(mem):
