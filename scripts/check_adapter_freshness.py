@@ -36,22 +36,30 @@
    前两道防线只管「仓库内的派生产物」——部署到宿主 profile 里的那份**没有人看**。
    2026-10-17 实锤：T-277 重建了 lib 与分发副本，但没有 bump package.json 版本，
    于是 npm latest 与 profile 部署副本都停在旧内容——本机 DSH 运行版少
-   `credential_list` / `credential_get` 两个工具，两道防线全绿，无人察觉。
+   ``credential_list`` / ``credential_get`` 两个工具，两道防线全绿，无人察觉。
    防线 3 把「部署副本缺基准工具」变成机器可见：
-   - 部署目录解析顺序：`--deploy <dir>` > `SGME_DSH_DEPLOY_DIR` > `~/.dsh/profiles/desktop/node_modules/dsh-sgme`
+   - 部署目录解析顺序：``--deploy <dir>`` > ``SGME_DSH_DEPLOY_DIR`` > ``~/.dsh/profiles/desktop/node_modules/dsh-sgme``
      （零配置解析到本机 profile；目录不存在 = 跳过并提示，不影响 CI 与无部署的机器）；
-   - 判据 = **契约级**：MCP 基准工具集（`scripts/adapter_parity.py` 的 baseline）
-     去掉 dsh 的架构豁免（`append` / `agent_onboarding`）后，必须全部出现在部署产物里；
-     再多一层「部署 vs 仓库产物逐文件哈希」——不一致即提示重刷（副本漂移）。
+   - 判据 = **契约级**：MCP 基准工具集（``scripts/adapter_parity.py`` 的 baseline）
+     去掉 dsh 的**永久豁免**后，必须全部出现在部署产物里；豁免**唯一真源 =
+     ``scripts/adapter_parity_map.yaml`` 的 ``exemptions.<tool>.dsh``**（与能力面
+     对账同源，本文件不再抄第二份）；再多一层「部署 vs 仓库产物逐文件哈希」——
+     不一致即提示重刷（副本漂移）。
    部署落后于仓库是**正常开发时序**（先合仓库、再发布、再刷新宿主），因此默认只警告、
-   不算漂移；发布门禁用 `--strict-deploy` 让缺口同样失败。
+   不算漂移；发布门禁用 ``--strict-deploy`` 让缺口同样失败。
 
-修复方式：① 分发副本漂移 → ``python scripts/publish_adapter_skills.py``；
-② dsh 产物漂移 → ``pnpm -C adapters/dsh/sgme-bridge run build`` 后提交 lib；
-③ 部署缺口 → bump 版本 + 发布（npm）/ 刷宿主 profile 后重启宿主。
-注意顺序：先 build 再 publish（publish 从真源打包，产物新了副本才会跟着新）。
+   ⚠️ 2026-11-03 修正两处假阳性（T-446，14 项缺口里 4 项是假的）：
+   ① 豁免曾是写死两项 ``(append, agent_onboarding)``，漏了 parity map 里 dsh 的
+      4 个管理面豁免（skill_candidate_pending / list / adopt / review）→ 4 个假缺口；
+   ② 旧别名解析「按缩进扫全 YAML」，把 exemptions 段里的 ``dsh: 同上（…）`` 中文
+      理由当成工具名参与契约比对 → 输出里出现中文"工具"、缺口语义也错。
+   现在豁免与别名都来自 parity map（``adapter_parity.load_map``），单一真源。
+
+   修复方式：① 分发副本漂移 → ``python scripts/publish_adapter_skills.py``；
+   ② dsh 产物漂移 → ``pnpm -C adapters/dsh/sgme-bridge run build`` 后提交 lib；
+   ③ 部署缺口 → bump 版本 + 发布（npm）/ 刷宿主 profile 后重启宿主。
+   注意顺序：先 build 再 publish（publish 从真源打包，产物新了副本才会跟着新）。
 """
-from __future__ import annotations
 from __future__ import annotations
 
 import argparse
@@ -76,16 +84,24 @@ REGION_PREFIX = "//#region "
 
 # 防线 3：部署态契约（见模块 docstring）。三条口径写死在这里，避免各处漂移：
 # - 部署目录默认候选（~ 展开在运行时做，便于测试注入）；
-# - dsh 的架构豁免工具（`adapter_parity.py` exemptions.dsh 同口径）；
+# - dsh 的永久豁免唯一真源 = parity map 的 exemptions 段（见 dsh_exempt_tools）；
 # - 部署产物相对部署目录的路径（npm 包内固定布局）。
 DEPLOY_DIR_ENV = "SGME_DSH_DEPLOY_DIR"
 DEFAULT_DEPLOY_REL = Path(".dsh") / "profiles" / "desktop" / "node_modules" / "dsh-sgme"
 DEPLOY_ENTRY_REL = Path("lib") / "index.js"
+ADAPTER_NAME = "dsh"
+
+# parity map 缺失 / 不可解析时的兜底豁免：保持历史口径，避免极简夹具或未同步仓库
+# 因缺文件把 append / agent_onboarding 误报成缺口。正常路径读 map，见 dsh_exempt_tools()。
 DSH_EXEMPT_TOOLS = ("append", "agent_onboarding")
 
-# 名称不同但语义等价的映射：唯一真源 = scripts/adapter_parity_map.yaml 的 aliases 段
-# （`search` ↔ dsh 的 `memory_search`）——在这里再抄一份就会漂移，故运行时读。
+# 名称不同但语义等价的映射（aliases 段）与永久豁免（exemptions 段）：
+# 唯一真源 = scripts/adapter_parity_map.yaml；在这里再抄一份就会漂移，故运行时读，
+# 且复用 adapter_parity.load_map（与能力面对账同源）。
 PARITY_MAP_REL = Path("scripts") / "adapter_parity_map.yaml"
+PARITY_SCRIPT_REL = Path("scripts") / "adapter_parity.py"
+
+_PARITY_CACHE: dict[str, dict] = {}
 
 
 def _load_publish_module(repo_root: Path):
@@ -98,6 +114,99 @@ def _load_publish_module(repo_root: Path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _load_parity_module(repo_root: Path):
+    """按路径加载 adapter_parity.py（隔离实例）。
+
+    复用它的 ``load_map`` 读 parity map，保证本门禁与能力面对账**读同一份真源**：
+    豁免/别名不在这里维护第二份，parity map 改了这边自动跟上。
+    """
+    script = repo_root / PARITY_SCRIPT_REL
+    spec = importlib.util.spec_from_file_location(
+        "sgme_adapter_parity_freshness", script
+    )
+    assert spec is not None and spec.loader is not None, f"无法加载 {script}"
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _parity_map(repo_root: Path = ROOT) -> dict:
+    """读 adapter_parity_map.yaml；读不到/解析失败返回 {}（调用方退化到兜底口径）。
+
+    fail-open 而不是 fail-closed 的原因：parity map 损坏时 ``adapter_parity.py``
+    自己会红（pre-push 两道门禁并联跑），本门禁没必要在缺依赖的极简环境里炸掉；
+    退化只影响「哪些工具算豁免」的精度，不影响仓库内两条防线的判定。
+    """
+    path = repo_root / PARITY_MAP_REL
+    key = str(path.resolve()) if path.exists() else str(path)
+    if key in _PARITY_CACHE:
+        return _PARITY_CACHE[key]
+    cfg: dict = {}
+    if path.is_file():
+        try:
+            loaded = _load_parity_module(repo_root).load_map(str(path))
+            cfg = loaded if isinstance(loaded, dict) else {}
+        except Exception:  # noqa: BLE001 - adapter_parity 缺失：退回直接 YAML 解析
+            try:
+                import yaml  # PyYAML 是项目锁定依赖（requirements.txt）
+
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+                cfg = loaded if isinstance(loaded, dict) else {}
+            except Exception:  # noqa: BLE001 - 依赖缺失/坏 YAML：退化，不阻断本门禁
+                cfg = {}
+    _PARITY_CACHE[key] = cfg
+    return cfg
+
+
+def dsh_exempt_tools(repo_root: Path = ROOT) -> set[str]:
+    """dsh 的永久豁免工具（唯一真源 = parity map 的 ``exemptions.<tool>.dsh``）。
+
+    2026-11-03 修正：旧实现把豁免写死成 ``append`` / ``agent_onboarding`` 两项，
+    漏了 parity map 里 dsh 的 4 个管理面豁免（skill_candidate_pending / list /
+    adopt / review）——部署缺口 14 项里有 4 项是这么来的假阳性。现在与
+    ``adapter_parity.py`` 同源读取；map 缺失时退回 ``DSH_EXEMPT_TOOLS`` 兜底，
+    map 存在但没有 exemptions 段 → 返回空集（不豁免任何工具，符合真源语义）。
+    """
+    cfg = _parity_map(repo_root)
+    if not cfg:
+        return set(DSH_EXEMPT_TOOLS)
+    exemptions = cfg.get("exemptions")
+    if exemptions is None:
+        return set()  # map 存在但未声明任何豁免 → 不豁免任何工具（真源语义）
+    if not isinstance(exemptions, dict):
+        return set(DSH_EXEMPT_TOOLS)
+    return {
+        str(tool)
+        for tool, per_adapter in exemptions.items()
+        if isinstance(per_adapter, dict) and per_adapter.get(ADAPTER_NAME)
+    }
+
+
+def dsh_alias_map(repo_root: Path = ROOT) -> dict[str, str]:
+    """parity map 的 **aliases 段**里 dsh 的等价名映射（基准名 → dsh 工具名）。
+
+    2026-11-03 修正：旧实现自称「只解析 aliases 段」，实际按缩进扫全 YAML——
+    exemptions 段形如::
+
+        skill_candidate_adopt:
+          dsh: 同上（需 admin key 的管理动作）
+
+    缩进与 aliases 段完全一样，于是中文豁免理由被当成别名值、豁免工具名被当成
+    基准工具名一起进了契约比对（输出里出现「部署副本缺工具 '同上（…）'」）。
+    现在只取 aliases 段（段落边界由 YAML 解析器保证），解析不到返回空映射（退化
+    为按名字严格比对）。
+    """
+    cfg = _parity_map(repo_root)
+    aliases = cfg.get("aliases")
+    if not isinstance(aliases, dict):
+        return {}
+    out: dict[str, str] = {}
+    for tool, per_adapter in aliases.items():
+        if isinstance(per_adapter, dict) and per_adapter.get(ADAPTER_NAME):
+            out[str(tool)] = str(per_adapter[ADAPTER_NAME])
+    return out
 
 
 def _normalized_digest(data: bytes) -> str:
@@ -228,7 +337,7 @@ def check_dsh_bundle(repo_root: Path = ROOT) -> list[str]:
 # ---------------- 防线 3：部署态契约（T-292） ----------------
 
 def mcp_baseline_tools(repo_root: Path = ROOT) -> set[str]:
-    """从 `sgme/mcp_server.py` 解析 MCP 工具面（与 adapter_parity.py 同口径）。
+    """从 ``sgme/mcp_server.py`` 解析 MCP 工具面（与 adapter_parity.py 同口径）。
 
     解析不到 = 提取口径失效，返回空集由调用方 fail-closed 处理。
     """
@@ -236,28 +345,6 @@ def mcp_baseline_tools(repo_root: Path = ROOT) -> set[str]:
     if not server.is_file():
         return set()
     return set(re.findall(r'\{"name":\s*"([a-z_]+)"', server.read_text(encoding="utf-8")))
-
-
-def dsh_alias_map(repo_root: Path = ROOT) -> dict[str, str]:
-    """解析 adapter_parity_map.yaml 的 aliases 段里 dsh 的等价名映射。
-
-    手工微解析（只取 `  <基准名>:` 下一行里的 `    dsh: <名>`），避免为一个映射
-    引入 YAML 依赖；解析不到返回空映射（退化为「按名字严格比对」）。
-    """
-    path = repo_root / PARITY_MAP_REL
-    if not path.is_file():
-        return {}
-    out: dict[str, str] = {}
-    current: str | None = None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip())
-        if indent == 2 and line.rstrip().endswith(":"):
-            current = line.strip().rstrip(":")
-        elif indent == 4 and current and line.strip().startswith("dsh:"):
-            out[current] = line.split(":", 1)[1].strip()
-    return out
 
 
 def resolve_deploy_dir(explicit=None) -> Path | None:
@@ -283,7 +370,8 @@ def check_deploy_contract(repo_root: Path = ROOT, deploy_dir=None) -> list[str]:
     """防线 3：部署副本是否满足能力面契约。返回缺口清单（空 = 无缺口）。
 
     两类判据：
-    - 契约级：MCP 基准工具（去 dsh 架构豁免）必须全部在部署产物里——缺 = 部署落后；
+    - 契约级：MCP 基准工具（去 dsh 永久豁免，豁免读 parity map）必须全部在部署
+      产物里——缺 = 部署落后；
     - 哈希级：部署产物与仓库产物逐文件一致——不一致 = 部署副本内容漂移。
     """
     if deploy_dir is None:
@@ -296,7 +384,8 @@ def check_deploy_contract(repo_root: Path = ROOT, deploy_dir=None) -> list[str]:
     if not baseline:
         return ["[deploy] MCP 基线解析到 0 个工具（提取规则失效？）→ fail-closed"]
     aliases = dsh_alias_map(repo_root)
-    contract = sorted(baseline - set(DSH_EXEMPT_TOOLS))
+    exemptions = dsh_exempt_tools(repo_root)
+    contract = sorted(baseline - exemptions)
 
     deployed = tool_names_in_file(entry)
     if not deployed:
@@ -330,7 +419,7 @@ def check(repo_root: Path = ROOT, deploy_dir=None) -> dict:
 
     - findings：仓库内派生产物漂移（分发副本 / dsh lib）——必须修，ok=False；
     - gaps：部署态缺口（部署落后于仓库）——正常开发时序里允许存在，默认只警告；
-      发布门禁用 `--strict-deploy` 把它也算失败（与 adapter_parity 的 pending 口径一致）。
+      发布门禁用 ``--strict-deploy`` 把它也算失败（与 adapter_parity 的 pending 口径一致）。
     """
     findings = check_skill_copies(repo_root) + check_dsh_bundle(repo_root)
     deploy = resolve_deploy_dir() if deploy_dir is None else deploy_dir
