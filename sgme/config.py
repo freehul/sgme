@@ -356,6 +356,42 @@ DEFAULT_CARE_CONFIG = {
 # 角色「自己过日子」的产物注入多少：每天最多 daily_max 条、每次装配最多 1 条（硬编码）、
 # 只给 lookback_days 内的新鲜事。秘密（is_secret）**永远不进注入**，不给配置开关——
 # 那是硬边界，不是可调参数。
+DEFAULT_INJECT_CONFIG = {
+    # D-70 记忆回指：画像块末尾带 1-2 条「上次提到的事」。
+    # **默认 off**——用户 2026-10-30 拍板「首月关闭」，先观察画像块长度与注入预算，
+    # 之后再决定是否打开。
+    "last_mentions": {
+        "enabled": False,
+        "limit": 2,        # 最多 2 条（D-70 第 4 条）
+        "days": 7,         # 候选窗口：最近 7 天 updated_at
+        "char_budget": 70, # 预算 60-100 token/轮 ≈ 40-70 汉字，超预算截断到 1 条
+    },
+}
+
+
+def _merge_inject_config(user_cfg: dict | None) -> dict:
+    """合并 inject 段默认值与用户配置（只认已知键，未知键不落到运行期）。"""
+    base = {k: (dict(v) if isinstance(v, dict) else v)
+            for k, v in DEFAULT_INJECT_CONFIG.items()}
+    if not isinstance(user_cfg, dict):
+        return base
+    lm = user_cfg.get("last_mentions")
+    if isinstance(lm, dict):
+        for k, v in lm.items():
+            if k not in base["last_mentions"] or v is None:
+                continue
+            if k == "enabled":
+                base["last_mentions"][k] = bool(v)
+            else:
+                try:
+                    iv = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if iv > 0:
+                    base["last_mentions"][k] = iv
+    return base
+
+
 DEFAULT_ROLE_LIFE_CONFIG = {
     "enabled": True,
     "daily_max": 2,
@@ -1426,6 +1462,8 @@ def load_config(
         "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
         # 2026-11-02 任务 B：角色离线生活注入闸（assemble 读 cfg["role_life"]）
         "role_life": _merge_role_life_config(sgme_cfg.get("role_life")),
+        # D-70 记忆回指开关（inject 侧读 cfg["inject"]["last_mentions"]）
+        "inject": _merge_inject_config(sgme_cfg.get("inject")),
         "wiki": sgme_cfg.get("wiki", dict(DEFAULT_WIKI_CONFIG)),
         "skills": sgme_cfg.get("skills", {"enabled": False}),
         "skills_hub": _merge_skills_hub_config(sgme_cfg.get("skills_hub")),

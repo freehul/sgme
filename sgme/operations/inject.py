@@ -142,6 +142,46 @@ def _attach_coldstart_repair(
     return response
 
 
+def _attach_last_mentions(
+    response: dict[str, Any],
+    mem_conn: sqlite3.Connection,
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    """D-70 记忆回指：在 blocks 末尾追加「上次提到的事」。
+
+    - 开关 ``inject.last_mentions.enabled``（**默认 off**，用户 10-30 拍板首月关闭）
+    - 取数规则见 ``profile/last_mentions.py``（focus/status、最近 7 天、
+      排除遗忘请求与他人事实、预算截断）
+    - 任何异常都跳过（回指是加分项，不能拖垮注入）
+    """
+    conf = ((cfg or {}).get("inject") or {}).get("last_mentions") or {}
+    if not conf.get("enabled", False):
+        return response
+    try:
+        from sgme.profile import last_mentions as lm_mod
+
+        items = lm_mod.pick(
+            mem_conn,
+            limit=int(conf.get("limit", 2)),
+            days=int(conf.get("days", 7)),
+            char_budget=int(conf.get("char_budget", 70)),
+        )
+        if not items:
+            return response
+        response.setdefault("blocks", []).append({
+            "title": "上次提到",
+            "items": [
+                {"content": f"{lm_mod._fmt_date(it.get('updated_at'))} {it['content']}"}
+                for it in items
+            ],
+            "present": True,
+            "kind": "last_mentions",
+        })
+    except Exception as e:  # noqa: BLE001——回指失败不影响注入
+        logger.warning("last_mentions 附加失败（已忽略）: %s", e)
+    return response
+
+
 def inject(
     mem_conn: sqlite3.Connection,
     cfg: dict[str, Any],
@@ -225,6 +265,8 @@ def inject(
             if fallback_mode:
                 # 回落提示最后追加（_attach_empty_note 会整体覆盖 note，须先走既有链路）
                 response = _attach_fallback_note(response, fallback_mode)
+            # D-70：记忆回指块（画像块末尾；默认 off）
+            response = _attach_last_mentions(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（不参与空注入/回落 note 判断）
             response = _attach_coldstart_repair(response, history, already_repaired)
             return OperationResult.succeed(response)
@@ -278,6 +320,8 @@ def inject(
             }
             response["stats"]["mode"] = "custom"
             response = _attach_key_missing_note(_attach_empty_note(response), cfg)
+            # D-70：记忆回指块（默认 off）
+            response = _attach_last_mentions(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（同上）
             response = _attach_coldstart_repair(response, history, already_repaired)
             return OperationResult.succeed(response)
