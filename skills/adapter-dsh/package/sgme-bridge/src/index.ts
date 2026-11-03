@@ -21,6 +21,7 @@ import { registerSgmeCommand } from './commands.js'
 import type { CommandResult, CommandInvocation } from './commands.js'
 import { registerSessionSync } from './session-sync.js'
 import { registerRulesSection, defaultRulesPath } from './rules.js'
+import { registerSkillProtocolSection } from './skill-protocol.js'
 import { SgmeEventSubscriber } from './events.js'
 
 export const name = 'dsh-sgme'
@@ -197,6 +198,19 @@ export function apply(ctx: CordisContext, config: Config): void {
   }).catch((e) => {
     const msg = e instanceof Error ? e.message : String(e)
     logger.warn(`[dsg-rules] 注册失败: ${msg}`)
+  })
+
+  // 5b. 技能检索协议注入（渐进式披露入口）
+  //    不注入 → system prompt 里只有画像，agent 不知道 SGME 有技能库可搜，
+  //    「开发前该加载编码纪律」这类规则从来没被想起过（2026-11-03 实测）。
+  void registerSkillProtocolSection(
+    { systemPrompt: ctx.systemPrompt, logger: { info: logger.info, warn: logger.warn } },
+    client,
+  ).then((disposeProtocol) => {
+    ctx.effect(() => disposeProtocol, 'sgme-skill-protocol-section')
+  }).catch((e) => {
+    const msg = e instanceof Error ? e.message : String(e)
+    logger.warn(`[dsg-skill-protocol] 注册失败: ${msg}`)
   })
 
   // 6. 启动连接探测（fire-and-forget，不阻塞插件加载；不可达给出本体安装指引）

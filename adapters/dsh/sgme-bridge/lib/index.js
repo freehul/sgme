@@ -6346,6 +6346,40 @@ async function registerRulesSection(ctx, rulesPath = defaultRulesPath()) {
 	};
 }
 //#endregion
+//#region src/skill-protocol.ts
+/** section 名（dsh systemPrompt.section 的稳定标识，用于热重载时替换）。 */
+const SKILL_PROTOCOL_SECTION = "sgme-skill-protocol";
+/**
+* 注册技能检索协议 section。
+*
+* @returns dispose 函数（注销该 section）；失败时返回空操作。
+*/
+async function registerSkillProtocolSection(ctx, client) {
+	let dispose = null;
+	let data = null;
+	try {
+		data = await client.skillColdstart();
+	} catch (e) {
+		ctx.logger.warn(`[dsg-skill-protocol] 拉取冷启动包失败: ${e instanceof Error ? e.message : String(e)}`);
+		return () => {};
+	}
+	const body = (data?.index?.items ?? []).map((it) => (it.content ?? "").trim()).filter((t) => t.length > 0).join("\n\n");
+	if (!body) {
+		ctx.logger.info("[dsg-skill-protocol] 协议正文为空，跳过注入");
+		return () => {};
+	}
+	dispose = ctx.systemPrompt.section({
+		name: SKILL_PROTOCOL_SECTION,
+		order: -65,
+		text: "# SGME 技能检索协议（常驻 · 按需取全文）\n\n" + body
+	});
+	ctx.logger.info(`[dsg-skill-protocol] 已注入协议 ${body.length} 字`);
+	return () => {
+		dispose?.();
+		dispose = null;
+	};
+}
+//#endregion
 //#region src/events.ts
 /**
 * events.ts — SGME 事件流订阅（SSE 长连，2026-08-18 用户选方案 2）
@@ -6634,6 +6668,18 @@ function apply(ctx, config) {
 	}).catch((e) => {
 		const msg = e instanceof Error ? e.message : String(e);
 		logger.warn(`[dsg-rules] 注册失败: ${msg}`);
+	});
+	registerSkillProtocolSection({
+		systemPrompt: ctx.systemPrompt,
+		logger: {
+			info: logger.info,
+			warn: logger.warn
+		}
+	}, client).then((disposeProtocol) => {
+		ctx.effect(() => disposeProtocol, "sgme-skill-protocol-section");
+	}).catch((e) => {
+		const msg = e instanceof Error ? e.message : String(e);
+		logger.warn(`[dsg-skill-protocol] 注册失败: ${msg}`);
 	});
 	client.health().then((h) => {
 		if (h) logger.info("SGME 连接正常: v" + (h.version ?? "?") + " llm=" + (h.llm?.model ?? "?") + " 记忆向量=" + (h.vector?.memory_vectors ?? "?"));

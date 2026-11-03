@@ -73,6 +73,11 @@ export interface SkillSummary {
   tags: string[]
   source: string | null
   version: string | null
+  /**
+   * 正文（仅 `/v1/skills/coldstart` 的 `index.items` 携带——服务端为该端点内联了
+   * 协议正文；`/v1/skills` 列表**不含**此字段）。缺失时按空处理。
+   */
+  content?: string
 }
 
 /** GET /v1/skills 列表响应（total=全量数，returned=实返回数，budget=默认截断窗口）。 */
