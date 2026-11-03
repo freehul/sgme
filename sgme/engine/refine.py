@@ -212,6 +212,8 @@ def refine_file(
             bucket_ctx=bucket_ctx,
             mem_conn=mem_conn,
             sunk_refs_text=sunk_refs_text,
+            chunk_retry_times=int((cfg.get("refine") or {}).get("chunk_retry_times", 2)),
+            chunk_retry_backoff_s=float((cfg.get("refine") or {}).get("chunk_retry_backoff_s", 5.0)),
         )
         result.prompt_versions["l1_extraction"] = prompt_meta
         # 块级失败（2026-11-03）：单块失败被 continue 吞掉，整份仍会标 refined →

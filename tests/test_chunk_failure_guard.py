@@ -42,7 +42,8 @@ def test_extract_l1_reports_chunk_failures(monkeypatch):
         return [GOOD_MEM], "agnes", {"stage": "l1_extraction", "version": "v019", "variant": None}
 
     monkeypatch.setattr(l1, "_extract_l1_chunk", fake_chunk)
-    memories, _provider, meta = l1.extract_l1(["块一", "块二"], DIMS, LLM_CFG)
+    memories, _provider, meta = l1.extract_l1(
+        ["块一", "块二"], DIMS, LLM_CFG, chunk_retry_times=0)
     assert len(memories) == 1          # 成功块的记忆保留
     assert meta["chunk_failures"] == 1
     assert meta["chunk_total"] == 2
@@ -65,7 +66,7 @@ def test_extract_l1_all_failed_still_raises(monkeypatch):
 
     monkeypatch.setattr(l1, "_extract_l1_chunk", fake_chunk)
     with pytest.raises(l1.RefineError):
-        l1.extract_l1(["块一", "块二"], DIMS, LLM_CFG)
+        l1.extract_l1(["块一", "块二"], DIMS, LLM_CFG, chunk_retry_times=0)
 
 
 # ---------- 提交闸 ----------
@@ -177,3 +178,82 @@ def test_refine_many_skips_commit_for_failed_file(monkeypatch):
     assert calls["commit"] == 1          # 只有干净的那个推游标
 
 
+
+
+# ---------- 块级重试（2026-11-03） ----------
+
+def test_extract_l1_retries_transient_failure(monkeypatch):
+    """瞬时失败（限流）在同轮内重试救回：不计失败块、退避按配置生效。"""
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def fake_chunk(chunk, dimensions, llm_cfg, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise l1.RefineError("模拟限流")
+        return [GOOD_MEM], "agnes", {"stage": "l1_extraction", "version": "v019", "variant": None}
+
+    monkeypatch.setattr(l1, "_extract_l1_chunk", fake_chunk)
+    monkeypatch.setattr(l1.time, "sleep", lambda s: sleeps.append(s))
+
+    memories, _, meta = l1.extract_l1(
+        ["块一", "块二"], DIMS, LLM_CFG, chunk_retry_times=2, chunk_retry_backoff_s=5.0)
+
+    assert meta["chunk_failures"] == 0     # 救回来了，不算缺口
+    assert meta["chunk_total"] == 2
+    assert len(memories) == 1              # 两块同内容，去重后 1 条
+    assert sleeps == [5.0]                 # 第 1 次失败 → 退避 5s
+    assert calls["n"] == 3                 # 块一(失败+重试) + 块二
+
+
+def test_extract_l1_gives_up_after_retries(monkeypatch):
+    """重试耗尽才计入失败块，调用次数 = 1 + retry_times。"""
+    calls = {"n": 0}
+
+    def fake_chunk(chunk, dimensions, llm_cfg, **kwargs):
+        calls["n"] += 1
+        raise l1.RefineError("永久失败")
+
+    monkeypatch.setattr(l1, "_extract_l1_chunk", fake_chunk)
+    monkeypatch.setattr(l1.time, "sleep", lambda s: None)
+
+    with pytest.raises(l1.RefineError):
+        l1.extract_l1(["块一"], DIMS, LLM_CFG, chunk_retry_times=2)
+    assert calls["n"] == 3
+
+
+def test_retry_backoff_grows_linearly(monkeypatch):
+    """退避递增：第 1 次 5s、第 2 次 10s（backoff × 第几次）。"""
+    sleeps: list[float] = []
+
+    def fake_chunk(chunk, dimensions, llm_cfg, **kwargs):
+        raise l1.RefineError("一直失败")
+
+    monkeypatch.setattr(l1, "_extract_l1_chunk", fake_chunk)
+    monkeypatch.setattr(l1.time, "sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(l1.RefineError):
+        l1.extract_l1(["块一"], DIMS, LLM_CFG, chunk_retry_times=2, chunk_retry_backoff_s=5.0)
+    assert sleeps == [5.0, 10.0]
+
+
+def test_retry_disabled_by_config(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_chunk(chunk, dimensions, llm_cfg, **kwargs):
+        calls["n"] += 1
+        raise l1.RefineError("失败")
+
+    monkeypatch.setattr(l1, "_extract_l1_chunk", fake_chunk)
+    monkeypatch.setattr(l1.time, "sleep", lambda s: None)
+
+    with pytest.raises(l1.RefineError):
+        l1.extract_l1(["块一"], DIMS, LLM_CFG, chunk_retry_times=0)
+    assert calls["n"] == 1
+
+
+def test_default_config_has_chunk_retry():
+    from sgme.config import DEFAULT_REFINE_CONFIG
+
+    assert DEFAULT_REFINE_CONFIG["chunk_retry_times"] == 2
+    assert DEFAULT_REFINE_CONFIG["chunk_retry_backoff_s"] == 5.0

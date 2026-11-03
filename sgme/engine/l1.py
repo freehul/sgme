@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -791,6 +792,46 @@ def chunk_conversation(
     return chunks
 
 
+def _extract_chunk_with_retry(
+    chunk: str,
+    dimensions: list[dict],
+    llm_cfg: dict,
+    *,
+    client=None,
+    bucket_ctx: BucketCtx | None = None,
+    mem_conn: sqlite3.Connection | None = None,
+    sunk_refs_text: str = "",
+    retry_times: int = 2,
+    backoff_s: float = 5.0,
+    label: str = "L1 块",
+):
+    """单块提炼 + 退避重试（2026-11-03）。
+
+    限流/网络抖动是**瞬时**的：同一轮内退避重试，比「跳过整块、等下一轮整份
+    重跑」划算得多——实测 agnes 免费档限流时单块失败率 30%，重试 2 次能救回
+    绝大多数。重试耗尽仍失败才抛 ``RefineError``，由调用方计入失败块。
+
+    退避按 ``backoff_s × 第几次`` 线性递增（第 1 次 5s、第 2 次 10s）。
+    """
+    times = max(0, int(retry_times))
+    last_err: RefineError | None = None
+    for attempt in range(times + 1):
+        try:
+            return _extract_l1_chunk(
+                chunk, dimensions, llm_cfg, client=client,
+                bucket_ctx=bucket_ctx, mem_conn=mem_conn,
+                sunk_refs_text=sunk_refs_text,
+            )
+        except RefineError as e:
+            last_err = e
+            if attempt < times:
+                wait_s = backoff_s * (attempt + 1)
+                logger.warning("%s 第 %d 次失败，%.1fs 后重试: %s",
+                               label, attempt + 1, wait_s, e)
+                time.sleep(wait_s)
+    raise last_err  # type: ignore[misc]
+
+
 def extract_l1(
     conversation: str | list[str],
     dimensions: list[dict],
@@ -801,6 +842,8 @@ def extract_l1(
     bucket_ctx: BucketCtx | None = None,
     mem_conn: sqlite3.Connection | None = None,
     sunk_refs_text: str = "",
+    chunk_retry_times: int = 2,
+    chunk_retry_backoff_s: float = 5.0,
 ) -> tuple[list[dict], str, dict]:
     """完整 L1 提取：render → call_with_fallback → parse。
 
@@ -819,6 +862,7 @@ def extract_l1(
         chunk_size = 8000
     if overlap is None:
         overlap = 1500
+    retry_times = max(0, int(chunk_retry_times))
 
     if isinstance(conversation, list):
         # 预分块模式：调用方已按语义回合分块，直接逐块提炼
@@ -828,10 +872,13 @@ def extract_l1(
         chunks = chunk_conversation(conversation, chunk_size, overlap)
         total_chars = len(conversation)
     if len(chunks) == 1:
-        return _extract_l1_chunk(
+        # 单块同样退避重试：小文件一次抖动就整份判死最不划算（2026-11-03）
+        return _extract_chunk_with_retry(
             chunks[0], dimensions, llm_cfg, client=client,
             bucket_ctx=bucket_ctx, mem_conn=mem_conn,
             sunk_refs_text=sunk_refs_text,
+            retry_times=retry_times, backoff_s=chunk_retry_backoff_s,
+            label="L1 单块",
         )
 
     # 多块：逐块提炼 + 按 content 去重合并
@@ -842,17 +889,20 @@ def extract_l1(
     failed_chunks = 0
     for idx, chunk in enumerate(chunks):
         try:
-            memories, _, meta = _extract_l1_chunk(
+            memories, _, meta = _extract_chunk_with_retry(
                 chunk, dimensions, llm_cfg, client=client,
                 bucket_ctx=bucket_ctx, mem_conn=mem_conn,
                 sunk_refs_text=sunk_refs_text,
+                retry_times=retry_times, backoff_s=chunk_retry_backoff_s,
+                label=f"L1 块 {idx + 1}/{len(chunks)}",
             )
             chunk_metas.append(meta)
         except RefineError as e:
             # 2026-11-03 修复（全量提炼实测）：失败块必须计数并上报，否则整份
             # 文件照常 commit 并标 refined → 静默缺内容（实测 35% 块丢失仍标 refined）
             failed_chunks += 1
-            logger.warning("L1 块 %d/%d 失败: %s", idx + 1, len(chunks), e)
+            logger.warning("L1 块 %d/%d 最终失败（已重试 %d 次）: %s",
+                           idx + 1, len(chunks), retry_times, e)
             continue
         for m in memories:
             key = m.get("content", "").strip()

@@ -472,6 +472,10 @@ DEFAULT_REFINE_CONFIG = {
     # 0.0（默认）= 零容忍，任何失败块都拦住提交、文件保持 status=new 待重跑；
     # >0 = 允许该比例的缺口（仍打 anomaly_warn + 告警日志，属显式接受）。
     "max_chunk_failure_ratio": 0.0,
+    # 块级重试（2026-11-03）：限流/抖动是瞬时的，同一轮内退避重试比整份重跑划算。
+    # chunk_retry_times=同块重试次数；backoff 按第 n 次 ×(n) 线性递增（秒）。
+    "chunk_retry_times": 2,
+    "chunk_retry_backoff_s": 5.0,
 }
 
 # ST-39 T-139 Guardrail：敏感信息写前/召回后过滤层（顶层配置，pipeline 与 search 共用）
