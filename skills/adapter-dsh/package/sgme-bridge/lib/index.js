@@ -21,14 +21,6 @@ function normalizeSkillSection(section) {
 	if (!section) return null;
 	return section.replace(/^#+\s*/, "").trim() || null;
 }
-/**
-* SGME HTTP 客户端。
-*
-* 防代理劫持：fetch 不读 HTTP_PROXY 环境变量（防 Clash 劫持 localhost），
-* 用显式 127.0.0.1（由 baseUrl 配置保证）+ dispatcher 禁用代理。
-*
-* 故障隔离：所有方法失败返回 null，绝不抛异常（调用方按 null 判断降级）。
-*/
 var SgmeClient = class {
 	baseUrl;
 	agentKey;
@@ -43,6 +35,41 @@ var SgmeClient = class {
 		this.timeoutMs = config.timeoutMs ?? 5e3;
 	}
 	/** SGME 健康检查（GET /v1/health，免鉴权——Bearer 可选，不强制 X-API-Key）。失败返回 null。 */
+	/** GET /v1/capabilities（Agent Key）；失败返回 null（故障隔离）。 */
+	async capabilities() {
+		const [data] = await this.get("/v1/capabilities", "agent");
+		return data;
+	}
+	/**
+	* D-58：启动时校验服务端 API 兼容族（只提示不阻塞）。
+	* 返回结构化结果，日志由调用方（index.ts）决定——客户端保持无 UI 依赖。
+	*/
+	async checkApiCompat(supported = "1.x") {
+		const caps = await this.capabilities();
+		if (!caps) return {
+			ok: false,
+			supported,
+			apiCompat: null,
+			schemaVersion: null,
+			reason: "unreachable"
+		};
+		const apiCompat = caps.api_compat ?? null;
+		const schemaVersion = typeof caps.schema_version === "number" ? caps.schema_version : null;
+		if (apiCompat !== supported) return {
+			ok: false,
+			supported,
+			apiCompat,
+			schemaVersion,
+			reason: "mismatch"
+		};
+		return {
+			ok: true,
+			supported,
+			apiCompat,
+			schemaVersion,
+			reason: null
+		};
+	}
 	async health() {
 		const url = this.baseUrl + "/v1/health";
 		try {
@@ -6788,7 +6815,15 @@ function apply(ctx, config) {
 		const msg = e instanceof Error ? e.message : String(e);
 		logger.warn("[dsh-sgme] 启动连接探测异常: " + msg);
 	});
-	logger.info("SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules + 连接探测）");
+	client.checkApiCompat().then((c) => {
+		if (c.ok) logger.info("SGME 能力面匹配: api_compat=" + c.apiCompat + " schema=v" + (c.schemaVersion ?? "?"));
+		else if (c.reason === "mismatch") logger.warn("[dsh-sgme] API 兼容族不匹配：服务端 api_compat=" + (c.apiCompat ?? "?") + "，适配器支持 " + c.supported + "——请升级适配器或核对 /v1/capabilities（不阻塞，仅提示）");
+		else logger.info("[dsh-sgme] 服务端未提供 /v1/capabilities（旧版 SGME）——按 1.x 语义继续，升级 2.0 后自动校验");
+	}).catch((e) => {
+		const msg = e instanceof Error ? e.message : String(e);
+		logger.warn("[dsh-sgme] 能力面自检异常（忽略）: " + msg);
+	});
+	logger.info("SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules + 连接探测 + 能力自检）");
 }
 //#endregion
 export { Config, apply, inject, name };

@@ -128,6 +128,8 @@ FILES = {
     "migration": S / "migration.py",
     "stage3": ROOT / "scripts" / "migrate_stage3_backfill.py",
     "regression_inject": S / "regression_inject.py",
+    "dsh_client": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "sgme-client.ts",
+    "dsh_index": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "index.ts",
 }
 
 _cache: dict[str, str] = {}
@@ -511,6 +513,8 @@ def _(self):
         ("catalog_version 字段", *has("compat", "catalog_version")),
         ("兼容期窗口计算", *has("compat", "def compat_phase")),
         ("升级提示 upgrade_hint", *has("compat", "upgrade_hint")),
+        ("dsh 适配器能力自检", *has("dsh_client", "checkApiCompat")),
+        ("dsh 启动调用自检（不阻塞）", *has("dsh_index", "checkApiCompat")),
     ]
 
 

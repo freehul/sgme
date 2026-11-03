@@ -685,6 +685,31 @@ export interface SkillWriteResponse {
  *
  * 故障隔离：所有方法失败返回 null，绝不抛异常（调用方按 null 判断降级）。
  */
+/**
+ * D-58（2026-11-04）：适配器声明的 API 兼容族。服务端 /v1/capabilities.api_compat
+ * 与它不一致时只**日志提示**、不阻塞（单用户场景不做强制弹窗，设计 §9.7）。
+ * 服务端上 /v2 时把这里改成 '2.x' 并同步工具面。
+ */
+export const SUPPORTED_API_COMPAT = '1.x'
+
+/** GET /v1/capabilities 响应（服务端 sgme/compat.py；只取适配器需要的字段）。 */
+export interface CapabilitiesResponse {
+  server?: { name?: string; version?: string }
+  schema_version?: number
+  api_compat?: string
+  catalog_version?: string
+  compat?: { phase?: string; ends_at?: string | null; days_left?: number | null }
+}
+
+export interface ApiCompatCheck {
+  ok: boolean
+  supported: string
+  apiCompat: string | null
+  schemaVersion: number | null
+  /** null=匹配；'mismatch'=兼容族不符；'unreachable'=端点不存在/请求失败 */
+  reason: 'mismatch' | 'unreachable' | null
+}
+
 export class SgmeClient {
   private readonly baseUrl: string
   private readonly agentKey: string
@@ -701,6 +726,35 @@ export class SgmeClient {
   }
 
   /** SGME 健康检查（GET /v1/health，免鉴权——Bearer 可选，不强制 X-API-Key）。失败返回 null。 */
+  /** GET /v1/capabilities（Agent Key）；失败返回 null（故障隔离）。 */
+  async capabilities(): Promise<CapabilitiesResponse | null> {
+    const [data] = await this.get<CapabilitiesResponse>('/v1/capabilities', 'agent')
+    return data
+  }
+
+  /**
+   * D-58：启动时校验服务端 API 兼容族（只提示不阻塞）。
+   * 返回结构化结果，日志由调用方（index.ts）决定——客户端保持无 UI 依赖。
+   */
+  async checkApiCompat(
+    supported: string = SUPPORTED_API_COMPAT,
+  ): Promise<ApiCompatCheck> {
+    const caps = await this.capabilities()
+    if (!caps) {
+      return {
+        ok: false, supported, apiCompat: null, schemaVersion: null,
+        reason: 'unreachable',
+      }
+    }
+    const apiCompat = caps.api_compat ?? null
+    const schemaVersion = typeof caps.schema_version === 'number'
+      ? caps.schema_version : null
+    if (apiCompat !== supported) {
+      return { ok: false, supported, apiCompat, schemaVersion, reason: 'mismatch' }
+    }
+    return { ok: true, supported, apiCompat, schemaVersion, reason: null }
+  }
+
   async health(): Promise<HealthResponse | null> {
     const url = this.baseUrl + '/v1/health'
     try {

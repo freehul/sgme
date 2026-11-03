@@ -232,5 +232,30 @@ export function apply(ctx: CordisContext, config: Config): void {
     logger.warn('[dsh-sgme] 启动连接探测异常: ' + msg)
   })
 
-  logger.info('SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules + 连接探测）')
+  // 7. D-58（2026-11-04）：能力面自检——GET /v1/capabilities，比较 api_compat。
+  //    设计 §9.7：不匹配只打日志提示、不阻塞。旧版服务端无该端点 → 按 1.x 继续。
+  void client.checkApiCompat().then((c) => {
+    if (c.ok) {
+      logger.info(
+        'SGME 能力面匹配: api_compat=' + c.apiCompat
+        + ' schema=v' + (c.schemaVersion ?? '?'),
+      )
+    } else if (c.reason === 'mismatch') {
+      logger.warn(
+        '[dsh-sgme] API 兼容族不匹配：服务端 api_compat=' + (c.apiCompat ?? '?')
+        + '，适配器支持 ' + c.supported
+        + '——请升级适配器或核对 /v1/capabilities（不阻塞，仅提示）',
+      )
+    } else {
+      logger.info(
+        '[dsh-sgme] 服务端未提供 /v1/capabilities（旧版 SGME）——按 1.x 语义继续，'
+        + '升级 2.0 后自动校验',
+      )
+    }
+  }).catch((e) => {
+    const msg = e instanceof Error ? e.message : String(e)
+    logger.warn('[dsh-sgme] 能力面自检异常（忽略）: ' + msg)
+  })
+
+  logger.info('SGME bridge 全部能力已注册（画像注入 + 工具 + 命令 + 会话同步 + dsg-rules + 连接探测 + 能力自检）')
 }
