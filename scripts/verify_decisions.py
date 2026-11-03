@@ -112,6 +112,7 @@ FILES = {
     "backfill_anchor": ROOT / "scripts" / "backfill_meaning_anchor.py",
     "meaning_anchor_mod": S / "engine" / "meaning_anchor.py",
     "ttl_disp": S / "engine" / "ttl_disposition.py",
+    "verify_migration": ROOT / "scripts" / "verify_migration.py",
 }
 
 _cache: dict[str, str] = {}
@@ -434,14 +435,15 @@ def _(self):
     ]
 
 
-@check("D-57", "迁移校验十项（全绿才准切读）", "planned")
+@check("D-57", "迁移校验十项（全绿才准切读）", "partial")
 def _(self):
-    # 2026-11-04：阶段 0 基线采集器已落地（scripts/migrate_2_0_baseline.py），
-    # 但 §9.4 十项**校验**尚未脚本化（无 verify_migration.py / 无校验报告）→ 仍待施工。
+    # 2026-11-04：十项已脚本化 8 项机判（行数/文本/向量/FTS/归档与场景/知识库/技能/scene_key），
+    # #9 注入回归与 #10 场景路影响按设计是人工/自动化执行项，脚本给口径与 MANUAL 标注
+    # → 校验器落地但「全绿才准切读」尚未实跑（阶段 3/4 未开始），故 partial。
     return [
         ("阶段 0 基线采集脚本", *has("migrate_baseline", "collect_memory")),
-        ("迁移报告目录", *exists("docs/migration")),
-        ("十项校验脚本", *exists("scripts/verify_migration.py")),
+        ("十项校验脚本", *has("verify_migration", "def run")),
+        ("校验报告目录", *exists("docs/migration")),
     ]
 
 

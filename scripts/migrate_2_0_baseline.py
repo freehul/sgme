@@ -540,9 +540,8 @@ def render_markdown(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(
+def collect_report(
     data_dir: str | Path,
-    out_dir: str | Path,
     *,
     sample_memories: int = 500,
     sample_wiki: int = 20,
@@ -550,9 +549,8 @@ def run(
     label: str | None = None,
     redact_paths: bool = True,
 ) -> dict:
-    """执行一次基线采集并写盘，返回 report 字典（测试直接调用本函数）。"""
+    """只读采集并返回 report 字典（**不落盘**；供阶段 0 报告与迁移校验复用）。"""
     data = Path(data_dir)
-    out = Path(out_dir)
     if not (data / "memory.db").is_file():
         raise FileNotFoundError(f"memory.db 不存在：{data}")
     label = label or datetime.now(UTC).strftime("%Y%m%d")
@@ -608,6 +606,31 @@ def run(
     if not (data / "agent_keys.json").is_file():
         warnings.append("agent_keys.json 未在数据目录（agent 配置基线需另采，见 §9.1）")
 
+    return report
+
+
+def run(
+    data_dir: str | Path,
+    out_dir: str | Path,
+    *,
+    sample_memories: int = 500,
+    sample_wiki: int = 20,
+    sample_skills: int = 20,
+    label: str | None = None,
+    redact_paths: bool = True,
+) -> dict:
+    """执行一次基线采集并写盘（JSON + Markdown），返回 report 字典。"""
+    data = Path(data_dir)
+    out = Path(out_dir)
+    report = collect_report(
+        data,
+        sample_memories=sample_memories,
+        sample_wiki=sample_wiki,
+        sample_skills=sample_skills,
+        label=label,
+        redact_paths=redact_paths,
+    )
+    label = report["label"]
     out.mkdir(parents=True, exist_ok=True)
     json_path = out / f"2.0-迁移基线-{label}.json"
     md_path = out / f"2.0-迁移基线-{label}.md"
