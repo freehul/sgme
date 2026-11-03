@@ -11,6 +11,34 @@
 # ============================================================
 set -u
 
+# ============================================================
+# 第二道：设计决策 ↔ 代码契约对账（2026-11-03 用户定）
+#
+# 背景：2.0 开发出现 20+ 处「文档写已实现、代码里没有」——只有测试绿这一道闸
+# 拦不住"结构性完成、最后一公里没接"（列建了没写入点、表建了没调用方）。
+# 规则：改到 sgme/ 下 Python 源码或对账脚本本身时，跑 verify_decisions.py，
+#       MISMATCH（文档标已实现但代码不满足）必须为 0 才放行。
+# 逃生：GIT_COMMIT_SKIP_DECISION_CHECK=1 git commit …（留痕）
+# ============================================================
+if [ "${GIT_COMMIT_SKIP_DECISION_CHECK:-}" = "1" ]; then
+    echo "[pre-commit] GIT_COMMIT_SKIP_DECISION_CHECK=1 —— 已跳过决策对账（留痕）" >&2
+else
+    _DEC_CHANGED="$(git diff --cached --name-only | grep -E '^(sgme/.*\.py|scripts/verify_decisions\.py)$' || true)"
+    if [ -n "$_DEC_CHANGED" ]; then
+        _DEC_ROOT="$(git rev-parse --show-toplevel)"
+        _DEC_PY="$_DEC_ROOT/.venv/Scripts/python.exe"
+        [ -x "$_DEC_PY" ] || _DEC_PY="python"
+        if "$_DEC_PY" "$_DEC_ROOT/scripts/verify_decisions.py" > "$_DEC_ROOT/.git/sgme_decision.log" 2>&1; then
+            echo "[pre-commit] 决策对账通过（MISMATCH 0）"
+        else
+            echo "[pre-commit] ❌ 决策对账失败——文档标已实现但代码不满足：" >&2
+            grep -A20 "MISMATCH" "$_DEC_ROOT/.git/sgme_decision.log" | head -30 >&2
+            echo "[pre-commit] 处置：补代码 / 把文档状态改回未实现 / 或 GIT_COMMIT_SKIP_DECISION_CHECK=1 留痕跳过" >&2
+            exit 1
+        fi
+    fi
+fi
+
 if [ "${GIT_COMMIT_SKIP_SCAN:-}" = "1" ]; then
     echo "[pre-commit] GIT_COMMIT_SKIP_SCAN=1 —— 已跳过数据卫生扫描（留痕）" >&2
     exit 0
