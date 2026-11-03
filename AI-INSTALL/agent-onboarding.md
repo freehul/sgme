@@ -11,6 +11,11 @@
 4. **写入**：每轮对话结束 `append` 当前轮次；会话结束 `refine_trigger(async_mode=true)`。
 5. **提炼**：批量 ≥20 文件必须分批 + 批间 30–60s；429 不立即重试，交 `batch_scan` 兜底。
 6. **技能获取（按需检索，MUST）**：需要 SGME 未内置的专业能力时，先 `skill_search(query)` 检索、命中后 `skill_get(name)` 拉全文注入再执行——**禁止未检索就声称具备技能或硬凑步骤**。冷启动包只含《技能检索协议》一个 skill、不预载全量技能，按需检索才是正路。
+   **⚠️ 前提：协议必须常驻上下文（2026-11-03 实测教训）**。「需要时再检索」这句话本身不成立——Agent 不知道自己「现在需要」，就不会去检索。接入方必须二选一：
+   - **宿主有 system prompt 注入能力**（Hermes 适配器 / dsh 插件）→ 会话开始时把协议正文（`GET /v1/skills/coldstart` 的 `index.items[].content`）注入静态块，常驻开头；
+   - **宿主无注入能力**（doubao / mimo / workbuddy / zcode / codex / claude-code）→ 会话开始调一次 `skill_coldstart`，把返回的协议放进**工作记忆 / 常驻清单**，让它在此后每轮都可见。
+
+   判据（唯一能证伪的方式）：**新会话里 Agent 在没人提醒的情况下，能否说出「SGME 有技能库，开发任务该先 skill_search」**。
 7. **管理面（2.0）**：待审队列 / 运维看板 / 角色演化见 §8.5；凭证管理见 §4.3；技能包两级缓存与技能编写见 §6.3 / §6.4。
 
 ### SGME 能力平面（核心三模块）
@@ -27,6 +32,14 @@
 统一路由：**memory 取上下文 → skills 取方法 → 执行 → wiki 沉淀稳定经验**。普通 skill 不物化；宿主适配器或确需本地资产的工具包按部署形态取件——同机用 `skill_materialize`（落盘在 SGME 服务端）；跨机用**包通道**取完整包：`GET /v1/skills/{name}/package`（或 `skill_fetch.py` 一键下载校验解包，见 §6.1），字节保真、可在本地直接执行。
 
 SGME 技能库已提供统一开发能力入口：`coding-workflow`（TDD/调试/审查/验证/CodeGraph/提交）、`sgme-development`（引擎开发）、`sgme-adapter-development`（适配器）、`sgme-docs-authoring`（文档）、`skill-governance`（技能治理）和 `sgme-operations`（记忆/技能/wiki/凭据运维与手册）。需要时按 `skill_search` 检索，不要再批量安装重复技能。
+
+### 为什么协议要常驻（而不是「需要时再想」）
+
+`skill_search` 只是工具箱里的一个工具，**工具不会自己触发**。Agent 只有在上下文里同时看见「有技能库」和「什么时候该用」，才可能在接到开发任务时想起去检索。
+
+实测（2026-11-03）：Hermes 会话的 system prompt 当时只有「角色提示词 + 画像摘要」，没有协议。结果整轮开发改了 10+ 个文件、修了十几个 bug，`coding-discipline` / `git-pr-workflow` **一次都没被加载**——不是拿不到（`sgme_skill_search` 一直可用），是压根不知道有。补上协议注入后，新会话开头就带着那张「任务信号 → 模块 → 动作」路由表。
+
+同理，**不要用手抄的方式把技能复制到宿主本地**：手抄既会漏内容（实测漏掉真源整节），又会造出第二个真源持续漂移。要本地可用就走包通道（`skill_materialize` / `GET /v1/skills/{name}/package`），且副本必须是可重建的。
 
 ---
 
@@ -274,7 +287,7 @@ SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 
 | ③ | 写入 | `append` / 会话入库 `status:new` |
 | ④ | 检索 | `search` 命中带溯源 |
 | ⑤ | 提炼 | `refine_trigger` async 可达 |
-| ⑥ | 技能 | `skill_search` 有结果 |
+| ⑥ | 技能 | 协议已常驻上下文（或已调 `skill_coldstart`）+ `skill_search` 有结果 |
 | ⑦ | 自我配置 | 身份文件含 `SGME-ONBOARDING-v2` |
 | ⑧ | 适配器 | 已装 `adapter-<host>`，或显式走通用 MCP 且 ⑦ 完成 |
 
