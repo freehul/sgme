@@ -28,10 +28,14 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sgme.engine import l1
 from sgme.engine.l2_split import decide_split
+
+# D-43：愿望类断言的有效窗口（天）
+WISHED_WINDOW_DAYS = 90
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +66,43 @@ def _dimensions_of(unit: dict[str, Any], dimensions: list[dict]) -> list[str]:
     return [d for d in dims if d in valid]
 
 
+def _valid_to_for(
+    modality: str | None, occurred_at: str | None
+) -> str | None:
+    """D-43 闸门 A 的输入：给 planned / wished 断言算有效期（``valid_to``）。
+
+    - **planned**：取计划时间点。模型给的 ``occurred_at`` 解析为**未来**时刻才认，
+      否则返回 None——不编造一个假的计划日期（宁可不设有效期，也不给错误断言）。
+    - **wished**：一律 ``now + 90 天``（D-43 定义的可执行窗口）。
+    - 其余 modality（done / quoted / unknown）→ None：已发生/引用类事实无断言有效期。
+
+    此前 ``valid_to`` 全仓无写入点，导致闸门 A 永远无输入——「明年三月体检」这类
+    计划记忆会像普通事实一样按维度 TTL 到期，而不是活到计划日。
+    """
+    m = str(modality or "").strip().lower()
+    if m == "wished":
+        return (_utcnow() + timedelta(days=WISHED_WINDOW_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if m != "planned":
+        return None
+    raw = str(occurred_at or "").strip()
+    if not raw:
+        return None
+    try:
+        # 兼容 'YYYY-MM-DD' 与完整 ISO（含 Z）
+        ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    if ts <= _utcnow():
+        return None  # 计划时间点已过 → 不是未来的断言
+    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _base_record(
     *,
     content: str,
@@ -70,6 +111,7 @@ def _base_record(
     route: str | None,
     occurred_at: str | None,
     extra: dict[str, Any],
+    valid_to: str | None = None,
 ) -> dict[str, Any]:
     return {
         "content": content,
@@ -78,6 +120,8 @@ def _base_record(
         "priority": DEFAULT_PRIORITY,
         "route": route if route in VALID_ROUTES else None,
         "occurred_at": occurred_at,
+        # D-43：planned/wished 的断言有效期（闸门 A 载体）
+        "valid_to": valid_to,
         "extra": extra,
     }
 
@@ -137,6 +181,10 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
             memory_type="persona" if ftype in _PERSONA_TYPES else "fact",
             route=decision.route or route or None,
             occurred_at=(fact.get("occurred_at") if decision.route is None else None),
+            valid_to=_valid_to_for(
+                fact.get("modality"),
+                fact.get("occurred_at") if decision.route is None else None,
+            ),
             extra={
                 "type": ftype or None,
                 "subject": l1._normalize_subject(fact.get("subject")),
@@ -164,6 +212,11 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
         memory_type="persona" if _has_static else "fact",
         route=route or None,
         occurred_at=str(main.get("occurred_at") or "").strip() or None,
+        # 主干按 unit 内 facts 的众数 modality 判有效期（与下面 extra.modality 同源）
+        valid_to=_valid_to_for(
+            _majority([f.get("modality") for f in facts], l1.VALID_MODALITY, "unknown"),
+            str(main.get("occurred_at") or "").strip() or None,
+        ),
         extra={
             "type": None,
             "subject": "self",

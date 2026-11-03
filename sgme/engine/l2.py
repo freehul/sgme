@@ -644,6 +644,8 @@ def _ensure_persisted(memories: list[dict], mem_conn: sqlite3.Connection, cfg: d
             created_at=m.get("created_at"),
             updated_at=m.get("updated_at"),
             occurred_at=m.get("occurred_at"),
+            # D-43：兜底路径同样写断言有效期，否则降级直存时闸门 A 依旧空转
+            valid_to=m.get("valid_to"),
             extra=extra or None,
         )
         m["memory_id"] = mid

@@ -257,6 +257,8 @@ def _fallback_direct_store(
             dimension_ids=m.get("dimension_ids", m.get("dimensions", [])),
             sources=[(src_ref, "session")],
             prompt_version=prompt_version,
+            # D-43 闸门 A：planned/wished 的断言有效期（此前全仓无写入点）
+            valid_to=m.get("valid_to"),
             extra={k: m[k] for k in ("type", "subject", "certainty", "derivation",
                                     "modality", "route", "feeling", "trait", "scene_key",
                                     "needs_review", "l2_facts_json",
