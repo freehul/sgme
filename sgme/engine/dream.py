@@ -52,7 +52,7 @@ import logging
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -158,7 +158,7 @@ def _mark_expired_ttl(mem_conn: sqlite3.Connection) -> int:
     candidates = mem_conn.execute(
         """
         SELECT m.memory_id, m.ttl_days, COALESCE(s.recall_count, 0) AS recall_count,
-               COALESCE(m.memory_type, '') AS memory_type
+               COALESCE(m.memory_type, '') AS memory_type, m.updated_at
         FROM memories m
         LEFT JOIN memory_stats s ON s.memory_id = m.memory_id
         WHERE m.status='active' AND m.ttl_days IS NOT NULL
@@ -167,7 +167,8 @@ def _mark_expired_ttl(mem_conn: sqlite3.Connection) -> int:
     ).fetchall()
 
     expired_ids: list[str] = []
-    for memory_id, ttl_days, recall_count, memory_type in candidates:
+    dispositions: list[tuple] = []  # (memory_id, old_expire_at) 供审计留痕
+    for memory_id, ttl_days, recall_count, memory_type, updated_at in candidates:
         # forget_request 豁免放大：按原 TTL 判（不是永不过期）
         if memory_type == "forget_request":
             multiplier = 1.0
@@ -181,6 +182,7 @@ def _mark_expired_ttl(mem_conn: sqlite3.Connection) -> int:
         ).fetchone()
         if hit:
             expired_ids.append(memory_id)
+            dispositions.append((memory_id, _plus_days(updated_at, effective_ttl)))
 
     if not expired_ids:
         return 0
@@ -198,7 +200,47 @@ def _mark_expired_ttl(mem_conn: sqlite3.Connection) -> int:
         )
         changed += cur.rowcount
     mem_conn.commit()
+    # D-52/D-73 审计接线（2026-11-03）：处置必须逐条留痕，否则运维页的 TTL 看板恒空。
+    _record_ttl_dispositions(mem_conn, dispositions)
     return changed
+
+
+def _plus_days(iso_ts: str | None, days: float) -> str | None:
+    """ISO 时间戳 + N 天（算「这条记忆的到期时刻」，供 TTL 审计留痕）。"""
+    if not iso_ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (dt + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _record_ttl_dispositions(
+    conn: sqlite3.Connection, rows: list[tuple[str, str | None]]
+) -> None:
+    """把本轮的 TTL 处置写进 `ttl_disposition`（best-effort，失败不阻塞梦境）。
+
+    现状只实现「到期 → expired（退出注入、等待休眠/归档）」这一档，D-52 的 0–4
+    五档尚未落地，故统一记 ``disposition='sleeping'``——语义最接近：退出注入、
+    保留可恢复。等 0–4 档实现后，再按 M 分到 renewed / anchor / sleeping / archived。
+    """
+    if not rows:
+        return
+    try:
+        from sgme.engine.recall_aging import ensure_ttl_disposition_table
+
+        ensure_ttl_disposition_table(conn)
+        now_iso = _now_iso()
+        conn.executemany(
+            "INSERT INTO ttl_disposition"
+            " (memory_id, disposition, m_score, renew_count, old_expire_at, new_expire_at, created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            [(mid, "sleeping", 0.0, 0, old_exp, None, now_iso) for mid, old_exp in rows],
+        )
+        conn.commit()
+    except Exception as e:  # noqa: BLE001——审计失败不能阻塞记忆时效判定
+        logger.warning("TTL 处置审计写入失败（不阻塞梦境）: %s", e)
 
 
 def _archive_old_raw_files(session_conn: sqlite3.Connection, archive_days: int) -> int:
