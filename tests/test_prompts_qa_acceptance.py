@@ -276,9 +276,11 @@ def test_refine_runs_records_error_status(prompts_root, mem_conn, monkeypatch):
             bucket_ctx=BucketCtx(bucket_key="file-err"), mem_conn=mem_conn,
         )
     runs = RefineRunRecorder.list_by_stage(mem_conn, "l1_extraction")
-    assert len(runs) == 1
-    assert runs[0]["status"] == "error"
-    assert runs[0]["version"].startswith("working-")
+    # 2026-11-03：块级退避重试上线后，同一块每次重试都会写一条 run（审计留痕），
+    # 故这里断言「至少一条、且条条 error」，不再钉死 1 条。
+    assert len(runs) >= 1
+    assert all(r["status"] == "error" for r in runs)
+    assert runs[0]["version"]  # 版本可观测（v019 起不再固定 working- 前缀）
     assert runs[0]["error"]
 
 

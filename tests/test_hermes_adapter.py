@@ -384,7 +384,14 @@ from adapters.hermes import _TOOL_HANDLERS  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # 永久豁免（理由见 adapters/hermes/README.md「工具清单」）
-EXEMPT_TOOLS = {"agent_onboarding", "append"}
+# 2026-11-03：D-67 技能候选池四工具是**管理面**能力（转入/审核决定技能库内容），
+# 由 HTTP /v1/admin/skill-candidates* 承担，静态适配器一律豁免——
+# 口径见 scripts/adapter_parity_map.yaml 的 skill_candidate_* 段。
+EXEMPT_TOOLS = {
+    "agent_onboarding", "append",
+    "skill_candidate_pending", "skill_candidate_list",
+    "skill_candidate_adopt", "skill_candidate_review",
+}
 # 适配器自有工具（不在基准内，登记在 scripts/adapter_parity_map.yaml extra）
 HERMES_EXTRA_TOOLS = {"sgme_conversation_search", "sgme_role_save", "sgme_role_delete"}
 # 基准名 → 适配器名的别名（parity map 的 aliases.search.hermes）
