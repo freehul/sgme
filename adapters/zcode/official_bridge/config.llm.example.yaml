@@ -1,0 +1,18 @@
+# 供 SGME llm.yaml 使用的桥配置示例（把 base_url 指到 bridge 进程）
+chains:
+  refinement:
+    - provider: zcode-official
+      model: zcode/GLM-5.3-Flash-Trial
+      base_url: http://127.0.0.1:8899/v1
+      provider_type: openai_compat
+      max_tokens: 32768
+      context_window: 200000
+      sampling:
+        temperature: 0
+        top_p: 1.0
+    - provider: rule
+      rule: drop_batch
+rules:
+  timeout_s: 900
+  max_retries: 1
+  fallback_on: [rate_limit, timeout, server_error]

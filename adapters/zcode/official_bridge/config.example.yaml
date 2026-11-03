@@ -1,0 +1,11 @@
+# ZCode 官方通道桥配置示例（复制成 config.local.yaml 使用；不要提交真实路径/凭据）
+bridge:
+  host: 127.0.0.1
+  port: 8899
+  model_id: zcode/GLM-5.3-Flash-Trial
+  timeout_s: 600
+  concurrency: 2
+cli:
+  node: node
+  # cjs: <ZCode 安装目录>/resources/glm/zcode.cjs
+  extra_args: []
