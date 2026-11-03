@@ -128,9 +128,16 @@ def _load_files(conn: sqlite3.Connection, name: str) -> list[tuple[str, bytes]]:
 def skill_manifest(conn: sqlite3.Connection, name: str) -> dict | None:
     """单技能缓存摘要；技能不存在返回 None。只读。
 
-    ``package_sha256`` 取**确定性包字节**的 sha256，而非库里的行级 ``sha256`` 列：
-    客户端既能比对它决定是否重拉，也能在下载后对包字节做完整性校验
-    （行级 sha256 只锚定 content，覆盖不到元数据与附属文件的变化）。
+    ``package_sha256`` 取**确定性包字节**的 sha256，而非库里的行级 ``sha256`` 列，
+    仅作**两级缓存的指纹**（客户端拿它决定是否重拉），**不可当传输字节的校验和**：
+
+    - 它 ≠ ``GET /v1/skills/{name}/package`` 响应体（流式 tar.gz）字节的 sha256
+      （2026-11-03 实测：同一技能三者互不相等）；
+    - 它 ≠ 响应头 ``X-Skill-Sha256``（后者 = 包内 ``MANIFEST.sha256`` 的聚合哈希）；
+    - 包内容完整性由包内 ``MANIFEST.sha256`` 逐成员校验（客户端侧），不靠本字段。
+
+    行级 ``sha256`` 只锚定 content，覆盖不到元数据与附属文件的变化，故本字段
+    对「DB 行 + 附属文件」做确定性打包后取哈希，充当缓存指纹。
 
     ``files``（T-404）：附属文件清单（path/sha256/size），不含 SKILL.md。
     """

@@ -612,7 +612,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "role_active_get", "description": "读取当前沟通角色（未设置返回 role_id=null；ST-29）"},
     {"name": "role_active_set", "description": "设置当前沟通角色（换皮不换芯，只换角色不换记忆池；ST-29）"},
     {"name": "persona_fill", "description": "人设懒补全（D-76）：用户追问角色人生没写过的细节时调用——查档案命中直接用；未命中生成类型级事实+冲突检查+写回角色卡；status=hit/filled/unset（unset 答「这个我没提过」）"},
-    {"name": "guard_reply", "description": "越界三级后果（D-77）：角色回复发送前调用——命中禁用项（身份自曝/客服腔/愧疚挽留/编造专名）则记录角色卡并 LLM 改写一次；同类同会话≥2 返回 constraint（须更正/收回），同类当日≥3 发 anomaly_warn；status=clean/rewritten"},
+    {"name": "guard_reply", "description": "越界自检（D-77）：角色回复发送前调用——命中禁用项（身份自曝/客服腔/愧疚挽留/编造专名）则记录角色卡并 LLM 改写一次；同类同会话≥2 / 当日≥3 的计数只写入返回体 observed，首版不发布 constraint 与 anomaly_warn（2026-10-30 拍板仅观测）；status=clean/rewritten"},
     {"name": "skill_search", "description": "技能检索（ST-36 M2 四级披露）：BM25+向量融合，先搜后取——先 skill_digest 审核再 skill_get 全文"},
     {"name": "skill_digest", "description": "技能摘要 L1：frontmatter 字段+正文骨架+uses 依赖清单——审核媒介层"},
     {"name": "skill_get", "description": "技能全文 L2：显式注入上下文；section 参数只取该标题节省 token"},
