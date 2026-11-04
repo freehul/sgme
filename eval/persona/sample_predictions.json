@@ -1,0 +1,693 @@
+{
+  "generator": "gold-as-prediction（仅演示格式与 CLI，真实跑分替换为模型输出）",
+  "annotations_version": "v001-draft",
+  "predictions": {
+    "pa-001": {
+      "memories": [
+        {
+          "content": "用户当天很累、不想说话",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-002": {
+      "memories": [
+        {
+          "content": "用户做事习惯先列清单再动手",
+          "dimensions": [
+            "habits"
+          ],
+          "main_dimension": "habits",
+          "memory_type": "persona",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": [
+        "先计划后动手"
+      ]
+    },
+    "pa-003": {
+      "memories": [
+        {
+          "content": "用户今日体检血压偏高，医嘱少吃盐",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-004": {
+      "memories": [],
+      "causal": [],
+      "traits": []
+    },
+    "pa-005": {
+      "memories": [
+        {
+          "content": "用户决定周末在家休息并整理书架",
+          "dimensions": [
+            "status",
+            "goals"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-006": {
+      "memories": [
+        {
+          "content": "用户的女友近期经常加班到很晚",
+          "dimensions": [
+            "family"
+          ],
+          "main_dimension": "family",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "others",
+          "route": "memory"
+        },
+        {
+          "content": "用户对女友长期加班感到心疼",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-007": {
+      "memories": [
+        {
+          "content": "用户上线前漏跑迁移导致线上表结构不一致、回滚约半小时",
+          "dimensions": [
+            "skills"
+          ],
+          "main_dimension": "skills",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [
+        {
+          "from": "漏跑迁移",
+          "to": "线上表结构不一致",
+          "type": "cause"
+        }
+      ],
+      "traits": []
+    },
+    "pa-008": {
+      "memories": [
+        {
+          "content": "用户去年夏天去过重庆，吃了很多火锅",
+          "dimensions": [
+            "environment",
+            "preferences"
+          ],
+          "main_dimension": "environment",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory",
+          "occurred_at": "2025-06..2025-08"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-009": {
+      "memories": [
+        {
+          "content": "用户下周四出发去东京出差三天",
+          "dimensions": [
+            "focus"
+          ],
+          "main_dimension": "focus",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-010": {
+      "memories": [
+        {
+          "content": "用户希望明早七点被叫醒，早餐想吃燕麦粥",
+          "dimensions": [
+            "status",
+            "preferences"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-011": {
+      "memories": [
+        {
+          "content": "用户周三晚上要陪伴侣去看电影",
+          "dimensions": [
+            "focus"
+          ],
+          "main_dimension": "focus",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        },
+        {
+          "content": "用户最近项目较忙，周三可能晚到",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-012": {
+      "memories": [
+        {
+          "content": "用户正在学 Rust，目前卡在所有权机制",
+          "dimensions": [
+            "skills",
+            "tech_stack",
+            "status"
+          ],
+          "main_dimension": "skills",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-013": {
+      "memories": [
+        {
+          "content": "用户周六要请朋友来家里吃饭，需提前买菜",
+          "dimensions": [
+            "social",
+            "status",
+            "goals"
+          ],
+          "main_dimension": "social",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-014": {
+      "memories": [
+        {
+          "content": "用户正在考虑下个月换工作，计划先投简历看机会",
+          "dimensions": [
+            "focus",
+            "goals"
+          ],
+          "main_dimension": "goals",
+          "memory_type": "episodic",
+          "certainty": "discussing",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-015": {
+      "memories": [
+        {
+          "content": "用户不喜欢临时改计划，习惯按既定计划执行",
+          "dimensions": [
+            "habits",
+            "preferences"
+          ],
+          "main_dimension": "habits",
+          "memory_type": "persona",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": [
+        "不喜欢临时改计划"
+      ]
+    },
+    "pa-016": {
+      "memories": [
+        {
+          "content": "用户遇到问题习惯先自己查资料，解决不了才求助",
+          "dimensions": [
+            "habits",
+            "skills"
+          ],
+          "main_dimension": "habits",
+          "memory_type": "persona",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": [
+        "遇到问题先自己查"
+      ]
+    },
+    "pa-017": {
+      "memories": [
+        {
+          "content": "用户对陌生人比较慢热，熟悉之后话才多",
+          "dimensions": [
+            "social",
+            "habits"
+          ],
+          "main_dimension": "social",
+          "memory_type": "persona",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": [
+        "对陌生人慢热"
+      ]
+    },
+    "pa-018": {
+      "memories": [
+        {
+          "content": "用户一直坚持记账，每笔开销都会记录",
+          "dimensions": [
+            "habits",
+            "values"
+          ],
+          "main_dimension": "habits",
+          "memory_type": "persona",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": [
+        "坚持记账"
+      ]
+    },
+    "pa-019": {
+      "memories": [
+        {
+          "content": "用户只要不出差，周末都会去跑步",
+          "dimensions": [
+            "habits",
+            "status"
+          ],
+          "main_dimension": "habits",
+          "memory_type": "persona",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": [
+        "周末必跑步"
+      ]
+    },
+    "pa-020": {
+      "memories": [
+        {
+          "content": "用户的妈妈最近学会用智能手机，经常给用户发语音",
+          "dimensions": [
+            "family"
+          ],
+          "main_dimension": "family",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "others",
+          "route": "memory"
+        },
+        {
+          "content": "用户对妈妈频繁发语音感到好笑又有点无奈",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-021": {
+      "memories": [
+        {
+          "content": "用户的大学室友这周向用户开口借钱",
+          "dimensions": [
+            "social"
+          ],
+          "main_dimension": "social",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "others",
+          "route": "memory"
+        },
+        {
+          "content": "用户对室友借钱感到为难",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-022": {
+      "memories": [
+        {
+          "content": "用户昨天与男朋友吵架，今天两人和好了",
+          "dimensions": [
+            "family",
+            "status"
+          ],
+          "main_dimension": "family",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        },
+        {
+          "content": "用户和好后松了一口气",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-023": {
+      "memories": [
+        {
+          "content": "用户带的新同事今天独立完成了第一个需求",
+          "dimensions": [
+            "social",
+            "skills"
+          ],
+          "main_dimension": "social",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "others",
+          "route": "memory"
+        },
+        {
+          "content": "用户为新同事独立完成需求感到高兴",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-024": {
+      "memories": [
+        {
+          "content": "用户上周感冒发烧两天，服药后已好转",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-025": {
+      "memories": [
+        {
+          "content": "用户昨天拔了智齿，医嘱本周忌辣、不要用力漱口",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-026": {
+      "memories": [
+        {
+          "content": "用户最近经常失眠",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "tentative",
+          "subject": "self",
+          "route": "memory"
+        },
+        {
+          "content": "用户昨晚只睡四小时，白天头晕",
+          "dimensions": [
+            "status"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-027": {
+      "memories": [
+        {
+          "content": "用户改配置忘了同步测试环境，导致预发结果异常、排查约一下午",
+          "dimensions": [
+            "skills"
+          ],
+          "main_dimension": "skills",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [
+        {
+          "from": "改配置漏同步测试环境",
+          "to": "预发结果仍是旧配置",
+          "type": "cause"
+        }
+      ],
+      "traits": []
+    },
+    "pa-028": {
+      "memories": [
+        {
+          "content": "用户为赶进度跳过代码评审，合并后接口参数不一致导致返工约一晚",
+          "dimensions": [
+            "skills"
+          ],
+          "main_dimension": "skills",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [
+        {
+          "from": "跳过代码评审",
+          "to": "合并后接口参数不一致",
+          "type": "cause"
+        }
+      ],
+      "traits": []
+    },
+    "pa-029": {
+      "memories": [],
+      "causal": [],
+      "traits": []
+    },
+    "pa-030": {
+      "memories": [],
+      "causal": [],
+      "traits": []
+    },
+    "pa-031": {
+      "memories": [
+        {
+          "content": "用户原计划周末看展但没抢到票，改为在家看电影",
+          "dimensions": [
+            "status",
+            "focus"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-032": {
+      "memories": [
+        {
+          "content": "用户下周一上午请假陪父亲去医院复查",
+          "dimensions": [
+            "status",
+            "family"
+          ],
+          "main_dimension": "status",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-033": {
+      "memories": [
+        {
+          "content": "用户前阵子把旧电脑换成 MacBook，用着挺顺手",
+          "dimensions": [
+            "tech_stack",
+            "preferences"
+          ],
+          "main_dimension": "tech_stack",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory",
+          "occurred_at": "2026-09..2026-10"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-034": {
+      "memories": [
+        {
+          "content": "用户上个月回老家给奶奶过生日，一家人拍了合照",
+          "dimensions": [
+            "family"
+          ],
+          "main_dimension": "family",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory",
+          "occurred_at": "2026-10-01..2026-10-31"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    },
+    "pa-035": {
+      "memories": [
+        {
+          "content": "用户下个月十一号出发去成都玩四天",
+          "dimensions": [
+            "focus"
+          ],
+          "main_dimension": "focus",
+          "memory_type": "episodic",
+          "certainty": "confirmed",
+          "subject": "self",
+          "route": "memory"
+        }
+      ],
+      "causal": [],
+      "traits": []
+    }
+  }
+}
