@@ -92,12 +92,24 @@ class SessionBridge:
         两路独立容错——任何一路失败不拖垮另一路，也不拖垮会话。
         """
         result: dict[str, Any] = {}
+        # D-61（2026-11-04）：当前角色关怀档位；silent 不主动拉取/注入关怀信号
+        try:
+            result["care_level"] = (
+                self.adapter.care_level()
+                if hasattr(self.adapter, "care_level")
+                else "session"
+            )
+        except Exception:  # noqa: BLE001
+            result["care_level"] = "session"
         try:
             result["inject"] = self.adapter.inject(mode=mode, max_tokens=max_tokens)
         except Exception as exc:  # noqa: BLE001
             result["inject_error"] = str(exc)[:200]
         try:
-            result["signals"] = self.adapter.mcp_tool("signal_pull", limit=20)
+            if result["care_level"] == "silent":
+                result["signals"] = None
+            else:
+                result["signals"] = self.adapter.mcp_tool("signal_pull", limit=20)
         except Exception as exc:  # noqa: BLE001
             result["signals_error"] = str(exc)[:200]
         return result

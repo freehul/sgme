@@ -33,8 +33,27 @@ def test_start_injects_profile_and_pulls_signals(tmp_path):
 
     result = bridge.start()
 
-    assert result == {"inject": {"mode": "daily"}, "signals": {"signals": []}}
+    assert result == {
+        "inject": {"mode": "daily"},
+        "signals": {"signals": []},
+        "care_level": "session",
+    }
     assert adapter.mcp_calls == [("signal_pull", {"limit": 20})]
+
+
+def test_start_silent_care_level_skips_signal_pull(tmp_path):
+    class SilentAdapter(FakeAdapter):
+        def care_level(self):
+            return "silent"
+
+    adapter = SilentAdapter()
+    bridge = SessionBridge(
+        adapter, session_key="codex-test",
+        cursor_store=JsonCursorStore(tmp_path / "cursor.json"),
+    )
+    result = bridge.start()
+    assert result["care_level"] == "silent" and result["signals"] is None
+    assert adapter.mcp_calls == []
 
 
 def test_append_turn_filters_non_conversation_messages_and_advances_cursor(tmp_path):

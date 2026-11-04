@@ -137,6 +137,8 @@ FILES = {
     "hermes_provider": ROOT / "adapters" / "hermes" / "__init__.py",
     "codex_http": ROOT / "adapters" / "codex" / "codex_sgme" / "http_client.py",
     "claude_http": ROOT / "adapters" / "claude-code" / "claude_sgme" / "http_client.py",
+    "codex_adapter": ROOT / "adapters" / "codex" / "codex_sgme" / "adapter.py",
+    "claude_adapter": ROOT / "adapters" / "claude-code" / "claude_sgme" / "adapter.py",
     "dsh_index": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "index.ts",
     "dsh_context": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "context.ts",
     "doubao_watch": ROOT / "adapters" / "doubao" / "scripts" / "care_watch.py",
@@ -557,6 +559,8 @@ def _(self):
         ("mimo care_watch 档位", *has("mimo_watch", "care_level()")),
         ("workbuddy care_watch 档位", *has("workbuddy_watch", "care_level()")),
         ("zcode care_watch 档位", *has("zcode_watch", "care_level()")),
+        ("codex 启动档位门控", *has("codex_adapter", "def care_level")),
+        ("claude 启动档位门控", *has("claude_adapter", "def care_level")),
     ]
 
 

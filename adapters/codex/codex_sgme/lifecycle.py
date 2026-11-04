@@ -75,9 +75,20 @@ class SessionBridge:
         self.agent_id = getattr(settings, "agent_id", "codex")
 
     def start(self, *, mode: str = "daily", max_tokens: int = 800) -> dict[str, Any]:
+        # D-61（2026-11-04）：silent 档不主动注入关怀信号（仍可手动 signal_pull）
+        level = (
+            self.adapter.care_level()
+            if hasattr(self.adapter, "care_level")
+            else "session"
+        )
         return {
             "inject": self.adapter.inject(mode=mode, max_tokens=max_tokens),
-            "signals": self.adapter.mcp_tool("signal_pull", limit=20),
+            "signals": (
+                self.adapter.mcp_tool("signal_pull", limit=20)
+                if level != "silent"
+                else None
+            ),
+            "care_level": level,
         }
 
     def _next_started_at(self, requested: str | None) -> str:

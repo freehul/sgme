@@ -72,7 +72,10 @@ def _compose_context(data: dict[str, Any]) -> str:
     if data.get("inject_error"):
         lines.append(f"（画像注入暂不可用：{data['inject_error']}）")
     signals = _tool_text(data.get("signals")).strip()
-    if signals and signals not in {"[]", "{}"} and '"count": 0' not in signals and '"events": []' not in signals:
+    if data.get("care_level") == "silent":
+        # D-61：静默档不主动推送关怀（信号仍在池里，可手动 signal_pull）
+        lines.append("（care_level=silent：关怀事件已记录，不主动推送；需要时手动 signal_pull）")
+    elif signals and signals not in {"[]", "{}"} and '"count": 0' not in signals and '"events": []' not in signals:
         lines.append("— 未消费关怀信号（claim → 关怀 → ack）—\n" + signals[:1200])
     return "\n\n".join(lines)
 

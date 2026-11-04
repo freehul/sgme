@@ -32,6 +32,17 @@ def test_compose_context_skips_empty_signals():
     assert "关怀信号" not in text
 
 
+def test_compose_context_silent_care_level_suppresses_signals():
+    text = hooks._compose_context(
+        {
+            "care_level": "silent",
+            "signals": {"content": [{"type": "text", "text": '{"count": 2, "events": [1, 2]}'}]},
+        }
+    )
+    assert "关怀信号" not in text
+    assert "silent" in text
+
+
 def test_compose_context_includes_real_signals_and_errors():
     text = hooks._compose_context(
         {

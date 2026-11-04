@@ -92,6 +92,22 @@ class SgmeAdapter:
         return self.mcp.call_tool(name, arguments)
 
 
+
+    def care_level(self) -> str:
+        """D-61（2026-11-04）：当前角色关怀档位（HTTP 层；无角色=silent；失败=session）。"""
+        try:
+            active = self.http.get("/v1/admin/care/active-role")
+            rid = active.get("role_id") if isinstance(active, dict) else None
+            if not rid:
+                return "silent"
+            card = self.http.get(f"/v1/admin/roles/{rid}")
+            data = ((card or {}).get("role") or {}).get("data") or {}
+            ext = data.get("extensions") or {}
+            lvl = ((ext.get("sgme_care") or {}).get("care_level"))
+            return lvl if lvl in ("silent", "session", "push") else "silent"
+        except Exception:  # 旧版服务端/网络错误：保持旧行为，不突然吞提醒
+            return "session"
+
     def capabilities(self) -> Any:
         return self.http.capabilities()
 
