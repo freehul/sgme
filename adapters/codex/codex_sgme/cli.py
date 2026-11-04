@@ -35,6 +35,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_lifecycle_args(end)
 
     commands.add_parser("health", help="read SGME health")
+    commands.add_parser("capabilities", help="read SGME capabilities (D-58)")
     commands.add_parser("onboarding", help="read SGME MCP onboarding")
 
     search = commands.add_parser("search", help="search SGME memory/Wiki")
@@ -79,9 +80,23 @@ def main(argv: list[str] | None = None) -> int:
     adapter = SgmeAdapter.from_env()
     try:
         if args.command in {"start", "turn", "end"}:
+            if args.command == "start":
+                # D-58：会话启动读一次能力广告；不匹配只 stderr 提示，不阻塞
+                try:
+                    chk = adapter.api_compat_check()
+                    if not chk.get("ok"):
+                        print(
+                            f"SGME capability check: {chk.get('reason')}"
+                            f" (api_compat={chk.get('api_compat')}, 按 1.x 继续)",
+                            file=sys.stderr,
+                        )
+                except Exception:
+                    pass
             result = _run_lifecycle(args, adapter)
         elif args.command == "health":
             result = adapter.health()
+        elif args.command == "capabilities":
+            result = adapter.capabilities()
         elif args.command == "onboarding":
             result = adapter.onboarding()
         else:

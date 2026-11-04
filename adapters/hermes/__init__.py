@@ -604,6 +604,45 @@ class SGMEProvider(MemoryProvider):
                     return None
             return self._client
 
+    # ---------- D-58（2026-11-04）：能力面自检 ----------
+
+    def capabilities(self) -> "tuple[Optional[Any], Optional[str]]":
+        """GET /v1/capabilities（服务端能力广告；旧版无端点返回 error）。"""
+        return self._request("GET", "/v1/capabilities")
+
+    def api_compat_check(self, supported: str = "1.x") -> Dict[str, Any]:
+        """比较服务端 api_compat；不匹配/端点缺失只返回结构化结果，不抛异常。"""
+        caps, err = self.capabilities()
+        if err or not isinstance(caps, dict):
+            return {"ok": False, "reason": "unreachable", "supported": supported,
+                    "error": err}
+        api_compat = caps.get("api_compat")
+        schema = caps.get("schema_version")
+        if api_compat != supported:
+            return {"ok": False, "reason": "mismatch", "supported": supported,
+                    "api_compat": api_compat, "schema_version": schema}
+        return {"ok": True, "reason": None, "supported": supported,
+                "api_compat": api_compat, "schema_version": schema}
+
+    def _probe_compat(self) -> None:
+        """D-58：后台读能力广告并记日志（不阻塞 initialize / 不起额外线程池）。"""
+        try:
+            info = self.api_compat_check()
+            if info.get("ok"):
+                logger.info(
+                    "sgme provider: api_compat=%s（能力面匹配）", info.get("api_compat")
+                )
+            elif info.get("reason") == "mismatch":
+                logger.warning(
+                    "sgme provider: API 兼容族不匹配（服务端 %s，适配器支持 %s）——"
+                    "按 1.x 继续，请升级适配器/服务端",
+                    info.get("api_compat"), info.get("supported"),
+                )
+            else:
+                logger.info("sgme provider: /v1/capabilities 不可用（旧版 SGME），按 1.x 继续")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sgme provider: 能力面自检异常（忽略）: %s", exc)
+
     def _probe(self) -> bool:
         """探测 SGME Gateway 可达性（结果带 TTL 缓存）。
 
@@ -669,6 +708,8 @@ class SGMEProvider(MemoryProvider):
             self._session_key = f"hermes-{session_id[:12]}"
         # 后台探测（不阻塞初始化）
         threading.Thread(target=self._probe, daemon=True).start()
+        # D-58：后台读能力广告（只日志提示，不阻塞）
+        threading.Thread(target=self._probe_compat, daemon=True).start()
 
     # ---------- 注入（读方向） ----------
 
@@ -746,6 +787,9 @@ class SGMEProvider(MemoryProvider):
         if flag in ("0", "false", "off", "no"):
             self._protocol_block_cache = ""
             return ""
+        # 2026-11-04（B291）：先置空再拉取——拉取成功但无正片段 / 抛异常时，
+        # 末尾 return self._protocol_block_cache 不能因属性未设而炸（hermes 测试实测）。
+        self._protocol_block_cache = ""
         try:
             r = cli.get(
                 f"{self.base_url}/v1/skills/coldstart",

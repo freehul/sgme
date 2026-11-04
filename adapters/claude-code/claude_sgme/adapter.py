@@ -91,6 +91,13 @@ class SgmeAdapter:
     def mcp_tool(self, name: str, **arguments: Any) -> Any:
         return self.mcp.call_tool(name, arguments)
 
+
+    def capabilities(self) -> Any:
+        return self.http.capabilities()
+
+    def api_compat_check(self) -> dict[str, Any]:
+        return self.http.api_compat_check()
+
     def close(self) -> None:
         self.http.close()
         self.mcp.close()

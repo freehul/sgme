@@ -674,6 +674,8 @@ def test_is_available_gates_fallback_key_on_remote():
 def test_system_prompt_block_injects_role_and_profile():
     """角色提示词 + 画像同块注入；角色块按会话缓存（不重复拉取）。"""
     p, fake = _provider(_Client(responses=[
+        # D-58/B291：system_prompt_block 先拉技能协议（coldstart），空 index 即可
+        _resp({"index": {"items": []}}),
         _resp({"role_id": "butler"}),
         _resp({"role_id": "butler", "role_name": "管家",
                "system_prompt": "你是{{user}}的管家，说话简洁。",
@@ -685,16 +687,17 @@ def test_system_prompt_block_injects_role_and_profile():
     assert "沟通角色：管家" in block
     assert "说话简洁" in block
     assert "用户画像" in block and "SGME" in block
-    assert len(fake.calls) == 3
+    assert len(fake.calls) == 4  # 协议 + 角色两跳 + 画像
 
     again = p.system_prompt_block()
     assert "沟通角色：管家" in again
-    assert len(fake.calls) == 4  # 角色块命中缓存，仅重拉画像
+    assert len(fake.calls) == 5  # 协议/角色块均命中缓存，仅重拉画像
 
 
 def test_system_prompt_block_no_role_only_profile():
     """未设置角色 → 仅画像（与旧版行为一致）。"""
     p, _ = _provider(_Client(responses=[
+        _resp({"index": {"items": []}}),
         _resp({"role_id": None}),
         _resp({"blocks": [{"title": "近期", "items": [{"content": "x"}]}]}),
     ]))

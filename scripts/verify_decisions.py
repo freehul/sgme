@@ -134,6 +134,9 @@ FILES = {
     "mimo_client": ROOT / "adapters" / "mimo" / "scripts" / "sgme_client.py",
     "workbuddy_client": ROOT / "adapters" / "workbuddy" / "scripts" / "sgme_client.py",
     "zcode_client": ROOT / "adapters" / "zcode" / "scripts" / "sgme_client.py",
+    "hermes_provider": ROOT / "adapters" / "hermes" / "__init__.py",
+    "codex_http": ROOT / "adapters" / "codex" / "codex_sgme" / "http_client.py",
+    "claude_http": ROOT / "adapters" / "claude-code" / "claude_sgme" / "http_client.py",
     "dsh_index": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "index.ts",
 }
 
@@ -509,7 +512,7 @@ def _(self):
     ]
 
 
-@check("D-58", "兼容期与旧适配器降级（capabilities.api_compat）", "partial")
+@check("D-58", "兼容期与旧适配器降级（capabilities.api_compat）", "done")
 def _(self):
     # 2026-11-04 落地：服务端 GET /v1/capabilities（schema_version/api_compat/
     # catalog_version + 兼容期窗口 + 端点清单）+ 兼容期守卫（默认关）。
@@ -526,6 +529,9 @@ def _(self):
         ("mimo 客户端自检", *has("mimo_client", "api_compat_check")),
         ("workbuddy 客户端自检", *has("workbuddy_client", "api_compat_check")),
         ("zcode 客户端自检", *has("zcode_client", "api_compat_check")),
+        ("hermes provider 自检", *has("hermes_provider", "api_compat_check")),
+        ("codex 客户端自检", *has("codex_http", "api_compat_check")),
+        ("claude-code 客户端自检", *has("claude_http", "api_compat_check")),
     ]
 
 

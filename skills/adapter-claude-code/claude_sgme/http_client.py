@@ -70,5 +70,25 @@ class HttpClient:
     ) -> Any:
         return self.request("POST", path, json=json, authenticated=authenticated)
 
+
+    def capabilities(self) -> Any:
+        """D-58（2026-11-04）：GET /v1/capabilities（服务端能力广告）。"""
+        return self.get("/v1/capabilities")
+
+    def api_compat_check(self, supported: str = "1.x") -> dict[str, Any]:
+        """比较服务端 api_compat；不匹配/端点缺失只返回结构化结果，不抛异常。"""
+        try:
+            caps = self.capabilities() or {}
+        except Exception as exc:  # 旧版 404 / 网络错误都按不可达处理
+            return {"ok": False, "reason": "unreachable", "supported": supported,
+                    "error": str(exc)[:120]}
+        api_compat = caps.get("api_compat")
+        schema = caps.get("schema_version")
+        if api_compat != supported:
+            return {"ok": False, "reason": "mismatch", "supported": supported,
+                    "api_compat": api_compat, "schema_version": schema}
+        return {"ok": True, "reason": None, "supported": supported,
+                "api_compat": api_compat, "schema_version": schema}
+
     def close(self) -> None:
         self.session.close()

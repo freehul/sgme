@@ -160,6 +160,20 @@ def run(event: str) -> int:
     adapter = None
     try:
         adapter = SgmeAdapter.from_env()
+        # D-58：会话启动读一次能力广告（失败只写 hook.log，不阻塞、不污染 hook 输出）
+        if event == "session-start":
+            try:
+                chk = adapter.api_compat_check()
+                if chk.get("ok"):
+                    _log(f"capability check: api_compat={chk.get('api_compat')}")
+                else:
+                    _log(
+                        "capability check: "
+                        f"{chk.get('reason')} api_compat={chk.get('api_compat')}"
+                        "（按 1.x 继续）"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _log(f"capability check failed: {exc}")
         output = handler(payload, adapter)
         if output:
             sys.stdout.write(json.dumps(output, ensure_ascii=False) + "\n")

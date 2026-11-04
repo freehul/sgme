@@ -18,6 +18,7 @@ def _parser() -> argparse.ArgumentParser:
     hook.add_argument("event", choices=sorted(hooks.EVENTS))
 
     commands.add_parser("health", help="读取 SGME 健康状态")
+    commands.add_parser("capabilities", help="读取 SGME 能力广告（D-58）")
     commands.add_parser("onboarding", help="读取 SGME MCP onboarding")
 
     refine = commands.add_parser("refine", help="触发异步提炼（默认扫全部 status=new）")
@@ -49,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "health":
             result = adapter.health()
+        elif args.command == "capabilities":
+            result = adapter.capabilities()
         elif args.command == "onboarding":
             result = adapter.onboarding()
         elif args.command == "refine":
