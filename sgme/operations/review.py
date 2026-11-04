@@ -105,9 +105,23 @@ def list_pending(
         f"ORDER BY m.created_at DESC, m.memory_id LIMIT ? OFFSET ?",
         (*params, limit_val, offset),
     ).fetchall()
-    return OperationResult.succeed(
-        {"items": [dict(r) for r in rows], "total": total}
-    )
+    items = [dict(r) for r in rows]
+    # 2026-11-04（B292）：待审列表附带 dimensions——此前只有 SELECT m.*，
+    # WebUI 只能逐条 GET /v1/memory/{id} 补维度（N+1）；一次批量查 memory_tags 补齐。
+    if items:
+        ids = [it["memory_id"] for it in items]
+        marks = ",".join("?" * len(ids))
+        tag_rows = conn.execute(
+            "SELECT memory_id, dimension_id FROM memory_tags "
+            f"WHERE memory_id IN ({marks}) ORDER BY dimension_id",
+            tuple(ids),
+        ).fetchall()
+        by_mem: dict[str, list[str]] = {}
+        for tr in tag_rows:
+            by_mem.setdefault(tr["memory_id"], []).append(tr["dimension_id"])
+        for it in items:
+            it["dimensions"] = by_mem.get(it["memory_id"], [])
+    return OperationResult.succeed({"items": items, "total": total})
 
 
 # ---------- 操作 2：人工放行 ----------

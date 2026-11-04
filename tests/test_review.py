@@ -107,6 +107,16 @@ class TestListPending:
 
         assert out.data["total"] == 1
         assert out.data["items"][0]["memory_id"] == "with_dim"
+
+    def test_pending_items_include_dimensions(self, tmp_path):
+        """B292：列表一次批量带出 dimensions（WebUI 不再逐条补全）。"""
+        conn = _make_conn(tmp_path)
+        _insert_memory(conn, "with_dim", dimensions=("identity",))
+        _insert_memory(conn, "no_dim")
+        out = review.list_pending(conn)
+        by = {it["memory_id"]: it for it in out.data["items"]}
+        assert by["with_dim"]["dimensions"] == ["identity"]
+        assert by["no_dim"]["dimensions"] == []
         assert review.list_pending(conn).data["total"] == 2
 
 
