@@ -21,8 +21,9 @@ def test_coverage_matrix_matches_design_targets():
     data = loader.load_cases(CASES)
     cov = loader.coverage(data)
     assert cov["target_total"] == 35
-    assert cov["draft_total"] == len(data["cases"]) == 9
-    assert cov["remaining_total"] == 26
+    # 批次推进：初稿 19 条（pa-001..pa-019）。剩余量按目标合计推导，后续批次只改本条计数
+    assert cov["draft_total"] == len(data["cases"]) == data["meta"]["total"]
+    assert cov["remaining_total"] == cov["target_total"] - cov["draft_total"]
     assert set(cov["by_category"]) == set(loader.CATEGORY_TARGETS)
     assert cov["by_category"]["role_interaction"]["target"] == 6
 
