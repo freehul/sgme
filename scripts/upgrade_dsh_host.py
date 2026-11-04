@@ -87,8 +87,15 @@ def plan(bridge: Path, profile: Path, artifacts: Path) -> dict:
 def _remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
-    elif path.exists():
-        shutil.rmtree(path)
+        return
+    if path.is_dir():
+        try:
+            # Windows junction：rmtree 会报 "Cannot call rmtree on a symbolic link"，
+            # os.rmdir 可删除 junction；普通目录 rmdir 失败再落 rmtree。
+            os.rmdir(path)
+            return
+        except OSError:
+            shutil.rmtree(path)
 
 
 def _make_dir_link(link: Path, target: Path) -> str:

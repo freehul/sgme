@@ -61,6 +61,22 @@ def test_plan_up_to_date(tmp_path):
     assert p["needs_work"] is False
 
 
+def test_remove_path_handles_directory_junction(tmp_path, monkeypatch):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "x").write_text("x", encoding="utf-8")
+    link = tmp_path / "link"
+    try:
+        import os
+        os.symlink(target, link, target_is_directory=True)
+    except OSError:
+        import pytest
+        pytest.skip("当前环境不允许创建目录链接")
+    up._remove_path(link)
+    assert not link.exists()
+    assert target.exists()
+
+
 def test_dry_run_main_does_not_touch_files(tmp_path, capsys):
     bridge = _bridge(tmp_path, "9.9.9")
     profile = tmp_path / "profile"
