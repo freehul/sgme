@@ -1,11 +1,11 @@
-# SGME 人格/角色标注集 v001-draft（D-25 九类 35 条 · 初稿 19 条）
+# SGME 人格/角色标注集 v001-draft（D-25 九类 35 条 · 初稿 27 条）
 # 说明：由 agent 代造初稿（D-25 四轮修订），**未经用户抽查**；user_checked=false。
 # 类别目标（合计 35）：角色互动 6 / 性格特质 6 / 关系情感 5 / 健康经历 4 /
 # 工作踩坑 3 / 纯技术反例 3 / 日常决策 3 / 粗日期 3 / 多轮对话 2。
 meta:
   version: v001-draft
   created_at: "2026-11-04T00:00:00Z"
-  total: 19
+  total: 27
   target_total: 35
   drafted_by: agent
   user_checked: false
@@ -418,5 +418,209 @@ cases:
       traits: ["周末必跑步"]
       causal: []
     trap: "条件句要保留「只要不出差」的前提，不能写成无条件每周跑步；也不要映射大五域"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-020
+    category: relationship_emotion
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      user: 我妈最近学会用智能手机了，天天给我发语音，我又觉得好笑又有点无奈。
+      assistant: 哈哈，阿姨这是想多跟你说话。
+    expected:
+      memories:
+        - content: "用户的妈妈最近学会用智能手机，经常给用户发语音"
+          dimensions: [family]
+          main_dimension: family
+          memory_type: episodic
+          certainty: confirmed
+          subject: others
+          route: memory
+        - content: "用户对妈妈频繁发语音感到好笑又有点无奈"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: tentative
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "主体分离：学会用手机、发语音的是妈妈（others/family），不是用户；好笑/无奈才是用户自己的情绪（self/status）"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-021
+    category: relationship_emotion
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 大学室友上个月结婚我随了份子，这周他又开口找我借钱，我有点为难。
+      assistant: 先问清用途和还款计划，再决定借不借。
+    expected:
+      memories:
+        - content: "用户的大学室友这周向用户开口借钱"
+          dimensions: [social]
+          main_dimension: social
+          memory_type: episodic
+          certainty: confirmed
+          subject: others
+          route: memory
+        - content: "用户对室友借钱感到为难"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: tentative
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "借钱的是室友（others/social），不能写成用户借钱或缺钱；「为难」才是用户自己的情绪（self/status）"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-022
+    category: relationship_emotion
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 昨天跟男朋友吵架，今天他主动道歉，我们和好了，我心里松了一口气。
+      assistant: 那就好，说开比憋着强。
+    expected:
+      memories:
+        - content: "用户昨天与男朋友吵架，今天两人和好了"
+          dimensions: [family, status]
+          main_dimension: family
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+        - content: "用户和好后松了一口气"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: tentative
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "别把「男朋友主动道歉」写成用户道歉；关系事件记 self，但伴侣的行为/台词属 others，不得改写成用户事实"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-023
+    category: relationship_emotion
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      user: 我带的新同事今天独立完成了第一个需求，我比自己做成还高兴。
+      assistant: 说明你带得好，也说明他肯学。
+    expected:
+      memories:
+        - content: "用户带的新同事今天独立完成了第一个需求"
+          dimensions: [social, skills]
+          main_dimension: social
+          memory_type: episodic
+          certainty: confirmed
+          subject: others
+          route: memory
+        - content: "用户为新同事独立完成需求感到高兴"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: tentative
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "新同事完成需求是 others 的事实，不能记成用户自己完成；用户的成就感才是 self/status"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-024
+    category: health_experience
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      user: 上周感冒发烧，烧了两天，吃了药现在好多了。
+      assistant: 那就好，多喝水再休息两天。
+    expected:
+      memories:
+        - content: "用户上周感冒发烧两天，服药后已好转"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "只记本次患病与恢复经过；健康维度已并入 status，不要写成慢性病或长期体质问题"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-025
+    category: health_experience
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 昨天去拔了智齿，医生让这周别吃辣，也别用力漱口。
+      assistant: 遵医嘱，这几天吃软一点。
+    expected:
+      memories:
+        - content: "用户昨天拔了智齿，医嘱本周忌辣、不要用力漱口"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "医嘱是本次术后注意事项，不是用户的长期饮食禁忌；健康归 status，不写成长期病症"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-026
+    category: health_experience
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      user: 最近老是失眠，昨晚只睡了四个小时，白天头有点晕。
+      assistant: 偶尔一次还好，连续失眠要留意。
+    expected:
+      memories:
+        - content: "用户最近经常失眠"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: tentative
+          subject: self
+          route: memory
+        - content: "用户昨晚只睡四小时，白天头晕"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "「最近老是失眠」按当下状态记为 tentative，不能上升为长期失眠症/健康诊断；昨晚睡眠与头晕是本次经历"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-027
+    category: work_pitfall
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 这次改配置忘了同步测试环境，预发跑出来的结果全是旧的，排查了一下午。
+      assistant: 以后配置变更也加进发布清单吧。
+    expected:
+      memories:
+        - content: "用户改配置忘了同步测试环境，导致预发结果异常、排查约一下午"
+          dimensions: [skills]
+          main_dimension: skills
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal:
+        - { from: "改配置漏同步测试环境", to: "预发结果仍是旧配置", type: "cause" }
+    trap: "工作踩坑要记「触发条件（漏同步）+ 后果（排查一下午）」，不是只记事故；这是经验不是纯技术百科"
     review: { drafted_by: agent, user_checked: false }
 

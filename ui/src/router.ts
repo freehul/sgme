@@ -35,7 +35,8 @@ const routes = [
       { path: 'wiki', name: 'wiki', component: () => import('./views/wiki/WikiView.vue'), meta: { title: 'Wiki 知识库' } },
       { path: 'skills', name: 'skills', component: () => import('./views/skills/SkillsView.vue'), meta: { title: '技能仓库' } },
 
-      // 运维看板（2.0 可观测性：TTL 处置 / LLM 成本）
+      // 运维看板（2.0 可观测性：健康总览 / TTL 处置 / LLM 成本）
+      { path: 'ops/health', name: 'ops-health', component: () => import('./views/ops/HealthView.vue'), meta: { title: '健康总览' } },
       { path: 'ops/ttl', name: 'ops-ttl', component: () => import('./views/ops/TtlDispositionView.vue'), meta: { title: 'TTL 处置' } },
       { path: 'ops/cost', name: 'ops-cost', component: () => import('./views/ops/CostView.vue'), meta: { title: 'LLM 成本' } },
 

@@ -129,3 +129,13 @@ def llm_cost(
         totals["calls"] += calls
 
     return {"items": items, "totals": totals, "days": span, "budget": budget}
+
+@router.get("/v1/admin/ops/health-overview")
+def health_overview(
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """运维健康总览：存储体检 + 9.6 场景下线就绪（只读，B300）。"""
+    from sgme.operations.ops_health import health_overview as _health_overview
+
+    return _health_overview(request.app.state.cfg)
