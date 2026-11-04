@@ -1,0 +1,118 @@
+# SGME 人格/角色标注集 v001-draft（D-25 九类 35 条 · 首批初稿 5 条）
+# 说明：由 agent 代造初稿（D-25 四轮修订），**未经用户抽查**；user_checked=false。
+# 类别目标（合计 35）：角色互动 6 / 性格特质 6 / 关系情感 5 / 健康经历 4 /
+# 工作踩坑 3 / 纯技术反例 3 / 日常决策 3 / 粗日期 3 / 多轮对话 2。
+meta:
+  version: v001-draft
+  created_at: "2026-11-04T00:00:00Z"
+  total: 5
+  target_total: 35
+  drafted_by: agent
+  user_checked: false
+  targets:
+    role_interaction: 6
+    personality_trait: 6
+    relationship_emotion: 5
+    health_experience: 4
+    work_pitfall: 3
+    tech_counterexample: 3
+    daily_decision: 3
+    coarse_date: 3
+    multi_turn: 2
+
+cases:
+  - id: pa-001
+    category: role_interaction
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      user: 今天累死了，不想说话。
+      assistant: 那就不说，我在。
+    expected:
+      memories:
+        - content: "用户当天很累、不想说话"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: tentative
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "别把角色设定/台词当用户事实；这里只记用户当下状态，不推断长期性格"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-002
+    category: personality_trait
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 我做任何事都习惯先列清单，确认完再动手。
+    expected:
+      memories:
+        - content: "用户做事习惯先列清单再动手"
+          dimensions: [habits]
+          main_dimension: habits
+          memory_type: persona
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: ["先计划后动手"]
+      causal: []
+    trap: "性格特质只写原文倾向，不要直接映射大五域；单句自述算 habit 而非结论性人格"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-003
+    category: health_experience
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 今早去体检，血压有点偏高，医生让我少吃盐。
+    expected:
+      memories:
+        - content: "用户今日体检血压偏高，医嘱少吃盐"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "健康维度已并入 status（13 维注册表无 health）；别写成长期病症，只记本次检查"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-004
+    category: tech_counterexample
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      user: Python 的 GIL 是什么？
+      assistant: GIL 是 CPython 的全局解释器锁，同一时刻只允许一个线程执行字节码……
+    expected:
+      memories: []
+      traits: []
+      causal: []
+    trap: "纯技术百科是助手自产知识，路由应为 discard/skill_candidate，绝不能进记忆层（D-67 分流护栏）"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-005
+    category: daily_decision
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 这周末不去爬山了，在家休息，顺便把书架整理了。
+    expected:
+      memories:
+        - content: "用户决定周末在家休息并整理书架"
+          dimensions: [status, goals]
+          main_dimension: status
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "「不去了」是已发生决定，不是愿望；不要写成 modality=wished"
+    review: { drafted_by: agent, user_checked: false }
+
