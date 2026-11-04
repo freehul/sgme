@@ -1,11 +1,11 @@
-# SGME 人格/角色标注集 v001-draft（D-25 九类 35 条 · 初稿 27 条）
+# SGME 人格/角色标注集 v001-draft（D-25 九类 35 条 · 初稿 35 条）
 # 说明：由 agent 代造初稿（D-25 四轮修订），**未经用户抽查**；user_checked=false。
 # 类别目标（合计 35）：角色互动 6 / 性格特质 6 / 关系情感 5 / 健康经历 4 /
 # 工作踩坑 3 / 纯技术反例 3 / 日常决策 3 / 粗日期 3 / 多轮对话 2。
 meta:
   version: v001-draft
   created_at: "2026-11-04T00:00:00Z"
-  total: 27
+  total: 35
   target_total: 35
   drafted_by: agent
   user_checked: false
@@ -622,5 +622,163 @@ cases:
       causal:
         - { from: "改配置漏同步测试环境", to: "预发结果仍是旧配置", type: "cause" }
     trap: "工作踩坑要记「触发条件（漏同步）+ 后果（排查一下午）」，不是只记事故；这是经验不是纯技术百科"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-028
+    category: work_pitfall
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 为了赶进度跳过了代码评审，合并后发现接口参数对不上，返工了一晚上。
+      assistant: 以后接口变更还是得走一遍评审。
+    expected:
+      memories:
+        - content: "用户为赶进度跳过代码评审，合并后接口参数不一致导致返工约一晚"
+          dimensions: [skills]
+          main_dimension: skills
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal:
+        - { from: "跳过代码评审", to: "合并后接口参数不一致", type: "cause" }
+    trap: "工作踩坑记「触发条件（跳过评审）+ 后果（返工一晚）」，不是只记事故；这是经验不是纯技术百科"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-029
+    category: tech_counterexample
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      user: Redis 的 RDB 和 AOF 持久化有什么区别？
+      assistant: RDB 是定时快照，恢复快但可能丢数据；AOF 追加写日志，数据更完整但文件更大……
+    expected:
+      memories: []
+      traits: []
+      causal: []
+    trap: "纯技术百科是助手自产知识，提问不等于用户长期技能/偏好；路由应为 discard/skill_candidate，绝不能进记忆层（D-67 分流护栏）"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-030
+    category: tech_counterexample
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: TypeScript 里 interface 和 type 有什么区别？
+      assistant: 两者大多可互换；interface 可声明合并、适合扩展对象结构，type 能表达联合类型等更广……
+    expected:
+      memories: []
+      traits: []
+      causal: []
+    trap: "换一种技术问法也要守住分流：助手答案属自产知识（discard/skill_candidate），提问本身不写入用户记忆（D-67 分流护栏）"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-031
+    category: daily_decision
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      user: 本来打算这周末去看展，票没抢到，改成在家看电影了。
+      assistant: 在家休息也不错。
+    expected:
+      memories:
+        - content: "用户原计划周末看展但没抢到票，改为在家看电影"
+          dimensions: [status, focus]
+          main_dimension: status
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "已发生的计划变更，不是「想看电影」的愿望；不要写成 modality=wished，也不要把未发生的事写成已发生"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-032
+    category: daily_decision
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 我跟领导请了下周一上午的假，准备去医院陪我爸复查。
+      assistant: 好的，陪家人复查要紧。
+    expected:
+      memories:
+        - content: "用户下周一上午请假陪父亲去医院复查"
+          dimensions: [status, family]
+          main_dimension: status
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "请假是已确认决定，不是打算/愿望；要看病复查的是父亲（others），不能写成用户自己看病"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-033
+    category: coarse_date
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 前阵子把家里的旧电脑换成了 MacBook，用着挺顺手。
+      assistant: MacBook 续航和便携性确实不错。
+    expected:
+      memories:
+        - content: "用户前阵子把旧电脑换成 MacBook，用着挺顺手"
+          dimensions: [tech_stack, preferences]
+          main_dimension: tech_stack
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+          occurred_at: "2026-09..2026-10"
+      traits: []
+      causal: []
+    trap: "「前阵子」必须展开成时间区间（2026-09..10），不能写精确日期，也不能丢弃；设备偏好不等于长期技术栈结论"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-034
+    category: coarse_date
+    source: synthetic
+    difficulty: easy
+    conversation: |
+      user: 上个月回老家给奶奶过生日，一家人拍了合照。
+      assistant: 一家人团聚挺好的。
+    expected:
+      memories:
+        - content: "用户上个月回老家给奶奶过生日，一家人拍了合照"
+          dimensions: [family]
+          main_dimension: family
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+          occurred_at: "2026-10-01..2026-10-31"
+      traits: []
+      causal: []
+    trap: "「上个月」展开为 2026-10 区间（含 ..），不能写精确日期，也不能把回老家写成长期居住"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-035
+    category: multi_turn
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 我下个月要去成都玩几天。
+      assistant: 具体哪几天？
+      user: 十一号出发，玩四天。
+    expected:
+      memories:
+        - content: "用户下个月十一号出发去成都玩四天"
+          dimensions: [focus]
+          main_dimension: focus
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "跨轮信息合并成一条完整事实（目的地+出发日+时长），不要拆碎片或重复；助手的追问不算用户事实"
     review: { drafted_by: agent, user_checked: false }
 
