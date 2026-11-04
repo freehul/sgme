@@ -139,6 +139,10 @@ FILES = {
     "claude_http": ROOT / "adapters" / "claude-code" / "claude_sgme" / "http_client.py",
     "dsh_index": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "index.ts",
     "dsh_context": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "context.ts",
+    "doubao_watch": ROOT / "adapters" / "doubao" / "scripts" / "care_watch.py",
+    "mimo_watch": ROOT / "adapters" / "mimo" / "scripts" / "care_watch.py",
+    "workbuddy_watch": ROOT / "adapters" / "workbuddy" / "scripts" / "care_watch.py",
+    "zcode_watch": ROOT / "adapters" / "zcode" / "scripts" / "care_watch.py",
 }
 
 _cache: dict[str, str] = {}
@@ -549,6 +553,10 @@ def _(self):
         ("工作台档位下拉", *has("ui_roles_view", "CARE_LEVEL_OPTIONS")),
         ("管家就医类推荐提示（不默认开启）", *has("ui_roles_view", "medical_day")),
         ("dsh 消费侧按档位过滤", *has("dsh_context", "filterEventsByCareLevel")),
+        ("doubao care_watch 档位", *has("doubao_watch", "care_level()")),
+        ("mimo care_watch 档位", *has("mimo_watch", "care_level()")),
+        ("workbuddy care_watch 档位", *has("workbuddy_watch", "care_level()")),
+        ("zcode care_watch 档位", *has("zcode_watch", "care_level()")),
     ]
 
 

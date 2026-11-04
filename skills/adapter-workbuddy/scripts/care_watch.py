@@ -23,17 +23,36 @@ WorkBuddy是会话型 agent（无常驻进程），主动关怀走官方「短�
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
 from sgme_client import SGME, SGMEError
 
+KEY_CARE_TYPES = ("care_todo_due", "care_mood")
 
-def fmt_pull(resp: dict, types_filter: str | None = "care_") -> str:
-    """把 events_pull 结果格式化为可读清单；types_filter 为类型前缀（服务端不支持 types 过滤，须客户端筛）。"""
+
+def fmt_pull(resp: dict, types_filter: str | None = "care_", care_level: str | None = None) -> str:
+    """把 events_pull 结果格式化为可读清单；D-61 按关怀档位过滤。
+
+    - silent：不输出 care_*（信号已记录，可在 WebUI 或 SGME_CARE_FORCE=1 手动查看）
+    - push：只输出关键信号（care_todo_due / care_mood）
+    - session / None：不过滤（None = 手动强制查看）
+    """
     items = resp.get("events") or resp.get("signals") or []
     if types_filter:
-        items = [it for it in items if str(it.get("type") or it.get("event_type") or "").startswith(types_filter)]
+        items = [
+            it for it in items
+            if str(it.get("type") or it.get("event_type") or "").startswith(types_filter)
+        ]
+    if care_level == "silent":
+        return "暂无未消费信号 ✅（care_level=silent：已记录，不主动推送；手动查看用 SGME_CARE_FORCE=1）"
+    if care_level == "push":
+        items = [
+            it for it in items
+            if not str(it.get("type") or it.get("event_type") or "").startswith("care_")
+            or str(it.get("type") or it.get("event_type")) in KEY_CARE_TYPES
+        ]
     if not items:
         return "暂无未消费信号 ✅"
     lines = []
@@ -76,13 +95,15 @@ def main(argv=None):
         # 订阅者取本机解析的 agent_id（B194「按 agent 前缀防碰撞」语义的延续，T-233）：
         # 多设备各拉各的持久游标，不互相推进对方未消费队列。
         if a.cmd == "pull":
-            print(fmt_pull(c.events_pull(a.subscriber or c.agent_id), a.types or None))
+            level = None if os.environ.get("SGME_CARE_FORCE") == "1" else c.care_level()
+            print(fmt_pull(c.events_pull(a.subscriber or c.agent_id), a.types or None, level))
         elif a.cmd == "watch":
             print(f"care_watch 常驻轮询开始（每 {a.interval}s）… Ctrl+C 退出")
             while True:
                 try:
                     resp = c.events_pull(c.agent_id)
-                    text = fmt_pull(resp, "care_")
+                    level = None if os.environ.get("SGME_CARE_FORCE") == "1" else c.care_level()
+                    text = fmt_pull(resp, "care_", level)
                     if "暂无" not in text:
                         print(f"[{time.strftime('%H:%M:%S')}]", text)
                 except SGMEError as e:

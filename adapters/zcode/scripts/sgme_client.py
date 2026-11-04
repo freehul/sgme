@@ -499,6 +499,23 @@ class SGME:
         return self._http("GET", "/v1/health")
 
     # D-58（2026-11-04）：服务端能力面自检（旧版无端点 → unreachable，不阻塞）
+
+    # D-61（2026-11-04）：当前角色关怀档位（HTTP 层，无 MCP 依赖）
+    def care_level(self) -> str:
+        """silent/session/push；无当前角色=silent；接口失败保持旧行为 session。"""
+        try:
+            active = self._http("GET", "/v1/admin/care/active-role") or {}
+            rid = (active or {}).get("role_id") if isinstance(active, dict) else None
+            if not rid:
+                return "silent"
+            card = self._http("GET", "/v1/admin/roles/" + str(rid)) or {}
+            data = ((card or {}).get("role") or {}).get("data") or {}
+            ext = data.get("extensions") or {}
+            lvl = ((ext.get("sgme_care") or {}).get("care_level"))
+            return lvl if lvl in ("silent", "session", "push") else "silent"
+        except Exception:  # 旧版服务端/网络错误：保持旧行为，别突然吞提醒
+            return "session"
+
     def server_capabilities(self):
         """GET /v1/capabilities（服务端能力广告）。"""
         return self._http("GET", "/v1/capabilities")
