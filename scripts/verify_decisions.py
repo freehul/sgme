@@ -128,6 +128,7 @@ FILES = {
     "migration": S / "migration.py",
     "stage3": ROOT / "scripts" / "migrate_stage3_backfill.py",
     "regression_inject": S / "regression_inject.py",
+    "purge_backups": ROOT / "scripts" / "purge_backups.py",
     "dsh_client": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "sgme-client.ts",
     "dsh_index": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "index.ts",
 }
@@ -362,6 +363,7 @@ def _(self):
         ("逻辑删除原因标记 user_delete", *has("memory_ops", "user_delete")),
         ("彻底删除物理清理", *has("memory_dao", "def purge_memory")),
         ("结果页剩余副本清单", *has("memory_ops", "PURGE_REMAINING_COPIES")),
+        ("备份 purge 工具（双钥匙）", *has("purge_backups", "CONFIRM_PHRASE")),
         ("审计留快照与内容哈希", *has("memory_dao", "content_sha256")),
     ]
 
