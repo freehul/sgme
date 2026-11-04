@@ -21,8 +21,8 @@ def test_coverage_matrix_matches_design_targets():
     data = loader.load_cases(CASES)
     cov = loader.coverage(data)
     assert cov["target_total"] == 35
-    assert cov["draft_total"] == len(data["cases"]) == 5
-    assert cov["remaining_total"] == 30
+    assert cov["draft_total"] == len(data["cases"]) == 9
+    assert cov["remaining_total"] == 26
     assert set(cov["by_category"]) == set(loader.CATEGORY_TARGETS)
     assert cov["by_category"]["role_interaction"]["target"] == 6
 
@@ -64,6 +64,17 @@ def test_tech_counterexample_must_not_store_memory():
     c = _case(category="tech_counterexample")
     errs = loader.validate_case(c)
     assert any("分流护栏" in e for e in errs)
+
+
+def test_coarse_date_requires_interval():
+    c = _case(category="coarse_date")
+    c["expected"]["memories"][0]["occurred_at"] = "2026-01-01"
+    assert any("occurred_at 区间" in e for e in loader.validate_case(c))
+
+
+def test_multi_turn_requires_two_user_turns():
+    c = _case(category="multi_turn")
+    assert any("2 个 user 轮次" in e for e in loader.validate_case(c))
 
 
 def test_missing_trap_rejected():

@@ -1,11 +1,11 @@
-# SGME 人格/角色标注集 v001-draft（D-25 九类 35 条 · 首批初稿 5 条）
+# SGME 人格/角色标注集 v001-draft（D-25 九类 35 条 · 初稿 9 条）
 # 说明：由 agent 代造初稿（D-25 四轮修订），**未经用户抽查**；user_checked=false。
 # 类别目标（合计 35）：角色互动 6 / 性格特质 6 / 关系情感 5 / 健康经历 4 /
 # 工作踩坑 3 / 纯技术反例 3 / 日常决策 3 / 粗日期 3 / 多轮对话 2。
 meta:
   version: v001-draft
   created_at: "2026-11-04T00:00:00Z"
-  total: 5
+  total: 9
   target_total: 35
   drafted_by: agent
   user_checked: false
@@ -115,4 +115,97 @@ cases:
       causal: []
     trap: "「不去了」是已发生决定，不是愿望；不要写成 modality=wished"
     review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-006
+    category: relationship_emotion
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 我女朋友最近天天加班到很晚，我有点心疼她。
+    expected:
+      memories:
+        - content: "用户的女友近期经常加班到很晚"
+          dimensions: [family]
+          main_dimension: family
+          memory_type: episodic
+          certainty: confirmed
+          subject: others
+          route: memory
+        - content: "用户对女友长期加班感到心疼"
+          dimensions: [status]
+          main_dimension: status
+          memory_type: episodic
+          certainty: tentative
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "主体归属：女友加班是 others，心疼是 self；不能合并成「用户加班」"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-007
+    category: work_pitfall
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 这次上线前忘了跑迁移，线上表结构对不上，回滚折腾了半小时。
+      assistant: 记下了，以后发布清单里加一步。
+    expected:
+      memories:
+        - content: "用户上线前漏跑迁移导致线上表结构不一致、回滚约半小时"
+          dimensions: [skills]
+          main_dimension: skills
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal:
+        - { from: "漏跑迁移", to: "线上表结构不一致", type: "cause" }
+    trap: "工作踩坑要记「触发条件 + 后果」，不是只记事故；这是经验不是纯技术百科"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-008
+    category: coarse_date
+    source: synthetic
+    difficulty: hard
+    conversation: |
+      user: 去年夏天去的重庆，吃了好多火锅。
+    expected:
+      memories:
+        - content: "用户去年夏天去过重庆，吃了很多火锅"
+          dimensions: [environment, preferences]
+          main_dimension: environment
+          memory_type: episodic
+          certainty: tentative
+          subject: self
+          route: memory
+          occurred_at: "2025-06..2025-08"
+      traits: []
+      causal: []
+    trap: "粗日期必须展开成时间区间（去年夏天→2025-06..08），不能写精确日期，也不能丢弃"
+    review: { drafted_by: agent, user_checked: false }
+
+  - id: pa-009
+    category: multi_turn
+    source: synthetic
+    difficulty: medium
+    conversation: |
+      user: 我下周要去东京出差。
+      assistant: 去几天呀？
+      user: 周四出发，待三天。
+    expected:
+      memories:
+        - content: "用户下周四出发去东京出差三天"
+          dimensions: [focus]
+          main_dimension: focus
+          memory_type: episodic
+          certainty: confirmed
+          subject: self
+          route: memory
+      traits: []
+      causal: []
+    trap: "跨轮信息合并成一条完整事实（目的地+出发日+时长），不要拆成碎片或重复记"
+    review: { drafted_by: agent, user_checked: false }
+
 

@@ -95,6 +95,20 @@ def validate_case(case: dict[str, Any]) -> list[str]:
             errs.append(f"{cid}.memories[{i}]: route 非法 {m.get('route')!r}")
         if m.get("subject") not in {"self", "others", "unknown"}:
             errs.append(f"{cid}.memories[{i}]: subject 非法 {m.get('subject')!r}")
+        if "occurred_at" in m and not isinstance(m.get("occurred_at"), str):
+            errs.append(f"{cid}.memories[{i}]: occurred_at 必须是字符串")
+    # 粗日期：至少一条记忆带区间（含 ..），不能写精确日期也不能丢
+    if case.get("category") == "coarse_date" and not any(
+        isinstance(m, dict)
+        and isinstance(m.get("occurred_at"), str)
+        and ".." in m["occurred_at"]
+        for m in mems
+    ):
+        errs.append(f"{cid}: coarse_date 至少一条记忆需带 occurred_at 区间（含 ..）")
+    # 多轮对话：至少 2 个 user 轮次（否则测不到跨轮合并）
+    if case.get("category") == "multi_turn":
+        if str(case.get("conversation") or "").count("user:") < 2:
+            errs.append(f"{cid}: multi_turn 至少需要 2 个 user 轮次")
     if not isinstance(exp.get("traits", []), list):
         errs.append(f"{cid}: expected.traits 必须是列表")
     if not isinstance(exp.get("causal", []), list):
