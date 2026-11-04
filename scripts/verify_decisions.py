@@ -130,6 +130,10 @@ FILES = {
     "regression_inject": S / "regression_inject.py",
     "purge_backups": ROOT / "scripts" / "purge_backups.py",
     "dsh_client": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "sgme-client.ts",
+    "doubao_client": ROOT / "adapters" / "doubao" / "scripts" / "sgme_client.py",
+    "mimo_client": ROOT / "adapters" / "mimo" / "scripts" / "sgme_client.py",
+    "workbuddy_client": ROOT / "adapters" / "workbuddy" / "scripts" / "sgme_client.py",
+    "zcode_client": ROOT / "adapters" / "zcode" / "scripts" / "sgme_client.py",
     "dsh_index": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "index.ts",
 }
 
@@ -518,6 +522,10 @@ def _(self):
         ("升级提示 upgrade_hint", *has("compat", "upgrade_hint")),
         ("dsh 适配器能力自检", *has("dsh_client", "checkApiCompat")),
         ("dsh 启动调用自检（不阻塞）", *has("dsh_index", "checkApiCompat")),
+        ("doubao 客户端自检", *has("doubao_client", "api_compat_check")),
+        ("mimo 客户端自检", *has("mimo_client", "api_compat_check")),
+        ("workbuddy 客户端自检", *has("workbuddy_client", "api_compat_check")),
+        ("zcode 客户端自检", *has("zcode_client", "api_compat_check")),
     ]
 
 

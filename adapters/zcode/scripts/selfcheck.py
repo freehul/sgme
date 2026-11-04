@@ -100,6 +100,8 @@ def main(argv=None) -> int:
         # ---- HTTP 层（只读 + 一次心跳写入） ----
         run("② health（服务可达）",
             lambda: "status=" + str(c.health().get("status")))
+        run("②ᵇ api-compat（能力面，D-58）",
+            lambda: (lambda r: "ok" if r["ok"] else r["reason"])(c.api_compat_check()))
         run("③ search（记忆检索）", lambda: _count(c.search("接入自检", limit=1)))
         run("④ inject（画像注入）", lambda: _count(c.inject("daily")))
         run("⑤ skill_search（技能检索）", lambda: _count(c.skill_search("sgme", limit=3)))

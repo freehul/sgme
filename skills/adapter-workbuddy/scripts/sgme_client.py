@@ -514,6 +514,26 @@ class SGME:
     def health(self):
         return self._http("GET", "/v1/health")
 
+    # D-58（2026-11-04）：服务端能力面自检（旧版无端点 → unreachable，不阻塞）
+    def server_capabilities(self):
+        """GET /v1/capabilities（服务端能力广告）。"""
+        return self._http("GET", "/v1/capabilities")
+
+    def api_compat_check(self, supported: str = "1.x") -> dict:
+        """比较服务端 api_compat；不匹配/端点缺失只返回结构化结果，不抛异常。"""
+        try:
+            caps = self.server_capabilities() or {}
+        except Exception as e:  # 旧版 404 / 网络错误都按不可达处理
+            return {"ok": False, "reason": "unreachable", "supported": supported,
+                    "error": str(e)[:120]}
+        api_compat = caps.get("api_compat")
+        schema = caps.get("schema_version")
+        if api_compat != supported:
+            return {"ok": False, "reason": "mismatch", "supported": supported,
+                    "api_compat": api_compat, "schema_version": schema}
+        return {"ok": True, "reason": None, "supported": supported,
+                "api_compat": api_compat, "schema_version": schema}
+
     def append(self, session_key: str, text: str, role: str = "user",
                agent_id: str | None = None, started_at: str | None = None) -> dict:
         ts = started_at or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
