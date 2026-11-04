@@ -2,12 +2,21 @@
 // LLM 成本看板：llm_usage_daily 账本按 (day, provider, model) 聚合展示
 // 数据源 GET /v1/admin/ops/llm-cost?days=N（后端未就绪时显示空态，不白屏）
 import { computed, onMounted, ref } from 'vue'
-import { getLlmCost, type LlmCostItem } from '../../api/ops'
+import { getLlmCost, type LlmBudget, type LlmCostItem } from '../../api/ops'
 import { ApiError } from '../../api/client'
+import {
+  baselineSourceLabel,
+  budgetLevelMeta,
+  budgetProgressPct,
+  formatBudgetRatio,
+  isBudgetUsable,
+} from './costBudget'
 
 const days = ref<7 | 30 | 90>(30)
 const items = ref<LlmCostItem[]>([])
 const totals = ref<{ prompt_tokens: number; completion_tokens: number; calls: number } | null>(null)
+// 成本告警档位（P1-9）：budget 为 null 时页面显示空态（账本未创建/旧后端不返回）
+const budget = ref<LlmBudget | null>(null)
 const loading = ref(false)
 const error = ref('')
 
@@ -69,6 +78,28 @@ function fmtNum(n: number): string {
   return n.toLocaleString('zh-CN')
 }
 
+// 预算卡片视图模型：null = 走空态（available=false / 旧后端无 budget / 基线非正数）
+const budgetView = computed(() => {
+  const b = budget.value
+  if (!b) return null
+  const level = budgetLevelMeta(b.level)
+  return {
+    level: level.key,
+    levelLabel: level.label,
+    levelDesc: level.desc,
+    month: b.month || '—',
+    monthTokens: fmtNum(b.month_tokens ?? 0),
+    baselineTokens: fmtNum(b.baseline_tokens),
+    baselineSource: baselineSourceLabel(b.baseline_source),
+    ratio: formatBudgetRatio(b.ratio),
+    progress: budgetProgressPct(b.ratio),
+    warnThreshold: `${(b.warn_ratio ?? 0).toFixed(1)}×`,
+    alertThreshold: `${(b.alert_ratio ?? 0).toFixed(1)}×`,
+    // enabled=false 时仍展示本月用量，但提示告警已关闭
+    disabled: b.enabled === false,
+  }
+})
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -76,10 +107,14 @@ async function load() {
     const r = await getLlmCost(days.value)
     items.value = r.items || []
     totals.value = r.totals || null
+    // budget 是 P1-9（2026-11-04）新增字段：旧后端不返回，账本未创建时 available=false，
+    // 两种情况都按空态展示，不显示 0 基线造成的误导性百分比
+    budget.value = isBudgetUsable(r.budget) ? r.budget : null
   } catch (e) {
     // 端点 404 / 服务不可达等：清空数据并显示友好提示
     items.value = []
     totals.value = null
+    budget.value = null
     error.value = e instanceof ApiError ? e.message : String(e)
   } finally {
     loading.value = false
@@ -113,6 +148,50 @@ onMounted(load)
     </div>
 
     <p v-if="error" class="error">{{ error }}（接口可能尚未上线，稍后重试或联系管理员）</p>
+
+    <!-- 成本预算 / 告警档位（P1-9：GET /v1/admin/ops/llm-cost 的 budget 字段） -->
+    <section class="panel">
+      <h3>成本预算 <span class="sub">本月 tokens 对基线 · 只告警不停服</span></h3>
+      <div v-if="loading && !budgetView" class="empty">加载中…</div>
+      <div v-else-if="!budgetView" class="empty">
+        暂无预算数据——LLM 用量账本尚未创建（available=false）或后端未返回 budget 字段；开始记账后此处显示本月用量与告警档位。
+      </div>
+      <template v-else>
+        <div class="stat-grid budget-grid">
+          <div class="stat-card">
+            <span class="v">{{ budgetView.monthTokens }}</span>
+            <span class="l">本月 tokens</span>
+          </div>
+          <div class="stat-card">
+            <span class="v">{{ budgetView.baselineTokens }}</span>
+            <span class="l">基线 tokens</span>
+          </div>
+          <div class="stat-card">
+            <span class="v">{{ budgetView.ratio }}</span>
+            <span class="l">本月 / 基线</span>
+          </div>
+          <div class="stat-card">
+            <span class="budget-level" :class="budgetView.level"><span class="dot" />{{ budgetView.levelLabel }}</span>
+            <span class="l">告警档位</span>
+          </div>
+        </div>
+        <div
+          class="budget-bar"
+          :class="budgetView.level"
+          :title="`比值 ${budgetView.ratio}（提示线 ${budgetView.warnThreshold} / 告警线 ${budgetView.alertThreshold}）`"
+        >
+          <i :style="{ width: budgetView.progress + '%' }" />
+        </div>
+        <p class="budget-note">
+          档位阈值：提示线 {{ budgetView.warnThreshold }} · 告警线 {{ budgetView.alertThreshold }}（相对基线；只告警不停服、不自动切链）
+        </p>
+        <p class="budget-note">
+          基线来源：{{ budgetView.baselineSource }} · 统计口径：{{ budgetView.month }} 自然月（UTC）prompt + completion 合计
+          <span v-if="budgetView.disabled" class="budget-off">· 成本告警已在配置中关闭（cost_alert.enabled=false）</span>
+          <span v-else-if="budgetView.level !== 'none'" class="budget-off">· {{ budgetView.levelDesc }}</span>
+        </p>
+      </template>
+    </section>
 
     <!-- 顶部汇总 -->
     <section class="panel">
@@ -214,5 +293,73 @@ onMounted(load)
 }
 .summary-grid .stat-card .v {
   font-size: 26px;
+}
+/* 成本预算 / 告警档位（P1-9）：配色沿用设计令牌 —— none 绿 / warn 橙 / alert 红 */
+.budget-grid {
+  grid-template-columns: repeat(4, 1fr);
+  margin-bottom: var(--space-3);
+}
+.budget-level {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.budget-level .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.budget-level.none {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.budget-level.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.budget-level.alert {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.budget-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  overflow: hidden;
+  margin-bottom: var(--space-2);
+}
+.budget-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+.budget-bar.none > i {
+  background: var(--success);
+}
+.budget-bar.warn > i {
+  background: var(--warn);
+}
+.budget-bar.alert > i {
+  background: var(--danger);
+}
+.budget-note {
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.budget-off {
+  color: var(--warn);
+}
+@media (max-width: 900px) {
+  .budget-grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 </style>
