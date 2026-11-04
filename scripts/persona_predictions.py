@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 条（0=全部）")
     ap.add_argument("--only", default="", help="逗号分隔 case id（如 pa-001,pa-004）")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--sleep", type=float, default=0.0,
+                    help="每条之间等待秒数（防限流；建议 5-10）")
     args = ap.parse_args(argv)
 
     if str(ROOT) not in sys.path:
@@ -90,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     errors: list[dict] = []
     started = time.time()
     for idx, case in enumerate(cases, 1):
+        if idx > 1 and args.sleep > 0:
+            time.sleep(args.sleep)
         cid = case["id"]
         try:
             pred = _predict_one(case, dimensions, llm_cfg)
