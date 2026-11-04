@@ -490,6 +490,22 @@ var SgmeClient = class {
 		}
 		return data;
 	}
+	/**
+	* D-61（2026-11-04）：当前角色的关怀档位。
+	*
+	* 口径：无当前角色 → silent（新角色默认静默，没有全局默认档）；
+	* role_assemble 返回 care_level（缺省/非法按 silent）；接口失败返回 null，
+	* 由调用方决定兜底（context.ts 用「保持旧行为=session」避免突然吞提醒）。
+	*/
+	async activeCareLevel() {
+		const active = await this.roleActiveGet();
+		if (!active) return null;
+		if (!active.role_id) return "silent";
+		const card = await this.roleAssemble(active.role_id);
+		if (!card) return null;
+		const level = card.care_level;
+		return level === "silent" || level === "session" || level === "push" ? level : "silent";
+	}
 	/** 设置当前沟通角色（PUT /v1/admin/care/active-role，Agent Key）。失败返回 null。 */
 	async roleActiveSet(roleId) {
 		const [data, err] = await this.put("/v1/admin/care/active-role", { role_id: roleId });
@@ -3280,6 +3296,21 @@ function adapterFailureChunk(error, signal) {
 *
 * 契约对齐：POST /v1/inject（Agent Key，mode + custom_filter 二选一；可选 history/already_repaired）
 */
+/** 画像注入配置。 */
+/** D-61：push 档只推「关键信号」——就医/安全类 + 已到期待办/情绪低落；其余留待信号池。 */
+const KEY_CARE_TYPES = /* @__PURE__ */ new Set(["care_todo_due", "care_mood"]);
+const CARE_LEVEL_TTL_MS = 3e5;
+/**
+* D-61（2026-11-04）：按角色关怀档位过滤事件提醒（导出供测试）。
+* - silent：关怀信号一律不注入提醒（仍可 signal_pull 查看/消费；anomaly_warn 照常）
+* - session：全部提醒（旧行为）
+* - push：只保留关键关怀信号（KEY_CARE_TYPES）+ anomaly_warn
+*/
+function filterEventsByCareLevel(events, level) {
+	if (level === "session") return events;
+	if (level === "silent") return events.filter((e) => !e.type.startsWith("care_"));
+	return events.filter((e) => !e.type.startsWith("care_") || KEY_CARE_TYPES.has(e.type));
+}
 /** 拼接事件提醒文本（摘要化，2026-08-20 修复）。
 *
 * 此前（44a7b85）把每条 care 信号全文 JSON 附在提醒里 → 每次注入都携带完整
@@ -3379,6 +3410,19 @@ function extractColdstartRepairHint(profile) {
 */
 function registerContextInjection(ctx, client, config) {
 	let profileCache = null;
+	let careLevel = "session";
+	let careLevelTs = 0;
+	async function ensureCareLevel() {
+		if (careLevelTs && Date.now() - careLevelTs < CARE_LEVEL_TTL_MS) return careLevel;
+		try {
+			const level = await client.activeCareLevel();
+			if (level) {
+				careLevel = level;
+				careLevelTs = Date.now();
+			}
+		} catch {}
+		return careLevel;
+	}
 	let fetching = null;
 	let injected = false;
 	let coldRepaired = false;
@@ -3410,21 +3454,25 @@ function registerContextInjection(ctx, client, config) {
 		if (decision.kind === "reject") return decision;
 		const unnotified = config.eventSubscriber?.unnotifiedEvents() ?? [];
 		if (unnotified.length && injected) {
-			const evMsg = createUserMessage({
-				content: [{
-					type: "text",
-					text: buildEventNoticeText(unnotified)
-				}],
-				source: { kind: "dsh-sgme" }
-			});
-			if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
-				ctx.logger.info(`[SGME 事件提醒] 注入 ${unnotified.length} 条事件提醒（step ${payload.step}）`);
-				config.eventSubscriber?.markNotified(unnotified.map((e) => e.event_id));
-				return {
-					kind: "enter",
-					messages: [evMsg, ...decision.messages]
-				};
-			}
+			const level = await ensureCareLevel();
+			const filtered = filterEventsByCareLevel(unnotified, level);
+			if (filtered.length) {
+				const evMsg = createUserMessage({
+					content: [{
+						type: "text",
+						text: buildEventNoticeText(filtered)
+					}],
+					source: { kind: "dsh-sgme" }
+				});
+				if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
+					ctx.logger.info(`[SGME 事件提醒] 注入 ${filtered.length} 条（care_level=${level}，step ${payload.step}）`);
+					config.eventSubscriber?.markNotified(unnotified.map((e) => e.event_id));
+					return {
+						kind: "enter",
+						messages: [evMsg, ...decision.messages]
+					};
+				}
+			} else config.eventSubscriber?.markNotified(unnotified.map((e) => e.event_id));
 		}
 		if (injected && !coldRepaired) {
 			const history = buildColdRepairHistory(payload.messages ?? []);
@@ -3508,7 +3556,8 @@ function registerContextInjection(ctx, client, config) {
 		if (!profileCache) return decision;
 		injected = true;
 		const unnotifiedFirstTurn = config.eventSubscriber?.unnotifiedEvents() ?? [];
-		const injectText = unnotifiedFirstTurn.length ? profileCache.text + "\n\n" + buildEventNoticeText(unnotifiedFirstTurn) : profileCache.text;
+		const filteredFirstTurn = filterEventsByCareLevel(unnotifiedFirstTurn, unnotifiedFirstTurn.length ? await ensureCareLevel() : "session");
+		const injectText = filteredFirstTurn.length ? profileCache.text + "\n\n" + buildEventNoticeText(filteredFirstTurn) : profileCache.text;
 		if (unnotifiedFirstTurn.length) config.eventSubscriber?.markNotified(unnotifiedFirstTurn.map((e) => e.event_id));
 		const desired = createUserMessage({
 			content: [{

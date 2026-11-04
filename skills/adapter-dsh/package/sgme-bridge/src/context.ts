@@ -17,7 +17,7 @@
  * 契约对齐：POST /v1/inject（Agent Key，mode + custom_filter 二选一；可选 history/already_repaired）
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { SgmeClient, InjectResponse, SearchResult } from './sgme-client.js'
+import type { SgmeClient, InjectResponse, SearchResult, CareLevel } from './sgme-client.js'
 import type { SgmeEvent, SgmeEventSubscriber } from './events.js'
 
 /**
@@ -36,6 +36,29 @@ declare module '@deepseek-ai/dsh-llm' {
 export type InjectMode = 'daily' | 'full' | 'coding' | 'work'
 
 /** 画像注入配置。 */
+/** D-61：push 档只推「关键信号」——就医/安全类 + 已到期待办/情绪低落；其余留待信号池。 */
+const KEY_CARE_TYPES = new Set(['care_todo_due', 'care_mood'])
+const CARE_LEVEL_TTL_MS = 5 * 60 * 1000
+
+/**
+ * D-61（2026-11-04）：按角色关怀档位过滤事件提醒（导出供测试）。
+ * - silent：关怀信号一律不注入提醒（仍可 signal_pull 查看/消费；anomaly_warn 照常）
+ * - session：全部提醒（旧行为）
+ * - push：只保留关键关怀信号（KEY_CARE_TYPES）+ anomaly_warn
+ */
+export function filterEventsByCareLevel(
+  events: SgmeEvent[],
+  level: CareLevel,
+): SgmeEvent[] {
+  if (level === 'session') return events
+  if (level === 'silent') {
+    return events.filter((e) => !e.type.startsWith('care_'))
+  }
+  return events.filter(
+    (e) => !e.type.startsWith('care_') || KEY_CARE_TYPES.has(e.type),
+  )
+}
+
 export interface ContextConfig {
   injectMode: InjectMode
   injectMaxTokens: number          // 协议接受但不消费，留作 v2 预算控制参考
@@ -199,6 +222,24 @@ export function registerContextInjection(
 ): () => void {
   // 预拉取缓存：turn/start 时异步拉取画像，pre-step 直接用缓存（不阻塞主循环）
   let profileCache: { text: string; ts: number } | null = null
+  // D-61：当前角色关怀档位缓存（5 分钟 TTL；拉取失败保持旧行为 session，避免突然吞提醒）
+  let careLevel: CareLevel = 'session'
+  let careLevelTs = 0
+  async function ensureCareLevel(): Promise<CareLevel> {
+    if (careLevelTs && Date.now() - careLevelTs < CARE_LEVEL_TTL_MS) {
+      return careLevel
+    }
+    try {
+      const level = await client.activeCareLevel()
+      if (level) {
+        careLevel = level
+        careLevelTs = Date.now()
+      }
+    } catch {
+      // 失败保持旧值（首次失败 = session，宁滥勿缺；silent 只有在服务端明确返回时才生效）
+    }
+    return careLevel
+  }
   // 正在拉取中的 promise（防并发重复拉取）
   let fetching: Promise<void> | null = null
   // 注入状态：仅成功注入后置位
@@ -245,16 +286,25 @@ export function registerContextInjection(
     // 避免死循环；agent 处理后再 markConsumed 移除。
     const unnotified = config.eventSubscriber?.unnotifiedEvents() ?? []
     if (unnotified.length && injected) {
-      const evText = buildEventNoticeText(unnotified)
-      const evMsg = createUserMessage({
-        content: [{ type: 'text', text: evText }],
-        source: { kind: 'dsh-sgme' },
-      })
-      if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
-        ctx.logger.info(`[SGME 事件提醒] 注入 ${unnotified.length} 条事件提醒（step ${payload.step}）`)
-        // 标记已提醒，防止下轮重复注入
+      // D-61：按当前角色关怀档位过滤（silent 不注入 care_*；push 只推关键信号）
+      const level = await ensureCareLevel()
+      const filtered = filterEventsByCareLevel(unnotified, level)
+      if (filtered.length) {
+        const evText = buildEventNoticeText(filtered)
+        const evMsg = createUserMessage({
+          content: [{ type: 'text', text: evText }],
+          source: { kind: 'dsh-sgme' },
+        })
+        if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
+          ctx.logger.info(
+            `[SGME 事件提醒] 注入 ${filtered.length} 条（care_level=${level}，step ${payload.step}）`,
+          )
+          // 标记已提醒，防止下轮重复注入（含被档位过滤掉的事件：它们仍可在信号池 signal_pull 查看）
+          config.eventSubscriber?.markNotified(unnotified.map((e) => e.event_id))
+          return { kind: 'enter', messages: [evMsg, ...decision.messages] }
+        }
+      } else {
         config.eventSubscriber?.markNotified(unnotified.map((e) => e.event_id))
-        return { kind: 'enter', messages: [evMsg, ...decision.messages] }
       }
     }
 
@@ -374,10 +424,18 @@ export function registerContextInjection(
 
     // 事件提醒（2026-08-20 修复）：只对「未消费且未提醒过」的事件附加到画像注入文本
     const unnotifiedFirstTurn = config.eventSubscriber?.unnotifiedEvents() ?? []
-    const injectText = unnotifiedFirstTurn.length
-      ? profileCache.text + '\n\n' + buildEventNoticeText(unnotifiedFirstTurn)
+    // D-61：首轮提醒同样按关怀档位过滤
+    const firstTurnLevel = unnotifiedFirstTurn.length
+      ? await ensureCareLevel()
+      : 'session'
+    const filteredFirstTurn = filterEventsByCareLevel(
+      unnotifiedFirstTurn,
+      firstTurnLevel,
+    )
+    const injectText = filteredFirstTurn.length
+      ? profileCache.text + '\n\n' + buildEventNoticeText(filteredFirstTurn)
       : profileCache.text
-    // 首轮画像注入时一并标记已提醒（防下轮重复）
+    // 首轮画像注入时一并标记已提醒（防下轮重复；被档位过滤的也标记，信号池仍可手动查看）
     if (unnotifiedFirstTurn.length) {
       config.eventSubscriber?.markNotified(unnotifiedFirstTurn.map((e) => e.event_id))
     }

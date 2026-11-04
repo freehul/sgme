@@ -442,10 +442,14 @@ export interface RoleListResponse {
 }
 
 /** GET /v1/admin/roles/{role_id}/assemble 响应体（角色沟通提示词装配产物）。 */
+/** D-61（2026-11-04）：关怀档位（角色卡 extensions.sgme_care.care_level）。 */
+export type CareLevel = 'silent' | 'session' | 'push'
+
 export interface RoleAssembleResponse {
   role_id: string
   role_name: string
   system_prompt: string            // 含 {{char}}/{{user}} 宏，消费方拼接
+  care_level?: CareLevel
   care_policy?: Record<string, unknown> | null
   persona?: string | null
   profile_blocks?: Array<Record<string, unknown>>
@@ -1267,6 +1271,25 @@ export class SgmeClient {
       return null
     }
     return data
+  }
+
+  /**
+   * D-61（2026-11-04）：当前角色的关怀档位。
+   *
+   * 口径：无当前角色 → silent（新角色默认静默，没有全局默认档）；
+   * role_assemble 返回 care_level（缺省/非法按 silent）；接口失败返回 null，
+   * 由调用方决定兜底（context.ts 用「保持旧行为=session」避免突然吞提醒）。
+   */
+  async activeCareLevel(): Promise<CareLevel | null> {
+    const active = await this.roleActiveGet()
+    if (!active) return null
+    if (!active.role_id) return 'silent'
+    const card = await this.roleAssemble(active.role_id)
+    if (!card) return null
+    const level = card.care_level
+    return level === 'silent' || level === 'session' || level === 'push'
+      ? level
+      : 'silent'
   }
 
   /** 设置当前沟通角色（PUT /v1/admin/care/active-role，Agent Key）。失败返回 null。 */

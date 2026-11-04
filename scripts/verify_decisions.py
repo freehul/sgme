@@ -138,6 +138,7 @@ FILES = {
     "codex_http": ROOT / "adapters" / "codex" / "codex_sgme" / "http_client.py",
     "claude_http": ROOT / "adapters" / "claude-code" / "claude_sgme" / "http_client.py",
     "dsh_index": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "index.ts",
+    "dsh_context": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "context.ts",
 }
 
 _cache: dict[str, str] = {}
@@ -547,6 +548,7 @@ def _(self):
         ("列表暴露档位", *has("care_roles", '"care_level": get_care_level')),
         ("工作台档位下拉", *has("ui_roles_view", "CARE_LEVEL_OPTIONS")),
         ("管家就医类推荐提示（不默认开启）", *has("ui_roles_view", "medical_day")),
+        ("dsh 消费侧按档位过滤", *has("dsh_context", "filterEventsByCareLevel")),
     ]
 
 
