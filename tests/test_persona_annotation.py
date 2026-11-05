@@ -28,8 +28,12 @@ def test_coverage_matrix_matches_design_targets():
     assert cov["by_category"]["role_interaction"]["target"] == 6
 
 
-def test_report_flags_user_unchecked():
-    rep = loader.build_report(loader.load_cases(CASES))
+def test_report_reflects_user_checked_flag():
+    """当前草稿已由用户抽查通过（meta.user_checked=true，2026-11-04）；同时锁住 true→false 的降级判定。"""
+    data = loader.load_cases(CASES)
+    assert loader.build_report(data)["user_checked"] is True
+    data["meta"]["user_checked"] = False
+    rep = loader.build_report(data)
     assert rep["user_checked"] is False
     assert rep["errors"] == []
 

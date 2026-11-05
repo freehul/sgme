@@ -12,7 +12,7 @@ A. scripts/check_adapter_freshness.py（部署态契约）
    - --json 结构不变、无 parity map 时退化口径稳定。
 
 B. scripts/verify_decisions.py（决策级对账）
-   - 覆盖 >= 40/73、MISMATCH 0、--strict 0（发布门禁可绿）；
+   - 覆盖 >= 40/74、MISMATCH 0、--strict 0（发布门禁可绿）；
    - 判定矩阵：done/partial 断言失败 → MISMATCH；planned 断言全过 → 文档落后
      （strict 下失败、默认只警告）；planned 未过 → 待施工（不算失败）；
    - D-55 回归：guardrail 的 read_mode 不得再被当成迁移配置的切读开关（旧假阳性）；
@@ -205,7 +205,7 @@ def test_all_ids_unique_and_doc_status_valid():
 
 
 def test_coverage_target_reached():
-    """任务验收：覆盖 >= 40/73（防后续新增检查时倒退）。"""
+    """任务验收：覆盖 >= 40/74（防后续新增检查时倒退；D-79 后总决策 74）。"""
     assert 40 <= len(vd.CHECKS) <= vd.TOTAL_DECISIONS, len(vd.CHECKS)
 
 
@@ -247,7 +247,8 @@ def test_cli_exit0_mismatch0_and_prints_coverage(capsys):
     out = capsys.readouterr().out
     assert rc == 0, out
     assert "MISMATCH 0 条" in out, out
-    assert re.search(r"覆盖 \d+/73 条决策", out), out
+    # 分母取脚本常量（D-79 后 73→74），防每次新增决策都要改测试
+    assert re.search(rf"覆盖 \d+/{vd.TOTAL_DECISIONS} 条决策", out), out
     assert "文档落后 0 条" in out, out
 
 
