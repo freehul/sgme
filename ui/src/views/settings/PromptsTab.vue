@@ -7,11 +7,12 @@ const stages = ref<PromptStage[]>([])
 const loading = ref(false)
 const error = ref('')
 
+// D-79（2026-11-05）：tier0_summary 已退役，不在受管 stage 列表内
+// 展示名对齐 sgme/engine/stage_map.py（L2 提取 / L3 裁决 / 遗留场景聚合）
 const STAGE_LABEL: Record<string, string> = {
-  l1_extraction: 'L1 抽取',
-  l1_conflict: 'L1.5 冲突提炼',
-  l2_scene: 'L2 场景',
-  tier0_summary: 'Tier0 摘要',
+  l1_extraction: 'L2 提取',
+  l1_conflict: 'L3 裁决',
+  l2_scene: '遗留场景聚合',
 }
 
 async function load() {

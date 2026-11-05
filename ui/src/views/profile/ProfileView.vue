@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { injectProfile, type InjectResponse } from '../../api/memory'
 import { ApiError } from '../../api/client'
-import PersonaSection from './PersonaSection.vue'
 
 const mode = ref('daily')
 const MODES = [
@@ -28,6 +27,10 @@ async function load() {
   }
 }
 
+const corePresent = computed(
+  () => !!(data.value?.stats as Record<string, unknown> | undefined)?.core_present,
+)
+
 onMounted(load)
 </script>
 
@@ -52,8 +55,9 @@ onMounted(load)
         <span>模式: {{ data.stats.mode }}</span>
         <span>块数: {{ data.blocks.length }}</span>
         <span>预估 tokens: {{ data.stats.tokens_est }}</span>
-        <span v-if="data.tier0?.present" class="tier0-ok">Tier0 摘要 ✓</span>
-        <span v-else class="tier0-miss">Tier0 缺失（静态降级）</span>
+        <!-- 2026-11-05 D-79：Tier0 已整体砍除，改显示 core 记忆卡状态 -->
+        <span v-if="corePresent" class="core-ok">Core 卡片 ✓</span>
+        <span v-else class="core-miss">Core 卡片未填（注入无「关于你」块）</span>
       </div>
 
       <div class="blocks">
@@ -68,14 +72,15 @@ onMounted(load)
       </div>
     </template>
 
-    <PersonaSection />
+    <!-- 2026-11-05：性格参考（MBTI/特质/月报）已拆到独立页 /persona；
+         本页回归本职——只做「注入预览」，看 agent 实际收到什么。 -->
   </div>
 </template>
 
 <style scoped>
 .meta-bar { display: flex; gap: 16px; color: var(--muted); font-size: 13px; margin-bottom: 12px; }
-.tier0-ok { color: var(--success); }
-.tier0-miss { color: var(--warn); }
+.core-ok { color: var(--success); }
+.core-miss { color: var(--warn); }
 .blocks { display: flex; flex-direction: column; gap: 14px; }
 .block { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--surface); }
 .block.empty { opacity: 0.6; }

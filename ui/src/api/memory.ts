@@ -136,8 +136,8 @@ export interface InjectBlock {
 }
 export interface InjectResponse {
   blocks: InjectBlock[]
-  stats: { mode: string; queries: number; tokens_est: number; tier0_present: boolean }
-  tier0?: { present: boolean; content?: string | null }
+  // D-79（2026-11-05）：Tier0 摘要字段已砍，画像由 core 记忆卡承担
+  stats: { mode: string; queries: number; tokens_est: number; core_present?: boolean }
 }
 export function injectProfile(mode: string) {
   return api.post<InjectResponse>('/v1/inject', { mode })

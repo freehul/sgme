@@ -3,7 +3,7 @@
 // 端点形状以服务端 sgme/server/routes_review.py 为准（放行/拒绝是「路径带 memory_id」形态）：
 //   GET  /v1/admin/review/pending?limit=&offset=&dimension=
 //   POST /v1/admin/review/{memory_id}/approve   body {note?}
-//   POST /v1/admin/review/{memory_id}/reject    body {reason}（必填，空理由后端报 400）
+//   POST /v1/admin/review/{memory_id}/reject    body {reason?}（2026-11-05 起非必填，空则后端记默认串）
 //   POST /v1/admin/review/auto-resolve          body {days}（默认 7）
 // ⚠️ 任务书里的 /v1/admin/review/approve {memory_id} 与 /reject {memory_id} 形态
 //   后端并未提供，此处保持与真实契约一致（改成 body 形态会直接 404）。
@@ -77,10 +77,10 @@ export interface ReviewRejectResult {
   ok?: boolean
 }
 
-export function rejectMemory(memoryId: string, reason: string) {
+export function rejectMemory(memoryId: string, reason?: string) {
   return api.post<ReviewRejectResult>(
     `/v1/admin/review/${encodeURIComponent(memoryId)}/reject`,
-    { reason },
+    reason ? { reason } : {},
   )
 }
 

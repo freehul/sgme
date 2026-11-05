@@ -74,11 +74,13 @@ function releaseUrl(v: string): string {
 const logLevel = ref('')
 const logSource = ref('')
 
+// 展示名对齐 sgme/engine/stage_map.py（L2 提取 / L3 裁决 / 遗留场景聚合）
 const STAGE_LABEL: Record<string, string> = {
-  l1_extraction: 'L1 抽取',
-  l1_conflict: 'L1.5 冲突提炼',
-  l2_scene: 'L2 场景',
-  tier0_summary: 'Tier0 摘要',
+  l1_extraction: 'L2 提取',
+  l1_conflict: 'L3 裁决',
+  l2_scene: '遗留场景聚合',
+  // D-79（2026-11-05）：Tier0 已砍，仅用于历史 refine_runs 行展示（生产 2 万+ 条）
+  tier0_summary: '用户画像（历史）',
 }
 const RUN_STATUS_LABEL: Record<string, string> = {
   running: '运行中',
@@ -116,10 +118,10 @@ const pipelineStages = computed(() => {
   if (!s) return []
   const max = Math.max(s.raw_files.total, 1)
   return [
-    { label: 'L0 原始待提炼', value: `${s.raw_files.new} 条`, pct: (s.raw_files.new / max) * 100, color: 'var(--brand)' },
-    { label: 'L1 提炼成功', value: `${s.raw_files.refined} 条`, pct: (s.raw_files.refined / max) * 100, color: '#6366F1' },
-    { label: 'L1.5 冲突/失败', value: `${s.raw_files.error} 条`, pct: (s.raw_files.error / max) * 100, color: '#F59E0B' },
-    { label: 'L2 场景', value: `${s.dimension_distribution.length} 维度`, pct: 0, color: '#10B981' },
+    { label: 'L1 捕获/待提炼', value: `${s.raw_files.new} 条`, pct: (s.raw_files.new / max) * 100, color: 'var(--brand)' },
+    { label: 'L2 提取成功', value: `${s.raw_files.refined} 条`, pct: (s.raw_files.refined / max) * 100, color: '#6366F1' },
+    { label: 'L3 裁决/失败', value: `${s.raw_files.error} 条`, pct: (s.raw_files.error / max) * 100, color: '#F59E0B' },
+    { label: 'L2 提取维度数', value: `${s.dimension_distribution.length} 维度`, pct: 0, color: '#10B981' },
   ]
 })
 
