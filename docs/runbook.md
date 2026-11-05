@@ -433,6 +433,17 @@ lsof -i :9910; kill -9 <pid>
 - 灾备（新机/数据目录丢失）：恢复快照 + `config/.env` → 逐 agent 重签发 `POST /v1/admin/agents/register` → 各机 `/v1/health` + append/search 回环 → 名册核对 `GET /v1/admin/agents`。
 - `data/agent_keys.json` 含明文访问凭据（高敏感），不纳入内部快照链；整目录备份会连带复制，存放面自行评估。
 
+### 7.11 首链熔断（降级保护）与心跳降噪
+
+- **症状**：首链（agnes）长时间不可用时，提炼会**静默降级**到付费备用模型（deepseek）。2026-11-05 实测单日 975 次降级，事后才从 `refine_runs.provider` 看出来。
+- **机制**（`llm.yaml` → `rules.primary_guard`，出厂默认关闭，生产已开）：
+  - 首链连续失败 `failure_threshold`（默认 3）次 → 熔断 `cooldown_minutes`（默认 30）分钟；
+  - 熔断期内**不做任何降级**（也不走 rule 丢弃）：跳过提炼，文件保持 `status=new`、不计 `fail_count`，冷却后自动重试（数据不丢）；
+  - 每次熔断**打开**发一条 `anomaly_warn`（`source=llm_primary`，payload 含 provider/连续失败次数/冷却/最后错误）；恢复后首链成功自动解除。
+- **观测**：`refine_runs.provider` 按小时分布（正常应全为 agnes；持续 deepseek = 首链异常）；`signal_events` 中 `source='llm_primary'` = 熔断事件，`source='refine_cost'` = 降级告警（每小时至多 1 条）。
+- **心跳降噪**：`/v1/health` 与心跳的 LLM 探测改为**连续 `health_fail_threshold`（默认 2）次失败**才判不可用，单次网络抖动不再产 `anomaly_warn`。
+- **手动恢复**：不想等冷却 → 重启容器（清空进程内熔断状态）；降级链与守卫配置见 `llm.yaml` / `providers.yaml`。
+
 ---
 
 ## 8. 升级与回滚
