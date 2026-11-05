@@ -60,6 +60,8 @@ class AppendRequest(BaseModel):
 
 class InjectRequest(BaseModel):
     mode: str | None = None
+    # D-49（2026-11-05）：注入预算（token 估算）——显式传入且超限时按
+    # core > 模板 section > persona_block 裁剪；不传（None）= 不裁剪，行为完全不变
     max_tokens: int | None = None
     custom_filter: dict | None = None
     # D-72：可选会话历史（时间正序 {role, content}）——传入才判冷场并附加修复提示，
@@ -143,6 +145,8 @@ def inject_memories(
     v0.7：业务逻辑已下沉 ``sgme.operations.inject``，本函数只做协议翻译。
     T-252：按鉴权 key 反查请求方 agent_id（与 search 路由同款反查）→ 传 caller，
     供记忆调用统计（source='inject'）记录；未注册 key → None（操作层回落 unknown）。
+    D-49（2026-11-05）：max_tokens 不再「收而不用」——显式透传操作层做预算门控
+    （缺省 None → 不裁剪，向后兼容）。
     """
     cfg = request.app.state.cfg
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
@@ -158,6 +162,8 @@ def inject_memories(
         # D-72：历史/修补状态仅在请求体显式携带时透传（缺省 None/False → 行为不变）
         history=payload.history,
         already_repaired=payload.already_repaired,
+        # D-49：注入预算门控（缺省 None → 不裁剪，行为完全不变）
+        max_tokens=payload.max_tokens,
     )
 
 

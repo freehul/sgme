@@ -2,16 +2,23 @@
 
 - query_section: 维度过滤(AND/any) + TTL + time_window + 默认排序
 - build_inject_blocks: 拼装 blocks[] + stats
+- apply_inject_budget: 注入预算门控（D-49）——core > section > persona 三级裁剪
 - Tier0 画像摘要已于 D-79 砍除（2026-11-05）；画像由 core 记忆卡承担
 """
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sgme.data import memory_dao
+
+# 单条记忆 token 估算口径唯一真源（与模板校验 validate_template 同源，勿另立常量）
+from sgme.profile.template import AVG_ITEM_TOKENS
+
+logger = logging.getLogger("sgme.profile.inject")
 
 
 def _relative_time(updated_at: str | None) -> str | None:
@@ -116,7 +123,7 @@ def _default_sort(dimensions: list[dict], section_dims: list[str]) -> str:
 def build_inject_blocks(
     template: dict,
     section_results: list[list[dict]],
-    avg_item_tokens: int = 30,
+    avg_item_tokens: int = AVG_ITEM_TOKENS,
 ) -> dict:
     """拼装注入响应：{"blocks":[...], "stats":{...}}。
 
@@ -177,6 +184,115 @@ def build_inject_blocks(
             "tokens_est": total_items * avg_item_tokens,
         },
     }
+
+
+# ---------- 注入预算门控（D-49，2026-11-05） ----------
+
+# 不参与 section 裁剪的附加块 kind：core 永不裁剪；persona 最先整块丢弃；
+# 锚点/回指/冷场修复块沿用各自独立预算（D-49 只约束 core > section > persona 三段）。
+NON_SECTION_KINDS = frozenset({
+    "core_cards",        # core 记忆卡（D-79）——永不裁剪
+    "persona",           # 性格参考块（D-48）——最先丢弃
+    "anchor",            # 长期锚点块（D-52）——独立预算
+    "last_mentions",     # 记忆回指块（D-70）——独立预算
+    "coldstart_repair",  # 冷场修复提示块（D-72）——提示性块
+})
+
+
+def is_section_block(block: dict) -> bool:
+    """模板 section 块判定：build_inject_blocks 产出的块**不带 kind**。"""
+    return block.get("kind") not in NON_SECTION_KINDS
+
+
+def estimate_tokens(response: dict) -> int:
+    """按现网口径重算注入 token 估算（不新造公式）。
+
+    - 模板 section 块：条数 × AVG_ITEM_TOKENS（与模板校验 validate_template 同源）
+    - core 块：core_cards.build_core_block 给出的 tokens（中文 1.5 字/token + 8）
+    - persona 块：persona_block.build_persona_block 给出的 tokens（每条 25）
+    锚点/回指/冷场块不计入本口径（与既有 build_inject_blocks 埋点一致）。
+    """
+    stats = response.get("stats") or {}
+    total = sum(
+        len(b.get("items") or [])
+        for b in response.get("blocks") or []
+        if is_section_block(b)
+    ) * AVG_ITEM_TOKENS
+    if stats.get("core_present"):
+        total += int(stats.get("core_tokens") or 0)
+    if stats.get("persona_present"):
+        total += int(stats.get("persona_tokens") or 0)
+    return int(total)
+
+
+def apply_inject_budget(response: dict, max_tokens: int | None) -> dict:
+    """注入预算门控（D-49）：超限按 core > 模板 section > persona_block 裁剪。
+
+    - max_tokens 为 None → 原样返回：不传预算的调用方行为**完全不变**。
+    - core 块永不裁剪；persona 块先**整块丢弃**；仍超限再从最后一个 section 块
+      尾部逐条丢 item（section 顺序即模板优先级，靠前的更保真）。
+    - 裁后按现网口径重算 stats.tokens_est，过程如实写进 stats：
+      budget_max_tokens / budget_tokens_before / budget_trimmed /
+      persona_dropped / dropped_items / budget_unmet。
+    - 极端情形（core 自身就超预算）不硬裁，置 budget_unmet=True 诚实标注。
+
+    非正数预算按 0 处理（只保留 core）——接口契约承诺的「按预算注入」不静默失效。
+    """
+    if max_tokens is None:
+        return response
+    budget = max(0, int(max_tokens))
+    stats = response.setdefault("stats", {})
+    tokens_before = int(stats.get("tokens_est") or 0)
+    stats["budget_max_tokens"] = budget
+    stats["budget_tokens_before"] = tokens_before
+
+    blocks = response.setdefault("blocks", [])
+    dropped_items = 0
+    persona_dropped = False
+    if tokens_before > budget:
+        # ① persona_block 先整块丢（优先级最低；不留空壳占位）
+        if stats.get("persona_present"):
+            for idx, block in enumerate(blocks):
+                if block.get("kind") == "persona":
+                    blocks.pop(idx)
+                    break
+            stats["persona_present"] = False
+            persona_dropped = True
+        # ② 模板 section 从最后一个块往前、每个块从尾部逐条丢 item
+        tokens = estimate_tokens(response)
+        if tokens > budget:
+            for block in reversed([b for b in blocks if is_section_block(b)]):
+                items = block.get("items") or []
+                while items and tokens > budget:
+                    items.pop()
+                    tokens -= AVG_ITEM_TOKENS
+                    dropped_items += 1
+                block["items"] = items
+                block["present"] = bool(items)  # blocks 与 items 必须一致
+                if tokens <= budget:
+                    break
+
+    # 裁后重算：tokens_est 必须与最终 blocks 一致（不沿用裁剪前的旧值）
+    stats["tokens_est"] = estimate_tokens(response)
+    stats["budget_trimmed"] = bool(persona_dropped or dropped_items)
+    stats["persona_dropped"] = persona_dropped
+    stats["dropped_items"] = dropped_items
+    stats["budget_unmet"] = stats["tokens_est"] > budget
+    # D-47 同款纪律：裁剪不许静默省略——note 写明裁了什么、去哪里取全文
+    if stats["budget_trimmed"] or stats["budget_unmet"]:
+        parts = [
+            f"注入预算裁剪：max_tokens={budget}，",
+            f"tokens {tokens_before}→{stats['tokens_est']}，",
+            f"丢弃 section 条目 {dropped_items} 条",
+        ]
+        if persona_dropped:
+            parts.append("，persona 块已整块丢弃")
+        if stats["budget_unmet"]:
+            parts.append("；core 块超出预算未裁（budget_unmet）")
+        parts.append("；被裁内容可按需经 /v1/search 检索全文")
+        current = str(stats.get("note") or "").strip()
+        stats["note"] = (current + "\n" + "".join(parts)).strip()
+    return response
 
 
 # ---------- 锚点块（D-52 档 2/3）----------

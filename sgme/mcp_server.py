@@ -858,12 +858,19 @@ def build_mcp_server():
     @tool
     def inject(
         mode: str = "daily",
-        max_tokens: int = 800,
+        # D-49（2026-11-05）：注入预算（token 估算）。缺省 None = 不裁剪——
+        # 与 HTTP /v1/inject 同语义（此前声明 800 却从未传下去，属「收而不用」缺陷）。
+        # 显式传入且超限时按 core > 模板 section > persona_block 裁剪。
+        max_tokens: int | None = None,
         history: list[dict] | None = None,
         already_repaired: bool = False,
         ctx: Context | None = None,
     ) -> str:
         """记忆注入：按模式模板查询记忆池，返回注入块（画像视图）。
+
+        D-49 注入预算：max_tokens 显式传入且 stats.tokens_est 超限时，按
+        core > 模板 section > persona_block 裁剪（core 永不裁、persona 先丢、
+        section 从最后一个块尾部丢 item）；不传（None）= 不裁剪，行为完全不变。
 
         D-72 冷场修复：MCP 协议只透传工具参数、**不带会话消息上下文**，
         因此 history 必须由调用方显式传入（时间正序 [{role, content}]）。
@@ -885,6 +892,8 @@ def build_mcp_server():
             caller=_usage_caller(ctx),
             history=history,
             already_repaired=already_repaired,
+            # D-49：预算门控透传（缺省 None → 不裁剪，与 HTTP 同语义）
+            max_tokens=max_tokens,
         )
         return json.dumps(data, ensure_ascii=False)
 

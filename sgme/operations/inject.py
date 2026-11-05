@@ -34,6 +34,14 @@ D-72（2.0 对话冷场修复接线）：``inject`` 增加**可选** ``history``
 不传 history → 响应与接线前逐字段一致（向后兼容）；engine 在此只用于纯函数判断，
 不读写任何库。
 
+D-49（2.0 注入预算门控，2026-11-05）：inject 增加**可选** max_tokens——
+显式传入且 stats.tokens_est 超限时，按既定优先级 core > 模板 section >
+persona_block 裁剪（core 永不裁、persona 先丢、section 从最后一个块尾部丢 item），
+裁后重算 tokens_est 并把 budget_* 字段写进 stats；不传（None）→ 行为完全不变。
+
+E7（2026-11-05，去重计量）：跨 section 去重 _dedupe_sections 的丢弃条数不再丢弃——
+写入 stats.dedupe_dropped 并打一行 INFO 日志，供去重前后 token 对比。
+
 投影函数说明：HTTP 与 MCP 两端对注入响应的历史契约形态**本就一致**
 （路由原样返回 response，MCP 直接 json.dumps(response)），因此按
 operations/__init__.py 约定**不写** http_payload / mcp_payload，两端直接使用 ``data``。
@@ -96,6 +104,34 @@ def _dedupe_sections(section_results: list[list[dict]]) -> tuple[list[list[dict]
             keep.append(r)
         out.append(keep)
     return out, dropped
+
+
+def _log_dedupe(dropped: int, kept: int, sections: int) -> None:
+    """E7（2026-11-05）：注入去重计量——每次注入打一行 INFO，供前后对比。
+
+    dropped 是跨 section 归一化去重丢弃条数，与 stats.dedupe_dropped 同口径；
+    注入每轮一次、只多一行日志，INFO 级保留便于线上观察（此前 _dupe_dropped 被丢弃）。
+    """
+    logger.info(
+        "注入去重：丢弃 %d 条 / 保留 %d 条（sections=%d，含跨 section 同文）",
+        dropped, kept, sections,
+    )
+
+
+def _log_budget(response: dict[str, Any]) -> None:
+    """D-49：预算裁剪/未达标时打一行 INFO（未触发不产日志，避免噪声）。"""
+    stats = response.get("stats") or {}
+    if stats.get("budget_trimmed") or stats.get("budget_unmet"):
+        logger.info(
+            "注入预算：max_tokens=%s, tokens %s→%s, persona_dropped=%s, "
+            "dropped_items=%s, budget_unmet=%s",
+            stats.get("budget_max_tokens"),
+            stats.get("budget_tokens_before"),
+            stats.get("tokens_est"),
+            stats.get("persona_dropped"),
+            stats.get("dropped_items"),
+            stats.get("budget_unmet"),
+        )
 
 
 def _read_filters(cfg: dict[str, Any]) -> dict[str, bool]:
@@ -305,10 +341,15 @@ def _attach_persona_block(
     if not info:
         response.setdefault("stats", {})["persona_present"] = False
         return response
-    response.setdefault("blocks", []).append(info["block"])
+    # D-49（2026-11-05）：块打 kind 标记 + 记 tokens——预算门控据此识别并整块丢弃
+    # 本块；tokens 直接沿用 persona_block 的估算结果（每条 25），不在此另立公式。
+    block = dict(info["block"])
+    block["kind"] = "persona"
+    response.setdefault("blocks", []).append(block)
     stats = response.setdefault("stats", {})
     stats["persona_present"] = True
-    stats["tokens_est"] = int(stats.get("tokens_est", 0)) + int(info.get("tokens", 0))
+    stats["persona_tokens"] = int(info.get("tokens", 0))
+    stats["tokens_est"] = int(stats.get("tokens_est", 0)) + stats["persona_tokens"]
     return response
 
 
@@ -320,6 +361,7 @@ def inject(
     caller: str | None = None,
     history: list[dict[str, Any]] | None = None,
     already_repaired: bool = False,
+    max_tokens: int | None = None,
 ) -> OperationResult:
     """记忆注入：mode 模板查询 或 custom_filter 自定义查询 → blocks。
 
@@ -341,11 +383,17 @@ def inject(
             不传（None/空）→ 行为与接线前完全一致。
         already_repaired: D-72 修补闸入参——调用方已消费过本次冷场修复提示时传 True，
             避免同一信号重复占预算。
+        max_tokens: D-49 注入预算（token 口径见 profile.inject.estimate_tokens）。
+            显式传入且超限时按 core > 模板 section > persona_block 裁剪：core 永不裁，
+            persona 先整块丢，section 从最后一个块尾部逐条丢 item；None（缺省）→
+            不裁剪，行为与接线前完全一致（向后兼容）。非正数按 0 处理（只保留 core）。
 
     Returns:
         OperationResult(ok=True)，``data`` 为注入响应（HTTP/MCP 共用形态）：
         - blocks: 注入块列表（core 记忆卡块排最前，随后各 section 块，含 present 标注）
-        - stats: {mode, queries, tokens_est, core_present}
+        - stats: {mode, queries, tokens_est, core_present, dedupe_dropped, ...}
+          （传 max_tokens 时另有 budget_max_tokens / budget_tokens_before /
+          budget_trimmed / persona_dropped / dropped_items / budget_unmet）
         - （Tier0 摘要字段已于 D-79 砍除，2026-11-05）
 
         失败态（错误码与文案照 v0.6 路由）：
@@ -375,7 +423,13 @@ def inject(
                 for s in tmpl.get("sections", [])
             ]
             # 2026-11-05：跨 section 内容去重（此前缺失，同义记忆会被多个维度各塞一次）
-            section_results, _dupe_dropped = _dedupe_sections(section_results)
+            section_results, dupe_dropped = _dedupe_sections(section_results)
+            # E7（2026-11-05）：去重条数进 stats + INFO 日志（此前 _dupe_dropped 被丢弃）
+            _log_dedupe(
+                dupe_dropped,
+                sum(len(sr) for sr in section_results),
+                len(section_results),
+            )
             # T-252：记忆调用统计（双源之二：画像注入）——section_results 即注入集
             # （T-203 G1 在案）；跨 section 去重由 DAO 兜底（同批一次 upsert）。
             record_memory_usage(
@@ -386,6 +440,8 @@ def inject(
             )
             # D-79（2026-11-05）：Tier0 摘要整体砍除——画像由 core 记忆卡承担
             response = inject_mod.build_inject_blocks(tmpl, section_results)
+            # E7：跨 section 去重条数（0 也记——无重复是正常态，字段恒定便于观察）
+            response.setdefault("stats", {})["dedupe_dropped"] = dupe_dropped
             # D-79（2026-11-05）：core 记忆卡——每次必注，排最前（稳定前缀利于缓存）。
             # 零 LLM（纯表查询 + 模板拼接）；空卡不渲染、不占位。
             core_block = core_cards_mod.build_core_block(mem_conn)
@@ -393,7 +449,9 @@ def inject(
                 response.setdefault("blocks", []).insert(0, core_block["block"])
                 stats = response.setdefault("stats", {})
                 stats["core_present"] = True
-                stats["tokens_est"] = int(stats.get("tokens_est") or 0) + core_block["tokens"]
+                # D-49：core 的 tokens 单独记账——预算裁剪时按同一口径重算（core 永不裁）
+                stats["core_tokens"] = int(core_block["tokens"])
+                stats["tokens_est"] = int(stats.get("tokens_est") or 0) + stats["core_tokens"]
             response = _attach_key_missing_note(_attach_empty_note(response), cfg)
             if fallback_mode:
                 # 回落提示最后追加（_attach_empty_note 会整体覆盖 note，须先走既有链路）
@@ -406,6 +464,10 @@ def inject(
             response = _attach_persona_block(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（不参与空注入/回落 note 判断）
             response = _attach_coldstart_repair(response, history, already_repaired)
+            # D-49（2026-11-05）：预算门控最后执行——core/section/persona 三段已齐备；
+            # max_tokens=None 时原样返回（不传预算的调用方行为完全不变，向后兼容）
+            response = inject_mod.apply_inject_budget(response, max_tokens)
+            _log_budget(response)
             return OperationResult.succeed(response)
 
         # ---------- 分支 2：custom_filter 自定义查询 ----------
@@ -435,8 +497,10 @@ def inject(
                 routes=("memory",),
             )
             # 2026-11-05：与 mode 分支同口径去重（自定义查询同样可能命中同义记忆）
-            results, _dupe_dropped = _dedupe_sections([results])
+            results, dupe_dropped = _dedupe_sections([results])
             results = results[0]
+            # E7：与 mode 分支同口径计量（单 section，跨 section 去重通常为 0）
+            _log_dedupe(dupe_dropped, len(results), 1)
             # 记录注入统计（best-effort）
             from sgme.data.memory_stats_dao import record_inject
             for r in results:
@@ -455,6 +519,7 @@ def inject(
             }
             response = inject_mod.build_inject_blocks(tmpl, [results])
             response["stats"]["mode"] = "custom"
+            response["stats"]["dedupe_dropped"] = dupe_dropped
             response = _attach_key_missing_note(_attach_empty_note(response), cfg)
             # D-70：记忆回指块（默认 off）
             response = _attach_last_mentions(response, mem_conn, cfg)
@@ -464,6 +529,9 @@ def inject(
             response = _attach_persona_block(response, mem_conn, cfg)
             # D-72：冷场修复块最后追加（同上）
             response = _attach_coldstart_repair(response, history, already_repaired)
+            # D-49：与 mode 分支同款预算门控（custom 分支无 core 块，persona/section 照裁）
+            response = inject_mod.apply_inject_budget(response, max_tokens)
+            _log_budget(response)
             return OperationResult.succeed(response)
 
         # 显式传空值（mode=""/custom_filter={} 等非缺省态）→ 参数非法（照 v0.6 路由兜底文案；
