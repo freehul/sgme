@@ -44,6 +44,9 @@
 # 前端构建产物与依赖（ui/ 源码入 git，dist/node_modules 不入；构建命令：cd ui && npm run build）
 /ui/node_modules/
 /ui/dist/
+
+# 适配器打包产物（dsh-sgme *.tgz 由 npm pack / upgrade_dsh_host 生成，可重建，不入 git）
+*.tgz
 __pycache__/
 *.pyc
 .venv/
