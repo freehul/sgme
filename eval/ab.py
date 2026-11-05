@@ -27,13 +27,13 @@ def compare_reports(
       {
         "report_a": str,  # 路径/标识
         "report_b": str,
-        "l1": {
+        "l2_extraction": {
           "dimension_micro_f1": {"a": float, "b": float, "delta": float},
           "dimension_micro_precision": {...},
           ...
           "per_dimension_f1": {dim_id: {"a": float, "b": float, "delta": float}, ...},
         },
-        "l2": {
+        "scene_aggregate": {
           "section_hit_rate": {"a": float, "b": float, "delta": float},
           ...
           "profile_quality": {...},
@@ -47,16 +47,16 @@ def compare_reports(
     label_a = _label_of(report_a)
     label_b = _label_of(report_b)
 
-    l1_a = data_a.get("l1") or {}
-    l1_b = data_b.get("l1") or {}
-    l2_a = data_a.get("l2") or {}
-    l2_b = data_b.get("l2") or {}
+    l1_a = data_a.get("l2_extraction") or {}
+    l1_b = data_b.get("l2_extraction") or {}
+    l2_a = data_a.get("scene_aggregate") or {}
+    l2_b = data_b.get("scene_aggregate") or {}
 
     diff: dict[str, Any] = {
         "report_a": label_a,
         "report_b": label_b,
-        "l1": _diff_l1(l1_a, l1_b),
-        "l2": _diff_l2(l2_a, l2_b),
+        "l2_extraction": _diff_l1(l1_a, l1_b),
+        "scene_aggregate": _diff_l2(l2_a, l2_b),
     }
 
     return diff
@@ -171,7 +171,7 @@ def format_diff_markdown(diff: dict) -> str:
     lines.append("| 指标 | A | B | Δ |")
     lines.append("|------|---|---|---|")
 
-    l1 = diff.get("l1", {})
+    l2_extraction = diff.get("l2_extraction", {})
     l1_labels = {
         "dimension_micro_f1": "维度微平均 F1",
         "dimension_micro_precision": "维度微平均 Precision",
@@ -183,7 +183,7 @@ def format_diff_markdown(diff: dict) -> str:
     }
 
     for field, label in l1_labels.items():
-        d = l1.get(field, {})
+        d = l2_extraction.get(field, {})
         a_val = d.get("a", "-")
         b_val = d.get("b", "-")
         delta = d.get("delta", "-")
@@ -199,7 +199,7 @@ def format_diff_markdown(diff: dict) -> str:
     lines.append("| 指标 | A | B | Δ |")
     lines.append("|------|---|---|---|")
 
-    l2 = diff.get("l2", {})
+    scene_aggregate = diff.get("scene_aggregate", {})
     l2_labels = {
         "section_hit_rate": "Section 命中率",
         "section_misentry_rate": "Section 误入率",
@@ -208,7 +208,7 @@ def format_diff_markdown(diff: dict) -> str:
     }
 
     for field, label in l2_labels.items():
-        d = l2.get(field, {})
+        d = scene_aggregate.get(field, {})
         a_val = d.get("a", "-")
         b_val = d.get("b", "-")
         delta = d.get("delta", "-")

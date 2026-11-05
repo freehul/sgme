@@ -62,8 +62,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 S = ROOT / "sgme"
 
-# 决策全集条数（D-1～D-78，其中 D-38～D-42 五个编号保留未用）
-TOTAL_DECISIONS = 73
+# 决策全集条数（D-1～D-79，其中 D-38～D-42 五个编号保留未用；D-79 core 记忆卡待施工）
+TOTAL_DECISIONS = 74
 
 # 常用文件（断言按需取用；文件不存在 → 该断言判失败，并给出预期路径）
 FILES = {

@@ -16,7 +16,7 @@ if not key:
 body = json.dumps({
     "title": "T-97 L2 场景聚合向量预筛 + 场景超限治理（active 276 > max 200 红警）",
     "project_id": "sgme",
-    "content": "L2 只喂 50 个场景摘要给 LLM，merge 收敛跟不上 create，场景超限触发红警；对齐 T-25 l15.prescreen 给 L2 加场景级向量预筛（Top-K 召回相似场景再裁决）",
+    "content": "L2 只喂 50 个场景摘要给 LLM，merge 收敛跟不上 create，场景超限触发红警；对齐 T-25 l3_adjudicate.prescreen 给 L2 加场景级向量预筛（Top-K 召回相似场景再裁决）",
 }).encode('utf-8')
 
 req = urllib.request.Request(

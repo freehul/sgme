@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import re, sys, json
 sys.path.insert(0, '.')
-from sgme.engine.l2 import _parse_json_lenient
+from sgme.engine.scene_aggregate import _parse_json_lenient
 
 t = '[{"action": "create", "target_scene_id": "a", "merged_content": "1", "reason": "x"}\n{"action": "create", "target_scene_id": "b", "merged_content": "2", "reason": "y"}]'
 

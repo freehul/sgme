@@ -5,7 +5,7 @@ import sys, time, json
 sys.path.insert(0, '.')
 from sgme.config import load_config
 cfg = load_config()
-from sgme.engine import l1, prune
+from sgme.engine import l2_extraction, prune
 from sgme.raw import store
 
 file_id = '20260806_103007_b7304e'
@@ -64,7 +64,7 @@ for size in sizes:
         for ci, chunk in enumerate(chunks):
             conv = fmt_turn(chunk)
             try:
-                raw_mems, provider, meta = l1.extract_l1(
+                raw_mems, provider, meta = l2_extraction.extract_memories(
                     conv, cfg['dimensions'], cfg['llm'], client=None,
                     chunk_size=size, overlap=1200, bucket_ctx=None, mem_conn=None,
                 )

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """scripts/persona_predictions.py：D-25 标注集预测生成（调用真实提炼链，需额度）。
 
-把标注集的 conversation 逐条送进 SGME 的 L1 提取链（l1.extract_l1，含提示词渲染、
+把标注集的 conversation 逐条送进 SGME 的 L1 提取链（l2_extraction.extract_memories，含提示词渲染、
 分块、重试、JSON 解析），产出七指标跑分所需的 predictions JSON。
 
 用法：
@@ -28,9 +28,9 @@ DEFAULT_GOLD = ROOT / "eval" / "persona" / "cases_v001_draft.yaml"
 
 
 def _predict_one(case: dict, dimensions: list[dict], llm_cfg: dict) -> dict:
-    from sgme.engine import l1
+    from sgme.engine import l2_extraction
 
-    memories, provider, meta = l1.extract_l1(
+    memories, provider, meta = l2_extraction.extract_memories(
         str(case["conversation"]), dimensions, llm_cfg,
     )
     out = []

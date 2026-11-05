@@ -5,7 +5,7 @@ import sys, time
 sys.path.insert(0, '.')
 from sgme.config import load_config
 cfg = load_config()
-from sgme.engine import l1, prune
+from sgme.engine import l2_extraction, prune
 from sgme.raw import store
 
 model = sys.argv[1] if len(sys.argv) > 1 else 'qwen/qwen3.5-9b'
@@ -64,7 +64,7 @@ for size in sizes:
     for rnd in range(3):
         t0 = time.time()
         try:
-            raw_mems, provider, meta = l1.extract_l1(
+            raw_mems, provider, meta = l2_extraction.extract_memories(
                 convs, cfg['dimensions'], cfg['llm'], client=None,
                 chunk_size=size, overlap=1600, bucket_ctx=None, mem_conn=None,
             )

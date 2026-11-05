@@ -1,5 +1,5 @@
 # SGME 人格/角色标注集 v001-draft（D-25 九类 35 条 · 初稿 35 条）
-# 说明：由 agent 代造初稿（D-25 四轮修订），**未经用户抽查**；user_checked=false。
+# 说明：由 agent 代造初稿（D-25 四轮修订），**用户已于 2026-11-04 抽查通过**；user_checked=true。
 # 类别目标（合计 35）：角色互动 6 / 性格特质 6 / 关系情感 5 / 健康经历 4 /
 # 工作踩坑 3 / 纯技术反例 3 / 日常决策 3 / 粗日期 3 / 多轮对话 2。
 meta:
@@ -8,7 +8,7 @@ meta:
   total: 35
   target_total: 35
   drafted_by: agent
-  user_checked: false
+  user_checked: true
   targets:
     role_interaction: 6
     personality_trait: 6
@@ -40,7 +40,7 @@ cases:
       traits: []
       causal: []
     trap: "别把角色设定/台词当用户事实；这里只记用户当下状态，不推断长期性格"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-002
     category: personality_trait
@@ -60,7 +60,7 @@ cases:
       traits: ["先计划后动手"]
       causal: []
     trap: "性格特质只写原文倾向，不要直接映射大五域；单句自述算 habit 而非结论性人格"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-003
     category: health_experience
@@ -80,7 +80,7 @@ cases:
       traits: []
       causal: []
     trap: "健康维度已并入 status（13 维注册表无 health）；别写成长期病症，只记本次检查"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-004
     category: tech_counterexample
@@ -94,7 +94,7 @@ cases:
       traits: []
       causal: []
     trap: "纯技术百科是助手自产知识，路由应为 discard/skill_candidate，绝不能进记忆层（D-67 分流护栏）"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-005
     category: daily_decision
@@ -114,7 +114,7 @@ cases:
       traits: []
       causal: []
     trap: "「不去了」是已发生决定，不是愿望；不要写成 modality=wished"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-006
     category: relationship_emotion
@@ -141,7 +141,7 @@ cases:
       traits: []
       causal: []
     trap: "主体归属：女友加班是 others，心疼是 self；不能合并成「用户加班」"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-007
     category: work_pitfall
@@ -163,7 +163,7 @@ cases:
       causal:
         - { from: "漏跑迁移", to: "线上表结构不一致", type: "cause" }
     trap: "工作踩坑要记「触发条件 + 后果」，不是只记事故；这是经验不是纯技术百科"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-008
     category: coarse_date
@@ -184,7 +184,7 @@ cases:
       traits: []
       causal: []
     trap: "粗日期必须展开成时间区间（去年夏天→2025-06..08），不能写精确日期，也不能丢弃"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-009
     category: multi_turn
@@ -206,7 +206,7 @@ cases:
       traits: []
       causal: []
     trap: "跨轮信息合并成一条完整事实（目的地+出发日+时长），不要拆成碎片或重复记"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-010
     category: role_interaction
@@ -227,7 +227,7 @@ cases:
       traits: []
       causal: []
     trap: "只记用户的请求与偏好；「管家准备燕麦粥」是角色承诺/台词，不是用户事实，不得写成用户记忆或用户习惯"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-011
     category: role_interaction
@@ -255,7 +255,7 @@ cases:
       traits: []
       causal: []
     trap: "只记用户的安排与状态；「帮你留票到七点半」是角色的安排/台词，不能当成用户的时间安排"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-012
     category: role_interaction
@@ -276,7 +276,7 @@ cases:
       traits: []
       causal: []
     trap: "只记用户的学习状态；导师讲的所有权/借用规则属助手自产知识（route 应为 discard/skill_candidate），绝不能写成用户记忆"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-013
     category: role_interaction
@@ -297,7 +297,7 @@ cases:
       traits: []
       causal: []
     trap: "只记用户的社交安排与待办；管家列的采购清单是角色台词，不是用户事实；也别把「朋友」写成用户家人"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-014
     category: role_interaction
@@ -318,7 +318,7 @@ cases:
       traits: []
       causal: []
     trap: "「考虑/先看看」是讨论中意向（certainty=discussing），不能写成已决定离职；导师给的求职建议属角色台词，不进用户记忆"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-015
     category: personality_trait
@@ -338,7 +338,7 @@ cases:
       traits: ["不喜欢临时改计划"]
       causal: []
     trap: "只写用户原文倾向（偏好按计划走），不要直接映射大五域或推断人格诊断；单句自述是习惯，不是结论性人格"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-016
     category: personality_trait
@@ -358,7 +358,7 @@ cases:
       traits: ["遇到问题先自己查"]
       causal: []
     trap: "只写原文的解决倾向；「先自己查」不等于拒绝协作，不要映射成大五域的开放性/宜人性"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-017
     category: personality_trait
@@ -378,7 +378,7 @@ cases:
       traits: ["对陌生人慢热"]
       causal: []
     trap: "只记用户自述的社交倾向；「慢热」不等于内向型人格诊断，不要直接映射大五域（如 extroversion）"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-018
     category: personality_trait
@@ -398,7 +398,7 @@ cases:
       traits: ["坚持记账"]
       causal: []
     trap: "只写用户自述的长期习惯；坚持记账不直接推出「自律/尽责性高」等人格结论"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-019
     category: personality_trait
@@ -418,7 +418,7 @@ cases:
       traits: ["周末必跑步"]
       causal: []
     trap: "条件句要保留「只要不出差」的前提，不能写成无条件每周跑步；也不要映射大五域"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-020
     category: relationship_emotion
@@ -446,7 +446,7 @@ cases:
       traits: []
       causal: []
     trap: "主体分离：学会用手机、发语音的是妈妈（others/family），不是用户；好笑/无奈才是用户自己的情绪（self/status）"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-021
     category: relationship_emotion
@@ -474,7 +474,7 @@ cases:
       traits: []
       causal: []
     trap: "借钱的是室友（others/social），不能写成用户借钱或缺钱；「为难」才是用户自己的情绪（self/status）"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-022
     category: relationship_emotion
@@ -502,7 +502,7 @@ cases:
       traits: []
       causal: []
     trap: "别把「男朋友主动道歉」写成用户道歉；关系事件记 self，但伴侣的行为/台词属 others，不得改写成用户事实"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-023
     category: relationship_emotion
@@ -530,7 +530,7 @@ cases:
       traits: []
       causal: []
     trap: "新同事完成需求是 others 的事实，不能记成用户自己完成；用户的成就感才是 self/status"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-024
     category: health_experience
@@ -551,7 +551,7 @@ cases:
       traits: []
       causal: []
     trap: "只记本次患病与恢复经过；健康维度已并入 status，不要写成慢性病或长期体质问题"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-025
     category: health_experience
@@ -572,7 +572,7 @@ cases:
       traits: []
       causal: []
     trap: "医嘱是本次术后注意事项，不是用户的长期饮食禁忌；健康归 status，不写成长期病症"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-026
     category: health_experience
@@ -600,7 +600,7 @@ cases:
       traits: []
       causal: []
     trap: "「最近老是失眠」按当下状态记为 tentative，不能上升为长期失眠症/健康诊断；昨晚睡眠与头晕是本次经历"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-027
     category: work_pitfall
@@ -622,7 +622,7 @@ cases:
       causal:
         - { from: "改配置漏同步测试环境", to: "预发结果仍是旧配置", type: "cause" }
     trap: "工作踩坑要记「触发条件（漏同步）+ 后果（排查一下午）」，不是只记事故；这是经验不是纯技术百科"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-028
     category: work_pitfall
@@ -644,7 +644,7 @@ cases:
       causal:
         - { from: "跳过代码评审", to: "合并后接口参数不一致", type: "cause" }
     trap: "工作踩坑记「触发条件（跳过评审）+ 后果（返工一晚）」，不是只记事故；这是经验不是纯技术百科"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-029
     category: tech_counterexample
@@ -658,7 +658,7 @@ cases:
       traits: []
       causal: []
     trap: "纯技术百科是助手自产知识，提问不等于用户长期技能/偏好；路由应为 discard/skill_candidate，绝不能进记忆层（D-67 分流护栏）"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-030
     category: tech_counterexample
@@ -672,7 +672,7 @@ cases:
       traits: []
       causal: []
     trap: "换一种技术问法也要守住分流：助手答案属自产知识（discard/skill_candidate），提问本身不写入用户记忆（D-67 分流护栏）"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-031
     category: daily_decision
@@ -693,7 +693,7 @@ cases:
       traits: []
       causal: []
     trap: "已发生的计划变更，不是「想看电影」的愿望；不要写成 modality=wished，也不要把未发生的事写成已发生"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-032
     category: daily_decision
@@ -714,7 +714,7 @@ cases:
       traits: []
       causal: []
     trap: "请假是已确认决定，不是打算/愿望；要看病复查的是父亲（others），不能写成用户自己看病"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-033
     category: coarse_date
@@ -736,7 +736,7 @@ cases:
       traits: []
       causal: []
     trap: "「前阵子」必须展开成时间区间（2026-09..10），不能写精确日期，也不能丢弃；设备偏好不等于长期技术栈结论"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-034
     category: coarse_date
@@ -758,7 +758,7 @@ cases:
       traits: []
       causal: []
     trap: "「上个月」展开为 2026-10 区间（含 ..），不能写精确日期，也不能把回老家写成长期居住"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 
   - id: pa-035
     category: multi_turn
@@ -780,5 +780,5 @@ cases:
       traits: []
       causal: []
     trap: "跨轮信息合并成一条完整事实（目的地+出发日+时长），不要拆碎片或重复；助手的追问不算用户事实"
-    review: { drafted_by: agent, user_checked: false }
+    review: { drafted_by: agent, user_checked: true }
 

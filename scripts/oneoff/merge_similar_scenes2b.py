@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, "/app")
 
 from sgme import config
-from sgme.engine import l2
+from sgme.engine import scene_aggregate
 from sgme.data import scene_dao
 from sgme.llm import chain as llm_chain
 
@@ -74,9 +74,9 @@ for pa, pb, sim, note in PAIRS:
         "merged_from": [a, b],
         "reason": f"相似度 {sim} 自动合并（{note}）",
     }
-    result = l2.L2Result()
+    result = scene_aggregate.SceneAggregateResult()
     try:
-        l2._apply_merge(mem_conn, action, [], result, cfg)
+        scene_aggregate._apply_merge(mem_conn, action, [], result, cfg)
         print(f"OK {pa}~{pb} ({note}): merged={result.merged}")
         done += 1
     except Exception as e:

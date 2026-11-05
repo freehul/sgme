@@ -3,7 +3,7 @@ import sys, time, json
 sys.path.insert(0, '.')
 from sgme.config import load_config
 cfg = load_config()
-from sgme.engine import l1, prune
+from sgme.engine import l2_extraction, prune
 from sgme.raw import store
 import httpx
 
@@ -14,14 +14,14 @@ def test_chunk(file_id: str, chunk_size: int, overlap: int, run: int) -> dict:
     conversation = '\n'.join(
         f'[msg#{m.seq}] {m.timestamp} {m.role}:\n  {m.content}' for m in messages
     )
-    chunks = l1.chunk_conversation(conversation, chunk_size, overlap)
+    chunks = l2_extraction.chunk_conversation(conversation, chunk_size, overlap)
     total_start = time.time()
     ok_chunks = 0
     fail_chunks = 0
     total_memories = 0
     chunk_times = []
     for ci, chunk in enumerate(chunks):
-        prompt = l1.render_l1(chunk, cfg['dimensions'])
+        prompt = l2_extraction.render_extraction(chunk, cfg['dimensions'])
         cstart = time.time()
         try:
             resp = httpx.post('http://127.0.0.1:1014/v1/chat/completions', json={

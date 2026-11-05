@@ -45,11 +45,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from eval import l15_decision_corpus as corpus  # noqa: E402
+from eval import l3_adjudicate_decision_corpus as corpus  # noqa: E402
 from sgme import config as sgme_config  # noqa: E402
 from sgme.data import db as db_mod  # noqa: E402
 from sgme.data import memory_dao  # noqa: E402
-from sgme.engine import l15 as l15_mod  # noqa: E402
+from sgme.engine import l3_adjudicate as l15_mod  # noqa: E402
 from sgme.prompts import BucketCtx  # noqa: E402
 
 #: 臂定义：名字 → 覆盖项（只写与基线不同的部分，保证「单变量」可读）
@@ -174,10 +174,10 @@ def build_cfg(arm: dict, *, embed_base_url: str, embed_model: str,
         "base_url": embed_base_url,
         "fallbacks": [],
     }
-    cfg.setdefault("l15", {}).setdefault("prescreen", {}).update(arm.get("prescreen", {}))
+    cfg.setdefault("l3_adjudicate", {}).setdefault("prescreen", {}).update(arm.get("prescreen", {}))
     # 关闭与本次对照无关的旁路（减少噪声：查重隔离、语义边写库）
     for k, v in (arm.get("l15_extra") or {}).items():
-        cfg["l15"][k] = v
+        cfg["l3_adjudicate"][k] = v
     return cfg
 
 
@@ -317,14 +317,14 @@ def probe_ranks(*, work_dir: Path, pool: list[dict], batches: list[dict],
             per_cap: dict[str, dict] = {}
             for cap in caps:
                 cfg = json.loads(json.dumps(base_cfg))
-                cfg.setdefault("l15", {})["prescreen"] = {
+                cfg.setdefault("l3_adjudicate", {})["prescreen"] = {
                     "enabled": True, "vector_top_k": cap, "dimension_top_n": cap,
                     "fallback": "skip_conflict",
                 }
                 groups, _warn = l15_mod.build_candidate_groups(
                     mem_conn, [dict(x) for x in b["new_memories"]],
                     top_k=cap, cfg=cfg,
-                    prescreen=cfg["l15"]["prescreen"], stats={},
+                    prescreen=cfg["l3_adjudicate"]["prescreen"], stats={},
                 )
                 cands = groups[0].candidates if groups else []
                 ids = [c["memory_id"] for c in cands]

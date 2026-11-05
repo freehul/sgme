@@ -56,7 +56,7 @@ def load_pairs(db_path: str, limit: int) -> list[dict]:
                   f"（脚本按只读打开，不会写库）", file=sys.stderr)
             return []
         # 维度标签要尽力带上：l3_rules 的「同维度」判据若两边都空，改口检测会恒假
-        # （l15.py:1230 注释记过这个坑），supersede 命中率会被系统性压低。
+        # （l3_adjudicate.py:1230 注释记过这个坑），supersede 命中率会被系统性压低。
         rows = conn.execute(
             """
             SELECT a.memory_id AS old_id, a.content AS old_content,

@@ -2,7 +2,7 @@
 """L2 lenient 解析测试 v2（含结构修复）"""
 import sys
 sys.path.insert(0, '.')
-from sgme.engine.l2 import parse_l2_output
+from sgme.engine.scene_aggregate import parse_scene_output
 
 cases = [
     # 1. 裸控制字符（字符串里未转义换行）
@@ -25,7 +25,7 @@ cases = [
 
 for name, t in cases:
     try:
-        r = parse_l2_output(t)
+        r = parse_scene_output(t)
         print(f'{name}: OK ({len(r)}条)')
     except Exception as e:
         print(f'{name}: FAIL {e}')

@@ -6,7 +6,7 @@
 大文件跑完。
 
 改动前必读的三条事实（2026-11-02 实测）：
-1. **单文件内逐块串行**：``engine/l1.extract_l1`` 是 for 循环，一个文件的墙钟时间
+1. **单文件内逐块串行**：``engine/l2_extraction.extract_memories`` 是 for 循环，一个文件的墙钟时间
    = 块数 × 单次调用耗时，跟并发度无关。并发只对「多文件」有意义。
 2. **节流器是进程级全局令牌桶**（``llm/provider.py::_acquire_throttle``）：所有并发
    线程共享 ``llm.yaml`` 的 ``rules.throttle.rps``。rps 太低时并发等于白搭。
@@ -96,10 +96,10 @@ def chunk_totals(file_ids: list[str]) -> dict[str, int]:
     """
     try:
         import sgme.config as C
-        from sgme.engine import l1
+        from sgme.engine import l2_extraction
         from sgme.raw import store
 
-        cs = (C.load_sgme_config().get("l1") or {}).get("chunk_size", 6000)
+        cs = (C.load_sgme_config().get("l2_extraction") or {}).get("chunk_size", 6000)
     except Exception as exc:  # noqa: BLE001
         _log(f"总块数预估跳过（{type(exc).__name__}: {exc}）")
         return {}
@@ -108,7 +108,7 @@ def chunk_totals(file_ids: list[str]) -> dict[str, int]:
         try:
             parsed = store.parse_file(fid, source_type="session")
             inc = store.extract_incremental(parsed, 0)
-            out[fid] = len(l1.chunk_messages_by_turn(inc, chunk_size=cs))
+            out[fid] = len(l2_extraction.chunk_messages_by_turn(inc, chunk_size=cs))
         except Exception as exc:  # noqa: BLE001
             _log(f"总块数预估失败 {fid[:8]}: {type(exc).__name__}: {exc}")
     return out

@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # 必须先 monkeypatch L1/L1.5 再 import server（server import 时不调 LLM）
-from sgme.engine import l1, l15  # noqa: E402
+from sgme.engine import l2_extraction, l3_adjudicate  # noqa: E402
 from sgme.llm import provider as llm_provider  # noqa: E402
 
 # ---------- mock LLM ----------
@@ -52,15 +52,15 @@ _L15_OUTPUT = json.dumps([
 
 def _install_mock_llm() -> None:
     """安装 mock L1 + L1.5（绕过真实 LLM 调用）。"""
-    # L1: 直接替换 extract_l1
-    _orig_extract_l1 = l1.extract_l1
+    # L1: 直接替换 extract_memories
+    _orig_extract_memories = l2_extraction.extract_memories
 
-    def fake_extract_l1(conversation, dimensions, llm_cfg, client=None, **kwargs):
+    def fake_extract_memories(conversation, dimensions, llm_cfg, client=None, **kwargs):
         import json as _json
         memories = _json.loads(_L1_OUTPUT)
         return memories, "mock", {"stage": "l1_extraction", "version": "working-mock", "variant": None}
 
-    l1.extract_l1 = fake_extract_l1
+    l2_extraction.extract_memories = fake_extract_memories
 
     # L1.5: 替换 call_with_fallback 返回 L1.5 裁决
     import sgme.llm.chain as llm_chain
@@ -71,7 +71,7 @@ def _install_mock_llm() -> None:
         # 根据 prompt 内容判断是 L1 还是 L1.5
         if "{{new_memories}}" in prompt or "新记忆#" in prompt or "[新记忆#" in prompt:
             return _L15_OUTPUT, "mock"
-        # L1 已被 fake_extract_l1 拦截，不会走到这里
+        # L1 已被 fake_extract_memories 拦截，不会走到这里
         return _L1_OUTPUT, "mock"
 
     llm_chain.call_with_fallback = fake_call_with_fallback
@@ -148,8 +148,8 @@ def main() -> int:
     body = r.json()
     print(f"[3] refine ok: status={body['status']} "
           f"memories_count={body['memories_count']} "
-          f"l15_stored={body['l15']['stored']} "
-          f"fallback={body['l15']['fallback']}")
+          f"l15_stored={body['l3_adjudicate']['stored']} "
+          f"fallback={body['l3_adjudicate']['fallback']}")
     assert body["status"] == "refined"
     assert body["memories_count"] >= 1
 

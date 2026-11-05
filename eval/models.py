@@ -285,9 +285,9 @@ class EvalResult:
     run_id: str = ""
     timestamp: str = ""
     prompt_versions: dict = field(default_factory=dict)
-    l1: Optional[L1Metrics] = None
-    l2: Optional[L2Metrics] = None
-    l15: Optional[L15Metrics] = None
+    l2_extraction: Optional[L1Metrics] = None
+    scene_aggregate: Optional[L2Metrics] = None
+    l3_adjudicate: Optional[L15Metrics] = None
     rrf: Optional[RRFMetrics] = None
     inject: Optional[InjectMetrics] = None   # T-20 注入效果（聚合）
     per_case: list[CaseResult] = field(default_factory=list)

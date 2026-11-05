@@ -1,7 +1,7 @@
 """第二轮合并：人工挑选的语义相近场景对（0.75-0.80 区间）。
 
 容器内执行：docker exec sgme python3 /data/merge_similar_scenes2.py
-用标题模糊匹配定位场景，走 l2._apply_merge（旧场景 archived + 新场景向量回填）。
+用标题模糊匹配定位场景，走 scene_aggregate._apply_merge（旧场景 archived + 新场景向量回填）。
 """
 import sqlite3
 import sys
@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, "/app")
 
 from sgme import config
-from sgme.engine import l2
+from sgme.engine import scene_aggregate
 from sgme.data import scene_dao
 from sgme.llm import chain as llm_chain
 
@@ -77,9 +77,9 @@ for kw_a, kw_b, sim, note in PAIRS:
         "merged_from": [a, b],
         "reason": f"相似度 {sim} 自动合并（{note}）",
     }
-    result = l2.L2Result()
+    result = scene_aggregate.SceneAggregateResult()
     try:
-        l2._apply_merge(mem_conn, action, [], result, cfg)
+        scene_aggregate._apply_merge(mem_conn, action, [], result, cfg)
         print(f"OK {kw_a} <=> {kw_b}: merged={result.merged}")
         done += 1
     except Exception as e:

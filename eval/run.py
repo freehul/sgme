@@ -63,8 +63,8 @@ def main() -> None:
     parser.add_argument(
         "--stages",
         type=str,
-        default="l1",
-        help="评测阶段（逗号分隔：l1,l15,l2,rrf；默认 l1）",
+        default="l2_extraction",
+        help="评测阶段（逗号分隔：l2_extraction,l3_adjudicate,scene_aggregate,rrf；默认 l2_extraction）",
     )
     parser.add_argument(
         "--rrf-gt-mode",
@@ -248,8 +248,8 @@ def _run_baseline(args: argparse.Namespace) -> None:
     print("\n" + "=" * 60)
     print("评测完成")
     print(f"  Run ID: {result.run_id}")
-    print(f"  L1 F1: {result.l1.dimension_micro_f1:.4f}" if result.l1 else "  L1: N/A")
-    print(f"  Strict Match: {result.l1.strict_match_rate:.4f}" if result.l1 else "")
+    print(f"  L1 F1: {result.l2_extraction.dimension_micro_f1:.4f}" if result.l2_extraction else "  L1: N/A")
+    print(f"  Strict Match: {result.l2_extraction.strict_match_rate:.4f}" if result.l2_extraction else "")
 
     # RRF 摘要行（诚实：无区分度时明说不给推荐值）
     rrf = result.rrf
@@ -285,9 +285,9 @@ def _run_baseline(args: argparse.Namespace) -> None:
     print(f"  报告: {md_path}")
     print("=" * 60)
 
-    # 退出码：P0 门槛只对提炼阶段（l1/l15/l2）生效。
+    # 退出码：P0 门槛只对提炼阶段（l2_extraction/l3_adjudicate/scene_aggregate）生效。
     # 纯 rrf 运行不产出 L1/L2 指标，用 P0 判退出码会恒定失败，语义错误。
-    if not any(s in stages for s in ("l1", "l15", "l2")):
+    if not any(s in stages for s in ("l2_extraction", "l3_adjudicate", "scene_aggregate")):
         logger.info("stages=%s 不含提炼阶段，P0 门槛不适用，退出码 0", stages)
         sys.exit(0)
 

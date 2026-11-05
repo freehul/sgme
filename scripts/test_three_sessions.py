@@ -7,7 +7,7 @@ import sys, time
 sys.path.insert(0, '.')
 from sgme.config import load_config
 cfg = load_config()
-from sgme.engine import l1, prune
+from sgme.engine import l2_extraction, prune
 from sgme.raw import store
 
 FILE_IDS = ['20260806_101032_cc30e6', '20260806_110258_26076e', '20260806_103007_b7304e']
@@ -30,7 +30,7 @@ for file_id in FILE_IDS:
     messages = prune.prune_messages(parsed.messages)
     pruned_chars = sum(len(m.content) for m in messages)
 
-    chunks = l1.chunk_messages_by_turn(messages, chunk_size=5000, min_chunk=4500)
+    chunks = l2_extraction.chunk_messages_by_turn(messages, chunk_size=5000, min_chunk=4500)
     convs = [fmt_msgs(c) for c in chunks]
 
     print(f'\n=== {file_id} ===', flush=True)
@@ -39,7 +39,7 @@ for file_id in FILE_IDS:
 
     t0 = time.time()
     try:
-        raw_mems, provider, meta = l1.extract_l1(
+        raw_mems, provider, meta = l2_extraction.extract_memories(
             convs, cfg['dimensions'], cfg['llm'], client=None,
             chunk_size=5000, overlap=1000, bucket_ctx=None, mem_conn=None,
         )

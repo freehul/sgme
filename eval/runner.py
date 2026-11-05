@@ -103,7 +103,7 @@ class EvalRunner:
     ) -> EvalResult:
         """执行全部用例的评测。
 
-        stages: 评测阶段列表 ["l1", "l15", "l2", "rrf"]，默认 ["l1"]
+        stages: 评测阶段列表 ["l2_extraction", "l3_adjudicate", "scene_aggregate", "rrf"]，默认 ["l2_extraction"]
         dry_run: mock LLM 输出模式（无需 LM Studio）
 
         "rrf" 阶段**独立于 L1**：直接把 GT 记忆落进 eval DB 做检索调参，
@@ -112,7 +112,7 @@ class EvalRunner:
         返回 EvalResult（含聚合指标 + 逐用例明细）。
         """
         if stages is None:
-            stages = ["l1"]
+            stages = ["l2_extraction"]
 
         run_id = f"eval-{uuid.uuid4().hex[:8]}"
         start_time = time.time()
@@ -134,7 +134,7 @@ class EvalRunner:
                 per_case_results.append(cr)
 
                 # 对每个 case 单独计算 L1 指标（用于聚合）
-                if "l1" in stages and hasattr(cr, "_l1_predictions"):
+                if "l2_extraction" in stages and hasattr(cr, "_l1_predictions"):
                     l1m = eval_metrics.compute_l1_f1(
                         cr._l1_predictions, case.expected_l1,  # type: ignore[attr-defined]
                     )
@@ -223,8 +223,8 @@ class EvalRunner:
             run_id=run_id,
             timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             prompt_versions={"l1_extraction": self.prompt_version or "dry-run"},
-            l1=aggregated_l1,
-            l2=aggregated_l2,
+            l2_extraction=aggregated_l1,
+            scene_aggregate=aggregated_l2,
             rrf=rrf_metrics,
             inject=inject_metrics,
             per_case=per_case_results,
@@ -247,7 +247,7 @@ class EvalRunner:
         )
 
         # L1 提取
-        if "l1" in stages:
+        if "l2_extraction" in stages:
             predictions, meta = self._run_l1(case, dry_run)
             cr._l1_predictions = predictions  # type: ignore[attr-defined]
 
@@ -794,7 +794,6 @@ class EvalRunner:
         template = load_template(gt_inject.mode, dimensions)
         inject_result = profile_inject.inject(
             self.mem_conn, template, dimensions,
-            tier0_summary=None,
         )
         blocks = inject_result.get("blocks", [])
 
@@ -813,7 +812,7 @@ class EvalRunner:
         """执行 L1 提取。
 
         dry_run 模式：生成 mock 记忆（基于 ground truth 做小幅扰动）。
-        正常模式：调用 sgme.engine.l1.extract_l1()。
+        正常模式：调用 sgme.engine.l2_extraction.extract_memories()。
 
         返回 (predictions, prompt_meta)。
         predictions 每条含: content, dimension_ids, memory_type, priority, time_velocity
@@ -824,7 +823,7 @@ class EvalRunner:
         # 正常模式：调用真实提炼引擎
         try:
             from sgme import config as sgme_config
-            from sgme.engine import l1 as l1_engine
+            from sgme.engine import l2_extraction as l1_engine
             from sgme.engine import normalize
             from sgme.prompts import BucketCtx
             from sgme.data import memory_dao
@@ -841,7 +840,7 @@ class EvalRunner:
                     },
                 )
 
-            raw_memories, provider, prompt_meta = l1_engine.extract_l1(
+            raw_memories, provider, prompt_meta = l1_engine.extract_memories(
                 case.conversation,
                 dimensions,
                 llm_cfg,
@@ -920,7 +919,7 @@ class EvalRunner:
     # ── P0 目标检查 ──
 
     @staticmethod
-    def _check_p0_targets(l1: L1Metrics, l2: L2Metrics) -> dict[str, str]:
+    def _check_p0_targets(l2_extraction: L1Metrics, scene_aggregate: L2Metrics) -> dict[str, str]:
         """检查 P0 指标是否达标（PRD §7.1）。
 
         返回 {指标名: "green"|"yellow"|"red"}。
@@ -928,49 +927,49 @@ class EvalRunner:
         status: dict[str, str] = {}
 
         # L1 维度微平均 F1 ≥ 0.75
-        if l1.dimension_micro_f1 >= 0.75:
+        if l2_extraction.dimension_micro_f1 >= 0.75:
             status["L1 F1"] = "green"
-        elif l1.dimension_micro_f1 >= 0.60:
+        elif l2_extraction.dimension_micro_f1 >= 0.60:
             status["L1 F1"] = "yellow"
         else:
             status["L1 F1"] = "red"
 
         # L1 Strict Match Rate ≥ 0.50
-        if l1.strict_match_rate >= 0.50:
+        if l2_extraction.strict_match_rate >= 0.50:
             status["Strict Match"] = "green"
-        elif l1.strict_match_rate >= 0.35:
+        elif l2_extraction.strict_match_rate >= 0.35:
             status["Strict Match"] = "yellow"
         else:
             status["Strict Match"] = "red"
 
         # memory_type Accuracy ≥ 0.85
-        if l1.memory_type_accuracy >= 0.85:
+        if l2_extraction.memory_type_accuracy >= 0.85:
             status["memory_type Acc"] = "green"
-        elif l1.memory_type_accuracy >= 0.70:
+        elif l2_extraction.memory_type_accuracy >= 0.70:
             status["memory_type Acc"] = "yellow"
         else:
             status["memory_type Acc"] = "red"
 
         # time_velocity Accuracy ≥ 0.80
-        if l1.time_velocity_accuracy >= 0.80:
+        if l2_extraction.time_velocity_accuracy >= 0.80:
             status["time_velocity Acc"] = "green"
-        elif l1.time_velocity_accuracy >= 0.65:
+        elif l2_extraction.time_velocity_accuracy >= 0.65:
             status["time_velocity Acc"] = "yellow"
         else:
             status["time_velocity Acc"] = "red"
 
         # L2 Section 命中率 ≥ 0.70
-        if l2.section_hit_rate >= 0.70:
+        if scene_aggregate.section_hit_rate >= 0.70:
             status["Section Hit Rate"] = "green"
-        elif l2.section_hit_rate >= 0.50:
+        elif scene_aggregate.section_hit_rate >= 0.50:
             status["Section Hit Rate"] = "yellow"
         else:
             status["Section Hit Rate"] = "red"
 
         # 画像质量 ≥ 0.50
-        if l2.profile_quality >= 0.50:
+        if scene_aggregate.profile_quality >= 0.50:
             status["Profile Quality"] = "green"
-        elif l2.profile_quality >= 0.35:
+        elif scene_aggregate.profile_quality >= 0.35:
             status["Profile Quality"] = "yellow"
         else:
             status["Profile Quality"] = "red"

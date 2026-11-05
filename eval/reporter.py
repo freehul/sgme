@@ -51,8 +51,8 @@ def generate_report_json(result: EvalResult, output_dir: Path) -> Path:
 
 def _build_json_report(result: EvalResult) -> dict:
     """构建 report.json 数据结构。"""
-    l1 = result.l1
-    l2 = result.l2
+    l2_extraction = result.l2_extraction
+    scene_aggregate = result.scene_aggregate
 
     report: dict[str, Any] = {
         "run_id": result.run_id,
@@ -66,9 +66,9 @@ def _build_json_report(result: EvalResult) -> dict:
         },
     }
 
-    if l1:
+    if l2_extraction:
         per_dim = {}
-        for dim_id, df1 in l1.per_dimension_f1.items():
+        for dim_id, df1 in l2_extraction.per_dimension_f1.items():
             per_dim[dim_id] = {
                 "f1": df1.f1,
                 "precision": df1.precision,
@@ -78,27 +78,27 @@ def _build_json_report(result: EvalResult) -> dict:
                 "fn": df1.fn,
             }
 
-        report["l1"] = {
-            "dimension_micro_f1": l1.dimension_micro_f1,
-            "dimension_micro_precision": l1.dimension_micro_precision,
-            "dimension_micro_recall": l1.dimension_micro_recall,
+        report["l2_extraction"] = {
+            "dimension_micro_f1": l2_extraction.dimension_micro_f1,
+            "dimension_micro_precision": l2_extraction.dimension_micro_precision,
+            "dimension_micro_recall": l2_extraction.dimension_micro_recall,
             "per_dimension_f1": per_dim,
-            "strict_match_rate": l1.strict_match_rate,
-            "memory_type_accuracy": l1.memory_type_accuracy,
-            "time_velocity_accuracy": l1.time_velocity_accuracy,
-            "priority_mae": l1.priority_mae,
-            "total_tp": l1.total_tp,
-            "total_fp": l1.total_fp,
-            "total_fn": l1.total_fn,
+            "strict_match_rate": l2_extraction.strict_match_rate,
+            "memory_type_accuracy": l2_extraction.memory_type_accuracy,
+            "time_velocity_accuracy": l2_extraction.time_velocity_accuracy,
+            "priority_mae": l2_extraction.priority_mae,
+            "total_tp": l2_extraction.total_tp,
+            "total_fp": l2_extraction.total_fp,
+            "total_fn": l2_extraction.total_fn,
         }
 
-    if l2:
-        report["l2"] = {
-            "section_hit_rate": l2.section_hit_rate,
-            "section_misentry_rate": l2.section_misentry_rate,
-            "section_miss_rate": l2.section_miss_rate,
-            "profile_quality": l2.profile_quality,
-            "total_evaluated": l2.total_evaluated,
+    if scene_aggregate:
+        report["scene_aggregate"] = {
+            "section_hit_rate": scene_aggregate.section_hit_rate,
+            "section_misentry_rate": scene_aggregate.section_misentry_rate,
+            "section_miss_rate": scene_aggregate.section_miss_rate,
+            "profile_quality": scene_aggregate.profile_quality,
+            "total_evaluated": scene_aggregate.total_evaluated,
         }
 
     # RRF 检索调参段（全字段；两次同输入运行应逐字段相等）
@@ -195,8 +195,8 @@ def _build_markdown_report(result: EvalResult) -> list[str]:
     lines.append(f"- **P0 全通过**: {'✅ 是' if result.summary.passed_p0 else '❌ 否'}")
     lines.append("")
 
-    l1 = result.l1
-    l2 = result.l2
+    l2_extraction = result.l2_extraction
+    scene_aggregate = result.scene_aggregate
 
     # ── 总览面板 ──
     lines.append("## 📊 总览面板")
@@ -204,21 +204,21 @@ def _build_markdown_report(result: EvalResult) -> list[str]:
     lines.append("| 指标 | 当前值 | 目标值 | 状态 |")
     lines.append("|------|--------|--------|------|")
 
-    if l1:
+    if l2_extraction:
         overview_rows = [
-            ("L1 维度微平均 F1", l1.dimension_micro_f1, P0_TARGETS["L1 F1"]),
-            ("Strict Match Rate", l1.strict_match_rate, P0_TARGETS["Strict Match"]),
-            ("memory_type Accuracy", l1.memory_type_accuracy, P0_TARGETS["memory_type Acc"]),
-            ("time_velocity Accuracy", l1.time_velocity_accuracy, P0_TARGETS["time_velocity Acc"]),
+            ("L1 维度微平均 F1", l2_extraction.dimension_micro_f1, P0_TARGETS["L1 F1"]),
+            ("Strict Match Rate", l2_extraction.strict_match_rate, P0_TARGETS["Strict Match"]),
+            ("memory_type Accuracy", l2_extraction.memory_type_accuracy, P0_TARGETS["memory_type Acc"]),
+            ("time_velocity Accuracy", l2_extraction.time_velocity_accuracy, P0_TARGETS["time_velocity Acc"]),
         ]
         for label, val, target in overview_rows:
             status = _status_emoji(val, target)
             lines.append(f"| {label} | {val:.4f} | {target} | {status} |")
 
-    if l2:
+    if scene_aggregate:
         overview_rows_l2 = [
-            ("L2 Section 命中率", l2.section_hit_rate, P0_TARGETS["Section Hit Rate"]),
-            ("画像质量综合分", l2.profile_quality, P0_TARGETS["Profile Quality"]),
+            ("L2 Section 命中率", scene_aggregate.section_hit_rate, P0_TARGETS["Section Hit Rate"]),
+            ("画像质量综合分", scene_aggregate.profile_quality, P0_TARGETS["Profile Quality"]),
         ]
         for label, val, target in overview_rows_l2:
             status = _status_emoji(val, target)
@@ -227,28 +227,28 @@ def _build_markdown_report(result: EvalResult) -> list[str]:
     lines.append("")
 
     # ── L1 详细指标 ──
-    if l1:
+    if l2_extraction:
         lines.append("## L1 维度标注指标")
         lines.append("")
         lines.append("| 指标 | 值 |")
         lines.append("|------|----|")
-        lines.append(f"| 微平均 Precision | {l1.dimension_micro_precision:.4f} |")
-        lines.append(f"| 微平均 Recall | {l1.dimension_micro_recall:.4f} |")
-        lines.append(f"| 微平均 F1 | {l1.dimension_micro_f1:.4f} |")
-        lines.append(f"| Strict Match Rate | {l1.strict_match_rate:.4f} |")
-        lines.append(f"| memory_type Accuracy | {l1.memory_type_accuracy:.4f} |")
-        lines.append(f"| time_velocity Accuracy | {l1.time_velocity_accuracy:.4f} |")
-        lines.append(f"| priority MAE | {l1.priority_mae:.4f} |")
-        lines.append(f"| TP / FP / FN | {l1.total_tp} / {l1.total_fp} / {l1.total_fn} |")
+        lines.append(f"| 微平均 Precision | {l2_extraction.dimension_micro_precision:.4f} |")
+        lines.append(f"| 微平均 Recall | {l2_extraction.dimension_micro_recall:.4f} |")
+        lines.append(f"| 微平均 F1 | {l2_extraction.dimension_micro_f1:.4f} |")
+        lines.append(f"| Strict Match Rate | {l2_extraction.strict_match_rate:.4f} |")
+        lines.append(f"| memory_type Accuracy | {l2_extraction.memory_type_accuracy:.4f} |")
+        lines.append(f"| time_velocity Accuracy | {l2_extraction.time_velocity_accuracy:.4f} |")
+        lines.append(f"| priority MAE | {l2_extraction.priority_mae:.4f} |")
+        lines.append(f"| TP / FP / FN | {l2_extraction.total_tp} / {l2_extraction.total_fp} / {l2_extraction.total_fn} |")
         lines.append("")
 
         # 逐维度 F1
-        if l1.per_dimension_f1:
+        if l2_extraction.per_dimension_f1:
             lines.append("### 逐维度 F1")
             lines.append("")
             lines.append("| 维度 ID | F1 | Precision | Recall | TP | FP | FN |")
             lines.append("|---------|----|-----------|--------|----|----|----|")
-            for dim_id, df1 in sorted(l1.per_dimension_f1.items()):
+            for dim_id, df1 in sorted(l2_extraction.per_dimension_f1.items()):
                 warn = " ⚠️" if df1.f1 < 0.6 else ""
                 lines.append(
                     f"| {dim_id}{warn} | {df1.f1:.4f} | {df1.precision:.4f} | "
@@ -257,15 +257,15 @@ def _build_markdown_report(result: EvalResult) -> list[str]:
             lines.append("")
 
     # ── L2 指标 ──
-    if l2 and l2.total_evaluated > 0:
+    if scene_aggregate and scene_aggregate.total_evaluated > 0:
         lines.append("## L2 模板查询指标")
         lines.append("")
         lines.append("| 指标 | 值 |")
         lines.append("|------|----|")
-        lines.append(f"| Section 命中率 | {l2.section_hit_rate:.4f} |")
-        lines.append(f"| Section 误入率 | {l2.section_misentry_rate:.4f} |")
-        lines.append(f"| Section 漏出率 | {l2.section_miss_rate:.4f} |")
-        lines.append(f"| 画像质量综合分 | {l2.profile_quality:.4f} |")
+        lines.append(f"| Section 命中率 | {scene_aggregate.section_hit_rate:.4f} |")
+        lines.append(f"| Section 误入率 | {scene_aggregate.section_misentry_rate:.4f} |")
+        lines.append(f"| Section 漏出率 | {scene_aggregate.section_miss_rate:.4f} |")
+        lines.append(f"| 画像质量综合分 | {scene_aggregate.profile_quality:.4f} |")
         lines.append("")
 
     # ── 注入效果（T-20，PRD §5.4） ──

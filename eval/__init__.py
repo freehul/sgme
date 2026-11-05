@@ -1,7 +1,7 @@
 """eval：SGME 提炼质量评测包。
 
 评测套件 = 提炼链路的消费者，不做改造者。
-通过现有 public API（extract_l1/resolve_conflicts/aggregate/normalize_batch）对接，
+通过现有 public API（extract_memories/resolve_conflicts/aggregate/normalize_batch）对接，
 不动 sgme/engine/* 核心逻辑。
 
 模块：

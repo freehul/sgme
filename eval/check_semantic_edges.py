@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sgme import config  # noqa: E402
-from sgme.engine import l15  # noqa: E402
+from sgme.engine import l3_adjudicate  # noqa: E402
 from sgme.data import db as db_mod, edge_dao, memory_dao  # noqa: E402
 
 
@@ -91,7 +91,7 @@ def _run_once(cfg: dict, dry: bool):
     }
 
     if dry:
-        from sgme.engine.l15 import ConflictDecision, RelationEdge
+        from sgme.engine.l3_adjudicate import ConflictDecision, RelationEdge
         decisions = [
             ConflictDecision(0, [], "store", relations=[
                 RelationEdge(c1, "similar", 0.85), RelationEdge(c2, "similar", 0.8)]),
@@ -99,15 +99,15 @@ def _run_once(cfg: dict, dry: bool):
                 RelationEdge(c3, "contradicts", 0.9),
                 RelationEdge(c4, "similar", 0.4)]),  # 低置信 + 无关 → 均不写
         ]
-        result = l15.L15Result()
+        result = l3_adjudicate.AdjudicationResult()
         for i, nm in enumerate(new_memories):
             d = decisions[i]
-            new_id = l15._store_memory(conn, nm, cfg["dimensions"], prompt_version="stub")
+            new_id = l3_adjudicate._store_memory(conn, nm, cfg["dimensions"], prompt_version="stub")
             nm["memory_id"] = new_id
             result.stored.append(new_id)
-            result.semantic_edges_written += l15._write_semantic_edges(conn, nm, d, cfg)
+            result.semantic_edges_written += l3_adjudicate._write_semantic_edges(conn, nm, d, cfg)
     else:
-        result = l15.resolve_conflicts(new_memories, conn, cfg)
+        result = l3_adjudicate.resolve_conflicts(new_memories, conn, cfg)
 
     mem_map.update({mid: nm["content"] for mid, nm in zip(result.stored, new_memories)})
     edges = edge_dao.list_edges(conn, source="l1_conflict")

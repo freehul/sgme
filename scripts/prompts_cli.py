@@ -36,7 +36,10 @@ def cmd_list(args: argparse.Namespace) -> int:
     if args.stage:
         stages = [args.stage]
     else:
-        stages = ["tier0_summary", "l1_extraction", "l1_conflict", "l2_scene"]
+        # 受管 stage 以 prompts.manager.STAGES 为唯一口径（tier0_summary 已随 D-79 退役）
+        from sgme.prompts.manager import STAGES
+
+        stages = list(STAGES)
     out = {"stages": []}
     for stage in stages:
         versions = [v.__dict__ for v in store.list_versions(stage)]

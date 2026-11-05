@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """eval/check_facts.py：T-136 验收冒烟——真实 LLM 三元组抽取成功率（agnes-2.5-flash）。
 
-会话埋 5 个确定性可断言事实 → l1.extract_l1（真实降级链）→ 统计：
+会话埋 5 个确定性可断言事实 → l2_extraction.extract_memories（真实降级链）→ 统计：
 - 期望事实被抽取为合法三元组的比例（抽取成功率，AC ≥85%）
 - 三元组结构合法率（subject/predicate/object 非空）
 - 报告落 eval/results/t136_facts_smoke.md
@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from sgme import config  # noqa: E402
-from sgme.engine import l1  # noqa: E402
+from sgme.engine import l2_extraction  # noqa: E402
 
 # 期望事实（确定性、可断言）→ (subject, predicate, object) 允许的归一化形式
 EXPECTED_FACTS = [
@@ -79,12 +79,12 @@ def main() -> int:
     dry = "--dry" in sys.argv
     cfg = config.load_config()
     if dry:
-        l1.extract_l1 = _stub_extract  # type: ignore[assignment]
+        l2_extraction.extract_memories = _stub_extract  # type: ignore[assignment]
         provider = "stub"
     else:
         provider = "agnes-2.5-flash（降级链首节点）"
 
-    memories, real_provider, meta = l1.extract_l1(
+    memories, real_provider, meta = l2_extraction.extract_memories(
         CONVERSATION, cfg["dimensions"], cfg["llm"],
     )
 

@@ -2,7 +2,7 @@
 """scripts/oneoff/facts_gate_check.py：T-148 批量抽取门禁——单条 vs 批量 F1 比对。
 
 对同一批样本记忆，分别用两种方法产出 facts 三元组并逐条比对：
-- 「单条 extract_l1 语义」：把每条记忆单独作为一个 batch（复用批量 prompt，仅 1 条），
+- 「单条 extract_memories 语义」：把每条记忆单独作为一个 batch（复用批量 prompt，仅 1 条），
   等价于单条抽取语义；
 - 「直接批量法」：一次 prompt 抽 20 条。
 

@@ -49,7 +49,7 @@ from pathlib import Path
 
 import numpy as np
 
-#: 判定阈值：与 sgme.engine.l15.DEFAULT_NEAR_DUP 出厂保守值同步（快照口径）。
+#: 判定阈值：与 sgme.engine.l3_adjudicate.DEFAULT_NEAR_DUP 出厂保守值同步（快照口径）。
 HIT_THRESHOLD = 0.92   # score >= 0.92 → hit（写隔离表）
 GRAY_ZONE = 0.85       # 0.85 <= score < 0.92 → gray（放行 + 聚合计数）
 WINDOW_DAYS = 90       # prior-only 候选窗（复刻验证阶段口径）

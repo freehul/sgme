@@ -1,6 +1,6 @@
 """场景超限治理：LLM 合并高相似场景对（T-97 第二步）。
 
-对相似度 >= 0.80 的场景对，用 LLM 生成合并正文，走 l2._apply_merge 落库
+对相似度 >= 0.80 的场景对，用 LLM 生成合并正文，走 scene_aggregate._apply_merge 落库
 （旧场景 archived 可恢复 + scene_versions 快照 + 新场景自动回填向量）。
 
 容器内执行：docker exec sgme python3 /data/merge_similar_scenes.py
@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, "/app")
 
 from sgme import config
-from sgme.engine import l2
+from sgme.engine import scene_aggregate
 from sgme.data import scene_dao
 from sgme.llm import chain as llm_chain
 
@@ -82,9 +82,9 @@ for aid_short, bid_short, sim in PAIRS:
         "merged_from": [a, b],
         "reason": f"相似度 {sim} 自动合并",
     }
-    result = l2.L2Result()
+    result = scene_aggregate.SceneAggregateResult()
     try:
-        l2._apply_merge(mem_conn, action, [], result, cfg)
+        scene_aggregate._apply_merge(mem_conn, action, [], result, cfg)
         print(f"OK {a[:8]}~{b[:8]} ({sim}): merged={result.merged} archived={result.archived}")
         done += 1
     except Exception as e:
