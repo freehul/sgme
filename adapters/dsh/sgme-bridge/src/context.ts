@@ -17,7 +17,7 @@
  * 契约对齐：POST /v1/inject（Agent Key，mode + custom_filter 二选一；可选 history/already_repaired）
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { SgmeClient, InjectResponse, SearchResult, CareLevel } from './sgme-client.js'
+import type { SgmeClient, InjectResponse, SearchResult, CareLevel, RoleAssembleResponse } from './sgme-client.js'
 import type { SgmeEvent, SgmeEventSubscriber } from './events.js'
 
 /**
@@ -59,12 +59,46 @@ export function filterEventsByCareLevel(
   )
 }
 
+/**
+ * F2（2026-11-05）：事件提醒类型白名单默认值——只提醒「需要主动处理」的事件。
+ *
+ * memory_updated 每轮对话都会产生（生产已堆积数千条），默认**不进**上下文；需要查看时
+ * 仍可 signal_pull 拉取。care_* 用「前缀_*」覆盖全部关怀子类型。
+ */
+export const DEFAULT_EVENT_NOTIFY_TYPES = ['anomaly_warn', 'care_*'] as const
+
+/** 单条 type 是否命中白名单项：支持精确 type 与「前缀_*」前缀匹配（单独 * = 全放行）。 */
+function matchesNotifyPattern(type: string, pattern: string): boolean {
+  const p = pattern.trim()
+  if (!p) return false
+  if (p === '*') return true
+  if (p.endsWith('*')) return type.startsWith(p.slice(0, -1))
+  return type === p
+}
+
+/**
+ * F2：按类型白名单过滤事件（导出供测试）。
+ *
+ * - patterns 省略（undefined）= 用默认白名单；
+ * - 显式空数组 = 一律不提醒（想彻底关掉事件提醒时用）。
+ */
+export function filterEventsByNotifyTypes(
+  events: SgmeEvent[],
+  patterns?: readonly string[],
+): SgmeEvent[] {
+  const list = patterns ?? DEFAULT_EVENT_NOTIFY_TYPES
+  if (!list.length) return []
+  return events.filter((e) => list.some((p) => matchesNotifyPattern(e.type, p)))
+}
+
 export interface ContextConfig {
   injectMode: InjectMode
   injectMaxTokens: number          // 协议接受但不消费，留作 v2 预算控制参考
   searchLimit: number              // 相关记忆检索条数
   projectHint?: string             // 项目名提示（用于相关记忆检索，可空）
   eventSubscriber?: SgmeEventSubscriber | null  // 2026-08-18：事件订阅器（SSE），有未消费事件时注入提醒
+  eventNotifyTypes?: string[]      // F2（2026-11-05）：注入提醒的类型白名单（精确 type 或 前缀_*；缺省 anomaly_warn + care_*）
+  roleInject?: boolean             // 2026-11-05：首步自动注入当前激活角色人设（默认开）
 }
 
 /**
@@ -106,11 +140,19 @@ export interface ContextInjectionCtx {
  * 此前（44a7b85）把每条 care 信号全文 JSON 附在提醒里 → 每次注入都携带完整
  * payload，上下文重复膨胀。现改为摘要：只给类型+数量+事件 id，
  * agent 需要详情时调 signal_pull（服务端仍是权威源）。
+ *
+ * F2（2026-11-05）：入口先按类型白名单过滤（默认 anomaly_warn + care_*）——
+ * 海量 memory_updated 不再挤进系统提示；过滤后为空返回空串，调用方跳过注入。
  */
-function buildEventNoticeText(events: SgmeEvent[]): string {
-  const care = events.filter((e) => e.type.startsWith('care_'))
-  const warn = events.filter((e) => e.type === 'anomaly_warn')
-  const other = events.filter((e) => !e.type.startsWith('care_') && e.type !== 'anomaly_warn')
+export function buildEventNoticeText(
+  events: SgmeEvent[],
+  notifyTypes?: readonly string[],
+): string {
+  const targets = filterEventsByNotifyTypes(events, notifyTypes)
+  if (!targets.length) return ''
+  const care = targets.filter((e) => e.type.startsWith('care_'))
+  const warn = targets.filter((e) => e.type === 'anomaly_warn')
+  const other = targets.filter((e) => !e.type.startsWith('care_') && e.type !== 'anomaly_warn')
   const parts: string[] = []
   if (care.length) parts.push(`关怀信号 ${care.length} 条`)
   if (warn.length) parts.push(`异常告警 ${warn.length} 条`)
@@ -122,7 +164,7 @@ function buildEventNoticeText(events: SgmeEvent[]): string {
     '不阻塞当前任务，处理完即可。',
   ].join('\n')
   // 摘要：只给类型 + event_id（不含全文 payload，避免上下文膨胀）
-  const eventIds = events.slice(0, 5).map((e) => `${e.type}#${e.event_id}`)
+  const eventIds = targets.slice(0, 5).map((e) => `${e.type}#${e.event_id}`)
   if (!eventIds.length) return head
   return head + '\n【事件列表（最多5条，详情请 signal_pull）】\n' + eventIds.join('\n')
 }
@@ -215,6 +257,22 @@ function extractColdstartRepairHint(profile: InjectResponse | null): string | un
  *
  * @returns 清理函数（由 ctx.effect 调用方管理生命周期）
  */
+/**
+ * 角色人设注入块（2026-11-05）：服务端 active_role 只存状态，适配器需自行装配。
+ * roleAssemble 恒带 render=true，{{char}}/{{user}} 宏已由服务端渲染。
+ */
+function buildRoleBlock(card: RoleAssembleResponse): string {
+  const name = card.role_name || card.role_id
+  const prompt = (card.system_prompt ?? '').trim()
+  if (!prompt) return ''
+  return [
+    `【当前沟通角色：${name}】`,
+    '下面是你此刻的角色设定——语气、称呼、表达方式按它来；记忆与事实仍以 SGME 记忆为准（换角色只换沟通外皮，不换记忆池）。',
+    '',
+    prompt,
+  ].join('\n')
+}
+
 export function registerContextInjection(
   ctx: ContextInjectionCtx,
   client: SgmeClient,
@@ -248,6 +306,59 @@ export function registerContextInjection(
   // 输入，避免同一 turn 的多个 step 对相同输入重复请求。
   let coldRepaired = false
   let coldProbeUserText = ''
+  // 角色人设注入（2026-11-05 T-角色自动注入）：服务端 active_role 只是状态位，
+  // 本适配器在 turn/start 复查、首步拼接、角色变化时补一条切换消息。
+  let roleCache: { roleId: string; roleName: string; text: string } | null = null
+  let roleFetching: Promise<void> | null = null
+  let pendingRoleUpdate: string | null = null
+  const roleEnabled = config.roleInject !== false
+
+  /** 拉取当前激活角色人设（幂等；角色变化时置 pendingRoleUpdate 供下一步注入）。 */
+  const fetchRole = (): Promise<void> => {
+    if (!roleEnabled) return Promise.resolve()
+    // 兼容没有角色 API 的客户端（老 mock/降级环境）：静默跳过
+    if (typeof client.roleActiveGet !== 'function' || typeof client.roleAssemble !== 'function') {
+      return Promise.resolve()
+    }
+    if (roleFetching) return roleFetching
+    roleFetching = (async () => {
+      try {
+        const active = await client.roleActiveGet()
+        const roleId = active?.role_id ?? null
+        if (!roleId) {
+          roleCache = null
+          return
+        }
+        if (roleCache?.roleId === roleId) return
+        const card = await client.roleAssemble(roleId, config.injectMode)
+        const text = card ? buildRoleBlock(card) : ''
+        if (!text) return
+        const roleName = card?.role_name || roleId
+        if (!roleCache && injected) {
+          pendingRoleUpdate = [
+            `【角色激活：${roleName}】`,
+            '从现在这句话起，按这个角色说话（记忆与事实不变）。',
+            '',
+            text,
+          ].join('\n')
+        } else if (roleCache && roleCache.roleId !== roleId) {
+          pendingRoleUpdate = [
+            `【角色切换：${roleCache.roleName} → ${roleName}】`,
+            '从现在这句话起，按新角色说话（记忆与事实不变）。',
+            '',
+            text,
+          ].join('\n')
+        }
+        roleCache = { roleId, roleName, text }
+        ctx.logger.info(`[SGME 角色] 已加载 ${roleName}（${roleId}）人设 ${text.length} 字符`)
+      } catch (e) {
+        ctx.logger.warn(`[SGME 角色人设拉取失败] ${e instanceof Error ? e.message : String(e)}`)
+      }
+    })().finally(() => {
+      roleFetching = null
+    })
+    return roleFetching
+  }
 
   /** 预拉取画像 + 相关记忆（turn/start 触发，失败不置位，下轮重试）。 */
   const prefetch = (projectHint: string | undefined): void => {
@@ -263,6 +374,7 @@ export function registerContextInjection(
                 limit: config.searchLimit,
               })
             : Promise.resolve(null),
+          fetchRole(),
         ])
         const text = buildInjectionText(profile, related)
         if (text) {
@@ -289,15 +401,19 @@ export function registerContextInjection(
       // D-61：按当前角色关怀档位过滤（silent 不注入 care_*；push 只推关键信号）
       const level = await ensureCareLevel()
       const filtered = filterEventsByCareLevel(unnotified, level)
-      if (filtered.length) {
-        const evText = buildEventNoticeText(filtered)
+      // F2（2026-11-05）：再按类型白名单过滤（缺省只提醒 anomaly_warn + care_*；
+      // memory_updated 这类高频事件不再逐轮挤进系统提示，需要时 signal_pull 查看）。
+      const notified = filterEventsByNotifyTypes(filtered, config.eventNotifyTypes)
+      // 文本为空串 = 没有可提醒的事件（被白名单全滤掉）→ 走 markNotified 分支，不产生空消息
+      const evText = buildEventNoticeText(notified, config.eventNotifyTypes)
+      if (evText) {
         const evMsg = createUserMessage({
           content: [{ type: 'text', text: evText }],
           source: { kind: 'dsh-sgme' },
         })
         if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
           ctx.logger.info(
-            `[SGME 事件提醒] 注入 ${filtered.length} 条（care_level=${level}，step ${payload.step}）`,
+            `[SGME 事件提醒] 注入 ${notified.length} 条（care_level=${level}，step ${payload.step}）`,
           )
           // 标记已提醒，防止下轮重复注入（含被档位过滤掉的事件：它们仍可在信号池 signal_pull 查看）
           config.eventSubscriber?.markNotified(unnotified.map((e) => e.event_id))
@@ -340,6 +456,20 @@ export function registerContextInjection(
           // 修复是加分项，任何异常都不得影响主流程
           ctx.logger.warn(`[SGME 冷场修复失败] ${e instanceof Error ? e.message : String(e)}`)
         }
+      }
+    }
+
+    // ── 角色热切换（2026-11-05）────────────────────────────────────────────
+    // turn/start 复查到 active_role 变化 → 在末尾追加一条切换提示（保前缀缓存）。
+    if (injected && pendingRoleUpdate) {
+      const roleMsg = createUserMessage({
+        content: [{ type: 'text', text: pendingRoleUpdate }],
+        source: { kind: 'dsh-sgme' },
+      })
+      pendingRoleUpdate = null
+      if (!decision.messages.some((m) => sameContextPayload(m, roleMsg))) {
+        ctx.logger.info('[SGME 角色切换] 已注入新角色人设')
+        return { kind: 'enter', messages: [...decision.messages, roleMsg] }
       }
     }
 
@@ -420,6 +550,9 @@ export function registerContextInjection(
 
     if (!profileCache) return decision  // 画像为空，跳过（不置位，下轮可重试）
 
+    // 角色人设：首步若无缓存则现场拉一次（失败不阻塞画像注入）
+    if (roleEnabled && !roleCache) await fetchRole()
+
     injected = true  // 成功注入后才置位
 
     // 事件提醒（2026-08-20 修复）：只对「未消费且未提醒过」的事件附加到画像注入文本
@@ -432,9 +565,20 @@ export function registerContextInjection(
       unnotifiedFirstTurn,
       firstTurnLevel,
     )
-    const injectText = filteredFirstTurn.length
-      ? profileCache.text + '\n\n' + buildEventNoticeText(filteredFirstTurn)
+    // F2（2026-11-05）：首轮提醒同样按类型白名单过滤——只有白名单内事件才拼进画像；
+    // 全是 memory_updated 这类噪声时返回空串，画像文本保持原样（不产生空提醒段）。
+    const noticedFirstTurn = filterEventsByNotifyTypes(
+      filteredFirstTurn,
+      config.eventNotifyTypes,
+    )
+    const firstTurnNotice = noticedFirstTurn.length
+      ? buildEventNoticeText(noticedFirstTurn, config.eventNotifyTypes)
+      : ''
+    let injectText = firstTurnNotice
+      ? profileCache.text + '\n\n' + firstTurnNotice
       : profileCache.text
+    // 角色人设拼在画像之前（角色优先决定语气，画像提供事实）
+    if (roleCache) injectText = roleCache.text + '\n\n' + injectText
     // 首轮画像注入时一并标记已提醒（防下轮重复；被档位过滤的也标记，信号池仍可手动查看）
     if (unnotifiedFirstTurn.length) {
       config.eventSubscriber?.markNotified(unnotifiedFirstTurn.map((e) => e.event_id))
@@ -471,6 +615,7 @@ export function registerContextInjection(
         ? agent.session.header.cwd.split(/[\\/]/).filter(Boolean).pop()
         : undefined)
     prefetch(projectHint)
+    void fetchRole()
   })
 
   const disposePreStep = ctx.on('agent/pre-step', handler)

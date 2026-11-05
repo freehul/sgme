@@ -506,6 +506,12 @@ export function registerTools(
   ctx.tools.register(createReviewApproveTool(client))
   ctx.tools.register(createReviewRejectTool(client))
   ctx.tools.register(createReviewAutoResolveTool(client))
+  ctx.tools.register(createNearDupListTool(client))
+  ctx.tools.register(createNearDupDiscardTool(client))
+  ctx.tools.register(createNearDupRestoreTool(client))
+  ctx.tools.register(createCardListTool(client))
+  ctx.tools.register(createCardUpdateTool(client))
+  ctx.tools.register(createCardHistoryTool(client))
   ctx.tools.register(createSkillMaterializeTool(client))
   ctx.tools.register(createSkillPutTool(client))
   ctx.tools.register(createSkillDeleteTool(client))
@@ -2348,6 +2354,190 @@ export function createCredentialGetTool(client: SgmeClient) {
         `[credential_get：${resp.key_name}（⚠️ 值不得复述进对话正文；实际使用走 sgme-cred run 注入）]`,
         resp.value,
       ].join('\n')
+    },
+  })
+}
+
+
+// ---------- 近似重复隔离区（2026-11-05，B313：灰区人工批复通道） ----------
+
+/** 创建 near_dup_list 工具（灰区待人工复核列表）。 */
+export function createNearDupListTool(client: SgmeClient) {
+  return defineTool({
+    name: 'near_dup_list',
+    description: [
+      '列出 SGME 近似重复隔离区（灰区）：提炼时判定「像重复但拿不准」的新记忆不进记忆池，',
+      '暂存隔离区等人工裁决是重复还是独立事实。每条带 matched_content（被撞上的既有记忆原文）',
+      '供左右对照。',
+    ].join(' '),
+    parameters: {
+      status: { type: 'string', description: 'pending/discarded/restored（默认 pending）' },
+      limit: { type: 'number', description: '页大小（1-200，默认 50）' },
+      offset: { type: 'number', description: '跳过条数（默认 0）' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { status?: string; limit?: number; offset?: number }
+      const resp = await client.nearDupList(a.status ?? 'pending', a.limit ?? 50, a.offset ?? 0)
+      if (!resp) {
+        return '[near_dup_list 失败：SGME Gateway 不可达，稍后重试]'
+      }
+      const items = (resp.items ?? []) as Array<Record<string, unknown>>
+      if (!items.length) {
+        return 'near_dup_list 隔离区为空'
+      }
+      const lines = items.map((it) => {
+        const score = Number(it.score ?? 0).toFixed(3)
+        const brief = String(it.content ?? '').slice(0, 60)
+        return '- #' + String(it.id) + '｜相似度 ' + score + '｜' + brief
+      })
+      const head = 'near_dup_list 共 ' + String(resp.total ?? items.length) + ' 条，本页 ' + items.length + ' 条'
+      return [head].concat(lines).join('\n')
+    },
+  })
+}
+
+/** 创建 near_dup_discard 工具（丢弃灰区记录，不进记忆池）。 */
+export function createNearDupDiscardTool(client: SgmeClient) {
+  return defineTool({
+    name: 'near_dup_discard',
+    description: [
+      '丢弃一条灰区隔离记录：确认是重复，不写进记忆池。reason 可选但建议填',
+      '（落 discard_reason，调阈值时靠它回算「丢掉的是哪类」）。仅 pending 可丢弃。',
+    ].join(' '),
+    parameters: {
+      qid: { type: 'number', required: true, description: '隔离行 ID（near_dup_list 可见）' },
+      reason: { type: 'string', description: '丢弃理由（可选）' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { qid: number; reason?: string }
+      const resp = await client.nearDupDiscard(a.qid, a.reason ?? null)
+      if (!resp) {
+        return '[near_dup_discard 失败：SGME Gateway 不可达或 id 非法]'
+      }
+      return '[near_dup_discard #' + a.qid + ' → ' + String(resp.status ?? 'discarded') + ']'
+    },
+  })
+}
+
+/** 创建 near_dup_restore 工具（放行灰区记录，补录进记忆池）。 */
+export function createNearDupRestoreTool(client: SgmeClient) {
+  return defineTool({
+    name: 'near_dup_restore',
+    description: [
+      '放行一条灰区隔离记录：判定其实是独立事实，补录进记忆池并即时回填向量。',
+      'reason 可选（落 restore_reason）。已补录过的行会报错，不重复补录。',
+    ].join(' '),
+    parameters: {
+      qid: { type: 'number', required: true, description: '隔离行 ID（near_dup_list 可见）' },
+      reason: { type: 'string', description: '放行理由（可选）' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { qid: number; reason?: string }
+      const resp = await client.nearDupRestore(a.qid, a.reason ?? null)
+      if (!resp) {
+        return '[near_dup_restore 失败：SGME Gateway 不可达或该行已补录]'
+      }
+      return '[near_dup_restore #' + a.qid + ' → memory_id=' + String(resp.memory_id ?? '?') + ']'
+    },
+  })
+}
+
+
+// ---------- core 记忆卡（D-79，2026-11-05） ----------
+
+/** 创建 card_list 工具（六张卡的人属性 + 槽位定义）。 */
+export function createCardListTool(client: SgmeClient) {
+  return defineTool({
+    name: "card_list",
+    description: [
+      "查看 core 记忆卡：关于用户本人的稳定事实（身份/家庭/作息/偏好/协作准则/目标），",
+      "这是每次注入必带的那批信息。返回六张卡内容 + 槽位定义 + 字数上限。",
+    ].join(" "),
+    parameters: {},
+    output: {
+      schema: { type: "string" },
+      render: (_args, value) => [{ type: "text", text: value as string }],
+    },
+    async execute(_args, _exec) {
+      const resp = await client.cardList()
+      if (!resp) return "[card_list 失败：SGME Gateway 不可达]"
+      const cards = (resp.cards ?? []) as Array<Record<string, unknown>>
+      if (!cards.length) return "[card_list 无卡片]"
+      const lines = cards.map((c) => {
+        const filled = c.filled ? "已填" : "空"
+        return "- " + String(c.card_id) + "（" + String(c.title) + "）" + filled
+      })
+      return ["[card_list 共 " + cards.length + " 张]"].concat(lines).join("\n")
+    },
+  })
+}
+
+/** 创建 card_update 工具（写一个槽位，覆盖式 + 留痕）。 */
+export function createCardUpdateTool(client: SgmeClient) {
+  return defineTool({
+    name: "card_update",
+    description: [
+      "写 core 记忆卡的一个槽位（覆盖式更新，旧值进历史）。card_id/slot_key 见 card_list 的 schema；",
+      "family 的「成员」是多值槽（传数组）。value 传空 = 清除该槽位。",
+      "只装「人」不装「事」：项目进度与技术细节走记忆池，不要写卡；写卡需用户明确授权。",
+    ].join(" "),
+    parameters: {
+      card_id: { type: "string", required: true, description: "卡 id：identity/family/routine/preferences/principles/goals" },
+      slot_key: { type: "string", required: true, description: "槽位名（见 card_list 的 schema）" },
+      value: { type: "string", description: "值（多值槽用 JSON 数组字符串）" },
+      reason: { type: "string", description: "修改理由（可选，写进历史）" },
+    },
+    output: {
+      schema: { type: "string" },
+      render: (_args, value) => [{ type: "text", text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { card_id: string; slot_key: string; value?: string; reason?: string }
+      let v: unknown = a.value
+      if (typeof v === "string" && v.trim().startsWith("[")) {
+        try { v = JSON.parse(v) } catch { /* 保持原字符串 */ }
+      }
+      const resp = await client.cardUpdate(a.card_id, a.slot_key, v, a.reason ?? null)
+      if (!resp) return "[card_update 失败：Gateway 不可达或参数非法（卡片/槽位不存在、超字数上限）]"
+      return "[card_update " + a.card_id + "." + a.slot_key + " → v" + String(resp.version ?? "?") + "]"
+    },
+  })
+}
+
+/** 创建 card_history 工具（修改历史）。 */
+export function createCardHistoryTool(client: SgmeClient) {
+  return defineTool({
+    name: "card_history",
+    description: "core 记忆卡修改历史（谁在何时改了什么、为什么）。",
+    parameters: {
+      card_id: { type: "string", description: "只看某张卡（省略=全部）" },
+      limit: { type: "number", description: "条数（默认 50）" },
+    },
+    output: {
+      schema: { type: "string" },
+      render: (_args, value) => [{ type: "text", text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { card_id?: string; limit?: number }
+      const resp = await client.cardHistory(a.card_id ?? null, a.limit ?? 50)
+      if (!resp) return "[card_history 失败：SGME Gateway 不可达]"
+      const items = (resp.items ?? []) as Array<Record<string, unknown>>
+      if (!items.length) return "[card_history 暂无修改记录]"
+      const lines = items.map((i) => "- " + String(i.changed_at) + " " + String(i.card_id) + "." + String(i.slot_key)
+        + " → " + String(i.new_value ?? "（清除）"))
+      return ["[card_history 共 " + items.length + " 条]"].concat(lines).join("\n")
     },
   })
 }

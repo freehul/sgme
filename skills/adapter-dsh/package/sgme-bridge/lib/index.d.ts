@@ -67,6 +67,7 @@ interface Config {
   adminKey: string;
   agentId: string;
   injectMode: InjectMode;
+  roleInject?: boolean;
   injectMaxTokens: number;
   searchLimit: number;
   projectHint?: string;
@@ -76,6 +77,7 @@ interface Config {
   evolveEnabled?: boolean;
   evolveMinRounds?: number;
   eventSubscribe?: boolean;
+  eventNotifyTypes?: string[];
 }
 declare const Config: Schema<Config>;
 /**

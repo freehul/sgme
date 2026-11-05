@@ -182,6 +182,8 @@ BASELINE_TOOLS: tuple[str, ...] = (
     "wiki_evolve_trigger", "memory_get", "memory_reject", "memory_unreject",
     "refine_trigger", "refine_batch", "refine_status", "stats", "health",
     "review_list", "review_approve", "review_reject", "review_auto_resolve",
+    "near_dup_list", "near_dup_restore", "near_dup_discard",
+    "card_list", "card_update", "card_history",
     "config_get", "config_update", "idea_add", "demand_create", "project_register",
     "signal_pull", "signal_claim", "signal_ack", "signal_clear",
     "role_list", "role_assemble", "role_active_get", "role_active_set", "persona_fill",
@@ -215,6 +217,12 @@ BASELINE_SPEC: dict[str, tuple[str, str, str, str]] = {
     "review_approve": ("review_approve", "review-approve", "mcp", "agent"),
     "review_reject": ("review_reject", "review-reject", "mcp", "agent"),
     "review_auto_resolve": ("review_auto_resolve", "review-auto-resolve", "mcp", "agent"),
+    "near_dup_list": ("near_dup_list", "near-dup-list", "mcp", "agent"),
+    "near_dup_restore": ("near_dup_restore", "near-dup-restore", "mcp", "agent"),
+    "near_dup_discard": ("near_dup_discard", "near-dup-discard", "mcp", "agent"),
+    "card_list": ("card_list", "card-list", "mcp", "agent"),
+    "card_update": ("card_update", "card-update", "mcp", "agent"),
+    "card_history": ("card_history", "card-history", "mcp", "agent"),
     "stats": ("stats", "stats", "mcp", "agent"),
     "health": ("health", "health", "http", "agent"),
     "config_get": ("config_get", "config-get", "mcp", "agent"),
@@ -647,6 +655,44 @@ class SGME:
     def review_auto_resolve(self, days: int = 7):
         """触发超期自动消化（D-30：超 N 天未处理的待审记忆按保守直存放行）。"""
         return self._mcp("review_auto_resolve", {"days": days})
+
+    def near_dup_list(self, status: str = "pending", limit: int = 50, offset: int = 0):
+        """近似重复隔离区列表（灰区待人工复核；每条带 matched_content 供左右对照）。"""
+        return self._mcp("near_dup_list", {"status": status, "limit": limit, "offset": offset})
+
+    def near_dup_discard(self, qid: int, reason: str | None = None):
+        """丢弃一条近似重复（不写进记忆池；reason 可选，落 discard_reason）。"""
+        args: dict = {"qid": qid}
+        if reason:
+            args["reason"] = reason
+        return self._mcp("near_dup_discard", args)
+
+    def near_dup_restore(self, qid: int, reason: str | None = None):
+        """放行一条近似重复（补录进记忆池 + 向量即时回填；reason 可选）。"""
+        args: dict = {"qid": qid}
+        if reason:
+            args["reason"] = reason
+        return self._mcp("near_dup_restore", args)
+
+    def card_list(self):
+        """core 记忆卡列表（D-79）：六张卡的人属性 + 槽位定义 + 字数上限。"""
+        return self._mcp("card_list", {})
+
+    def card_update(self, card_id: str, slot_key: str, value=None, reason: str | None = None):
+        """写 core 记忆卡的一个槽位（覆盖式，旧值进历史；value=None 清除）。"""
+        args: dict = {"card_id": card_id, "slot_key": slot_key}
+        if value is not None:
+            args["value"] = value
+        if reason:
+            args["reason"] = reason
+        return self._mcp("card_update", args)
+
+    def card_history(self, card_id: str | None = None, limit: int = 50):
+        """core 记忆卡修改历史。"""
+        args: dict = {"limit": limit}
+        if card_id:
+            args["card_id"] = card_id
+        return self._mcp("card_history", args)
 
     def stats(self):
         return self._mcp("stats", {})
@@ -1173,12 +1219,58 @@ CMD_SPECS: list[dict] = [
                      "help": "超期天数阈值"}],
         "run": lambda c, a: c.review_auto_resolve(a.days),
     },
+    {
+        "cli": "near-dup-list", "help": "近似重复隔离区列表（灰区待人工复核）",
+        "options": [
+            {"dest": "status", "flag": "status", "default": "pending", "help": "状态 pending/discarded/restored"},
+            {"dest": "limit", "flag": "limit", "type": int, "default": 50, "help": "条数"},
+            {"dest": "offset", "flag": "offset", "type": int, "default": 0, "help": "偏移"},
+        ],
+        "run": lambda c, a: c.near_dup_list(a.status, a.limit, a.offset),
+    },
+    {
+        "cli": "near-dup-discard", "help": "丢弃一条近似重复（不写进记忆池）",
+        "positionals": [{"dest": "qid", "type": int, "help": "隔离行 ID"}],
+        "options": [{"dest": "reason", "flag": "reason", "help": "丢弃理由（可选）"}],
+        "run": lambda c, a: c.near_dup_discard(a.qid, a.reason),
+    },
+    {
+        "cli": "near-dup-restore", "help": "放行一条近似重复（补录进记忆池）",
+        "positionals": [{"dest": "qid", "type": int, "help": "隔离行 ID"}],
+        "options": [{"dest": "reason", "flag": "reason", "help": "放行理由（可选）"}],
+        "run": lambda c, a: c.near_dup_restore(a.qid, a.reason),
+    },
+    {
+        "cli": "card-list", "help": "core 记忆卡列表（六张卡的人属性 + 槽位定义）",
+        "options": [],
+        "run": lambda c, a: c.card_list(),
+    },
+    {
+        "cli": "card-update", "help": "写 core 记忆卡的一个槽位（覆盖式 + 留痕）",
+        "positionals": [
+            {"dest": "card_id", "help": "卡 id（identity/family/routine/preferences/principles/goals）"},
+            {"dest": "slot_key", "help": "槽位名（见 card-list 的 schema）"},
+        ],
+        "options": [
+            {"dest": "value", "flag": "value", "help": "值（多值槽用逗号分隔）"},
+            {"dest": "reason", "flag": "reason", "help": "修改理由（可选）"},
+        ],
+        "run": lambda c, a: c.card_update(a.card_id, a.slot_key, a.value, a.reason),
+    },
+    {
+        "cli": "card-history", "help": "core 记忆卡修改历史",
+        "options": [
+            {"dest": "card_id", "flag": "card-id", "help": "只看某张卡"},
+            {"dest": "limit", "flag": "limit", "type": int, "default": 50, "help": "条数"},
+        ],
+        "run": lambda c, a: c.card_history(a.card_id, a.limit),
+    },
     {"cli": "stats", "help": "引擎统计（记忆数/维度分布/水位）",
      "run": lambda c, a: c.stats()},
     # ---- MCP 层：配置 ----
     {
         "cli": "config-get", "help": "读取配置段",
-        "options": [{"dest": "section", "flag": "section", "help": "段名（l1/l2/refine/search/backup）"}],
+        "options": [{"dest": "section", "flag": "section", "help": "段名（l2_extraction/scene_aggregate/refine/search/backup）"}],
         "run": lambda c, a: c.config_get(a.section),
     },
     {

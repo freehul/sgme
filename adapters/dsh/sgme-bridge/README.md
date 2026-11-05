@@ -1,5 +1,7 @@
 # dsh-sgme — SGME 记忆引擎 DSH 插件
 
+> 当前版本 **0.6.8**（2026-11-05）：新增 6 个工具（`near_dup_list` / `near_dup_discard` / `near_dup_restore`、`card_list` / `card_update` / `card_history`）+ 事件提醒类型白名单 `eventNotifyTypes`（F2）。
+
 把 [SGME 拾光记忆引擎](https://github.com/freehul/sgme) 接入 DeepSeek Harness（DSH），让 DSH 拥有**多智能体共享的长期记忆**与**主动关怀**能力。
 
 你的 AI，从此记得你——聊过的事，它都记得，还会主动关心你。
@@ -28,7 +30,9 @@
 >
 > | DSH 版本 | 验证状态 |
 > |---|---|
-> | `0.2.0-rc.2` | ✅ typecheck + 228 测试通过（开发基线，当前本机运行版） |
+> | `0.2.0-rc.2` | ✅ typecheck + 309 测试通过（开发 / CI 验证基线） |
+>
+> 本机宿主当前为 DSH `0.2.1-rc.2`，在下面的 peer 覆盖范围内（未单列验证行）。
 >
 > peer 声明 `^0.2.0-rc.2` 覆盖 rc.2 → <0.3.0 全部版本；DSH 处于 RC 快速迭代期，**新 RC 发布后先跑一遍 rc-N 兼容验证再升级本插件**（方法见发布流程文档「RC 兼容验证」一节），验证通过前不承诺新 RC 兼容。0.1.0-rc.6 ~ rc.8 的旧版支持见 dsh-sgme 0.5.x。
 
@@ -50,7 +54,7 @@ curl http://localhost:9910/v1/health      # 返回 {"status":"ok"} 即就绪
 ```bash
 git clone https://github.com/freehul/sgme.git
 cd sgme
-python -m venv .venv                      # 需 Python 3.11+
+python -m venv .venv                      # 需 Python 3.12（项目基准解释器）
 .venv\Scripts\activate                # Windows；Linux/macOS: source .venv/bin/activate
 pip install -e .
 cp config/.env.example .env               # 填入 DEEPSEEK_API_KEY / VOLC_API_KEY 等密钥
@@ -83,7 +87,7 @@ dsh plugin --profile <你的profile> add dsh-sgme
 |---|---|---|
 | `/sgme status` 显示不可达 | SGME 本体未启动或地址不对 | 按「前置条件」装好本体，确认 `curl /v1/health` 返回 200；本地部署设 `SGME_BASE_URL=http://127.0.0.1:9910` |
 | 401 / key 无效 | agent key 未注册或过期 | 运行 `adapters/dsh/install.py` 重新注册 |
-| 插件加载报版本不兼容 | dsh 版本与插件锁定版本不符 | 本插件面向 dsh `0.2.0-rc.2`，升级 dsh 前先确认兼容 |
+| 插件加载报版本不兼容 | dsh 版本超出插件 peer 范围 | peer 为 `^0.2.0-rc.2`（覆盖 0.2.0-rc.2 → <0.3.0）；升到 0.3.x 及以上前先做 RC 兼容验证 |
 | 注入/检索超时或异常走外网 | 代理劫持 localhost | 插件 fetch 显式禁用代理；检查系统代理是否拦截 127.0.0.1 |
 | 日志去哪看 | — | 插件日志在 dsh stderr；SGME 日志在 `logs/`（本机）或 `docker logs sgme`（容器） |
 
@@ -98,14 +102,16 @@ adminKey: process.env.SGME_ADMIN_KEY
 agentId: dsh
 injectMode: daily
 syncOnTurnEnd: true
+eventNotifyTypes: [anomaly_warn, care_*]   # F2：事件提醒类型白名单（精确 type 或 前缀_*）
 ```
 
 - `baseUrl` 与密钥均通过环境变量注入（符合 SGME 密钥不落盘铁律）；`SGME_BASE_URL` 缺省指向 NAS（<NAS_IP>:9910），SGME 部署在其他机器时改环境变量即可，无需改代码；
 - 生产环境请用 SGME 的 `adapters/dsh/install.py` 注册 agent 后覆盖 dev key（install.py 已把 `SGME_BASE_URL` 一并写入 `.env`）。
+- **事件提醒白名单（F2）**：`eventNotifyTypes` 决定哪些事件类型会拼进「【SGME 事件提醒】」注入块，缺省 `[anomaly_warn, care_*]`；`memory_updated` 这类每轮都可能产生的高频事件**默认不提醒**（仍可 `signal_pull` 查看）。支持精确 type 与「前缀_*」前缀匹配，写空数组 = 彻底关掉事件提醒。
 
 ## 用法
 
-接入后，DSH 自动拥有 53 个工具（与 SGME 能力面对齐，适配器平级对账零漂移）：
+接入后，DSH 自动拥有 59 个工具（与 SGME 能力面对齐，适配器平级对账零漂移）：
 
 **检索与知识库（7）**
 - `memory_search(query, limit, dimensions, match)` — 查历史事实/偏好/决策，涉及「之前/以前/还记得」时必用；
@@ -177,6 +183,16 @@ syncOnTurnEnd: true
 - `review_approve(memory_id, note)` — 放行（恢复进主注入；幂等，已放行为 no-op）；
 - `review_reject(memory_id, reason)` — 拒绝（软删 status=rejected，可恢复；reason 必填，幂等不覆盖首次理由）；
 - `review_auto_resolve(days)` — 触发超期自动消化（超 N 天未处理按保守直存放行，notes 追加「未经人工确认」标记可复查）。
+
+**近似重复隔离区（3，v0.6.8 对齐 B313 灰区人工批复通道）**
+- `near_dup_list(status, limit, offset)` — 列隔离区（灰区）待人工裁决的新记忆：提炼时判定「像重复但拿不准」的不进记忆池，每条带 `matched_content`（被撞上的既有记忆原文）供左右对照；
+- `near_dup_discard(qid, reason)` — 丢弃（确认是重复，不写进记忆池；`reason` 落 `discard_reason`，调阈值时靠它回算）；
+- `near_dup_restore(qid, reason)` — 放行（判定是独立事实，补录进记忆池并即时回填向量；已补录的行不重复补录）。
+
+**core 记忆卡（3，v0.6.8 对齐 D-79）**
+- `card_list()` — 六张卡（identity/family/routine/preferences/principles/goals）内容 + 槽位定义 + 字数上限——即每次注入必带的那批「关于用户本人」的稳定事实；
+- `card_update(card_id, slot_key, value, reason)` — 覆盖式写一个槽位（旧值进历史；多值槽传 JSON 数组，空值清除）；**只装「人」不装「事」**，项目进度与技术细节走记忆池，写卡需用户明确授权；
+- `card_history(card_id, limit)` — 卡片修改历史（谁在何时改了什么、为什么）。
 
 > ⚠️ 写侧工具（`config_update` / `skill_put` / `skill_delete` / `skill_rename` / `refine_*` / `signal_clear`）需 **Admin Key**，且会真实改变服务端状态或消耗额度——工具描述内已加护栏，仅在用户明确要求时调用。
 

@@ -58,6 +58,7 @@ export interface Config {
   adminKey: string
   agentId: string
   injectMode: InjectMode
+  roleInject?: boolean             // 首步自动注入当前激活角色人设（默认 true）
   injectMaxTokens: number
   searchLimit: number
   projectHint?: string             // 项目名提示（用于相关记忆检索，可空）
@@ -67,6 +68,7 @@ export interface Config {
   evolveEnabled?: boolean          // W4 自进化自动触发（默认 true）
   evolveMinRounds?: number         // 费用门禁：会话消息块下限（默认 5）
   eventSubscribe?: boolean          // 2026-08-18：SGME 事件流订阅（SSE 长连，默认 true）
+  eventNotifyTypes?: string[]       // F2（2026-11-05）：注入事件提醒的类型白名单（精确 type 或 前缀_*；缺省 anomaly_warn + care_*）
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -75,6 +77,7 @@ export const Config: Schema<Config> = Schema.object({
   adminKey: Schema.string().default('').description('SGME admin key（触发提炼用）'),
   agentId: Schema.string().default('dsh').description('SGME agent id'),
   injectMode: Schema.union(['daily', 'full', 'coding', 'work']).default('daily').description('画像注入模式'),
+  roleInject: Schema.boolean().default(true).description('首步自动注入当前激活角色的人设（/v1/admin/care/active-role 非空时；换皮不换芯）'),
   injectMaxTokens: Schema.number().default(800).description('画像注入 token 上限'),
   searchLimit: Schema.number().default(5).description('检索返回条数上限'),
   projectHint: Schema.string().default('').description('项目名提示（用于相关记忆检索，可空；缺省按会话 cwd 目录名推断）'),
@@ -84,6 +87,7 @@ export const Config: Schema<Config> = Schema.object({
   evolveEnabled: Schema.boolean().default(true).description('自进化自动触发（W4：turn/end 后调 /v1/wiki/evolve/trigger，evolve 侧幂等+费用门禁兜底）'),
   evolveMinRounds: Schema.number().default(5).description('自进化费用门禁：会话消息块下限'),
   eventSubscribe: Schema.boolean().default(true).description('SGME 事件流订阅（SSE 长连，实时接收 care_*/anomaly_warn，注入提醒）'),
+  eventNotifyTypes: Schema.array(Schema.string()).default(['anomaly_warn', 'care_*']).description('注入事件提醒的类型白名单（精确 type 或 前缀_*）；memory_updated 默认不提醒（仍可 signal_pull 查看）'),
 })
 
 /**
@@ -135,14 +139,15 @@ export function apply(ctx: CordisContext, config: Config): void {
   const toolsCtx = { tools: ctx.tools }
   registerTools(toolsCtx, client, config.searchLimit, eventSubscriber)
   logger.info(
-    '工具已注册（53）：memory_search/answer/memory_get/memory_reject/memory_unreject, '
+    '工具已注册（59）：memory_search/answer/memory_get/memory_reject/memory_unreject, '
     + 'wiki_search/pages/page/page_add/page_update, inject, '
     + 'signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, '
     + 'skill_search/digest/get/list/coldstart/materialize/put/delete/rename, '
     + 'skill_catalog_version/manifest/file_get/file_put/lint, '
     + 'conversation_search/persona_fill/guard_reply/'
     + 'health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger, '
-    + 'review_list/review_approve/review_reject/review_auto_resolve, credential_list/get',
+    + 'review_list/review_approve/review_reject/review_auto_resolve, credential_list/get, '
+    + 'near_dup_list/near_dup_discard/near_dup_restore, card_list/card_update/card_history',
   )
 
   // 2. 画像首步注入（turn/start 拦截，对齐 dsh-agent-instructions 的 session/event 用法）
@@ -156,8 +161,10 @@ export function apply(ctx: CordisContext, config: Config): void {
   const disposeContext = registerContextInjection(contextCtx, client, {
     injectMode: config.injectMode,
     injectMaxTokens: config.injectMaxTokens,
+    ...(config.roleInject !== undefined ? { roleInject: config.roleInject } : {}),
     searchLimit: config.searchLimit,
     eventSubscriber,
+    ...(config.eventNotifyTypes ? { eventNotifyTypes: config.eventNotifyTypes } : {}),
     ...(projectHint ? { projectHint } : {}),
   })
   ctx.effect(() => disposeContext, 'sgme-context-injection')

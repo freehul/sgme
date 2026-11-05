@@ -562,6 +562,65 @@ var SgmeClient = class {
 		}
 		return data;
 	}
+	async cardList() {
+		const [data, err] = await this.get("/v1/admin/cards", "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] cardList failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	async cardUpdate(cardId, slotKey, value, reason) {
+		const body = { value };
+		if (reason) body.reason = reason;
+		const [data, err] = await this.post(`/v1/admin/cards/${encodeURIComponent(cardId)}/slots/${encodeURIComponent(slotKey)}`, body, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] cardUpdate failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	async cardHistory(cardId, limit = 50) {
+		const path = cardId ? `/v1/admin/cards/${encodeURIComponent(cardId)}/history?limit=${limit}` : `/v1/admin/cards/history?limit=${limit}`;
+		const [data, err] = await this.get(path, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] cardHistory failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 隔离区列表（GET /v1/admin/near-dup/quarantine，Agent Key）。失败返回 null。 */
+	async nearDupList(status = "pending", limit = 50, offset = 0) {
+		const params = new URLSearchParams({
+			status,
+			limit: String(limit),
+			offset: String(offset)
+		});
+		const [data, err] = await this.get(`/v1/admin/near-dup/quarantine?${params.toString()}`, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] nearDupList failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 丢弃一条隔离记录（POST /v1/admin/near-dup/{id}/discard）。失败返回 null。 */
+	async nearDupDiscard(qid, reason) {
+		const [data, err] = await this.post(`/v1/admin/near-dup/${qid}/discard`, { reason: reason ?? null }, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] nearDupDiscard failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
+	/** 放行一条隔离记录（POST /v1/admin/near-dup/{id}/restore，补录进记忆池）。 */
+	async nearDupRestore(qid, reason) {
+		const [data, err] = await this.post(`/v1/admin/near-dup/${qid}/restore`, { reason: reason ?? null }, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] nearDupRestore failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
 	/** 待审列表（GET /v1/admin/review/pending，Agent Key）。失败返回 null。 */
 	async reviewPending(limit, offset, dimension) {
 		const params = new URLSearchParams({
@@ -3311,16 +3370,47 @@ function filterEventsByCareLevel(events, level) {
 	if (level === "silent") return events.filter((e) => !e.type.startsWith("care_"));
 	return events.filter((e) => !e.type.startsWith("care_") || KEY_CARE_TYPES.has(e.type));
 }
+/**
+* F2（2026-11-05）：事件提醒类型白名单默认值——只提醒「需要主动处理」的事件。
+*
+* memory_updated 每轮对话都会产生（生产已堆积数千条），默认**不进**上下文；需要查看时
+* 仍可 signal_pull 拉取。care_* 用「前缀_*」覆盖全部关怀子类型。
+*/
+const DEFAULT_EVENT_NOTIFY_TYPES = ["anomaly_warn", "care_*"];
+/** 单条 type 是否命中白名单项：支持精确 type 与「前缀_*」前缀匹配（单独 * = 全放行）。 */
+function matchesNotifyPattern(type, pattern) {
+	const p = pattern.trim();
+	if (!p) return false;
+	if (p === "*") return true;
+	if (p.endsWith("*")) return type.startsWith(p.slice(0, -1));
+	return type === p;
+}
+/**
+* F2：按类型白名单过滤事件（导出供测试）。
+*
+* - patterns 省略（undefined）= 用默认白名单；
+* - 显式空数组 = 一律不提醒（想彻底关掉事件提醒时用）。
+*/
+function filterEventsByNotifyTypes(events, patterns) {
+	const list = patterns ?? DEFAULT_EVENT_NOTIFY_TYPES;
+	if (!list.length) return [];
+	return events.filter((e) => list.some((p) => matchesNotifyPattern(e.type, p)));
+}
 /** 拼接事件提醒文本（摘要化，2026-08-20 修复）。
 *
 * 此前（44a7b85）把每条 care 信号全文 JSON 附在提醒里 → 每次注入都携带完整
 * payload，上下文重复膨胀。现改为摘要：只给类型+数量+事件 id，
 * agent 需要详情时调 signal_pull（服务端仍是权威源）。
+*
+* F2（2026-11-05）：入口先按类型白名单过滤（默认 anomaly_warn + care_*）——
+* 海量 memory_updated 不再挤进系统提示；过滤后为空返回空串，调用方跳过注入。
 */
-function buildEventNoticeText(events) {
-	const care = events.filter((e) => e.type.startsWith("care_"));
-	const warn = events.filter((e) => e.type === "anomaly_warn");
-	const other = events.filter((e) => !e.type.startsWith("care_") && e.type !== "anomaly_warn");
+function buildEventNoticeText(events, notifyTypes) {
+	const targets = filterEventsByNotifyTypes(events, notifyTypes);
+	if (!targets.length) return "";
+	const care = targets.filter((e) => e.type.startsWith("care_"));
+	const warn = targets.filter((e) => e.type === "anomaly_warn");
+	const other = targets.filter((e) => !e.type.startsWith("care_") && e.type !== "anomaly_warn");
 	const parts = [];
 	if (care.length) parts.push(`关怀信号 ${care.length} 条`);
 	if (warn.length) parts.push(`异常告警 ${warn.length} 条`);
@@ -3331,7 +3421,7 @@ function buildEventNoticeText(events) {
 		"如需处理请调 signal_pull 拉取详情，按信号消费纪律处理：signal_claim 原子认领 → 主动关怀/处理 → signal_ack 回执。",
 		"不阻塞当前任务，处理完即可。"
 	].join("\n");
-	const eventIds = events.slice(0, 5).map((e) => `${e.type}#${e.event_id}`);
+	const eventIds = targets.slice(0, 5).map((e) => `${e.type}#${e.event_id}`);
 	if (!eventIds.length) return head;
 	return head + "\n【事件列表（最多5条，详情请 signal_pull）】\n" + eventIds.join("\n");
 }
@@ -3408,6 +3498,21 @@ function extractColdstartRepairHint(profile) {
 *
 * @returns 清理函数（由 ctx.effect 调用方管理生命周期）
 */
+/**
+* 角色人设注入块（2026-11-05）：服务端 active_role 只存状态，适配器需自行装配。
+* roleAssemble 恒带 render=true，{{char}}/{{user}} 宏已由服务端渲染。
+*/
+function buildRoleBlock(card) {
+	const name = card.role_name || card.role_id;
+	const prompt = (card.system_prompt ?? "").trim();
+	if (!prompt) return "";
+	return [
+		`【当前沟通角色：${name}】`,
+		"下面是你此刻的角色设定——语气、称呼、表达方式按它来；记忆与事实仍以 SGME 记忆为准（换角色只换沟通外皮，不换记忆池）。",
+		"",
+		prompt
+	].join("\n");
+}
 function registerContextInjection(ctx, client, config) {
 	let profileCache = null;
 	let careLevel = "session";
@@ -3427,16 +3532,67 @@ function registerContextInjection(ctx, client, config) {
 	let injected = false;
 	let coldRepaired = false;
 	let coldProbeUserText = "";
+	let roleCache = null;
+	let roleFetching = null;
+	let pendingRoleUpdate = null;
+	const roleEnabled = config.roleInject !== false;
+	/** 拉取当前激活角色人设（幂等；角色变化时置 pendingRoleUpdate 供下一步注入）。 */
+	const fetchRole = () => {
+		if (!roleEnabled) return Promise.resolve();
+		if (typeof client.roleActiveGet !== "function" || typeof client.roleAssemble !== "function") return Promise.resolve();
+		if (roleFetching) return roleFetching;
+		roleFetching = (async () => {
+			try {
+				const roleId = (await client.roleActiveGet())?.role_id ?? null;
+				if (!roleId) {
+					roleCache = null;
+					return;
+				}
+				if (roleCache?.roleId === roleId) return;
+				const card = await client.roleAssemble(roleId, config.injectMode);
+				const text = card ? buildRoleBlock(card) : "";
+				if (!text) return;
+				const roleName = card?.role_name || roleId;
+				if (!roleCache && injected) pendingRoleUpdate = [
+					`【角色激活：${roleName}】`,
+					"从现在这句话起，按这个角色说话（记忆与事实不变）。",
+					"",
+					text
+				].join("\n");
+				else if (roleCache && roleCache.roleId !== roleId) pendingRoleUpdate = [
+					`【角色切换：${roleCache.roleName} → ${roleName}】`,
+					"从现在这句话起，按新角色说话（记忆与事实不变）。",
+					"",
+					text
+				].join("\n");
+				roleCache = {
+					roleId,
+					roleName,
+					text
+				};
+				ctx.logger.info(`[SGME 角色] 已加载 ${roleName}（${roleId}）人设 ${text.length} 字符`);
+			} catch (e) {
+				ctx.logger.warn(`[SGME 角色人设拉取失败] ${e instanceof Error ? e.message : String(e)}`);
+			}
+		})().finally(() => {
+			roleFetching = null;
+		});
+		return roleFetching;
+	};
 	/** 预拉取画像 + 相关记忆（turn/start 触发，失败不置位，下轮重试）。 */
 	const prefetch = (projectHint) => {
 		if (fetching) return;
 		fetching = (async () => {
 			try {
-				const [profile, related] = await Promise.all([client.inject({ mode: config.injectMode }), projectHint ? client.search({
-					query: projectHint,
-					scopes: ["memory"],
-					limit: config.searchLimit
-				}) : Promise.resolve(null)]);
+				const [profile, related] = await Promise.all([
+					client.inject({ mode: config.injectMode }),
+					projectHint ? client.search({
+						query: projectHint,
+						scopes: ["memory"],
+						limit: config.searchLimit
+					}) : Promise.resolve(null),
+					fetchRole()
+				]);
 				const text = buildInjectionText(profile, related);
 				if (text) profileCache = {
 					text,
@@ -3455,17 +3611,18 @@ function registerContextInjection(ctx, client, config) {
 		const unnotified = config.eventSubscriber?.unnotifiedEvents() ?? [];
 		if (unnotified.length && injected) {
 			const level = await ensureCareLevel();
-			const filtered = filterEventsByCareLevel(unnotified, level);
-			if (filtered.length) {
+			const notified = filterEventsByNotifyTypes(filterEventsByCareLevel(unnotified, level), config.eventNotifyTypes);
+			const evText = buildEventNoticeText(notified, config.eventNotifyTypes);
+			if (evText) {
 				const evMsg = createUserMessage({
 					content: [{
 						type: "text",
-						text: buildEventNoticeText(filtered)
+						text: evText
 					}],
 					source: { kind: "dsh-sgme" }
 				});
 				if (!decision.messages.some((m) => sameContextPayload(m, evMsg))) {
-					ctx.logger.info(`[SGME 事件提醒] 注入 ${filtered.length} 条（care_level=${level}，step ${payload.step}）`);
+					ctx.logger.info(`[SGME 事件提醒] 注入 ${notified.length} 条（care_level=${level}，step ${payload.step}）`);
 					config.eventSubscriber?.markNotified(unnotified.map((e) => e.event_id));
 					return {
 						kind: "enter",
@@ -3505,6 +3662,23 @@ function registerContextInjection(ctx, client, config) {
 				} catch (e) {
 					ctx.logger.warn(`[SGME 冷场修复失败] ${e instanceof Error ? e.message : String(e)}`);
 				}
+			}
+		}
+		if (injected && pendingRoleUpdate) {
+			const roleMsg = createUserMessage({
+				content: [{
+					type: "text",
+					text: pendingRoleUpdate
+				}],
+				source: { kind: "dsh-sgme" }
+			});
+			pendingRoleUpdate = null;
+			if (!decision.messages.some((m) => sameContextPayload(m, roleMsg))) {
+				ctx.logger.info("[SGME 角色切换] 已注入新角色人设");
+				return {
+					kind: "enter",
+					messages: [...decision.messages, roleMsg]
+				};
 			}
 		}
 		if (injected) return decision;
@@ -3554,10 +3728,13 @@ function registerContextInjection(ctx, client, config) {
 			}
 		}
 		if (!profileCache) return decision;
+		if (roleEnabled && !roleCache) await fetchRole();
 		injected = true;
 		const unnotifiedFirstTurn = config.eventSubscriber?.unnotifiedEvents() ?? [];
-		const filteredFirstTurn = filterEventsByCareLevel(unnotifiedFirstTurn, unnotifiedFirstTurn.length ? await ensureCareLevel() : "session");
-		const injectText = filteredFirstTurn.length ? profileCache.text + "\n\n" + buildEventNoticeText(filteredFirstTurn) : profileCache.text;
+		const noticedFirstTurn = filterEventsByNotifyTypes(filterEventsByCareLevel(unnotifiedFirstTurn, unnotifiedFirstTurn.length ? await ensureCareLevel() : "session"), config.eventNotifyTypes);
+		const firstTurnNotice = noticedFirstTurn.length ? buildEventNoticeText(noticedFirstTurn, config.eventNotifyTypes) : "";
+		let injectText = firstTurnNotice ? profileCache.text + "\n\n" + firstTurnNotice : profileCache.text;
+		if (roleCache) injectText = roleCache.text + "\n\n" + injectText;
 		if (unnotifiedFirstTurn.length) config.eventSubscriber?.markNotified(unnotifiedFirstTurn.map((e) => e.event_id));
 		const desired = createUserMessage({
 			content: [{
@@ -3579,6 +3756,7 @@ function registerContextInjection(ctx, client, config) {
 		const agent = payload?.agent;
 		const projectHint = config.projectHint || process.env.SGME_PROJECT_HINT || (agent?.session?.header?.cwd ? agent.session.header.cwd.split(/[\\/]/).filter(Boolean).pop() : void 0);
 		prefetch(projectHint);
+		fetchRole();
 	});
 	const disposePreStep = ctx.on("agent/pre-step", handler);
 	return () => {
@@ -4498,6 +4676,12 @@ function registerTools(ctx, client, defaultLimit, eventSubscriber) {
 	ctx.tools.register(createReviewApproveTool(client));
 	ctx.tools.register(createReviewRejectTool(client));
 	ctx.tools.register(createReviewAutoResolveTool(client));
+	ctx.tools.register(createNearDupListTool(client));
+	ctx.tools.register(createNearDupDiscardTool(client));
+	ctx.tools.register(createNearDupRestoreTool(client));
+	ctx.tools.register(createCardListTool(client));
+	ctx.tools.register(createCardUpdateTool(client));
+	ctx.tools.register(createCardHistoryTool(client));
 	ctx.tools.register(createSkillMaterializeTool(client));
 	ctx.tools.register(createSkillPutTool(client));
 	ctx.tools.register(createSkillDeleteTool(client));
@@ -6179,6 +6363,220 @@ function createCredentialGetTool(client) {
 		}
 	});
 }
+/** 创建 near_dup_list 工具（灰区待人工复核列表）。 */
+function createNearDupListTool(client) {
+	return defineTool({
+		name: "near_dup_list",
+		description: [
+			"列出 SGME 近似重复隔离区（灰区）：提炼时判定「像重复但拿不准」的新记忆不进记忆池，",
+			"暂存隔离区等人工裁决是重复还是独立事实。每条带 matched_content（被撞上的既有记忆原文）",
+			"供左右对照。"
+		].join(" "),
+		parameters: {
+			status: {
+				type: "string",
+				description: "pending/discarded/restored（默认 pending）"
+			},
+			limit: {
+				type: "number",
+				description: "页大小（1-200，默认 50）"
+			},
+			offset: {
+				type: "number",
+				description: "跳过条数（默认 0）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.nearDupList(a.status ?? "pending", a.limit ?? 50, a.offset ?? 0);
+			if (!resp) return "[near_dup_list 失败：SGME Gateway 不可达，稍后重试]";
+			const items = resp.items ?? [];
+			if (!items.length) return "near_dup_list 隔离区为空";
+			const lines = items.map((it) => {
+				const score = Number(it.score ?? 0).toFixed(3);
+				const brief = String(it.content ?? "").slice(0, 60);
+				return "- #" + String(it.id) + "｜相似度 " + score + "｜" + brief;
+			});
+			return ["near_dup_list 共 " + String(resp.total ?? items.length) + " 条，本页 " + items.length + " 条"].concat(lines).join("\n");
+		}
+	});
+}
+/** 创建 near_dup_discard 工具（丢弃灰区记录，不进记忆池）。 */
+function createNearDupDiscardTool(client) {
+	return defineTool({
+		name: "near_dup_discard",
+		description: ["丢弃一条灰区隔离记录：确认是重复，不写进记忆池。reason 可选但建议填", "（落 discard_reason，调阈值时靠它回算「丢掉的是哪类」）。仅 pending 可丢弃。"].join(" "),
+		parameters: {
+			qid: {
+				type: "number",
+				required: true,
+				description: "隔离行 ID（near_dup_list 可见）"
+			},
+			reason: {
+				type: "string",
+				description: "丢弃理由（可选）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.nearDupDiscard(a.qid, a.reason ?? null);
+			if (!resp) return "[near_dup_discard 失败：SGME Gateway 不可达或 id 非法]";
+			return "[near_dup_discard #" + a.qid + " → " + String(resp.status ?? "discarded") + "]";
+		}
+	});
+}
+/** 创建 near_dup_restore 工具（放行灰区记录，补录进记忆池）。 */
+function createNearDupRestoreTool(client) {
+	return defineTool({
+		name: "near_dup_restore",
+		description: ["放行一条灰区隔离记录：判定其实是独立事实，补录进记忆池并即时回填向量。", "reason 可选（落 restore_reason）。已补录过的行会报错，不重复补录。"].join(" "),
+		parameters: {
+			qid: {
+				type: "number",
+				required: true,
+				description: "隔离行 ID（near_dup_list 可见）"
+			},
+			reason: {
+				type: "string",
+				description: "放行理由（可选）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.nearDupRestore(a.qid, a.reason ?? null);
+			if (!resp) return "[near_dup_restore 失败：SGME Gateway 不可达或该行已补录]";
+			return "[near_dup_restore #" + a.qid + " → memory_id=" + String(resp.memory_id ?? "?") + "]";
+		}
+	});
+}
+/** 创建 card_list 工具（六张卡的人属性 + 槽位定义）。 */
+function createCardListTool(client) {
+	return defineTool({
+		name: "card_list",
+		description: ["查看 core 记忆卡：关于用户本人的稳定事实（身份/家庭/作息/偏好/协作准则/目标），", "这是每次注入必带的那批信息。返回六张卡内容 + 槽位定义 + 字数上限。"].join(" "),
+		parameters: {},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(_args, _exec) {
+			const resp = await client.cardList();
+			if (!resp) return "[card_list 失败：SGME Gateway 不可达]";
+			const cards = resp.cards ?? [];
+			if (!cards.length) return "[card_list 无卡片]";
+			const lines = cards.map((c) => {
+				const filled = c.filled ? "已填" : "空";
+				return "- " + String(c.card_id) + "（" + String(c.title) + "）" + filled;
+			});
+			return ["[card_list 共 " + cards.length + " 张]"].concat(lines).join("\n");
+		}
+	});
+}
+/** 创建 card_update 工具（写一个槽位，覆盖式 + 留痕）。 */
+function createCardUpdateTool(client) {
+	return defineTool({
+		name: "card_update",
+		description: [
+			"写 core 记忆卡的一个槽位（覆盖式更新，旧值进历史）。card_id/slot_key 见 card_list 的 schema；",
+			"family 的「成员」是多值槽（传数组）。value 传空 = 清除该槽位。",
+			"只装「人」不装「事」：项目进度与技术细节走记忆池，不要写卡；写卡需用户明确授权。"
+		].join(" "),
+		parameters: {
+			card_id: {
+				type: "string",
+				required: true,
+				description: "卡 id：identity/family/routine/preferences/principles/goals"
+			},
+			slot_key: {
+				type: "string",
+				required: true,
+				description: "槽位名（见 card_list 的 schema）"
+			},
+			value: {
+				type: "string",
+				description: "值（多值槽用 JSON 数组字符串）"
+			},
+			reason: {
+				type: "string",
+				description: "修改理由（可选，写进历史）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			let v = a.value;
+			if (typeof v === "string" && v.trim().startsWith("[")) try {
+				v = JSON.parse(v);
+			} catch {}
+			const resp = await client.cardUpdate(a.card_id, a.slot_key, v, a.reason ?? null);
+			if (!resp) return "[card_update 失败：Gateway 不可达或参数非法（卡片/槽位不存在、超字数上限）]";
+			return "[card_update " + a.card_id + "." + a.slot_key + " → v" + String(resp.version ?? "?") + "]";
+		}
+	});
+}
+/** 创建 card_history 工具（修改历史）。 */
+function createCardHistoryTool(client) {
+	return defineTool({
+		name: "card_history",
+		description: "core 记忆卡修改历史（谁在何时改了什么、为什么）。",
+		parameters: {
+			card_id: {
+				type: "string",
+				description: "只看某张卡（省略=全部）"
+			},
+			limit: {
+				type: "number",
+				description: "条数（默认 50）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.cardHistory(a.card_id ?? null, a.limit ?? 50);
+			if (!resp) return "[card_history 失败：SGME Gateway 不可达]";
+			const items = resp.items ?? [];
+			if (!items.length) return "[card_history 暂无修改记录]";
+			const lines = items.map((i) => "- " + String(i.changed_at) + " " + String(i.card_id) + "." + String(i.slot_key) + " → " + String(i.new_value ?? "（清除）"));
+			return ["[card_history 共 " + items.length + " 条]"].concat(lines).join("\n");
+		}
+	});
+}
 //#endregion
 //#region src/commands.ts
 /**
@@ -6750,6 +7148,7 @@ const Config = Schema.object({
 		"coding",
 		"work"
 	]).default("daily").description("画像注入模式"),
+	roleInject: Schema.boolean().default(true).description("首步自动注入当前激活角色的人设（/v1/admin/care/active-role 非空时；换皮不换芯）"),
 	injectMaxTokens: Schema.number().default(800).description("画像注入 token 上限"),
 	searchLimit: Schema.number().default(5).description("检索返回条数上限"),
 	projectHint: Schema.string().default("").description("项目名提示（用于相关记忆检索，可空；缺省按会话 cwd 目录名推断）"),
@@ -6758,7 +7157,8 @@ const Config = Schema.object({
 	turnBatchSize: Schema.number().default(1).description("入库攒批大小（v1=1 即每 turn 即 append）"),
 	evolveEnabled: Schema.boolean().default(true).description("自进化自动触发（W4：turn/end 后调 /v1/wiki/evolve/trigger，evolve 侧幂等+费用门禁兜底）"),
 	evolveMinRounds: Schema.number().default(5).description("自进化费用门禁：会话消息块下限"),
-	eventSubscribe: Schema.boolean().default(true).description("SGME 事件流订阅（SSE 长连，实时接收 care_*/anomaly_warn，注入提醒）")
+	eventSubscribe: Schema.boolean().default(true).description("SGME 事件流订阅（SSE 长连，实时接收 care_*/anomaly_warn，注入提醒）"),
+	eventNotifyTypes: Schema.array(Schema.string()).default(["anomaly_warn", "care_*"]).description("注入事件提醒的类型白名单（精确 type 或 前缀_*）；memory_updated 默认不提醒（仍可 signal_pull 查看）")
 });
 /**
 * 插件入口（Cordis apply）。
@@ -6794,7 +7194,7 @@ function apply(ctx, config) {
 		logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`);
 	}
 	registerTools({ tools: ctx.tools }, client, config.searchLimit, eventSubscriber);
-	logger.info("工具已注册（53）：memory_search/answer/memory_get/memory_reject/memory_unreject, wiki_search/pages/page/page_add/page_update, inject, signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, skill_search/digest/get/list/coldstart/materialize/put/delete/rename, skill_catalog_version/manifest/file_get/file_put/lint, conversation_search/persona_fill/guard_reply/health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger, review_list/review_approve/review_reject/review_auto_resolve, credential_list/get");
+	logger.info("工具已注册（59）：memory_search/answer/memory_get/memory_reject/memory_unreject, wiki_search/pages/page/page_add/page_update, inject, signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, skill_search/digest/get/list/coldstart/materialize/put/delete/rename, skill_catalog_version/manifest/file_get/file_put/lint, conversation_search/persona_fill/guard_reply/health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger, review_list/review_approve/review_reject/review_auto_resolve, credential_list/get, near_dup_list/near_dup_discard/near_dup_restore, card_list/card_update/card_history");
 	const contextCtx = {
 		on: ctx.on,
 		logger: {
@@ -6806,8 +7206,10 @@ function apply(ctx, config) {
 	const disposeContext = registerContextInjection(contextCtx, client, {
 		injectMode: config.injectMode,
 		injectMaxTokens: config.injectMaxTokens,
+		...config.roleInject !== void 0 ? { roleInject: config.roleInject } : {},
 		searchLimit: config.searchLimit,
 		eventSubscriber,
+		...config.eventNotifyTypes ? { eventNotifyTypes: config.eventNotifyTypes } : {},
 		...projectHint ? { projectHint } : {}
 	});
 	ctx.effect(() => disposeContext, "sgme-context-injection");

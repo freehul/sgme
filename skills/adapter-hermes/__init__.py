@@ -1379,6 +1379,81 @@ class SGMEProvider(MemoryProvider):
             },
         },
         {
+            "name": "sgme_near_dup_list",
+            "description": "查看 SGME 近似重复隔离区（灰区）：提炼时判定「像重复但拿不准」的新记忆"
+                           "不进记忆池、暂存此处，等人工判是重复还是独立事实。每条带 matched_content"
+                           "（被撞上的既有记忆原文）供左右对照。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "pending/discarded/restored（默认 pending）"},
+                    "limit": {"type": "integer", "description": "页大小 1-200（默认 50）"},
+                    "offset": {"type": "integer", "description": "跳过条数（默认 0）"},
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "sgme_near_dup_discard",
+            "description": "丢弃一条灰区隔离记录：确认是重复，不写进记忆池。reason 可选但建议填"
+                           "（落 discard_reason，调阈值时靠它回算「丢掉的是哪类」）。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "qid": {"type": "integer", "description": "隔离行 ID（sgme_near_dup_list 可见）"},
+                    "reason": {"type": "string", "description": "丢弃理由（可选）"},
+                },
+                "required": ["qid"],
+            },
+        },
+        {
+            "name": "sgme_near_dup_restore",
+            "description": "放行一条灰区隔离记录：判定其实是独立事实，补录进记忆池并即时回填向量。"
+                           "reason 可选（落 restore_reason）。已补录过的行会报错，不重复补录。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "qid": {"type": "integer", "description": "隔离行 ID（sgme_near_dup_list 可见）"},
+                    "reason": {"type": "string", "description": "放行理由（可选）"},
+                },
+                "required": ["qid"],
+            },
+        },
+        {
+            "name": "sgme_card_list",
+            "description": "查看 core 记忆卡（D-79）：关于用户本人的稳定事实——身份/家庭/作息/偏好/协作准则/目标，"
+                           "这是每次注入必带的那批信息。返回六张卡内容 + 槽位定义 + 字数上限。需管理员 Key。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+        {
+            "name": "sgme_card_update",
+            "description": "写 core 记忆卡的一个槽位（覆盖式更新，旧值进历史）。card_id/slot_key 见 sgme_card_list 的 schema；"
+                           "family 的「成员」是多值槽（传数组）。value 传空 = 清除该槽位。"
+                           "⚠️ 只装「人」不装「事」：项目进度与技术细节走记忆池，不要写卡；写卡需用户明确授权。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string", "description": "卡 id：identity/family/routine/preferences/principles/goals"},
+                    "slot_key": {"type": "string", "description": "槽位名（见 sgme_card_list 的 schema）"},
+                    "value": {"type": "string", "description": "值；多值槽用换行或 JSON 数组字符串"},
+                    "reason": {"type": "string", "description": "修改理由（可选，写进历史）"},
+                },
+                "required": ["card_id", "slot_key"],
+            },
+        },
+        {
+            "name": "sgme_card_history",
+            "description": "core 记忆卡修改历史（谁在何时改了什么、为什么）。需管理员 Key。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "card_id": {"type": "string", "description": "只看某张卡（省略=全部）"},
+                    "limit": {"type": "integer", "description": "条数（默认 50）"},
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "sgme_refine_trigger",
             "description": "同步触发提炼：给 file_id 提炼单个会话原文，或扫 status=new 批量提炼。"
                            "⚠️ 同步阻塞直到完成且真实消耗 LLM 额度；批量任务优先用 sgme_refine_batch（异步）。"
@@ -1432,12 +1507,12 @@ class SGMEProvider(MemoryProvider):
         },
         {
             "name": "sgme_config_get",
-            "description": "读取 SGME 服务端运行时配置（整体读或按段读：l1/l2/refine/search/backup 等）。"
+            "description": "读取 SGME 服务端运行时配置（整体读或按段读：l2_extraction/scene_aggregate/refine/search/backup 等）。"
                            "用于核实服务端实际生效的配置值。需管理员 Key。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "section": {"type": "string", "description": "配置段名（l1/l2/refine/search/backup）；省略返回全部"},
+                    "section": {"type": "string", "description": "配置段名（l2_extraction/scene_aggregate/refine/search/backup）；省略返回全部"},
                 },
                 "required": [],
             },
@@ -1450,7 +1525,7 @@ class SGMEProvider(MemoryProvider):
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "section": {"type": "string", "description": "要更新的配置段名（l1/l2/refine/search/backup）"},
+                    "section": {"type": "string", "description": "要更新的配置段名（l2_extraction/scene_aggregate/refine/search/backup）"},
                     "values": {"type": "object", "description": "该段的键值对（只传要改的键，未传的保留）"},
                 },
                 "required": ["section", "values"],
@@ -2227,6 +2302,106 @@ class SGMEProvider(MemoryProvider):
         if err:
             return self._err(f"触发自动消化失败: {err}")
         return self._ok(data if isinstance(data, dict) else {"resolved": 0})
+
+    def _t_near_dup_list(self, args: Dict[str, Any]) -> str:
+        """sgme_near_dup_list：近似重复隔离区列表（灰区待人工复核）。需管理员 Key。"""
+        params: Dict[str, Any] = {
+            "status": _arg_str(args, "status") or "pending",
+            "limit": _clamp_limit(args.get("limit"), 50, 200),
+            "offset": _arg_int(args.get("offset"), 0, minimum=0),
+        }
+        data, err = self._request(
+            "GET", "/v1/admin/near-dup/quarantine", key="admin", params=params
+        )
+        if err:
+            return self._err(f"查询近似重复隔离区失败: {err}")
+        if not isinstance(data, dict):
+            return self._err("查询近似重复隔离区响应异常")
+        items = data.get("items")
+        return self._ok({
+            "total": data.get("total", len(items) if isinstance(items, list) else 0),
+            "count": len(items) if isinstance(items, list) else 0,
+            "items": items if isinstance(items, list) else [],
+            "limit": params["limit"], "offset": params["offset"],
+        })
+
+    def _t_near_dup_discard(self, args: Dict[str, Any]) -> str:
+        """sgme_near_dup_discard：丢弃一条灰区隔离记录（不进记忆池）。需管理员 Key。"""
+        qid = _arg_int(args.get("qid"), 0, minimum=1)
+        if not qid:
+            return self._err("缺少 qid（隔离行 ID）")
+        body: Dict[str, Any] = {}
+        reason = _arg_str(args, "reason", 500)
+        if reason:
+            body["reason"] = reason
+        data, err = self._request(
+            "POST", f"/v1/admin/near-dup/{qid}/discard", key="admin", json_body=body
+        )
+        if err:
+            return self._err(f"丢弃失败（qid={qid}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"id": qid, "status": "discarded"})
+
+    def _t_near_dup_restore(self, args: Dict[str, Any]) -> str:
+        """sgme_near_dup_restore：放行一条灰区隔离记录（补录进记忆池）。需管理员 Key。"""
+        qid = _arg_int(args.get("qid"), 0, minimum=1)
+        if not qid:
+            return self._err("缺少 qid（隔离行 ID）")
+        body: Dict[str, Any] = {}
+        reason = _arg_str(args, "reason", 500)
+        if reason:
+            body["reason"] = reason
+        data, err = self._request(
+            "POST", f"/v1/admin/near-dup/{qid}/restore", key="admin", json_body=body
+        )
+        if err:
+            return self._err(f"放行失败（qid={qid}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"id": qid, "status": "restored"})
+
+    def _t_card_list(self, args: Dict[str, Any]) -> str:
+        """sgme_card_list：core 记忆卡列表。需管理员 Key。"""
+        data, err = self._request("GET", "/v1/admin/cards", key="agent")
+        if err:
+            return self._err(f"查询记忆卡失败: {err}")
+        if not isinstance(data, dict):
+            return self._err("查询记忆卡响应异常")
+        cards = data.get("cards")
+        return self._ok({
+            "total": data.get("total", len(cards) if isinstance(cards, list) else 0),
+            "cards": cards if isinstance(cards, list) else [],
+        })
+
+    def _t_card_update(self, args: Dict[str, Any]) -> str:
+        """sgme_card_update：写 core 记忆卡的一个槽位。需管理员 Key。"""
+        card_id = _arg_str(args, "card_id")
+        slot_key = _arg_str(args, "slot_key")
+        if not card_id or not slot_key:
+            return self._err("缺少 card_id 或 slot_key")
+        body: Dict[str, Any] = {}
+        value = args.get("value")
+        if value is not None:
+            body["value"] = value
+        reason = _arg_str(args, "reason", 500)
+        if reason:
+            body["reason"] = reason
+        data, err = self._request(
+            "POST", f"/v1/admin/cards/{_path_seg(card_id)}/slots/{_path_seg(slot_key)}",
+            key="agent", json_body=body,
+        )
+        if err:
+            return self._err(f"写记忆卡失败（{card_id}.{slot_key}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"card_id": card_id, "slot_key": slot_key})
+
+    def _t_card_history(self, args: Dict[str, Any]) -> str:
+        """sgme_card_history：core 记忆卡修改历史。需管理员 Key。"""
+        params: Dict[str, Any] = {"limit": _clamp_limit(args.get("limit"), 50, 200)}
+        card_id = _arg_str(args, "card_id")
+        path = "/v1/admin/cards/history"
+        if card_id:
+            path = f"/v1/admin/cards/{_path_seg(card_id)}/history"
+        data, err = self._request("GET", path, key="agent", params=params)
+        if err:
+            return self._err(f"查询卡片历史失败: {err}")
+        return self._ok(data if isinstance(data, dict) else {})
 
     def _t_refine_trigger(self, args: Dict[str, Any]) -> str:
         """sgme_refine_trigger：同步提炼（阻塞 + 消耗 LLM 额度）。需管理员 Key。"""

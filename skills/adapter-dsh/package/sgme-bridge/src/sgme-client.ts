@@ -1382,6 +1382,107 @@ export class SgmeClient {
     return data
   }
 
+  // ---------- core 记忆卡（D-79，2026-11-05） ----------
+
+  async cardList(): Promise<Record<string, unknown> | null> {
+    const [data, err] = await this.get<Record<string, unknown>>("/v1/admin/cards", "agent")
+    if (err) {
+      console.warn(`[sgme-bridge] cardList failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  async cardUpdate(
+    cardId: string,
+    slotKey: string,
+    value: unknown,
+    reason?: string | null,
+  ): Promise<Record<string, unknown> | null> {
+    const body: Record<string, unknown> = { value }
+    if (reason) body.reason = reason
+    const [data, err] = await this.post<Record<string, unknown>>(
+      `/v1/admin/cards/${encodeURIComponent(cardId)}/slots/${encodeURIComponent(slotKey)}`,
+      body,
+      "agent",
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] cardUpdate failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  async cardHistory(cardId?: string | null, limit = 50): Promise<Record<string, unknown> | null> {
+    const path = cardId
+      ? `/v1/admin/cards/${encodeURIComponent(cardId)}/history?limit=${limit}`
+      : `/v1/admin/cards/history?limit=${limit}`
+    const [data, err] = await this.get<Record<string, unknown>>(path, "agent")
+    if (err) {
+      console.warn(`[sgme-bridge] cardHistory failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  // ---------- 近似重复隔离区（2026-11-05，B313：灰区人工批复通道） ----------
+
+  /** 隔离区列表（GET /v1/admin/near-dup/quarantine，Agent Key）。失败返回 null。 */
+  async nearDupList(
+    status = 'pending',
+    limit = 50,
+    offset = 0,
+  ): Promise<Record<string, unknown> | null> {
+    const params = new URLSearchParams({
+      status,
+      limit: String(limit),
+      offset: String(offset),
+    })
+    const [data, err] = await this.get<Record<string, unknown>>(
+      `/v1/admin/near-dup/quarantine?${params.toString()}`,
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] nearDupList failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 丢弃一条隔离记录（POST /v1/admin/near-dup/{id}/discard）。失败返回 null。 */
+  async nearDupDiscard(
+    qid: number,
+    reason?: string | null,
+  ): Promise<Record<string, unknown> | null> {
+    const [data, err] = await this.post<Record<string, unknown>>(
+      `/v1/admin/near-dup/${qid}/discard`,
+      { reason: reason ?? null },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] nearDupDiscard failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 放行一条隔离记录（POST /v1/admin/near-dup/{id}/restore，补录进记忆池）。 */
+  async nearDupRestore(
+    qid: number,
+    reason?: string | null,
+  ): Promise<Record<string, unknown> | null> {
+    const [data, err] = await this.post<Record<string, unknown>>(
+      `/v1/admin/near-dup/${qid}/restore`,
+      { reason: reason ?? null },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] nearDupRestore failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
   // ---------- 待审记忆队列（D-30：needs_review 闸门的人工放行/拒绝） ----------
 
   /** 待审列表（GET /v1/admin/review/pending，Agent Key）。失败返回 null。 */
