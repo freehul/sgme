@@ -2,7 +2,9 @@
 
 - refine_file(file_id): Session 级增量提炼
   - 读 raw 文件 → 增量段提取 → L1 提取 → 归一化 → 返回记忆列表
-  - 更新 raw_files.last_refined_seq/refined_at/status
+  - 失败路径递增 raw_files.fail_count / last_error（E3 失败熔断；达
+    refine.max_file_attempts → status='error'）；体积闸超限（E4）直接标 error
+  - 成功路径由 commit_refine 推进 last_refined_seq/refined_at/status 并清零失败计数
 - refine_batch(): 扫 status=new 的文件批量提炼
 """
 
@@ -11,11 +13,12 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 from sgme import config
-from sgme.engine import l1, l2, normalize
+from sgme.engine import l2_extraction, scene_aggregate, normalize
 from sgme.prompts import BucketCtx
 from sgme.raw import store
 from sgme.data import memory_dao, session_dao
@@ -40,6 +43,9 @@ class RefineResult:
     # 块级失败计数（2026-11-03）：>0 表示该文件内容有缺口，不得标 refined。
     failed_chunks: int = 0
     chunk_total: int = 0
+    # E3 失败熔断（2026-11-05）：本次失败是否已计入 raw_files.fail_count——
+    # batch_scan 据此避免对同一文件重复计数（只有 refine 入口之外的异常才由它记账）。
+    failure_recorded: bool = False
 
 
 #: 自注入画像块（dsh/hermes 把 Tier0 画像当 user 消息写进原件时的标记）
@@ -80,6 +86,117 @@ def _build_registry_names(dimensions: list[dict]) -> dict[str, str]:
     return {d["id"]: d["display_name"] for d in dimensions}
 
 
+# ======================================================================
+# E3/E4（2026-11-05）：失败熔断 + 体积闸
+# ======================================================================
+# 背景（B312 待办 1/2）：块级失败的文件此前保持 status=new 无限重扫（实测同一批
+# 超大文件空转 5 天 / 4.9 万次提炼）；>10MB 文件反复超时且 92% 落在 3 个超大文件。
+# 口径：不新增 status 取值（保持 new/refined/error/archived），失败原因写 last_error，
+# 连续失败次数写 fail_count，达 refine.max_file_attempts → status='error' 终止重试。
+
+def _refine_section(cfg: dict) -> dict:
+    """取 cfg 的 refine 段（缺失/非 dict → 空 dict）。"""
+    section = (cfg or {}).get("refine")
+    return section if isinstance(section, dict) else {}
+
+
+def max_file_attempts(cfg: dict) -> int:
+    """refine.max_file_attempts（失败熔断阈值；默认 5，非法 / <1 回退默认）。"""
+    default = int(config.DEFAULT_REFINE_CONFIG.get("max_file_attempts", 5))
+    try:
+        value = int(_refine_section(cfg).get("max_file_attempts", default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 1 else default
+
+
+def max_file_bytes(cfg: dict) -> int:
+    """refine.max_file_bytes（单文件体积闸；默认 10 MiB，0 / 负数 = 关闭）。"""
+    default = int(config.DEFAULT_REFINE_CONFIG.get("max_file_bytes", 10 * 1024 * 1024))
+    try:
+        return int(_refine_section(cfg).get("max_file_bytes", default))
+    except (TypeError, ValueError):
+        return default
+
+
+def record_refine_failure(
+    session_conn: sqlite3.Connection,
+    file_id: str,
+    error: str | None,
+    cfg: dict,
+    *,
+    terminal: bool = False,
+) -> None:
+    """失败熔断统一入口（E3）：递增 fail_count / last_error，达上限转 status='error'。
+
+    记账失败只告警不抛出——记账是旁路，绝不能反过来打断提炼主流程。终态失败
+    （terminal=True）在记账失败时兜底 mark_status('error')，保持修复前语义。
+    """
+    attempts = max_file_attempts(cfg)
+    try:
+        state = session_dao.record_refine_failure(
+            session_conn, file_id, error, max_attempts=attempts, terminal=terminal,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("失败熔断计数写入异常（不阻塞）: file=%s err=%s", file_id, e)
+        state = None
+    if state is None:
+        if terminal:
+            try:
+                session_dao.mark_status(session_conn, file_id, "error")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("终态 error 标记失败（不阻塞）: file=%s err=%s", file_id, e)
+        return
+    if state.get("status") == "error" and not terminal:
+        logger.warning(
+            "失败熔断触发：file=%s 连续失败 %s 次（阈值 %s），已标 status=error 终止重试；"
+            "last_error=%s",
+            file_id, state.get("fail_count"), attempts, str(error or "")[:200],
+        )
+
+
+def _gate_refine_size(rf: dict, cfg: dict) -> int | None:
+    """E4 体积闸：返回超限字节数；未超限 / 闸关闭 / 无法判定 → None。
+
+    size 优先用 raw_files.size（append 时写入）；缺失时读磁盘实际大小兜底。
+    读盘失败不拦（交给正常链路，失败也会被 E3 熔断兜住）。
+    """
+    limit = max_file_bytes(cfg)
+    if limit <= 0:
+        return None
+    size = rf.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        size = None
+    if size is None:
+        try:
+            size = store.file_path(
+                rf["file_id"], source_type=rf.get("source_type") or "session"
+            ).stat().st_size
+        except Exception:  # noqa: BLE001
+            size = None
+    if size is None or size <= limit:
+        return None
+    return int(size)
+
+
+#: refine_cost 告警节流窗口（秒）：同进程同一 source 最多每窗口发布 1 条
+#: （F2，2026-11-05：生产 10 小时 82 条属噪声；日志仍逐次输出，不丢线索）
+REFINE_COST_ALERT_INTERVAL_S = 3600.0
+#: 上次实际发布 refine_cost 告警的 monotonic 时刻（None = 本进程尚未发布）
+_refine_cost_alert_last_at: float | None = None
+
+
+def _throttle_refine_cost_alert(now: float | None = None) -> bool:
+    """refine_cost 告警节流判定（F2）：窗口内返回 False（不发布），放行时记账。"""
+    global _refine_cost_alert_last_at
+    ts = time.monotonic() if now is None else now
+    last = _refine_cost_alert_last_at
+    if last is not None and ts - last < REFINE_COST_ALERT_INTERVAL_S:
+        return False
+    _refine_cost_alert_last_at = ts
+    return True
+
+
 def refine_file(
     file_id: str,
     mem_conn: sqlite3.Connection,
@@ -106,6 +223,12 @@ def refine_file(
     status=new 可重扫重试。
     error 路径（raw_files 无记录/L0 解析失败/L1 失败）语义不变：直接
     ``mark_status("error")``（error 是终态型业务结果，不是「可丢弃的中间态」）。
+
+    E3 失败熔断（2026-11-05）：所有失败路径同时递增 raw_files.fail_count 并写
+    last_error；可重试失败（块级缺口）累计达 refine.max_file_attempts 后转
+    status='error' 终止重扫（见 record_refine_failure）。成功路径在 commit_refine 清零。
+    E4 体积闸（2026-11-05）：文件超过 refine.max_file_bytes 时**在解析/LLM 之前**
+    直接标 error + last_error='file_too_large'，不消耗模型额度。
     """
     result = RefineResult(file_id=file_id)
 
@@ -113,6 +236,22 @@ def refine_file(
     if rf is None:
         result.status = "error"
         result.error = f"raw_files 表无记录: {file_id}"
+        return result
+
+    # E4 体积闸（2026-11-05，B312 待办 2）：超限文件不进解析 / LLM——历史上
+    # 16.7 / 25.4 / 12.4 MB 三个超大文件占失败风暴 92%，反复超时且耗尽重试预算。
+    # 终态：status='error' + last_error='file_too_large'；不计入 E3 失败次数
+    # （体积是静态事实，重试无意义；append 追加后 status 回 new 会重新过闸）。
+    oversized = _gate_refine_size(rf, cfg)
+    if oversized is not None:
+        result.status = "error"
+        result.error = "file_too_large"
+        result.failure_recorded = True
+        session_dao.mark_file_too_large(session_conn, file_id, size=oversized)
+        logger.warning(
+            "文件超过体积闸（file=%s size=%d > max_file_bytes=%d），不调 LLM 直接标 error",
+            file_id, oversized, max_file_bytes(cfg),
+        )
         return result
 
     # T-43：动态提炼链——session 声明的 agent_model（provider/model）→
@@ -129,7 +268,9 @@ def refine_file(
     except Exception as e:
         result.status = "error"
         result.error = f"L0 解析失败: {e}"
-        session_dao.mark_status(session_conn, file_id, "error")
+        result.failure_recorded = True
+        # E3：终态失败也记账（fail_count/last_error 供运维追溯），status 仍直接 error
+        record_refine_failure(session_conn, file_id, result.error, cfg, terminal=True)
         return result
 
     # 内容哈希对比（§9.1 Dedup）：文件被修改 → 全量重提炼（游标视为 0）
@@ -192,9 +333,9 @@ def refine_file(
 
     # 回合感知分块：剪枝后消息按「user+回答」语义单元贪心填充分块，
     # 不拆散问答对（固定字符切块会切碎上下文导致提取无效）
-    l1_cfg = cfg.get("l1", {}) or {}
+    l1_cfg = cfg.get("l2_extraction", {}) or {}
     chunk_size = l1_cfg.get("chunk_size", 6000)
-    msg_chunks = l1.chunk_messages_by_turn(incremental, chunk_size=chunk_size)
+    msg_chunks = l2_extraction.chunk_messages_by_turn(incremental, chunk_size=chunk_size)
     conversations = [
         _format_conversation(chunk_msgs, file_id) for chunk_msgs in msg_chunks
     ]
@@ -205,7 +346,7 @@ def refine_file(
     # #33：bucket_ctx 携带 file_id（A/B 确定性分流）；mem_conn 记录 refine_run
     bucket_ctx = BucketCtx(bucket_key=file_id)
     try:
-        raw_memories, provider, prompt_meta = l1.extract_l1(
+        raw_memories, provider, prompt_meta = l2_extraction.extract_memories(
             conversations, dimensions, cfg["llm"], client=client,
             chunk_size=chunk_size,
             overlap=l1_cfg.get("overlap", 1200),
@@ -226,11 +367,13 @@ def refine_file(
                 "L1 块级失败 %d/%d（file=%s）：内容有缺口，本次不推进游标，文件保持待重跑",
                 result.failed_chunks, result.chunk_total, file_id,
             )
-    except l1.RefineError as e:
+    except l2_extraction.RefineError as e:
         result.status = "error"
         result.error = str(e)
         result.anomaly_warn = True
-        session_dao.mark_status(session_conn, file_id, "error")
+        result.failure_recorded = True
+        # E3：LLM 全链失败属终态结果（与修复前 mark_status("error") 一致）
+        record_refine_failure(session_conn, file_id, result.error, cfg, terminal=True)
         return result
 
     # 归一化（每条记忆的 dimensions 标签）
@@ -302,24 +445,30 @@ def refine_file(
     # 2026-08-18（T-53 免费托底）：提炼走了付费备用模型（deepseek）→ 记 anomaly_warn，
     # 供用户发现「免费主链被跳过/降级在烧钱」——降级成功不报错，此前无任何告警
     # （refine_runs 5279 次 deepseek 消耗无人知晓的根因）。
+    # F2（2026-11-05）：①文案对齐现行降级链 agnes→deepseek→rule（zhipu 已于
+    # 2026-08-29 B121 移出，旧文案仍指向已删除 provider）；②signal 事件按进程内
+    # 3600s 窗口节流（生产实测 10 小时 82 条属噪声），但**日志每次照常输出**，
+    # 线索不丢——只有事件面收敛。
     if provider == "deepseek":
-        try:
-            from sgme.signal import engine as signal_engine
-            signal_engine.publish(
-                event_type="anomaly_warn",
-                source="refine_cost",
-                payload={
-                    "message": "提炼使用了付费备用模型 deepseek（预期 zhipu 免费）——"
-                               "检查 llm_override / agent_model 是否被劫持",
-                    "provider": provider,
-                    "file_id": file_id,
-                    "memories_count": len(normalized_memories),
-                },
-                mem_conn=mem_conn,
-            )
-            logger.warning("提炼走 deepseek（付费备用）: file=%s memories=%d", file_id, len(normalized_memories))
-        except Exception as e:
-            logger.warning("deepseek 使用告警发布失败（不阻塞）: %s", e)
+        logger.warning("提炼走 deepseek（付费备用）: file=%s memories=%d", file_id, len(normalized_memories))
+        if _throttle_refine_cost_alert():
+            try:
+                from sgme.signal import engine as signal_engine
+                signal_engine.publish(
+                    event_type="anomaly_warn",
+                    source="refine_cost",
+                    payload={
+                        "message": "提炼使用了付费备用模型 deepseek（预期 agnes 免费；"
+                                   "链：agnes→deepseek→rule）——检查 llm_override / "
+                                   "agent_model 是否被劫持",
+                        "provider": provider,
+                        "file_id": file_id,
+                        "memories_count": len(normalized_memories),
+                    },
+                    mem_conn=mem_conn,
+                )
+            except Exception as e:
+                logger.warning("deepseek 使用告警发布失败（不阻塞）: %s", e)
 
     # 提炼完成：不在本函数推进游标/哈希（T-223 两阶段——见 docstring 游标语义）。
     # 调用方必须在 L1.5 落库成功后执行 commit_refine(result, session_conn)。
@@ -332,6 +481,18 @@ def refine_file(
         batch_stats.drops, result.anomaly_warn,
         result.prompt_versions.get("l1_extraction"),
     )
+
+    # E3 失败熔断（2026-11-05）：块级缺口是可重试失败——未达 max_file_attempts 时保持
+    # status=new 让下轮重扫；累计达上限 → status='error' 终止重试（历史教训：无上限
+    # 重扫空转 5 天 / 4.9 万次）。放在归一化全部完成之后记账：此前若中途抛异常，
+    # 由批扫侧兜底记账一次，避免同一轮被重复计数。成功提交时 commit_refine 清零。
+    if result.failed_chunks:
+        result.failure_recorded = True
+        record_refine_failure(
+            session_conn, file_id,
+            f"块级失败 {result.failed_chunks}/{result.chunk_total}: 内容有缺口",
+            cfg,
+        )
 
     return result
 
@@ -350,6 +511,8 @@ def commit_refine(
     仅对 ``status="refined"`` 的结果生效（error 等非成功态返回 False 不推进——
     error 路径的状态流转在 refine_file 内已完成）。「无增量」结果同样走本函数
     （new_last_refined_seq=原游标值），语义上收敛为 refined。
+    E3（2026-11-05）：成功推进游标的同时清零 raw_files.fail_count / last_error——
+    失败计数只反映「连续失败」，一次成功即归零。
 
     Returns:
         True 表示已推进游标；False 表示未推进（非 refined 结果）。
@@ -364,6 +527,9 @@ def commit_refine(
     )
     if result.content_hash:
         session_dao.update_content_hash(session_conn, result.file_id, result.content_hash)
+    # E3（2026-11-05）：成功路径清零失败计数——避免历史失败残留让「一次成功之后的
+    # 偶发失败」过早触发熔断。归零只在真正落库成功（本函数）做，refine_file 不碰。
+    session_dao.clear_refine_failure(session_conn, result.file_id)
     return True
 
 
@@ -387,47 +553,51 @@ def finalize_refinement(
         return
 
     # L2 场景聚合（记忆已带 memory_id，_ensure_persisted 直接复用）
-    # D-53 冻结开关（2026-11-03）：2.0 取消场景层，最终四表冻结只读。但当前生产仍跑
-    # 1.x 链路、场景功能在用，**默认保持开启**（不擅自改变现网行为）；迁移阶段 1 完成后
-    # 把 l2.scene_aggregate.enabled 置 false 即可停写，无需改代码。
-    scene_enabled = bool(((cfg or {}).get("l2") or {}).get("scene_aggregate", {}).get("enabled", True))
+    # D-53 冻结开关（2026-11-03）：2.0 取消场景层，四表冻结只读；A1 收尾（2026-11-05）
+    # 起配置默认 enabled=false 停写，存量场景仅供图谱页/管理页只读展示。
+    # ⚠️ 2026-11-05 修正：旧实现误读 scene_aggregate.scene_aggregate.enabled（双嵌套，
+    # 恒为默认 True，导致开关形同虚设）；配置键口径统一为 scene_aggregate.enabled。
+    # ⚠️ 2026-11-05（E1 复核修复）：冻结场景层只能跳过**场景聚合本身**——旧实现用
+    # `return` 提前退出，把后面的 embedding 回填、source='refine' 信号发布、人格特质抽取
+    # 一并跳过（场景默认关=这三个副作用全死）。现改为只包场景块。
+    scene_enabled = bool((((cfg or {}).get("scene_aggregate") or {}).get("enabled", True)))
     if not scene_enabled:
-        logger.debug("L2 场景聚合已冻结（l2.scene_aggregate.enabled=false），跳过: %s", file_id)
-        return
-    # #33：bucket_ctx 携带 file_id（A/B 分流）；l2_result.prompt_meta 透传
-    try:
-        l2_result = l2.aggregate(
-            result.memories, mem_conn, cfg, client=client,
-            bucket_ctx=BucketCtx(bucket_key=file_id),
-        )
-        result.prompt_versions["l2_scene"] = l2_result.prompt_meta
-        if l2_result.error:
-            logger.warning("L2 聚合失败（不阻塞）: %s", l2_result.error)
-        # 场景阈值预警（软策略，仅告警）
-        level, count = l2.check_scene_threshold(mem_conn, cfg)
-        if level is not None:
-            result.anomaly_warn = True
-            logger.warning("场景数预警 level=%s count=%s", level, count)
-        # 信号发布：L2 场景事件
+        logger.debug("L2 场景聚合已冻结（scene_aggregate.enabled=false），跳过: %s", file_id)
+    else:
+        # #33：bucket_ctx 携带 file_id（A/B 分流）；l2_result.prompt_meta 透传
         try:
-            from sgme.signal import engine as signal_engine
-            signal_engine.publish(
-                event_type="memory_updated",
-                source="l2",
-                payload={
-                    "file_id": file_id,
-                    "created": l2_result.created,
-                    "updated": l2_result.updated,
-                    "merged": l2_result.merged,
-                    "archived": l2_result.archived,
-                    "error": l2_result.error,
-                },
-                mem_conn=mem_conn,
+            l2_result = scene_aggregate.aggregate(
+                result.memories, mem_conn, cfg, client=client,
+                bucket_ctx=BucketCtx(bucket_key=file_id),
             )
+            result.prompt_versions["l2_scene"] = l2_result.prompt_meta
+            if l2_result.error:
+                logger.warning("L2 聚合失败（不阻塞）: %s", l2_result.error)
+            # 场景阈值预警（软策略，仅告警）
+            level, count = scene_aggregate.check_scene_threshold(mem_conn, cfg)
+            if level is not None:
+                result.anomaly_warn = True
+                logger.warning("场景数预警 level=%s count=%s", level, count)
+            # 信号发布：L2 场景事件
+            try:
+                from sgme.signal import engine as signal_engine
+                signal_engine.publish(
+                    event_type="memory_updated",
+                    source="scene_aggregate",
+                    payload={
+                        "file_id": file_id,
+                        "created": l2_result.created,
+                        "updated": l2_result.updated,
+                        "merged": l2_result.merged,
+                        "archived": l2_result.archived,
+                        "error": l2_result.error,
+                    },
+                    mem_conn=mem_conn,
+                )
+            except Exception as e:
+                logger.warning("L2 信号发布失败（不阻塞）: %s", e)
         except Exception as e:
-            logger.warning("L2 信号发布失败（不阻塞）: %s", e)
-    except Exception as e:
-        logger.warning("L2 聚合异常（不阻塞）: %s", e)
+            logger.warning("L2 聚合异常（不阻塞）: %s", e)
 
     # 为新记忆生成 embedding（失败不阻塞，向量检索层降级纯 BM25）
     try:

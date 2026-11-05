@@ -112,7 +112,7 @@ def _step_extract(
         file_id = rf["file_id"]
         try:
             # refine_one = refine_file（L1 抽取）→ persist_memories（L1.5 判决落库 + L2）
-            result, l15_stats = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
+            result, l3_stats = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
         except Exception as e:
             logger.warning("Dream 提炼文件 %s 异常（继续下一文件）: %s", file_id, e)
             error_count += 1
@@ -121,7 +121,7 @@ def _step_extract(
             continue
         if result.status == "refined":
             refined_count += 1
-            memory_count += int((l15_stats or {}).get("stored", 0) or 0)
+            memory_count += int((l3_stats or {}).get("stored", 0) or 0)
         else:
             error_count += 1
             if len(errors) < _MAX_ERRORS_IN_REPORT:
@@ -341,12 +341,38 @@ def _pool_totals(mem_conn: sqlite3.Connection) -> dict:
         return {"total_memories": 0, "total_scenes": 0}
 
 
+def _quarantine_summary(mem_conn: sqlite3.Connection) -> dict[str, int]:
+    """灰区待复核汇总（B313，2026-11-05）：按相似度分三档。
+
+    纯 COUNT 查询、零 LLM；任何异常静默返回全 0（日报不能因它挂掉）。
+    分档口径与人工复核习惯对齐：≥0.95 基本可整批丢，0.90–0.95 逐条看，
+    <0.90 可能是独立事实、倾向放行。
+    """
+    def _count(where: str, params: tuple = ()) -> int:
+        try:
+            row = mem_conn.execute(
+                "SELECT COUNT(*) AS c FROM near_dup_quarantine WHERE status='pending' " + where,
+                params,
+            ).fetchone()
+            return int(row["c"]) if row else 0
+        except Exception:  # noqa: BLE001 - 日报不因它挂掉
+            return 0
+
+    return {
+        "total": _count(""),
+        "high": _count("AND score >= ?", (0.95,)),
+        "mid": _count("AND score >= ? AND score < ?", (0.90, 0.95)),
+        "low": _count("AND score < ?", (0.90,)),
+    }
+
+
 def _render_report_md(
     date_label: str,
     stats: dict[str, Any],
     errors: list[dict],
     stage_errors: list[str],
     pool: dict[str, Any],
+    quarantine: dict[str, int] | None = None,
 ) -> str:
     """渲染阮一峰风格紧凑日报（设计文档 §2.3）。"""
     lines = [f"# Dream 日报 {date_label}", ""]
@@ -362,6 +388,14 @@ def _render_report_md(
     lines.append(f"- 信号 TTL 归档：{stats['signal_purged_count']}")
     lines.append(f"- 关怀信号：{stats['care_signal_count']}")
     lines.append("")
+    if quarantine and quarantine.get("total"):
+        lines.append("## 近似重复待复核")
+        lines.append(
+            f"- 待处理：{quarantine['total']} 条"
+            f"（≥0.95 {quarantine['high']} / 0.90–0.95 {quarantine['mid']} / <0.90 {quarantine['low']}）"
+        )
+        lines.append("- 处理：near_dup_list 看对照 → near_dup_discard / near_dup_restore")
+        lines.append("")
     lines.append("## 异常")
     if errors:
         for e in errors:
@@ -654,8 +688,9 @@ def _run_dream_locked(
         f" / 场景治理 合并 {scene_gc_merged} 归档 {scene_gc_archived} / 失败 {error_count}"
         + (f" / 出池归档 {purged_pool_count}" if purged_pool_count else "")
     )
+    quarantine = _quarantine_summary(mem_conn)  # B313：灰区待复核提示
     rel_path = _write_report_md(cfg, date_label, _render_report_md(
-        date_label, stats, errors, stage_errors, pool,
+        date_label, stats, errors, stage_errors, pool, quarantine,
     ))
     try:
         _upsert_report_row(mem_conn, date_label, rel_path, stats, summary)

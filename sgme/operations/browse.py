@@ -40,6 +40,7 @@ from typing import Any, Sequence
 from sgme.data import memory_dao, refine_dao, session_dao, stats_dao
 from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult
 from sgme.raw import store as raw_store
+from sgme.engine.stage_map import stage_label
 
 # ---------- 契约枚举与缺省值（§5.3.2 / §5.4.1 / §5.5.1 / §5.6.1 / §5.7） ----------
 
@@ -61,7 +62,10 @@ MEMORY_SORT_VALUES: tuple[str, ...] = ("updated_at", "occurred_at", "priority")
 DEFAULT_MEMORY_SORT: str = "updated_at"
 
 REFINE_STAGE_VALUES: tuple[str, ...] = (
-    "l1_extraction", "l1_conflict", "l2_scene", "tier0_summary",
+    "l1_extraction", "l1_conflict", "l2_scene",
+    # D-79（2026-11-05）：tier0_summary 写侧已砍，生产库里仍有 2 万+ 条历史行；
+    # 保留该过滤值**仅供历史数据查询**（删掉会让历史行无法按 stage 过滤）。
+    "tier0_summary",
 )
 REFINE_STATUS_VALUES: tuple[str, ...] = ("running", "ok", "error")
 
@@ -386,6 +390,8 @@ def list_refine_runs(
         since=since_ts,
         until=until_ts,
     )
+    # 2.0 口径统一：展示层附加 2.0 阶段名，原始 stage 键不变（契约兼容）。
+    items = [{**it, "stage_label": stage_label(it.get("stage"))} for it in items]
     return OperationResult.succeed(page_envelope(items, total, page_num, limit_num))
 
 
@@ -500,7 +506,7 @@ def stats_detail(
         mem_conn: memory.db 连接（``refine_runs`` 在 memory.db）。
         cfg: 全量配置。ST-58/T-296（D1）：用于解析批预算，算出派生字段
             ``batch_utilization``（= 单批平均 prompt / 批预算）。**预算解析走
-            engine 的公开口径**（`l15.resolve_batch_budget`），本层不自己折算，
+            engine 的公开口径**（`l3_adjudicate.resolve_batch_budget`），本层不自己折算，
             避免与 L1.5 实际用的预算口径漂移；不传则该项为 ``None``。
         period: ``daily`` / ``weekly``（缺省）/ ``monthly``。
         stage: 可选 stage 过滤；不传时按 stage 分行。
@@ -524,7 +530,7 @@ def stats_detail(
     batch_budget: int | None = None
     if cfg:
         try:
-            from sgme.engine import l15 as l15_mod
+            from sgme.engine import l3_adjudicate as l15_mod
 
             batch_budget = l15_mod.resolve_batch_budget(cfg.get("llm", {}) or {})
         except Exception:  # noqa: BLE001——派生字段缺失不影响主明细

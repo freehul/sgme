@@ -1,8 +1,9 @@
-"""engine/l1.py：L1 提取（prompt 渲染 + LLM 调用 + 输出校验）。
+"""engine/l2_extraction.py：L1 提取（prompt 渲染 + LLM 调用 + 输出校验）。
+2.0 口径：本模块 = L2 提取（prompt 渲染 + LLM 调用 + 校验）；DB stage 键沿用历史契约名 l1_extraction（展示层见 stage_map）。
 
-- render_l1: 经 PromptStore 读 prompts/l1_extraction.txt（支持 A/B 与钉版），替换 {{conversation}} 与 {{dimensions}}
-- parse_l1_output: 严格 JSON 数组解析 + 字段校验（失败重试 1 次 → RefineError）
-- extract_l1: 完整 L1 提取（render → call_with_fallback → parse），返回版本元信息 + 逐块记录 refine_run
+- render_extraction: 经 PromptStore 读 prompts/l1_extraction.txt（支持 A/B 与钉版），替换 {{conversation}} 与 {{dimensions}}
+- parse_extraction_output: 严格 JSON 数组解析 + 字段校验（失败重试 1 次 → RefineError）
+- extract_memories: 完整 L1 提取（render → call_with_fallback → parse），返回版本元信息 + 逐块记录 refine_run
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from sgme.llm import chain as llm_chain
 from sgme.llm import provider as llm_provider
 from sgme.prompts import BucketCtx, PromptStore
 
-logger = logging.getLogger("sgme.engine.l1")
+logger = logging.getLogger("sgme.engine.l2_extraction")
 
 # 记忆类型白名单
 # forget_request：D-68 软遗忘请求的专用类型（原设计文档写 instruction，代码消费侧
@@ -156,17 +157,17 @@ class RefineError(Exception):
 
 # ---------- prompt 渲染 ----------
 
-def render_l1(conversation: str, dimensions: list[dict], ctx: BucketCtx | None = None) -> str:
+def render_extraction(conversation: str, dimensions: list[dict], ctx: BucketCtx | None = None) -> str:
     """渲染 L1 提取 prompt（模板经 PromptStore 读取，支持 A/B 与钉版）。
 
     - {{dimensions}} = 注册表 active 维度的 "id：display_name" 列表（动态生成）
     - {{conversation}} = 会话文本
     """
     template = PromptStore().get("l1_extraction", ctx).text
-    return _render_l1_text(template, conversation, dimensions)
+    return _render_extraction_text(template, conversation, dimensions)
 
 
-def _render_l1_text(
+def _render_extraction_text(
     template: str,
     conversation: str,
     dimensions: list[dict],
@@ -551,7 +552,7 @@ def _validate_item(item: Any, dimensions: list[dict]) -> dict | None:
 _parse_item = _validate_item
 
 
-def parse_l1_output(text: str, dimensions: list[dict]) -> list[dict]:
+def parse_extraction_output(text: str, dimensions: list[dict]) -> list[dict]:
     """解析 L1 输出为记忆列表。
 
     严格 JSON 数组 + 字段校验。失败抛 RefineError。
@@ -838,7 +839,7 @@ def _extract_chunk_with_retry(
     last_err: RefineError | None = None
     for attempt in range(times + 1):
         try:
-            return _extract_l1_chunk(
+            return _extract_memories_chunk(
                 chunk, dimensions, llm_cfg, client=client,
                 bucket_ctx=bucket_ctx, mem_conn=mem_conn,
                 sunk_refs_text=sunk_refs_text,
@@ -853,7 +854,7 @@ def _extract_chunk_with_retry(
     raise last_err  # type: ignore[misc]
 
 
-def extract_l1(
+def extract_memories(
     conversation: str | list[str],
     dimensions: list[dict],
     llm_cfg: dict,
@@ -976,7 +977,7 @@ def _lang_mismatch(conversation: str, memories: list[dict]) -> bool:
 def _parse_extraction_output(text: str, dimensions: list[dict]) -> list[dict]:
     """按 schema 开关选择解析器（2.0 结构开关，默认 1.x 行为不变）。
 
-    开关：**默认走 2.0 解析**（`parse_l2_output` + `records_to_items`）。
+    开关：**默认走 2.0 解析**（`parse_scene_output` + `records_to_items`）。
     显式设 ``SGME_L2_SCHEMA=1`` / ``1.0`` 才回退 1.x 解析器。
 
     2026-11-02 变更（2.0 正式上线）：此前默认值是空串 → 生产从未启用 2.0 解析器，
@@ -985,19 +986,19 @@ def _parse_extraction_output(text: str, dimensions: list[dict]) -> list[dict]:
     设 SGME_L2_SCHEMA=2.0 后 3 条。这与"提示词切了就算上线"是两个独立开关，
     两个都开才算真的 2.0 抽取链。
 
-    为什么还用环境变量：`_extract_l1_chunk` 的调用链上没有 cfg（只有 llm_cfg），
-    给整条链加参数会波及全部调用点；配置化（`l2.schema`）留待后续批次。
+    为什么还用环境变量：`_extract_memories_chunk` 的调用链上没有 cfg（只有 llm_cfg），
+    给整条链加参数会波及全部调用点；配置化（`scene_aggregate.schema`）留待后续批次。
     2.0 解析器自带向后兼容：输出里没有 `main_event` 时自动回退 1.x。
     """
     schema = os.environ.get("SGME_L2_SCHEMA", "2.0").strip()
     if schema not in ("1", "1.0"):
-        from sgme.engine.l2_extract import parse_l2_output, records_to_items
+        from sgme.engine.l2_extract import parse_scene_output, records_to_items
 
-        return records_to_items(parse_l2_output(text, dimensions), dimensions)
-    return parse_l1_output(text, dimensions)
+        return records_to_items(parse_scene_output(text, dimensions), dimensions)
+    return parse_extraction_output(text, dimensions)
 
 
-def _extract_l1_chunk(
+def _extract_memories_chunk(
     conversation: str,
     dimensions: list[dict],
     llm_cfg: dict,
@@ -1018,7 +1019,7 @@ def _extract_l1_chunk(
     from sgme.data.refine_dao import RefineRunRecorder
 
     pv = PromptStore().get("l1_extraction", bucket_ctx)
-    prompt = _render_l1_text(pv.text, conversation, dimensions, sunk_refs_text)
+    prompt = _render_extraction_text(pv.text, conversation, dimensions, sunk_refs_text)
     bucket_key = bucket_ctx.bucket_key if (bucket_ctx and bucket_ctx.bucket_key) else "unknown"
     max_attempts = 2  # 解析/空结果：重试 1 次（B164 既有行为）
     lang_retries = 0
@@ -1068,7 +1069,7 @@ def _extract_l1_chunk(
                 logger.warning("L1 输出解析失败 (attempt=%s): %s", attempt, e)
                 # 重试时 prompt 加提示
                 if attempt < max_attempts:
-                    prompt = _render_l1_text(pv.text, conversation, dimensions, sunk_refs_text) + \
+                    prompt = _render_extraction_text(pv.text, conversation, dimensions, sunk_refs_text) + \
                         "\n\n# 注意\n上次输出无法解析为 JSON 数组，请只输出纯 JSON 数组，无其他文字。"
                 continue
 
@@ -1081,7 +1082,7 @@ def _extract_l1_chunk(
             )
             if not memories and attempt < max_attempts and conv_chars >= EMPTY_RETRY_MIN_CONV_CHARS:
                 logger.warning("L1 空结果 (attempt=%s)，加提示重试", attempt)
-                prompt = _render_l1_text(pv.text, conversation, dimensions, sunk_refs_text) + \
+                prompt = _render_extraction_text(pv.text, conversation, dimensions, sunk_refs_text) + \
                     "\n\n# 注意\n上次输出为空数组 []，但对话中可能仍有值得长期保存的记忆。" \
                     "请逐条复查对话内容，确保不遗漏任何用户事实（尤其数字、时长、地点、偏好等细节）。" \
                     "若确实没有可提炼的记忆，再输出 []。"
@@ -1094,7 +1095,7 @@ def _extract_l1_chunk(
             if lang_retries < max_lang_retries and _lang_mismatch(conversation, memories):
                 lang_retries += 1
                 logger.warning("L1 语言漂移（英文会话→中文记忆，attempt=%s），加语言提示重试", attempt)
-                prompt = _render_l1_text(pv.text, conversation, dimensions, sunk_refs_text) + \
+                prompt = _render_extraction_text(pv.text, conversation, dimensions, sunk_refs_text) + \
                     "\n\n# 注意\n上次输出把会话内容翻译成了中文，这会破坏检索。必须使用**与会话原文相同的语言**输出：" \
                     "英文会话 → 英文记忆（逐条改写为英文，专名/数字/术语保持原样，不要意译）；中文会话 → 中文记忆。"
                 continue

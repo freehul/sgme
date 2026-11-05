@@ -4,7 +4,7 @@
 - SCSM 不直接改 NAS 上的 SGME 配置文件（跨机无法直接写），
   改由 SGME Server 进程提供 HTTP 接口读写自身配置（sgme.yaml）。
 - GET  /v1/admin/config            → 返回当前生效配置（含默认值合并）
-- GET  /v1/admin/config/{section}  → 返回单个配置段（l1/l2/refine/search/backup）
+- GET  /v1/admin/config/{section}  → 返回单个配置段（l2_extraction/scene_aggregate/refine/search/backup）
 - PUT  /v1/admin/config            → 更新配置段（部分更新，合并后落盘）
 - 仅管理员 Key 可调
 

@@ -6,11 +6,11 @@
 
 两分支语义（与 v0.6 路由逐行等价，抽取时不得改动任何字段与文案）：
 1. ``mode`` 分支：``template.load_template(mode, dimensions)`` → 逐 section
-   ``profile.inject.query_section``（纯 SQL 零 LLM）→ ``build_inject_blocks``
-   → 响应附加 tier0 字段 ``{"present": bool, "content": 摘要或 None}``（契约 4.2）。
+   ``profile.inject.query_section``（纯 SQL 零 LLM）→ ``build_inject_blocks``。
+   （Tier0 摘要字段已于 D-79 整体砍除，2026-11-05；画像由 core 记忆卡承担）
 2. ``custom_filter`` 分支：自定义过滤查询（dimensions/match/limit，
    先校验维度 id 已注册）→ 拼装为单个 section → ``build_inject_blocks``
-   → tier0 字段 + ``stats.mode="custom"``。
+   → ``stats.mode="custom"``。
 
 异常翻译（照 v0.6 路由，逐条一致；T-120 起新增 mode 缺省回落）：
 - ``template.TemplateError`` → ``fail(ERR_INVALID_ARGS, "模板加载失败: {e}")``
@@ -21,7 +21,7 @@
   ``fail(ERR_INVALID_ARGS, "需指定 mode 或 custom_filter")`` 兜底
 - 其余意外异常（pipeline/DAO 层）→ ``fail(ERR_INTERNAL, ...)``
 
-依赖：只调 profile.template / profile.inject / profile.tier0 / storage.memory_dao
+依赖：只调 profile.template / profile.inject / profile.core_cards / storage.memory_dao
 （业务层，全部只读；engine 是禁区）。副作用：不调 LLM、不发信号；唯一写操作是
 统计类（均 best-effort 全静默，失败不影响注入）——既有 memory_stats.record_inject
 （注入计数 sidecar，原样保留）+ T-252 记忆调用统计 ``memory_usage_daily``
@@ -41,6 +41,7 @@ operations/__init__.py 约定**不写** http_payload / mcp_payload，两端直�
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from typing import Any
 
@@ -48,14 +49,53 @@ from sgme.data import memory_dao
 from sgme.engine import conversation_state
 from sgme.operations.errors import ERR_INTERNAL, ERR_INVALID_ARGS, OperationResult
 from sgme.operations.memory_usage import record_memory_usage
+from sgme.profile import core_cards as core_cards_mod
 from sgme.profile import inject as inject_mod
 from sgme.profile import template as template_mod
-from sgme.profile import tier0 as tier0_mod
 
 # mode 缺省回落目标（T-120：2026-08-30 接入实测定，daily 为最常用画像注入模式）
 DEFAULT_INJECT_MODE = "daily"
 
 logger = logging.getLogger("sgme.operations.inject")
+
+
+def _content_key(text: str | None) -> str:
+    """内容归一化键：去空白与标点，用于注入去重。
+
+    与 search 侧 seen_content 去重同口径（精确比对归一化后的正文）。
+    不做近重复判定——注入是 zero-LLM 路径，语义去重放不进来。
+    """
+    return re.sub(r"[\s\W_]+", "", str(text or ""))
+
+
+def _dedupe_sections(section_results: list[list[dict]]) -> tuple[list[list[dict]], int]:
+    """跨 section 内容去重：同一段内容只保留最靠前出现的那次。
+
+    背景（2026-11-05 用户提出）：注入走模板查询——每个 section 一条独立 SQL。
+    profile.inject.build_inject_blocks 已有同日层去重（2026-08-18：memory_id 判等 +
+    content 前 50 字去尾部标点），但仍漏两类：①同内容不同 memory_id（跨维度重复落库）；
+    ②前 50 字内部的空白/标点差异。本函数按**全文去空白与标点**归一化再补一层，
+    覆盖 build_inject_blocks 判不出的同义重复；两层互补，不替代（search 侧
+    data/search/__init__.py 的 seen_content 是同一归一化口径）。
+
+    保序：先出现的保留——section 顺序即模板里定义的优先级顺序，前面的块更重要。
+    返回 (去重后的 section_results, 被丢弃条数)。
+    """
+    seen: set[str] = set()
+    out: list[list[dict]] = []
+    dropped = 0
+    for sr in section_results:
+        keep: list[dict] = []
+        for r in sr:
+            key = _content_key(r.get("content"))
+            if key and key in seen:
+                dropped += 1
+                continue
+            if key:
+                seen.add(key)
+            keep.append(r)
+        out.append(keep)
+    return out, dropped
 
 
 def _read_filters(cfg: dict[str, Any]) -> dict[str, bool]:
@@ -281,7 +321,7 @@ def inject(
     history: list[dict[str, Any]] | None = None,
     already_repaired: bool = False,
 ) -> OperationResult:
-    """记忆注入：mode 模板查询 或 custom_filter 自定义查询 → blocks + tier0。
+    """记忆注入：mode 模板查询 或 custom_filter 自定义查询 → blocks。
 
     签名刻意**只收业务依赖**：operations 层不认识 ``request.app.state``
     或 mcp 的 ``_app_state``（那是入口层的协议细节），由入口层取出后显式传入。
@@ -304,9 +344,9 @@ def inject(
 
     Returns:
         OperationResult(ok=True)，``data`` 为注入响应（HTTP/MCP 共用形态）：
-        - blocks: 注入块列表（Tier0 摘要块 + 各 section 块，含 present 标注）
-        - stats: {mode, queries, tokens_est, tier0_present}
-        - tier0: {"present": bool, "content": 摘要或 None}（契约 4.2）
+        - blocks: 注入块列表（core 记忆卡块排最前，随后各 section 块，含 present 标注）
+        - stats: {mode, queries, tokens_est, core_present}
+        - （Tier0 摘要字段已于 D-79 砍除，2026-11-05）
 
         失败态（错误码与文案照 v0.6 路由）：
         - 模板加载失败（TemplateError）→ ERR_INVALID_ARGS「模板加载失败: {e}」
@@ -334,6 +374,8 @@ def inject(
                 inject_mod.query_section(mem_conn, s, dimensions, **_read_filters(cfg))
                 for s in tmpl.get("sections", [])
             ]
+            # 2026-11-05：跨 section 内容去重（此前缺失，同义记忆会被多个维度各塞一次）
+            section_results, _dupe_dropped = _dedupe_sections(section_results)
             # T-252：记忆调用统计（双源之二：画像注入）——section_results 即注入集
             # （T-203 G1 在案）；跨 section 去重由 DAO 兜底（同批一次 upsert）。
             record_memory_usage(
@@ -342,15 +384,16 @@ def inject(
                 "inject",
                 caller,
             )
-            tier0_summary = tier0_mod.load_summary()
-            response = inject_mod.build_inject_blocks(
-                tmpl, section_results, tier0_summary=tier0_summary,
-            )
-            # 契约 4.2：tier0 字段
-            response["tier0"] = {
-                "present": tier0_summary is not None,
-                "content": tier0_summary,
-            }
+            # D-79（2026-11-05）：Tier0 摘要整体砍除——画像由 core 记忆卡承担
+            response = inject_mod.build_inject_blocks(tmpl, section_results)
+            # D-79（2026-11-05）：core 记忆卡——每次必注，排最前（稳定前缀利于缓存）。
+            # 零 LLM（纯表查询 + 模板拼接）；空卡不渲染、不占位。
+            core_block = core_cards_mod.build_core_block(mem_conn)
+            if core_block:
+                response.setdefault("blocks", []).insert(0, core_block["block"])
+                stats = response.setdefault("stats", {})
+                stats["core_present"] = True
+                stats["tokens_est"] = int(stats.get("tokens_est") or 0) + core_block["tokens"]
             response = _attach_key_missing_note(_attach_empty_note(response), cfg)
             if fallback_mode:
                 # 回落提示最后追加（_attach_empty_note 会整体覆盖 note，须先走既有链路）
@@ -391,6 +434,9 @@ def inject(
                 # 2.0 D-67：技能/知识候选不进画像（与 profile/inject 口径一致）
                 routes=("memory",),
             )
+            # 2026-11-05：与 mode 分支同口径去重（自定义查询同样可能命中同义记忆）
+            results, _dupe_dropped = _dedupe_sections([results])
+            results = results[0]
             # 记录注入统计（best-effort）
             from sgme.data.memory_stats_dao import record_inject
             for r in results:
@@ -407,14 +453,7 @@ def inject(
                 "name": "custom",
                 "sections": [{"title": "自定义查询", "query": {"dimensions": dims}}],
             }
-            tier0_summary = tier0_mod.load_summary()
-            response = inject_mod.build_inject_blocks(
-                tmpl, [results], tier0_summary=tier0_summary,
-            )
-            response["tier0"] = {
-                "present": tier0_summary is not None,
-                "content": tier0_summary,
-            }
+            response = inject_mod.build_inject_blocks(tmpl, [results])
             response["stats"]["mode"] = "custom"
             response = _attach_key_missing_note(_attach_empty_note(response), cfg)
             # D-70：记忆回指块（默认 off）

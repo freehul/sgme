@@ -2,7 +2,7 @@
 
 - query_section: 维度过滤(AND/any) + TTL + time_window + 默认排序
 - build_inject_blocks: 拼装 blocks[] + stats
-- Tier0：摘要文件不存在 → 静态维度直出降级（present:false）
+- Tier0 画像摘要已于 D-79 砍除（2026-11-05）；画像由 core 记忆卡承担
 """
 
 from __future__ import annotations
@@ -116,26 +116,18 @@ def _default_sort(dimensions: list[dict], section_dims: list[str]) -> str:
 def build_inject_blocks(
     template: dict,
     section_results: list[list[dict]],
-    tier0_summary: str | None = None,
     avg_item_tokens: int = 30,
 ) -> dict:
     """拼装注入响应：{"blocks":[...], "stats":{...}}。
 
     - template: 加载后的模板
     - section_results: 每个 section 的查询结果（与 template.sections 顺序对应）
-    - tier0_summary: Tier0 摘要文本（若 None → present:false）
+
+    Tier0 摘要已于 2026-11-05（D-79）整体砍除——画像由 core 记忆卡承担，
+    本函数不再渲染任何 LLM 生成的摘要块。
     """
     blocks: list[dict] = []
     total_items = 0
-
-    # Tier0 摘要（若有）
-    if tier0_summary:
-        blocks.append({
-            "title": "画像摘要",
-            "items": [{"content": tier0_summary}],
-            "present": True,
-        })
-        total_items += 1
 
     sections = template.get("sections", [])
     # 跨 section 去重（2026-08-18 修复）：多维度记忆会在多个 section 重复命中，
@@ -183,7 +175,6 @@ def build_inject_blocks(
             "mode": template.get("name"),
             "queries": len(sections),
             "tokens_est": total_items * avg_item_tokens,
-            "tier0_present": tier0_summary is not None,
         },
     }
 
@@ -254,17 +245,16 @@ def inject(
     mem_conn: sqlite3.Connection,
     template: dict,
     dimensions: list[dict],
-    tier0_summary: str | None = None,
 ) -> dict:
     """完整注入：遍历模板 sections → query_section → build_inject_blocks。
 
-    Tier0 降级：tier0_summary=None → 静态维度直出（present:false 标注）。
+    Tier0 已砍除（D-79，2026-11-05）；画像由 core 记忆卡承担。
     """
     section_results = [
         query_section(mem_conn, s, dimensions)
         for s in template.get("sections", [])
     ]
-    result = build_inject_blocks(template, section_results, tier0_summary=tier0_summary)
+    result = build_inject_blocks(template, section_results)
     # ST-35 T-101：性格参考块（失败不阻塞注入）
     try:
         from sgme.profile.persona_block import build_persona_block

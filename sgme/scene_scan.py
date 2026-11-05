@@ -121,7 +121,7 @@ CHECKLIST = [
     },
     {
         "item": "代码摘除",
-        "detail": "按 top_files 顺序摘 scene 分支（最重：engine/l2.py、data/search、routes_admin）",
+        "detail": "按 top_files 顺序摘 scene 分支（最重：engine/scene_aggregate.py、data/search、routes_admin）",
         "action": "摘除后跑 scripts/e2e_smoke.py + 9.4 #9/#10 全绿",
         "owner": "dev",
     },

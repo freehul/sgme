@@ -127,7 +127,7 @@ def prompts_publish(
     失败一律 → InvalidArgs（400）。
 
     Args:
-        stage: stage 名（tier0_summary / l1_extraction / l1_conflict / l2_scene）。
+        stage: stage 名（l1_extraction / l1_conflict / l2_scene；tier0_summary 已随 D-79 退役）。
         note: 发布说明（≤200 字符，入口层 pydantic 已限长）。
         store: PromptStore 实例；None 时默认构造。
 

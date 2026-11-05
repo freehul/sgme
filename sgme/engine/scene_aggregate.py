@@ -1,4 +1,9 @@
-"""engine/l2.py：L2 场景聚合（§架构约束 7 / §9.1）。
+"""engine/scene_aggregate.py：L2 场景聚合（§架构约束 7 / §9.1）。
+2.0 口径：本模块 = 场景聚合（D-53 已取消场景层，属 9.6 下线范围）；2.0 的 L4 梦境在 engine/dream.py。
+
+⚠️ 冻结状态（D-53 / 收尾 A1·C2，2026-11-05）：配置 `scene_aggregate.enabled` 默认 false，
+refine.finalize_refinement 不再调用本模块聚合（历史实现保留仅供回滚与只读排查）；
+存量四表（scenes / scene_vectors / scene_memories / scene_versions）冻结只读，禁止新代码接入。
 
 L2 输入 = 纯记忆（L1.5 裁决后标签化记忆，已含 memory_id），分批按 batch_budget。
 L2 三动作（优先级从高到低）：
@@ -35,9 +40,9 @@ from sgme.llm import provider as llm_provider
 from sgme.prompts import BucketCtx, PromptStore
 from sgme.data import memory_dao, scene_dao
 
-logger = logging.getLogger("sgme.engine.l2")
+logger = logging.getLogger("sgme.engine.scene_aggregate")
 
-# 单条记忆 token 估算（用于 batch_budget 转条数，沿用 l15.py 经验值）
+# 单条记忆 token 估算（用于 batch_budget 转条数，沿用 l3_adjudicate.py 经验值）
 AVG_TOKENS_PER_MEMORY = 30
 
 # existing_scenes 摘要长度（content 前 N 字）
@@ -49,12 +54,12 @@ EXISTING_SCENES_LIMIT = 50
 VALID_ACTIONS = {"update", "merge", "create"}
 
 
-class L2Error(Exception):
+class SceneAggregateError(Exception):
     """L2 场景聚合失败（JSON 解析/校验失败）。"""
 
 
 @dataclass
-class L2Result:
+class SceneAggregateResult:
     """L2 聚合结果。"""
     created: list[str] = field(default_factory=list)    # 新建场景 scene_id
     updated: list[str] = field(default_factory=list)    # 被更新场景 scene_id
@@ -67,7 +72,7 @@ class L2Result:
 
 # ---------- prompt 渲染 ----------
 
-def render_l2(memories_batch: list[dict], existing_scenes: list[dict], cfg: dict,
+def render_scene(memories_batch: list[dict], existing_scenes: list[dict], cfg: dict,
               ctx: BucketCtx | None = None) -> str:
     """渲染 L2 场景聚合 prompt（模板经 PromptStore 读取，支持 A/B 与钉版）。
 
@@ -76,10 +81,10 @@ def render_l2(memories_batch: list[dict], existing_scenes: list[dict], cfg: dict
     - {{max_scenes}}: 配置的 active 场景数软上限
     """
     template = PromptStore().get("l2_scene", ctx).text
-    return _render_l2_text(template, memories_batch, existing_scenes, cfg)
+    return _render_scene_text(template, memories_batch, existing_scenes, cfg)
 
 
-def _render_l2_text(template: str, memories_batch: list[dict], existing_scenes: list[dict],
+def _render_scene_text(template: str, memories_batch: list[dict], existing_scenes: list[dict],
                     cfg: dict) -> str:
     """渲染已读出的模板文本（{{new_memories}} + {{existing_scenes}} + {{max_scenes}}）。"""
     nm_text = _format_new_memories(memories_batch)
@@ -123,8 +128,8 @@ def _format_existing_scenes(existing_scenes: list[dict]) -> str:
 
 
 def _get_max_scenes(cfg: dict) -> int:
-    """从 cfg['l2'] 取 max_scenes，缺失用默认 200。"""
-    l2_cfg = cfg.get("l2") or {}
+    """从 cfg['scene_aggregate'] 取 max_scenes，缺失用默认 200。"""
+    l2_cfg = cfg.get("scene_aggregate") or {}
     return int(l2_cfg.get("max_scenes", 200))
 
 
@@ -210,13 +215,13 @@ def _loads_robust(text: str):
         except json.JSONDecodeError as e:
             if first_err is None:
                 first_err = e
-    raise L2Error(f"L2 JSON 解析失败: {first_err}")
+    raise SceneAggregateError(f"L2 JSON 解析失败: {first_err}")
 def _parse_json_lenient(text: str) -> list:
     """容错 JSON 解析：修复 qwen 关思考后的常见输出缺陷。
 
     1. 字符串值内部裸控制字符（x00-x1f，含未转义换行/制表）→ unicode 转义
     2. 无效 X 转义（如 x、q）→ 双反斜杠（保留反斜杠字面量）
-    失败仍抛 L2Error。
+    失败仍抛 SceneAggregateError。
     """
     import re as _re
 
@@ -253,18 +258,18 @@ def _parse_json_lenient(text: str) -> list:
     #    字符串值后跟键 / 数组元素间等高频形态由错误位置驱动修复。
     data = _loads_robust(text)
     if not isinstance(data, list):
-        raise L2Error(f"L2 期望 JSON 数组，得到 {type(data).__name__}")
+        raise SceneAggregateError(f"L2 期望 JSON 数组，得到 {type(data).__name__}")
     return data
 
 
-def parse_l2_output(text: str) -> list[dict]:
+def parse_scene_output(text: str) -> list[dict]:
     """解析 L2 输出为动作列表（对外入口，兼容旧名）。"""
-    return _parse_l2_output(text)
+    return _parse_scene_output(text)
 
 
 # ---------------------------------------------------------------- ST-58/T-292
 # L2 **不需要**新增就地修复（2026-10-17 实施时核实）：
-# `_parse_l2_output` 早在 2026-08-06 就内置 `_parse_json_lenient`，其第 2 步正是
+# `_parse_scene_output` 早在 2026-08-06 就内置 `_parse_json_lenient`，其第 2 步正是
 # 「无效 \X 转义 → 双反斜杠」，与本批为 L1.5 新增的 `json_repair` 同类能力。
 # 故本批只补 L1.5（它没有宽松路径），**不为 L2 另写一份**（防实现漂移，AGENTS.md
 # 「禁止另写一份防漂移」）。
@@ -275,13 +280,13 @@ def parse_l2_output(text: str) -> list[dict]:
 # ----------------------------------------------------------------
 
 
-def _parse_l2_output(text: str) -> list[dict]:
+def _parse_scene_output(text: str) -> list[dict]:
     """解析 L2 输出为动作列表。
 
     - 支持 ```json 代码块包裹
     - 严格 JSON 数组，每条 {action, target_scene_id, merged_content, reason, ...}
-    - action 必须 ∈ {update, merge, create}，否则抛 L2Error
-    - 坏 JSON 抛 L2Error（不重试）
+    - action 必须 ∈ {update, merge, create}，否则抛 SceneAggregateError
+    - 坏 JSON 抛 SceneAggregateError（不重试）
     """
     text = text.strip()
     # 去除 ```json 包裹
@@ -295,7 +300,7 @@ def _parse_l2_output(text: str) -> list[dict]:
         start = text.find("[")
         end = text.rfind("]")
         if start == -1 or end == -1 or end <= start:
-            raise L2Error(f"L2 JSON 解析失败: {text[:200]}")
+            raise SceneAggregateError(f"L2 JSON 解析失败: {text[:200]}")
         text = text[start:end + 1]
         try:
             data = json.loads(text)
@@ -305,14 +310,14 @@ def _parse_l2_output(text: str) -> list[dict]:
             # 策略：字符串值内部的裸控制字符转义为 \uXXXX；无效 \X 转义修复为 \\X。
             data = _parse_json_lenient(text)
     if not isinstance(data, list):
-        raise L2Error(f"L2 期望 JSON 数组，得到 {type(data).__name__}")
+        raise SceneAggregateError(f"L2 期望 JSON 数组，得到 {type(data).__name__}")
     result = []
     for item in data:
         if not isinstance(item, dict):
-            raise L2Error(f"L2 数组元素必须是对象，得到 {type(item).__name__}")
+            raise SceneAggregateError(f"L2 数组元素必须是对象，得到 {type(item).__name__}")
         action = item.get("action")
         if action not in VALID_ACTIONS:
-            raise L2Error(f"L2 非法 action={action!r}，合法集合={VALID_ACTIONS}")
+            raise SceneAggregateError(f"L2 非法 action={action!r}，合法集合={VALID_ACTIONS}")
         target = item.get("target_scene_id")
         # 宽容（2026-08-06）：模型偶发省略 target_scene_id（尤其 merge/create），
         # 用占位符兜底——系统对 create 会重新生成 uuid，merge 的 target 仅作区分。
@@ -320,7 +325,7 @@ def _parse_l2_output(text: str) -> list[dict]:
             target = f"placeholder-{action}"
         merged_content = item.get("merged_content")
         if not merged_content or not isinstance(merged_content, str):
-            raise L2Error(f"L2 action={action} 缺 merged_content")
+            raise SceneAggregateError(f"L2 action={action} 缺 merged_content")
         result.append({
             "action": action,
             "target_scene_id": target,
@@ -359,7 +364,7 @@ def _prescreen_scenes(
     不了，场景数只增不减（active 276 > max 200 红警）。本函数让 LLM 只看到
     「本批记忆语义相似的场景 + 高热度兜底场景」，提升 update/merge 命中率。
 
-    对齐 L1.5 prescreen（l15._build_prescreened_candidates）模式：
+    对齐 L1.5 prescreen（l3_adjudicate._build_prescreened_candidates）模式：
     - 向量 Top-K：本批记忆拼接文本 embed → scene_vector_search（sqlite-vec/numpy 双路径）
     - 热度 Top-N：active 场景按 heat DESC 取前 N（无向量覆盖的高热度场景不丢）
     - 并集按 scene_id 去重（向量候选在前，热度补充）
@@ -459,7 +464,7 @@ def _apply_update(
     mem_conn: sqlite3.Connection,
     action: dict,
     batch_memory_ids: list[str],
-    result: L2Result,
+    result: SceneAggregateResult,
     cfg: dict | None = None,
 ) -> None:
     """update：归档旧内容到 scene_versions + 更新正文 heat+1 + 关联记忆。"""
@@ -490,7 +495,7 @@ def _apply_merge(
     mem_conn: sqlite3.Connection,
     action: dict,
     batch_memory_ids: list[str],
-    result: L2Result,
+    result: SceneAggregateResult,
     cfg: dict | None = None,
 ) -> None:
     """merge：归档所有 merged_from 旧场景 + 新建合并场景 heat=sum+1 + 关联记忆。"""
@@ -542,7 +547,7 @@ def _apply_create(
     mem_conn: sqlite3.Connection,
     action: dict,
     batch_memory_ids: list[str],
-    result: L2Result,
+    result: SceneAggregateResult,
     cfg: dict | None = None,
 ) -> None:
     """create：新建场景 heat=1 + 关联记忆。"""
@@ -571,7 +576,7 @@ def check_scene_threshold(mem_conn: sqlite3.Connection, cfg: dict) -> tuple[str 
     软策略：仅返回级别供调用方产 anomaly_warn，不阻塞。
     """
     count = scene_dao.list_scenes_over_threshold(mem_conn, 0)
-    l2_cfg = cfg.get("l2") or {}
+    l2_cfg = cfg.get("scene_aggregate") or {}
     thresholds = l2_cfg.get("warn_thresholds", {})
     red = int(thresholds.get("red", 200))
     orange = int(thresholds.get("orange", 180))
@@ -592,7 +597,7 @@ def _backfill_ttl(ttl_days: int | None, dimension_ids: list[str], dimensions: li
     """TTL 回填（T-205：委托 ttl_policy 单一实现，C2 语义）。
 
     旧实现（按维度默认，ideas 铁律）已在 T-205 收敛到 ``sgme/engine/ttl_policy.py``；
-    本模块与 l15 均委托之，防止两份实现漂移。
+    本模块与 l3_adjudicate 均委托之，防止两份实现漂移。
     """
     from sgme.engine.ttl_policy import backfill_ttl
 
@@ -662,7 +667,7 @@ def aggregate(
     cfg: dict,
     client=None,
     bucket_ctx: BucketCtx | None = None,
-) -> L2Result:
+) -> SceneAggregateResult:
     """L2 场景聚合主入口。
 
     - memories: L1.5 裁决后纯记忆列表；缺 memory_id 时内部兜底落库
@@ -674,7 +679,7 @@ def aggregate(
     """
     from sgme.data.refine_dao import RefineRunRecorder
 
-    result = L2Result()
+    result = SceneAggregateResult()
     if not memories:
         return result
 
@@ -690,9 +695,9 @@ def aggregate(
 
     budget = _resolve_budget(cfg)
     batches = _batch_memories(memories, budget)
-    # T-97 场景级向量预筛（2026-08-22）：l2.prescreen.enabled=true 时
+    # T-97 场景级向量预筛（2026-08-22）：scene_aggregate.prescreen.enabled=true 时
     # existing_scenes = 向量 Top-K ∪ 热度 Top-N；未配置/embed 不可达 → 固定 50 摘要（零回归）
-    prescreen_cfg = ((cfg.get("l2") or {}).get("prescreen") or {}) or None
+    prescreen_cfg = ((cfg.get("scene_aggregate") or {}).get("prescreen") or {}) or None
     prescreen_enabled = bool(prescreen_cfg and prescreen_cfg.get("enabled", False))
     existing_scenes = scene_dao.list_active_scenes(mem_conn, limit=EXISTING_SCENES_LIMIT)
 
@@ -703,7 +708,7 @@ def aggregate(
                 existing_scenes = ps
         batch_memory_ids = [m.get("memory_id") for m in batch if m.get("memory_id")]
         pv = PromptStore().get("l2_scene", bucket_ctx)
-        prompt = _render_l2_text(pv.text, batch, existing_scenes, cfg)
+        prompt = _render_scene_text(pv.text, batch, existing_scenes, cfg)
         # ST-58/T-289：run 记账 `start()` 前移到 **LLM 调用之前**（原先在返回后才 start，
         # 全表 `started_at == finished_at`，耗时不可度量）。provider 走完降级链才知，
         # 起手置 "pending"，由 finish 回填。
@@ -741,10 +746,10 @@ def aggregate(
                 return result
 
             try:
-                actions = parse_l2_output(text)
+                actions = parse_scene_output(text)
                 run_status = "ok"
                 run_error = None
-            except L2Error as e:
+            except SceneAggregateError as e:
                 # 2026-08-18（T-53 免费托底）：zhipu 免费档偶发输出截断 → JSON 解析失败。
                 # 同模型重试 1 次（提示只输出纯 JSON 数组）——截断是偶发，重试大概率拿完整输出；
                 # 2 次仍失败才整批 error（原逻辑不重试直接跳过）。
@@ -754,11 +759,11 @@ def aggregate(
                     text, provider_name, usage = llm_chain.call_with_fallback(
                         cfg["llm"], retry_prompt, chain_name="refinement", client=client,
                     )
-                    actions = parse_l2_output(text)
+                    actions = parse_scene_output(text)
                     run_status = "ok"
                     run_error = None
                     logger.info("L2 解析重试成功 provider=%s", provider_name)
-                except (L2Error, llm_provider.LLMUnavailable) as e2:
+                except (SceneAggregateError, llm_provider.LLMUnavailable) as e2:
                     # 坏 JSON：整批标记 error + anomaly_warn
                     result.error = str(e2)
                     result.anomaly_warn = True

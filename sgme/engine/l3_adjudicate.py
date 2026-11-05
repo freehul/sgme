@@ -1,4 +1,5 @@
-"""engine/l15.py：L1.5 冲突提炼。
+"""engine/l3_adjudicate.py：L1.5 冲突提炼。
+2.0 口径：本模块 = L3 裁决（候选池 + 语义闸 + 四动作落库）；DB stage 键沿用历史契约名 l1_conflict。向量预筛属本层。
 
 流程（§架构约束 7）：
 1. 候选池查询：按新记忆分组，标签 OR 预过滤（共享维度的旧记忆，不截断全量召回）
@@ -22,6 +23,7 @@ import logging
 import math
 import random
 import sqlite3
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,7 +38,7 @@ from sgme.data import memory_dao
 from sgme.data import near_dup_dao
 from sgme.data.search import vector as vector_mod
 
-logger = logging.getLogger("sgme.engine.l15")
+logger = logging.getLogger("sgme.engine.l3_adjudicate")
 
 # 候选池 top-k 截断阈值（单记忆候选超上下文预算 → 截断 + anomaly_warn，铁律 #7 唯一允许截断场景）
 DEFAULT_TOP_K = 50
@@ -56,7 +58,7 @@ DEFAULT_BATCH_BUDGET = 24000
 _UNLIMITED_RECALL_LIMIT = 2**31 - 1
 
 
-class L15Error(Exception):
+class AdjudicationError(Exception):
     """L1.5 冲突提炼失败。"""
 
 
@@ -65,7 +67,7 @@ class RelationEdge:
     """T-135 语义边：L1.5 裁决附带的新记忆 ↔ 候选关系判定（零新增调用）。"""
     candidate_id: str               # 候选 memory_id（旧记忆）
     relation: str                   # similar / causes / contradicts
-    confidence: float               # LLM 置信（0.0-1.0），过滤阈值见 l15.semantic_edges.min_weight
+    confidence: float               # LLM 置信（0.0-1.0），过滤阈值见 l3_adjudicate.semantic_edges.min_weight
 
 
 @dataclass
@@ -80,7 +82,7 @@ class ConflictDecision:
 
 
 @dataclass
-class L15Result:
+class AdjudicationResult:
     """L1.5 提炼结果。"""
     stored: list[str] = field(default_factory=list)        # 新写入的 memory_id
     skipped: list[int] = field(default_factory=list)       # skip 的新记忆 index
@@ -113,7 +115,7 @@ class NearDupResult:
 
 # ---------- prompt 渲染 ----------
 
-def render_l15(new_memories: list[dict], candidates: list[dict], ctx: BucketCtx | None = None,
+def render_adjudication(new_memories: list[dict], candidates: list[dict], ctx: BucketCtx | None = None,
                candidate_fields: dict | None = None) -> str:
     """渲染 L1.5 冲突提炼 prompt（模板经 PromptStore 读取，支持 A/B 与钉版）。
 
@@ -121,10 +123,10 @@ def render_l15(new_memories: list[dict], candidates: list[dict], ctx: BucketCtx 
     - {{candidates}}: 候选记忆列表（带 id）
     """
     template = PromptStore().get("l1_conflict", ctx).text
-    return _render_l15_text(template, new_memories, candidates, candidate_fields)
+    return _render_adjudication_text(template, new_memories, candidates, candidate_fields)
 
 
-def _render_l15_text(template: str, new_memories: list[dict], candidates: list[dict],
+def _render_adjudication_text(template: str, new_memories: list[dict], candidates: list[dict],
                      candidate_fields: dict | None = None) -> str:
     """渲染已读出的模板文本（{{new_memories}} + {{candidates}}）。"""
     nm_text = _format_new_memories(new_memories)
@@ -144,7 +146,7 @@ def _format_new_memories(new_memories: list[dict]) -> str:
     return "\n".join(lines)
 
 
-#: B1'（ST-58/T-300）：`l15.candidate_fields` 的预设 → 有效字段开关。
+#: B1'（ST-58/T-300）：`l3_adjudicate.candidate_fields` 的预设 → 有效字段开关。
 #: `full` = 现状（零回归默认）；`minimal` = 砍 dimensions + memory_type + priority，
 #: `updated_at` 缩为 `YYYY-MM-DD`（保留短日期作模板第 6 条「更新」判定的平局线索）。
 #: 实测（单批候均 434.6、prompt 58,502）：dimensions −14.0% / type+priority −11.5% /
@@ -166,15 +168,15 @@ _CANDIDATE_FIELDS_PRESETS: dict[str, dict] = {
 
 
 def resolve_candidate_fields(l15_cfg: dict | None) -> dict:
-    """解析 `l15.candidate_fields` → 有效字段开关（preset 打底，显式项覆盖）。
+    """解析 `l3_adjudicate.candidate_fields` → 有效字段开关（preset 打底，显式项覆盖）。
 
     Args:
-        l15_cfg: `cfg["l15"]` 段（**不是**全量 cfg）。None / 缺键 → 返回 `full` 预设。
+        l15_cfg: `cfg["l3_adjudicate"]` 段（**不是**全量 cfg）。None / 缺键 → 返回 `full` 预设。
 
     Returns:
         ``{show_dimensions, show_memory_type, show_priority, updated_at_format}``
 
-    ⚠️ 非法值退回默认（与 `config._merge_l15_config` 同口径，双保险）——配置层已过滤，
+    ⚠️ 非法值退回默认（与 `config._merge_l3_adjudicate_config` 同口径，双保险）——配置层已过滤，
     但本函数也允许被直接调用（评测/脚本），不能依赖调用方先做校验。
     """
     raw = (l15_cfg or {}).get("candidate_fields")
@@ -245,7 +247,7 @@ def _parse_relations(raw: object) -> list[RelationEdge]:
     return out
 
 
-def parse_l15_output(text: str) -> list[ConflictDecision]:
+def parse_adjudication_output(text: str) -> list[ConflictDecision]:
     """解析 L1.5 输出为裁决列表。"""
     import re
     text = text.strip()
@@ -262,16 +264,16 @@ def parse_l15_output(text: str) -> list[ConflictDecision]:
         start = text.find("[")
         end = text.rfind("]")
         if start == -1 or end == -1:
-            raise L15Error(f"JSON 解析失败: {text[:200]}")
+            raise AdjudicationError(f"JSON 解析失败: {text[:200]}")
         try:
             data = json.loads(text[start:end + 1])
         except json.JSONDecodeError as e:
             # T1.10：兜底切片仍非法（如模型输出内含未转义引号——实测形态）→ 统一收敛为
-            # L15Error：否则原始 JSONDecodeError 会逃逸 resolve_conflicts 的 L15Error
+            # AdjudicationError：否则原始 JSONDecodeError 会逃逸 resolve_conflicts 的 AdjudicationError
             # 重试链（T-53），直达 pipeline 降级直存（绕过重试与落库期 F1 守卫）。
-            raise L15Error(f"JSON 解析失败（兜底切片仍非法）: {e}: {text[:200]}") from e
+            raise AdjudicationError(f"JSON 解析失败（兜底切片仍非法）: {e}: {text[:200]}") from e
     if not isinstance(data, list):
-        raise L15Error(f"期望 JSON 数组，得到 {type(data).__name__}")
+        raise AdjudicationError(f"期望 JSON 数组，得到 {type(data).__name__}")
     result = []
     for item in data:
         if not isinstance(item, dict):
@@ -290,8 +292,8 @@ def parse_l15_output(text: str) -> list[ConflictDecision]:
     return result
 
 
-def _parse_l15_with_repair(text: str, expected: int) -> list:
-    """解析 L1.5 输出；失败先**就地修复**再解，修复不成立才抛 L15Error。
+def _parse_adjudication_with_repair(text: str, expected: int) -> list:
+    """解析 L1.5 输出；失败先**就地修复**再解，修复不成立才抛 AdjudicationError。
 
     ST-58/T-292（P8）：解析失败的原行为是**整批重发 LLM**（token 翻倍）。
     近 30 天的失败**全部**是 `Invalid \\escape`（模型输出 Windows 路径
@@ -303,21 +305,21 @@ def _parse_l15_with_repair(text: str, expected: int) -> list:
       修复不可信，抛回原重试链路。
     """
     try:
-        return parse_l15_output(text)
-    except L15Error:
+        return parse_adjudication_output(text)
+    except AdjudicationError:
         pass
 
     fixed = json_repair.repair_json_text(text)
     if fixed is None:
-        raise L15Error(f"JSON 解析失败且无法就地修复: {text[:200]}")
+        raise AdjudicationError(f"JSON 解析失败且无法就地修复: {text[:200]}")
     try:
-        decisions = parse_l15_output(fixed)
-    except L15Error as e:
-        raise L15Error(f"JSON 解析失败（就地修复后仍非法）: {e}") from e
+        decisions = parse_adjudication_output(fixed)
+    except AdjudicationError as e:
+        raise AdjudicationError(f"JSON 解析失败（就地修复后仍非法）: {e}") from e
 
     if not decisions or len(decisions) > expected:
         # 修复出空/超量裁决 = 语义不可信，交回重试链路
-        raise L15Error(
+        raise AdjudicationError(
             f"就地修复后裁决数与批内新记忆数不相容（{len(decisions)} vs {expected}）"
         )
     logger.info("L1.5 输出就地修复成功（免重发）: %d 条裁决", len(decisions))
@@ -677,7 +679,7 @@ DEFAULT_NEAR_DUP: dict = {
 
 
 def _near_dup_cfg(cfg: dict | None) -> dict:
-    """读取并校验 l15.near_dup 配置，返回含 enabled/threshold/gray_zone 的字典。
+    """读取并校验 l3_adjudicate.near_dup 配置，返回含 enabled/threshold/gray_zone 的字典。
 
     缺省键回退出厂保守值（配置丢失不静默降档）；单键类型非法（字符串/布尔等）
     回退该键出厂值；跨键校验 ``0 <= gray_zone < threshold <= 1``（近似命中阈值
@@ -686,7 +688,7 @@ def _near_dup_cfg(cfg: dict | None) -> dict:
     """
     base = dict(DEFAULT_NEAR_DUP)
     try:
-        l15_cfg = cfg.get("l15") if isinstance(cfg, dict) else None
+        l15_cfg = cfg.get("l3_adjudicate") if isinstance(cfg, dict) else None
         nd = l15_cfg.get("near_dup") if isinstance(l15_cfg, dict) else None
         if isinstance(nd, dict):
             if isinstance(nd.get("enabled"), bool):
@@ -797,7 +799,7 @@ def _quarantine_if_near_dup(
     mem_conn: sqlite3.Connection,
     new_mem: dict,
     cfg: dict,
-    result: L15Result,
+    result: AdjudicationResult,
     source_ref: str | None = None,
 ) -> bool:
     """F1 落库前守卫（L1.5 P1，T1.6）：近似重复命中 → 写隔离表 + 调用方 skip。
@@ -841,7 +843,7 @@ def _quarantine_if_near_dup(
 def _record_near_dup_run(
     mem_conn: sqlite3.Connection,
     bucket_key: str,
-    result: L15Result,
+    result: AdjudicationResult,
     bucket_ctx,
 ) -> None:
     """F1 独立计数记录（L1.5 P1，T1.6）：近似查重拦截/灰区数写一条 refine_run。
@@ -917,6 +919,78 @@ def _extra_of(mem: dict) -> dict:
     return {k: mem[k] for k in _EXTRA_KEYS if mem.get(k) is not None}
 
 
+# ---------- E1 向量回填（2026-11-05）：落库成功后同步 embed + upsert ----------
+
+#: 回填单条 embed 的客户端超时（秒）。正常本地 bge-m3 ≈50ms/条；端点不可达时必须
+#: **快速失败**（宁可本次不回填、交 scripts/backfill_vectors.py 兜底，也不让提炼主链
+#: 等满 embed 默认的 30s×整条降级链）。
+VECTOR_BACKFILL_TIMEOUT_S = 10.0
+
+
+def _vector_backfill_enabled(cfg: dict | None) -> bool:
+    """E1：仅部署启用向量检索（search.vector.enabled=true）时才回填。
+
+    enabled=false 时向量索引本就不被读（/search 降级纯 BM25），回填零收益却要为
+    每条记忆付一次 embed 成本——直接跳过。
+    """
+    try:
+        return bool((((cfg or {}).get("search") or {}).get("vector") or {}).get("enabled"))
+    except (AttributeError, TypeError):
+        return False
+
+
+def _backfill_memory_vector(
+    mem_conn: sqlite3.Connection,
+    memory_id: str,
+    content: str | None,
+    cfg: dict | None,
+) -> bool:
+    """E1（2026-11-05）：记忆落库成功后同步 embed + upsert 向量。
+
+    背景（B314 待办 1）：_store_memory 只写 memories，向量靠 finalize_refinement
+    批末统一回填 → 同一批里先落的记忆对后续 _near_dup_check 不可见（检出滞后一个
+    finalize 周期），同批写入的重复内容互相看不见。
+
+    做法参照 near_dup_dao.restore 的单条即时回填。幂等由
+    memory_dao.upsert_vector 的 INSERT OR REPLACE（memory_id 主键）保证——
+    与 finalize_refinement 的批量回填重复执行只覆盖同一条，不产生重复行、
+    不会串到别的 memory_id。
+
+    fail-open（绝不阻塞落库主链）：embed 不可达 / 异常 / DB 异常一律只 WARNING，
+    返回 False；补数可无参重跑 scripts/backfill_vectors.py（LEFT JOIN 扫
+    「active 且无向量」天然捡起）。content 为空或向量检索未启用 → 直接 False。
+    """
+    if not content or not _vector_backfill_enabled(cfg):
+        return False
+    started = time.monotonic()
+    try:
+        # 专用短超时客户端：端点不可达时快速失败（不拖垮提炼主链）；
+        # 显式传入时 embed 内部不会自行关闭，这里负责收尾。
+        client = llm_provider.make_client(timeout_s=VECTOR_BACKFILL_TIMEOUT_S)
+        try:
+            ok = bool(vector_mod.upsert_memory_vector(
+                mem_conn, memory_id, content, cfg, client=client,
+            ))
+        finally:
+            client.close()
+    except Exception as e:  # noqa: BLE001 - 向量是增强项，异常一律 fail-open
+        logger.warning(
+            "L1.5 向量回填异常（fail-open，不阻塞落库）: memory_id=%s err=%s", memory_id, e,
+        )
+        return False
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+    if not ok:
+        logger.warning(
+            "L1.5 向量回填失败（embed 不可达，fail-open 不阻塞落库）: memory_id=%s "
+            "耗时=%.1fms；可无参重跑 scripts/backfill_vectors.py 兜底",
+            memory_id, elapsed_ms,
+        )
+        return False
+    # 单条耗时证据（E1 验收：文档口径 ≈50ms/条）：DEBUG 落日志，不淹没提炼 INFO 日志
+    logger.debug("L1.5 向量回填完成: memory_id=%s 耗时=%.1fms", memory_id, elapsed_ms)
+    return True
+
+
 def _store_memory(
     mem_conn: sqlite3.Connection,
     new_mem: dict,
@@ -924,8 +998,13 @@ def _store_memory(
     source_ref: str | None = None,
     prompt_version: str | None = None,
     write_2_0: bool = True,
+    cfg: dict | None = None,
 ) -> str:
-    """store 动作：INSERT 新记忆。"""
+    """store 动作：INSERT 新记忆 + 落库成功后同步向量回填（E1）。
+
+    cfg：L1.5 全局配置（回填读 search.vector.enabled）；缺省 None = 不回填
+    （旧调用签名向后兼容——直接单测 _store_memory 时不触网、不写向量）。
+    """
     ttl = _backfill_ttl(
         new_mem.get("ttl_days"),
         new_mem.get("dimension_ids", new_mem.get("dimensions", [])),
@@ -940,7 +1019,7 @@ def _store_memory(
     surprise = compute_for_store(mem_conn, new_mem.get("content"), new_mem.get("memory_type"))
     if surprise is not None:
         extra["surprise"] = surprise
-    return memory_dao.insert_memory(
+    new_id = memory_dao.insert_memory(
         mem_conn,
         content=new_mem["content"],
         memory_type=new_mem.get("memory_type", "persona"),
@@ -963,6 +1042,9 @@ def _store_memory(
         # D-55 阶段 2：双写灰度开关（关闭时不落 2.0 新字段）
         write_2_0=write_2_0,
     )
+    # E1（2026-11-05）：落库成功后同步回填向量——同批后续记忆的 near_dup 立即可见
+    _backfill_memory_vector(mem_conn, new_id, new_mem.get("content"), cfg)
+    return new_id
 
 
 def _update_memory(
@@ -973,11 +1055,12 @@ def _update_memory(
     source_ref: str | None = None,
     prompt_version: str | None = None,
     write_2_0: bool = True,
+    cfg: dict | None = None,
 ) -> str:
-    """update 动作：归档候选行 + INSERT 新记忆。"""
+    """update 动作：归档候选行 + INSERT 新记忆（含 E1 向量回填，透传 cfg）。"""
     new_id = _store_memory(
         mem_conn, new_mem, dimensions, source_ref,
-        prompt_version=prompt_version, write_2_0=write_2_0,
+        prompt_version=prompt_version, write_2_0=write_2_0, cfg=cfg,
     )
     memory_dao.archive_memory(mem_conn, candidate_id, superseded_by=new_id)
     return new_id
@@ -992,8 +1075,9 @@ def _merge_memory(
     source_ref: str | None = None,
     prompt_version: str | None = None,
     write_2_0: bool = True,
+    cfg: dict | None = None,
 ) -> str:
-    """merge 动作：INSERT 合并行 + 归档所有命中候选。
+    """merge 动作：INSERT 合并行 + 归档所有命中候选（含 E1 向量回填，透传 cfg）。
 
     合并行：
     - content = merged_content
@@ -1021,7 +1105,7 @@ def _merge_memory(
     }
     new_id = _store_memory(
         mem_conn, merged_mem, dimensions, source_ref,
-        prompt_version=prompt_version, write_2_0=write_2_0,
+        prompt_version=prompt_version, write_2_0=write_2_0, cfg=cfg,
     )
     # 归档所有命中候选
     for cid in candidate_ids:
@@ -1142,14 +1226,14 @@ def _write_semantic_edges(
 
     零新增调用：关系判定复用冲突提炼同一次 LLM 输出（relations 字段）。
     脏边控制（AC）：
-    - weight 阈值：confidence < `l15.semantic_edges.min_weight`（默认 0.6）丢弃
+    - weight 阈值：confidence < `l3_adjudicate.semantic_edges.min_weight`（默认 0.6）丢弃
     - 被 update/merge 归档的候选跳过（已被取代，替代关系由 archive 链 supersedes 承载）
     - 候选非 active（rejected/过期）跳过
     - source='l1_conflict' 可溯源：delete_edges_by_source(conn, 'l1_conflict') 一键关闭该路
     返回写入边数。
     """
     from sgme.data import edge_dao
-    se_cfg = (cfg.get("l15", {}) or {}).get("semantic_edges", {}) or {}
+    se_cfg = (cfg.get("l3_adjudicate", {}) or {}).get("semantic_edges", {}) or {}
     if not se_cfg.get("enabled", True):
         return 0
     min_weight = float(se_cfg.get("min_weight", 0.6))
@@ -1202,6 +1286,53 @@ _resolve_batch_budget = resolve_batch_budget
 
 
 # ---------- L3 规则裁决前置（2.0 D-28 / D-29）----------
+
+# ---------- 候选去重 + D-29 语义闸（2026-11-05） ----------
+
+def _dedupe_group_candidates(groups: list["CandidateGroup"]) -> int:
+    """候选集内按归一化正文去重（保留首条，原地修改）；返回移除条数。
+
+    只合并归一化后正文完全相同的候选：不减少不同候选、不改正文，无漏判风险。
+    """
+    from sgme.engine.l3_rules import normalize_text
+
+    removed = 0
+    for g in groups:
+        if len(g.candidates) <= 1:
+            continue
+        seen: set[str] = set()
+        kept: list[dict] = []
+        for c in g.candidates:
+            key = normalize_text(c.get("content", ""))
+            if key and key in seen:
+                removed += 1
+                continue
+            if key:
+                seen.add(key)
+            kept.append(c)
+        g.candidates = kept
+    return removed
+
+
+def _semantic_gate_override(new_mem: dict, candidates: list[dict], gate: dict) -> tuple[str, str | None, str] | None:
+    """D-29 语义闸（纯函数）：向量预筛带 score 时把明显无关/明显重复切出灰区。
+
+    返回 (kind, target_id, reason)；None = 保持灰区交 LLM。无 score 不生效（不猜）。
+    """
+    if not gate or not gate.get("enabled"):
+        return None
+    scored = [(float(c["score"]), c) for c in candidates if isinstance(c.get("score"), (int, float))]
+    if not scored:
+        return None
+    top_score, top_cand = max(scored, key=lambda x: x[0])
+    low = float(gate.get("low", 0.55))
+    high = float(gate.get("high", 0.95))
+    from sgme.engine.l3_rules import has_change_signal
+    if top_score < low:
+        return ("store", None, f"L3 语义闸：最高相似度 {top_score:.2f} < {low:.2f} → 直接入库")
+    if top_score >= high and not has_change_signal(new_mem.get("content")):
+        return ("skip", str(top_cand.get("memory_id")), f"L3 语义闸：最高相似度 {top_score:.2f} >= {high:.2f} 且无改口信号 → 判重")
+    return None
 
 def _apply_l3_rules(
     mem_conn: sqlite3.Connection,
@@ -1258,6 +1389,22 @@ def _apply_l3_rules(
             views,
             overlap_gray=overlap_gray, overlap_same=overlap_same,
         )
+        # D-29 语义闸（2026-11-05，l3.rules.semantic_gate，默认关；shadow 只记日志）
+        gate_cfg = rule_cfg.get("semantic_gate") or {}
+        if decision.kind == "llm" and isinstance(gate_cfg, dict) and gate_cfg.get("enabled"):
+            override = _semantic_gate_override(g.new_memory, g.candidates, gate_cfg)
+            if override is not None:
+                kind, target_id, reason = override
+                if gate_cfg.get("shadow"):
+                    logger.info("L3 语义闸（shadow，不改判）: %s", reason)
+                else:
+                    decisions[g.new_memory_index] = ConflictDecision(
+                        g.new_memory_index,
+                        [target_id] if target_id and kind != "store" else [],
+                        action_of.get(kind, "store"),
+                        reason=reason,
+                    )
+                    continue
         if decision.kind == "llm":
             remaining.append(g)
             continue
@@ -1278,7 +1425,7 @@ def resolve_conflicts(
     source_ref: str | None = None,
     bucket_ctx: BucketCtx | None = None,
     prompt_version: str | None = None,
-) -> L15Result:
+) -> AdjudicationResult:
     """L1.5 冲突提炼：候选池（分组全量召回）→ 预算分批 → LLM 裁决 → 四动作落库。
 
     铁律 #7（T-18 治理）：
@@ -1290,11 +1437,11 @@ def resolve_conflicts(
     - prompt_version：产出这些新记忆的 L1 版本（形如 `l1_extraction:v002`），
       随 store/update/merge 写入 memories.prompt_version（#33 透传）
     - 每候选批记录一条 refine_run（action 分布 + provider + version/variant）
-    - 返回 L15Result。
+    - 返回 AdjudicationResult。
     """
     from sgme.data.refine_dao import RefineRunRecorder
 
-    result = L15Result()
+    result = AdjudicationResult()
     if not new_memories:
         return result
 
@@ -1322,12 +1469,12 @@ def resolve_conflicts(
     # 1. 上下文预算（tokens，链首节点 context_window 折算；失败回退默认）
     budget = _resolve_batch_budget(llm_cfg)
     # B1'（ST-58/T-300）：候选元数据行裁剪开关——只压缩呈现体积，候选集与正文均不动
-    candidate_fields = resolve_candidate_fields(cfg.get("l15"))
+    candidate_fields = resolve_candidate_fields(cfg.get("l3_adjudicate"))
 
     # 1.5 候选池（铁律 #7：按新记忆分组全量召回；
     #     仅单记忆候选超上下文预算 → top-k 截断 + anomaly_warn；
-    #     2026-08-12 成本治理：l15.prescreen 配置开启向量预筛 → 候选受限，见 build_candidate_groups）
-    prescreen = (cfg.get("l15", {}) or {}).get("prescreen")
+    #     2026-08-12 成本治理：l3_adjudicate.prescreen 配置开启向量预筛 → 候选受限，见 build_candidate_groups）
+    prescreen = (cfg.get("l3_adjudicate", {}) or {}).get("prescreen")
     _prescreen_stats: dict = {}
     groups, pool_warn = build_candidate_groups(
         mem_conn, new_memories, top_k=top_k, per_memory_budget_tokens=budget,
@@ -1336,6 +1483,13 @@ def resolve_conflicts(
     prescreen_skipped = int(_prescreen_stats.get("prescreen_skipped", 0))
     result.prescreen_skipped = prescreen_skipped
     result.anomaly_warn = pool_warn
+
+    # 1.55 候选集内去重（2026-11-05，l3_adjudicate.candidate_dedup，默认关）
+    dedup_cfg = (cfg.get("l3_adjudicate", {}) or {}).get("candidate_dedup") or {}
+    if isinstance(dedup_cfg, dict) and dedup_cfg.get("enabled"):
+        removed = _dedupe_group_candidates(groups)
+        if removed:
+            logger.info("L3 候选集内去重: 移除 %d 条重复内容候选", removed)
 
     # 1.6 所有候选池为空 → 无冲突可能，直接全部 store（短路，不调 LLM）
     # 否则空 {{candidates}} 会让 LLM 困惑（输出非 JSON 文本），且浪费一次调用
@@ -1370,6 +1524,7 @@ def resolve_conflicts(
                 mem_conn, new_mem, dimensions, source_ref,
                 prompt_version=prompt_version,
                 write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
+                cfg=cfg,
             )
             new_mem["memory_id"] = new_id
             result.stored.append(new_id)
@@ -1417,7 +1572,7 @@ def resolve_conflicts(
     all_decisions: list[ConflictDecision] = list(l3_rule_decisions.values())
     for batch in batches:
         pv = PromptStore().get("l1_conflict", bucket_ctx)
-        prompt = _render_l15_text(pv.text, batch.new_memories, batch.candidates,
+        prompt = _render_adjudication_text(pv.text, batch.new_memories, batch.candidates,
                                   candidate_fields)
         # ST-58/T-289：run 记账 `start()` 前移到 **LLM 调用之前**——原先在 LLM 返回
         # 后才 start，全表 `started_at == finished_at`，耗时不可度量。
@@ -1458,13 +1613,13 @@ def resolve_conflicts(
                 _finish_run("error", str(e), [])
                 return result
             try:
-                decisions = _parse_l15_with_repair(text, len(batch.new_memories))
+                decisions = _parse_adjudication_with_repair(text, len(batch.new_memories))
                 for d in decisions:
                     d.new_memory_index += batch.start_index
                 all_decisions.extend(decisions)
                 run_status = "ok"
                 run_error = None
-            except L15Error as e:
+            except AdjudicationError as e:
                 # 2026-08-18（T-53 免费托底）：zhipu 免费档偶发输出截断 → JSON 解析失败。
                 # 同模型重试 1 次（提示只输出纯 JSON 数组）——截断是偶发，重试大概率拿完整输出；
                 # 2 次仍失败才降级默认 store（保守，不丢数据）。
@@ -1474,14 +1629,14 @@ def resolve_conflicts(
                     text, provider_name, usage = llm_chain.call_with_fallback(
                         llm_cfg, retry_prompt, chain_name="refinement", client=client,
                     )
-                    decisions = parse_l15_output(text)
+                    decisions = parse_adjudication_output(text)
                     for d in decisions:
                         d.new_memory_index += batch.start_index
                     all_decisions.extend(decisions)
                     run_status = "ok"
                     run_error = None
                     logger.info("L1.5 解析重试成功 provider=%s", provider_name)
-                except (L15Error, llm_provider.LLMUnavailable) as e2:
+                except (AdjudicationError, llm_provider.LLMUnavailable) as e2:
                     logger.warning("L1.5 输出解析重试仍失败: %s", e2)
                     # 解析失败 → 默认 store（保守，不丢数据）
                     decisions = [
@@ -1546,6 +1701,7 @@ def resolve_conflicts(
                 mem_conn, new_mem, dimensions, source_ref,
                 prompt_version=prompt_version,
                 write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
+                cfg=cfg,
             )
             new_mem["memory_id"] = new_id  # 写回，供 L2 场景关联
             result.stored.append(new_id)
@@ -1556,6 +1712,7 @@ def resolve_conflicts(
                 new_id = _update_memory(
                     mem_conn, new_mem, decision.candidate_ids[0],
                     dimensions, source_ref, prompt_version=prompt_version,
+                    cfg=cfg,
                 )
                 new_mem["memory_id"] = new_id
                 result.updated.append(new_id)
@@ -1569,10 +1726,11 @@ def resolve_conflicts(
                     result.skipped.append(i)
                     continue
                 new_id = _store_memory(
-                mem_conn, new_mem, dimensions, source_ref,
-                prompt_version=prompt_version,
-                write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
-            )
+                    mem_conn, new_mem, dimensions, source_ref,
+                    prompt_version=prompt_version,
+                    write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
+                    cfg=cfg,
+                )
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
         elif action == "merge":
@@ -1580,6 +1738,7 @@ def resolve_conflicts(
                 new_id = _merge_memory(
                     mem_conn, new_mem, decision.candidate_ids,
                     decision.merged_content, dimensions, source_ref, prompt_version=prompt_version,
+                    cfg=cfg,
                 )
                 new_mem["memory_id"] = new_id
                 result.merged.append(new_id)
@@ -1593,10 +1752,11 @@ def resolve_conflicts(
                     result.skipped.append(i)
                     continue
                 new_id = _store_memory(
-                mem_conn, new_mem, dimensions, source_ref,
-                prompt_version=prompt_version,
-                write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
-            )
+                    mem_conn, new_mem, dimensions, source_ref,
+                    prompt_version=prompt_version,
+                    write_2_0=dual_write_enabled(cfg, new_mem.get("agent_tag")),
+                    cfg=cfg,
+                )
                 new_mem["memory_id"] = new_id
                 result.stored.append(new_id)
 

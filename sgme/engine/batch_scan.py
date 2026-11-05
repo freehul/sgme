@@ -29,9 +29,12 @@ batch_scan.enabled=true 由 server/app.py 生命周期拉起；enabled=false 不
   幂等语义同上。batch_scan 自身持共享锁防与 Dream 并发；手动链路未持锁
   （pipeline 侧改动超出本任务范围，见 dream.py 同款注释）——最坏情况为
   同一增量段被重复 L1 提取一次，L1.5 按锚点去重/合并，可接受。
-- 失败文件：单文件提炼失败（LLM 不可用/L0 解析失败）由 refine_file 标记
-  status='error'，本模块不再重扫（与手动链路/Dream 语义一致，不改变提炼
-  链路状态流转规则）；重试由上层（agent 手动重触发）负责。
+- 失败文件：终态失败（LLM 全链失败/L0 解析失败）由 refine_file 标记
+  status='error'，本模块不再重扫（与手动链路/Dream 语义一致）；可重试失败
+  （块级缺口 / persist 落库异常）保持 status=new 由本模块下轮重扫，但同一文件
+  累计失败达 refine.max_file_attempts（默认 5）→ 转 status='error' 终止重扫
+  （E3 失败熔断，2026-11-05：此前无上限重扫曾空转 5 天 / 4.9 万次）；
+  恢复由上层（agent 手动重触发）负责。
 
 失败预案：单文件异常独立 try/except 继续（崩溃只丢当前文件）；整体崩溃由
 status='new' 幂等语义保证下轮重扫（绝不半途标记已处理）；error 事件进
@@ -53,6 +56,7 @@ from sgme import config as sgme_config
 from sgme.data import session_dao
 from sgme.engine import dream as dream_mod
 from sgme.engine import pipeline as pipeline_mod
+from sgme.engine import refine as refine_mod
 
 logger = logging.getLogger("sgme.engine.batch_scan")
 
@@ -114,6 +118,24 @@ def run_batch_scan(
         _REFINE_LOCK.release()
 
 
+def _record_failure(
+    session_conn: sqlite3.Connection,
+    file_id: str,
+    error: str | None,
+    cfg: dict[str, Any],
+) -> None:
+    """E3 失败熔断（2026-11-05）：批扫侧失败记账（写库异常不打断本轮扫描）。
+
+    refine 入口内部的失败已由 refine_file 自行记账（RefineResult.failure_recorded）；
+    本函数只覆盖「refine 入口之外的异常」与未记账结果的兜底，防同一文件重复计数
+    由调用方判定。
+    """
+    try:
+        refine_mod.record_refine_failure(session_conn, file_id, error, cfg)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("失败熔断计数写入异常（不阻塞批扫）: file=%s err=%s", file_id, e)
+
+
 def _run_batch_scan_locked(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -132,16 +154,19 @@ def _run_batch_scan_locked(
         try:
             # refine_one = refine_file（L1 抽取）→ persist_memories（L1.5 落库 + L2）
             # → commit_refine（游标推进，T-223：落库成功后才推进）
-            result, l15_stats = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
+            result, l3_stats = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
         except Exception as e:
             logger.warning("Batch 兜底提炼文件 %s 异常（继续下一文件）: %s", file_id, e)
             failed_count += 1
             if len(errors) < _MAX_ERRORS_IN_EVENT:
                 errors.append({"file_id": file_id, "error": f"异常: {e}"})
+            # E3 失败熔断（2026-11-05）：入口之外的异常（如 persist 落库失败）此前
+            # 只让文件保持 status=new 无限重扫——计入失败计数，达上限转 error。
+            _record_failure(session_conn, file_id, f"异常: {e}", cfg)
             continue
         if result.status == "refined":
             refined_count += 1
-            memory_count += int((l15_stats or {}).get("stored", 0) or 0)
+            memory_count += int((l3_stats or {}).get("stored", 0) or 0)
         else:
             failed_count += 1
             if len(errors) < _MAX_ERRORS_IN_EVENT:
@@ -149,6 +174,14 @@ def _run_batch_scan_locked(
                     "file_id": file_id,
                     "error": result.error or f"提炼失败（status={result.status}）",
                 })
+            # E3：refine 入口内的失败（L0 解析 / LLM 全链 / 块级缺口）已由
+            # refine_file 记账（failure_recorded=True）——此处只补记未记账的结果，
+            # 防同一文件被重复计数。
+            if not getattr(result, "failure_recorded", False):
+                _record_failure(
+                    session_conn, file_id,
+                    result.error or f"提炼失败（status={result.status}）", cfg,
+                )
     if new_files:
         logger.info(
             "Batch 兜底扫描完成 scanned=%d refined=%d failed=%d memories=%d",

@@ -236,7 +236,9 @@ DEFAULT_LOGGING_CONFIG = {
     "output": None,
 }
 
-DEFAULT_L2_CONFIG = {
+DEFAULT_SCENE_AGGREGATE_CONFIG = {
+    # D-53 / A1（2026-11-05）：场景层冻结；该键为 refine.finalize_refinement 的总闸。
+    "enabled": True,
     "max_scenes": 200,
     "warn_thresholds": {"yellow": 150, "orange": 180, "red": 200},
 }
@@ -248,7 +250,15 @@ DEFAULT_L3_CONFIG = {
     "rules": {
         "enabled": False,
         "overlap_gray": 0.30,    # 相似度高于此值即灰区（交 LLM）
-        "overlap_same": 0.85,    # 高于此值且无改口信号 → 判 llm（补充细节还是重复）
+        "overlap_same": 0.85,
+        # D-29 语义 top-5 阈值探测（2026-11-05）：向量预筛带 score 时，把明显无关/明显重复切出灰区；
+        # shadow=true 只记日志不改判（先标定线上分布再启用，避免漏判）。
+        "semantic_gate": {
+            "enabled": False,
+            "shadow": False,
+            "low": 0.55,
+            "high": 0.95,
+        },    # 高于此值且无改口信号 → 判 llm（补充细节还是重复）
     },
 }
 
@@ -269,6 +279,20 @@ def _merge_l3_config(user_cfg: dict | None) -> dict:
             val = rules.get(key)
             if isinstance(val, (int, float)) and 0 <= float(val) <= 1:
                 base["rules"][key] = float(val)
+
+        sg = rules.get("semantic_gate")
+        if isinstance(sg, dict):
+            tgt = base["rules"]["semantic_gate"]
+            if isinstance(sg.get("enabled"), bool):
+                tgt["enabled"] = sg["enabled"]
+            if isinstance(sg.get("shadow"), bool):
+                tgt["shadow"] = sg["shadow"]
+            for key in ("low", "high"):
+                val = sg.get(key)
+                if isinstance(val, (int, float)) and 0 <= float(val) <= 1:
+                    tgt[key] = float(val)
+            if tgt["low"] >= tgt["high"]:
+                tgt["low"], tgt["high"] = 0.55, 0.95
     return base
 
 
@@ -277,7 +301,7 @@ DEFAULT_SCENE_GC_CONFIG = {
     "enabled": True,            # 总开关
     "merge_threshold": 0.70,    # 相似度入选阈值（>= 才合并）；B117 由 0.80 下调，收掉 AIRDT/SGME/hermes 等弱相似度重复场景（下限 min_threshold=0.70）
     "min_threshold": 0.70,      # 兜底下限（候选不足时可降至此重算，当前未启用降级）
-    "trigger_at": None,         # 仅当 active >= 此值才执行；None = 回退 l2.warn_thresholds.orange
+    "trigger_at": None,         # 仅当 active >= 此值才执行；None = 回退 scene_aggregate.warn_thresholds.orange
     "max_merges": 20,           # 单次合并上限（防一次 LLM 消耗过大）
 }
 
@@ -288,7 +312,7 @@ def _merge_scene_gc_config(user_cfg: dict | None) -> dict:
     类型校验规则：
     - enabled：必须 bool，否则回退默认
     - merge_threshold / min_threshold：数值，否则回退默认
-    - trigger_at：int 或 None（None = 运行时回退 l2 橙色阈值），否则回退默认
+    - trigger_at：int 或 None（None = 运行时回退 scene_aggregate 橙色阈值），否则回退默认
     - max_merges：正整数，否则回退默认
     """
     base = dict(DEFAULT_SCENE_GC_CONFIG)
@@ -473,7 +497,7 @@ def resolve_backup_dir(cfg: dict | None) -> Path:
 #   与 refine.py 代码内默认、包内资源默认 sgme.yaml 三方对齐。
 # overlap：相邻块重叠字符——⚠️ 仅字符串路径 chunk_conversation 生效，
 #   回合路径 chunk_messages_by_turn 不读此值（B162 记录的死配置，待清理）。
-DEFAULT_L1_CONFIG = {
+DEFAULT_L2_EXTRACTION_CONFIG = {
     "chunk_size": 6000,
     "overlap": 1500,
 }
@@ -487,7 +511,7 @@ DEFAULT_L1_CONFIG = {
 #     80 万+ tokens（08-11/12 单日 9800 万 tokens 的元凶），宁贵勿漏
 #   - skip_conflict：跳过冲突检测直接 store（不调 LLM，零额外 token）——embed 不可达时
 #     说明向量链路本身异常，冲突检测的召回质量不可信，先保数据落地，事后补检
-DEFAULT_L15_CONFIG = {
+DEFAULT_L3_ADJUDICATE_CONFIG = {
     "prescreen": {
         "enabled": False,
         "vector_top_k": 50,
@@ -496,7 +520,7 @@ DEFAULT_L15_CONFIG = {
     },
     # T-135 语义边（搭 l1_conflict 顺风车，零新增调用）：关系判定写入 memory_edges
     # source='l1_conflict' 可溯源关闭（delete_edges_by_source）；min_weight 为 LLM confidence
-    # 阈值（脏边控制，见 l15.py _write_semantic_edges）
+    # 阈值（脏边控制，见 l3_adjudicate.py _write_semantic_edges）
     "semantic_edges": {
         "enabled": True,
         "min_weight": 0.6,
@@ -516,6 +540,10 @@ DEFAULT_L15_CONFIG = {
     "candidate_fields": {
         "preset": "full",
         "updated_at_format": "iso",   # iso（完整时间戳）| date（YYYY-MM-DD）
+    },
+    # 候选集内按归一化正文去重（2026-11-05）：只合并内容完全相同的候选，不减少不同候选。
+    "candidate_dedup": {
+        "enabled": False,
     },
 }
 
@@ -548,6 +576,14 @@ DEFAULT_REFINE_CONFIG = {
     # chunk_retry_times=同块重试次数；backoff 按第 n 次 ×(n) 线性递增（秒）。
     "chunk_retry_times": 2,
     "chunk_retry_backoff_s": 5.0,
+    # E3 失败熔断（2026-11-05，B312 待办 1）：同一文件连续提炼失败达该次数 →
+    # raw_files.status='error' 终止 batch_scan 重扫；成功（commit_refine）清零。
+    # 背景：块级失败文件此前保持 status=new 无限重试，实测空转 5 天 / 4.9 万次。
+    "max_file_attempts": 5,
+    # E4 体积闸（2026-11-05，B312 待办 2）：单文件超过该字节数 → 直接标 error +
+    # last_error='file_too_large'，不进 LLM（不消耗模型额度）。
+    # 背景：>10MB 文件反复超时，3 个超大文件占失败风暴 92%。0 或负数 = 关闭体积闸。
+    "max_file_bytes": 10 * 1024 * 1024,
 }
 
 # ST-39 T-139 Guardrail：敏感信息写前/召回后过滤层（顶层配置，pipeline 与 search 共用）
@@ -598,7 +634,6 @@ DEFAULT_SERVER_CONFIG = {
         "/v1/answer": 10,
         "/v1/admin/refine": 5,
         "/v1/admin/dream": 5,
-        "/v1/admin/tier0": 5,
         "/v1/wiki": 5,
         "/v1/admin/skills": 5,
     },
@@ -1141,8 +1176,8 @@ def load_relations(path: Path | str | None = None) -> list[dict]:
 def load_sgme_config(path: Path | str | None = None) -> dict:
     """加载主配置 sgme.yaml（L2 场景聚合阈值等）。
 
-    文件缺失时返回 DEFAULT_L2_CONFIG 兜底（保证测试可在无 sgme.yaml 环境运行）。
-    目前识别顶层 `l2` 与 `search` 字段，其余字段忽略。
+    文件缺失时返回 DEFAULT_SCENE_AGGREGATE_CONFIG 兜底（保证测试可在无 sgme.yaml 环境运行）。
+    目前识别顶层 `scene_aggregate` 与 `search` 字段，其余字段忽略。
     """
     cfg_path = Path(path) if path else DEFAULT_SGME_CONFIG
     # T-142：覆盖目录（SGME_HOME/config 或 ~/.sgme/config）优先；缺失时回退包内默认模板，
@@ -1151,11 +1186,11 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
         cfg_path = BUNDLE_SGME_CONFIG
     if not cfg_path.exists():
         return {
-            "l2": dict(DEFAULT_L2_CONFIG),
+            "scene_aggregate": dict(DEFAULT_SCENE_AGGREGATE_CONFIG),
             "search": _merge_search_config(None),
             "backup": dict(DEFAULT_BACKUP_CONFIG),
-            "l1": dict(DEFAULT_L1_CONFIG),
-            "l15": dict(DEFAULT_L15_CONFIG),
+            "l2_extraction": dict(DEFAULT_L2_EXTRACTION_CONFIG),
+            "l3_adjudicate": dict(DEFAULT_L3_ADJUDICATE_CONFIG),
             "refine": _merge_refine_config(None),
             "server": dict(DEFAULT_SERVER_CONFIG),
             "dream": _merge_dream_config(None),
@@ -1168,22 +1203,23 @@ def load_sgme_config(path: Path | str | None = None) -> dict:
     raw = _read_yaml(cfg_path)
     if not isinstance(raw, dict):
         raise ValueError(f"sgme.yaml 格式错误: {cfg_path}")
-    # 缺 l2 段时用默认兜底
-    if "l2" not in raw or not isinstance(raw["l2"], dict):
-        raw["l2"] = dict(DEFAULT_L2_CONFIG)
+    # 缺 scene_aggregate 段时用默认兜底
+    if "scene_aggregate" not in raw or not isinstance(raw["scene_aggregate"], dict):
+        raw["scene_aggregate"] = dict(DEFAULT_SCENE_AGGREGATE_CONFIG)
     else:
         # 合并默认值（保证缺字段时兜底）
-        merged = dict(DEFAULT_L2_CONFIG)
-        merged.update(raw["l2"])
-        raw["l2"] = merged
+        merged = dict(DEFAULT_SCENE_AGGREGATE_CONFIG)
+        merged.update(raw["scene_aggregate"])
+        raw["scene_aggregate"] = merged
     # search 段合并默认值
     raw["search"] = _merge_search_config(raw.get("search"))
     # backup 段合并默认值
     raw["backup"] = _merge_backup_config(raw.get("backup"))
-    # l1 段合并默认值
-    raw["l1"] = _merge_l1_config(raw.get("l1"))
-    # l15 段合并默认值（T-25 候选池向量预筛）
-    raw["l15"] = _merge_l15_config(raw.get("l15"))
+    # l2_extraction 段合并默认值
+    raw["l2_extraction"] = _merge_l2_extraction_config(raw.get("l2_extraction"))
+    # l3_adjudicate 段合并默认值（T-25 候选池向量预筛）
+    raw["l3_adjudicate"] = _merge_l3_adjudicate_config(raw.get("l3_adjudicate"))
+    raw["l3"] = _merge_l3_config(raw.get("l3"))
     # refine 段合并默认值
     raw["refine"] = _merge_refine_config(raw.get("refine"))
     # server 段合并默认值（T-7 §6 限流阈值）
@@ -1310,9 +1346,9 @@ def _load_embedding_config(provider: str = "volc-plan") -> dict:
     return load_embeddings_config().get(provider, {})
 
 
-def _merge_l1_config(user_cfg: dict | None) -> dict:
-    """合并 l1 段默认值与用户配置（分块参数）。"""
-    base = dict(DEFAULT_L1_CONFIG)
+def _merge_l2_extraction_config(user_cfg: dict | None) -> dict:
+    """合并 l2_extraction 段默认值与用户配置（分块参数）。"""
+    base = dict(DEFAULT_L2_EXTRACTION_CONFIG)
     if not isinstance(user_cfg, dict):
         return base
     for k in ("chunk_size", "overlap"):
@@ -1321,18 +1357,19 @@ def _merge_l1_config(user_cfg: dict | None) -> dict:
     return base
 
 
-def _merge_l15_config(user_cfg: dict | None) -> dict:
-    """合并 l15 段默认值与用户配置（候选池预筛 T-25；语义边 T-135；近似查重 F1；候选字段裁剪 B1'）。
+def _merge_l3_adjudicate_config(user_cfg: dict | None) -> dict:
+    """合并 l3_adjudicate 段默认值与用户配置（候选池预筛 T-25；语义边 T-135；近似查重 F1；候选字段裁剪 B1'）。
 
     校验原则：**非法值一律退回默认**（不静默放行错配置）——preset 只认 `full`/`minimal`，
     开关只认 bool，`updated_at_format` 只认 `iso`/`date`。
     """
     base = {
-        "prescreen": dict(DEFAULT_L15_CONFIG["prescreen"]),
-        "semantic_edges": dict(DEFAULT_L15_CONFIG["semantic_edges"]),
+        "prescreen": dict(DEFAULT_L3_ADJUDICATE_CONFIG["prescreen"]),
+        "semantic_edges": dict(DEFAULT_L3_ADJUDICATE_CONFIG["semantic_edges"]),
         # dict() 浅拷贝防可变默认共享（near_dup 内层暂为标量，与 prescreen 同款）
-        "near_dup": dict(DEFAULT_L15_CONFIG["near_dup"]),
-        "candidate_fields": dict(DEFAULT_L15_CONFIG["candidate_fields"]),
+        "near_dup": dict(DEFAULT_L3_ADJUDICATE_CONFIG["near_dup"]),
+        "candidate_fields": dict(DEFAULT_L3_ADJUDICATE_CONFIG["candidate_fields"]),
+        "candidate_dedup": dict(DEFAULT_L3_ADJUDICATE_CONFIG["candidate_dedup"]),
     }
     if not isinstance(user_cfg, dict):
         return base
@@ -1361,6 +1398,10 @@ def _merge_l15_config(user_cfg: dict | None) -> dict:
         for k in ("enabled", "threshold", "gray_zone"):
             if k in nd:
                 base["near_dup"][k] = nd[k]
+
+    cd = user_cfg.get("candidate_dedup")
+    if isinstance(cd, dict) and isinstance(cd.get("enabled"), bool):
+        base["candidate_dedup"]["enabled"] = cd["enabled"]
     return base
 
 
@@ -1416,6 +1457,26 @@ def _merge_refine_config(user_cfg: dict | None) -> dict:
         if isinstance(ov.get("max_tokens"), int) and ov["max_tokens"] > 0:
             merged["max_tokens"] = ov["max_tokens"]
         base["llm_override"] = merged
+    # 2026-11-05（收尾 E3/E4 + 口径补漏）：以下键此前**从未参与合并**——sgme.yaml 里
+    # 显式写了也会被静默丢弃（与 B121 llm_override 同类缺陷）。一并透传：
+    #   max_chunk_failure_ratio（≥0 浮点）、chunk_retry_times（≥0 整数）、
+    #   chunk_retry_backoff_s（≥0 数值）、max_file_attempts（≥1 整数）、
+    #   max_file_bytes（≥0 整数，0 = 关闭体积闸）。
+    ratio = user_cfg.get("max_chunk_failure_ratio")
+    if isinstance(ratio, (int, float)) and not isinstance(ratio, bool) and ratio >= 0:
+        base["max_chunk_failure_ratio"] = float(ratio)
+    times = user_cfg.get("chunk_retry_times")
+    if isinstance(times, int) and not isinstance(times, bool) and times >= 0:
+        base["chunk_retry_times"] = times
+    backoff = user_cfg.get("chunk_retry_backoff_s")
+    if isinstance(backoff, (int, float)) and not isinstance(backoff, bool) and backoff >= 0:
+        base["chunk_retry_backoff_s"] = float(backoff)
+    attempts = user_cfg.get("max_file_attempts")
+    if isinstance(attempts, int) and not isinstance(attempts, bool) and attempts >= 1:
+        base["max_file_attempts"] = attempts
+    fsize = user_cfg.get("max_file_bytes")
+    if isinstance(fsize, int) and not isinstance(fsize, bool) and fsize >= 0:
+        base["max_file_bytes"] = fsize
     return base
 
 
@@ -1630,7 +1691,7 @@ def load_config(
         "aliases": {dim_id: [alias,...]},
         "term_aliases": {旧术语: 标准术语},  # ST-19 检索术语别名表
         "relations": [rel_dict, ...],  # T-14 关系类型注册表
-        "l2": {max_scenes, warn_thresholds},  # 来自 sgme.yaml，缺失用默认兜底
+        "scene_aggregate": {max_scenes, warn_thresholds},  # 来自 sgme.yaml，缺失用默认兜底
         "paths": {"project_root", "data_dir", "raw_dir"}
       }
     启动时打印加载摘要（维度数/链长）。
@@ -1657,12 +1718,12 @@ def load_config(
         "aliases": aliases,
         "term_aliases": term_aliases,
         "relations": relations,
-        "l2": sgme_cfg.get("l2", dict(DEFAULT_L2_CONFIG)),
+        "scene_aggregate": sgme_cfg.get("scene_aggregate", dict(DEFAULT_SCENE_AGGREGATE_CONFIG)),
         "l3": _merge_l3_config(sgme_cfg.get("l3")),
         "search": sgme_cfg.get("search", _merge_search_config(None)),
         "backup": sgme_cfg.get("backup", dict(DEFAULT_BACKUP_CONFIG)),
-        "l1": sgme_cfg.get("l1", dict(DEFAULT_L1_CONFIG)),
-        "l15": sgme_cfg.get("l15", dict(DEFAULT_L15_CONFIG)),
+        "l2_extraction": sgme_cfg.get("l2_extraction", dict(DEFAULT_L2_EXTRACTION_CONFIG)),
+        "l3_adjudicate": sgme_cfg.get("l3_adjudicate", dict(DEFAULT_L3_ADJUDICATE_CONFIG)),
         "refine": sgme_cfg.get("refine", _merge_refine_config(None)),
         "guardrail": _merge_guardrail_config(sgme_cfg.get("guardrail")),
         "agent_scope": _merge_agent_scope_config(sgme_cfg.get("agent_scope")),
@@ -1720,13 +1781,19 @@ def get_env(name: str) -> str | None:
 # ---------- 配置写入（2026-08-07 模块化重构 B30：config = 配置唯一读写方） ----------
 
 # 可写段白名单（sgme.yaml 顶层键；llm.yaml/registry 属机密与注册表，不由接口改）
-CONFIG_SECTIONS = {"l1", "l2", "refine", "search", "backup", "wiki", "skills_hub", "logging", "dream", "scene_gc"}
+CONFIG_SECTIONS = {"l2_extraction", "l3_adjudicate", "l3", "scene_aggregate", "refine", "search", "backup", "wiki", "skills_hub", "logging", "dream", "scene_gc"}
 
 # 各段可写字段（防未知键注入；缺省 = 整段白名单）
 SECTION_KEYS: dict[str, set[str]] = {
-    "l1": {"chunk_size", "overlap"},
-    "l2": {"max_scenes", "warn_thresholds"},
-    "refine": {"refine_on_append", "batch_scan"},
+    "l2_extraction": {"chunk_size", "overlap"},
+    "l3_adjudicate": {"prescreen", "semantic_edges", "near_dup", "candidate_fields", "candidate_dedup"},
+    "l3": {"rules"},
+    "scene_aggregate": {"enabled", "max_scenes", "warn_thresholds"},
+    "refine": {
+        "refine_on_append", "batch_scan",
+        # E3/E4（2026-11-05）：失败熔断阈值 + 单文件体积闸
+        "max_file_attempts", "max_file_bytes",
+    },
     "search": {"vector", "rrf"},
     "backup": {"dir", "schedule", "raw_cold_days", "remote_dir"},
     "dream": {"enabled", "schedule", "max_files", "ttl_mark", "archive_days", "report_dir", "purge_expired"},

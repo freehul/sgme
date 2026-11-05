@@ -6,7 +6,7 @@
 - SGME_BEARER_TOKEN  Bearer 令牌（不设则旁路关闭，仅 localhost）
 - SGME_HOST / SGME_PORT  绑定地址（默认 127.0.0.1:9910）
 
-启动时经 lifespan 附加：每日 Tier0 摘要生成 cron（UTC 00:00）+ 每 10 分钟心跳检查
+启动时经 lifespan 附加：每 10 分钟心跳检查 + 定时版本检测（Tier0 每日摘要已于 D-79 砍除）
 + Batch 兜底扫描定时器（refine.batch_scan.enabled=true 时，线程常驻）。
 """
 from __future__ import annotations

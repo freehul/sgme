@@ -16,7 +16,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from sgme.operations.errors import ERR_NOT_FOUND, InvalidArgs, OperationResult
+from sgme.data import near_dup_dao
+from sgme.operations.errors import ERR_INVALID_ARGS, ERR_NOT_FOUND, InvalidArgs, OperationResult
 
 # 列表分页硬上限（防查询放大，对齐 demand.py 的 MAX_LIMIT 先例）
 MAX_LIMIT: int = 200
@@ -26,6 +27,9 @@ DEFAULT_LIMIT: int = 50
 AUTO_RESOLVE_MARK: str = "未经人工确认"
 
 DEFAULT_RESOLVE_DAYS: int = 7
+
+# 拒绝理由缺省值（2026-11-05 用户定：理由非必填）
+DEFAULT_REJECT_REASON: str = "人工拒绝（未填理由）"
 
 
 def _now_iso() -> str:
@@ -177,8 +181,9 @@ def reject(conn: sqlite3.Connection, memory_id: str, reason: str) -> dict:
     Raises:
         InvalidArgs: reason 为空。
     """
-    if not isinstance(reason, str) or not reason.strip():
-        raise InvalidArgs("reason 不能为空")
+    # 2026-11-05 用户定：理由**非必填**（与近似重复复核同口径）。
+    # 空理由记默认串，保留「人工拒绝」这一事实本身，便于后续按来源区分。
+    reason_val = str(reason).strip() if reason is not None and str(reason).strip() else DEFAULT_REJECT_REASON
     row = conn.execute(
         "SELECT status FROM memories WHERE memory_id = ?", (memory_id,)
     ).fetchone()
@@ -189,7 +194,7 @@ def reject(conn: sqlite3.Connection, memory_id: str, reason: str) -> dict:
         conn.execute(
             "UPDATE memories SET status = 'rejected', reject_reason = ?, rejected_at = ? "
             "WHERE memory_id = ?",
-            (reason.strip(), _now_iso(), memory_id),
+            (reason_val, _now_iso(), memory_id),
         )
         conn.commit()
     return OperationResult.succeed({"memory_id": memory_id})
@@ -243,3 +248,116 @@ def auto_resolve_expired(
         resolved += 1
     conn.commit()
     return OperationResult.succeed({"resolved": resolved})
+
+
+# ---------- 操作 5-7：近似重复隔离区人工批复（2026-11-05，B313） ----------
+#
+# 背景：l3_adjudicate._near_dup_check 把「拿不准」的新记忆挡进
+# near_dup_quarantine（灰区），设计上等人工复核。但 2026-11-05 核查发现：
+# 整条人工通道**只有 DAO、没有端点/工具/界面**——458 条 pending 从未被处理过，
+# 不是没人清，是没有清的手段。用户同日拍板补通道，并要求两侧都能留痕
+#（放行已有 restore_reason；丢弃本批补 discard_reason）。
+# 用户另定：理由**不设必填**——批量清理要快，但字段留空也要留痕能力。
+
+def list_quarantine(
+    conn: sqlite3.Connection,
+    status: str | None = "pending",
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> dict:
+    """近似重复隔离区分页列表（灰区复核唯一数据源）。
+
+    items 每条带 matched_content——被撞上的既有记忆原文。灰区复核必须
+    「左右并排看」才能判断是不是同一件事，故 DAO 侧 LEFT JOIN 一次带出
+    （不做 N+1 查询）。
+
+    Args:
+        conn: memory.db 连接。
+        status: pending / discarded / restored；None 或空串 = 不过滤。
+        limit: 页大小（1-200）。
+        offset: 跳过条数（≥0）。
+
+    Raises:
+        InvalidArgs: limit/offset 非法。
+    """
+    limit_val = _parse_limit(limit)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise InvalidArgs(f"offset 必须 ≥ 0: {offset!r}")
+    st = (status or "").strip() or None
+    items = near_dup_dao.list_items_with_matched(
+        conn, status=st, limit=limit_val, offset=offset
+    )
+    total = near_dup_dao.count_items(conn, status=st)
+    return OperationResult.succeed({"items": items, "total": total})
+
+
+def _parse_quarantine_id(id: object) -> int:
+    """隔离行 id 校验：必须是正整数（HTTP 路径参数为 str，MCP 为 int）。"""
+    try:
+        qid = int(id)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise InvalidArgs(f"id 必须是整数: {id!r}")
+    if qid < 1:
+        raise InvalidArgs(f"id 必须 ≥ 1: {qid}")
+    return qid
+
+
+def discard_quarantine(
+    conn: sqlite3.Connection,
+    id: object,
+    reason: str | None = None,
+) -> dict:
+    """丢弃一条近似重复：置 discarded，不写进记忆池。
+
+    状态机：仅 pending 可丢弃（DAO 内 WHERE status='pending' 兜底）；已丢弃 /
+    已补录返回 ok=False 并回带当前状态，不报错——重复点击是正常操作。
+
+    reason 非必填（用户 2026-11-05 拍板），非空时落 discard_reason 留痕。
+    """
+    qid = _parse_quarantine_id(id)
+    item = near_dup_dao.get_item(conn, qid)
+    if item is None:
+        return OperationResult.fail(ERR_NOT_FOUND, f"隔离行不存在: id={qid}")
+    reason_val = str(reason).strip() if reason is not None and str(reason).strip() else None
+    ok = near_dup_dao.mark_discarded(conn, qid, reason=reason_val)
+    return OperationResult.succeed({
+        "id": qid,
+        "ok": bool(ok),
+        "status": "discarded" if ok else item.get("status"),
+        "reason": reason_val,
+    })
+
+
+def restore_quarantine(
+    conn: sqlite3.Connection,
+    id: object,
+    reason: str | None = None,
+    cfg: dict | None = None,
+    client=None,
+    supersede: bool = True,
+) -> dict:
+    """放行一条近似重复：补录进记忆池 + 向量即时回填。
+
+    复用 near_dup_dao.restore（全字段写入 + TTL 回填 + 向量即时回填）。
+    已补录过的行抛 ValueError → 转 ERR_INVALID_ARGS（不重复补录）。
+
+    supersede（默认 True，用户 2026-11-05 定）：人工放行 = 判定新内容更准，故
+    新记忆用人工确认档 priority=80，并把被撞上的旧记忆 mark_superseded（退出
+    注入/召回，不删可溯源）。传 False 则两条并存——适用于「都是独立事实、
+    只是措辞相似」的情况。
+    """
+    qid = _parse_quarantine_id(id)
+    reason_val = str(reason).strip() if reason is not None and str(reason).strip() else "人工补录"
+    try:
+        new_id = near_dup_dao.restore(
+            conn, qid, reason_val, cfg or {}, client=client, supersede=bool(supersede),
+        )
+    except ValueError as e:
+        return OperationResult.fail(ERR_INVALID_ARGS, str(e))
+    return OperationResult.succeed({
+        "id": qid,
+        "memory_id": new_id,
+        "status": "restored",
+        "reason": reason_val,
+        "supersede": bool(supersede),
+    })

@@ -44,7 +44,7 @@ def _llm_call(llm_cfg: dict, prompt: str) -> str:
     """降级链调 LLM（chain=refinement，与提炼同链）。返回文本。
 
     llm_cfg 为 llm 段（含顶层 chains/rules，即 load_config()["llm"]），
-    与 tier0/l2/care 各管线传 cfg["llm"] 的约定一致。
+    与 scene_aggregate/care 各管线传 cfg["llm"] 的约定一致（Tier0 已于 D-79 砍除）。
     """
     text, _provider, _usage = llm_chain.call_with_fallback(llm_cfg, prompt, chain_name="refinement")
     return text

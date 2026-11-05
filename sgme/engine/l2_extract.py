@@ -21,7 +21,7 @@
    （D-23 二轮修订 P1-2：宁可漏注入不可错断言）。
 
 向后兼容：输入若不是 2.0 结构（无 `main_event`），整段委托给 1.x 的
-`sgme.engine.l1.parse_l1_output`，行为不变。
+`sgme.engine.l2_extraction.parse_extraction_output`，行为不变。
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sgme.engine import l1
+from sgme.engine import l2_extraction
 from sgme.engine.l2_split import decide_split
 
 # D-43：愿望类断言的有效窗口（天）
@@ -61,7 +61,7 @@ def _clip(text: Any, limit: int, what: str) -> str:
 
 def _dimensions_of(unit: dict[str, Any], dimensions: list[dict]) -> list[str]:
     """归一维度：兼容 {primary, secondary} 与列表两种形态；只保留注册表内的 id。"""
-    dims, _dropped = l1._normalize_dimensions(unit.get("dimensions"), dimensions)
+    dims, _dropped = l2_extraction._normalize_dimensions(unit.get("dimensions"), dimensions)
     valid = {d["id"] for d in dimensions}
     return [d for d in dims if d in valid]
 
@@ -187,16 +187,16 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
             ),
             extra={
                 "type": ftype or None,
-                "subject": l1._normalize_subject(fact.get("subject")),
-                "certainty": l1._normalize_enum(
-                    fact.get("certainty"), l1.VALID_CERTAINTY, "confirmed"),
+                "subject": l2_extraction._normalize_subject(fact.get("subject")),
+                "certainty": l2_extraction._normalize_enum(
+                    fact.get("certainty"), l2_extraction.VALID_CERTAINTY, "confirmed"),
                 # 2026-11-02 修复：原先写死 fact/done，从不读模型输出——导致
                 # 「计划下周出差」被记成已发生（modality=done），闸门 A 永远无输入。
                 # 现在逐 fact 取模型值，缺失/非法才回落 fact/unknown（D-43 双轴正交）。
-                "derivation": l1._normalize_enum(
-                    fact.get("derivation"), l1.VALID_DERIVATION, "fact"),
-                "modality": l1._normalize_enum(
-                    fact.get("modality"), l1.VALID_MODALITY, "unknown"),
+                "derivation": l2_extraction._normalize_enum(
+                    fact.get("derivation"), l2_extraction.VALID_DERIVATION, "fact"),
+                "modality": l2_extraction._normalize_enum(
+                    fact.get("modality"), l2_extraction.VALID_MODALITY, "unknown"),
                 "needs_review": 0,
                 "split_reason": decision.reason,
             },
@@ -214,7 +214,7 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
         occurred_at=str(main.get("occurred_at") or "").strip() or None,
         # 主干按 unit 内 facts 的众数 modality 判有效期（与下面 extra.modality 同源）
         valid_to=_valid_to_for(
-            _majority([f.get("modality") for f in facts], l1.VALID_MODALITY, "unknown"),
+            _majority([f.get("modality") for f in facts], l2_extraction.VALID_MODALITY, "unknown"),
             str(main.get("occurred_at") or "").strip() or None,
         ),
         extra={
@@ -226,9 +226,9 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
             # need_review=1（降级待审）一律标 inferred——宁可漏注入不可错断言；
             # 正常项才取 facts 众数。
             "derivation": "inferred" if need_review else _majority(
-                [f.get("derivation") for f in facts], l1.VALID_DERIVATION, "fact"),
+                [f.get("derivation") for f in facts], l2_extraction.VALID_DERIVATION, "fact"),
             "modality": _majority([f.get("modality") for f in facts],
-                                  l1.VALID_MODALITY, "unknown"),
+                                  l2_extraction.VALID_MODALITY, "unknown"),
             "feeling": str(main.get("feeling") or "").strip() or None,
             "trait": trait or None,
             "needs_review": need_review,
@@ -248,12 +248,12 @@ def _majority(values: list, valid: set[str], default: str) -> str:
     """
     from collections import Counter
 
-    norm = [v for v in (l1._normalize_enum(x, valid, "") if x else "" for x in values) if v]
+    norm = [v for v in (l2_extraction._normalize_enum(x, valid, "") if x else "" for x in values) if v]
     if not norm:
         return default
     return Counter(norm).most_common(1)[0][0]
 
-def parse_l2_output(text: str, dimensions: list[dict]) -> list[dict[str, Any]]:
+def parse_scene_output(text: str, dimensions: list[dict]) -> list[dict[str, Any]]:
     """解析 2.0 L2 输出为记忆记录列表。
 
     Args:
@@ -270,14 +270,14 @@ def parse_l2_output(text: str, dimensions: list[dict]) -> list[dict[str, Any]]:
         RefineError: JSON 无法解析（与 1.x 一致，由调用方走重试/降级）。
     """
     try:
-        data = l1._extract_json_array(text)
+        data = l2_extraction._extract_json_array(text)
     except (json.JSONDecodeError, ValueError) as e:
-        raise l1.RefineError(f"JSON 解析失败: {e}") from e
+        raise l2_extraction.RefineError(f"JSON 解析失败: {e}") from e
     if not data:
         return []
     if not (isinstance(data[0], dict) and "main_event" in data[0]):
         # 1.x 结构 → 走旧解析，行为完全不变（向后兼容）
-        return l1.parse_l1_output(text, dimensions)
+        return l2_extraction.parse_extraction_output(text, dimensions)
 
     records: list[dict[str, Any]] = []
     for unit in data:
@@ -291,14 +291,14 @@ def parse_l2_output(text: str, dimensions: list[dict]) -> list[dict[str, Any]]:
 def records_to_items(
     records: list[dict[str, Any]], dimensions: list[dict]
 ) -> list[dict[str, Any]]:
-    """把 `parse_l2_output` 的记录转成 `l1._validate_item` 的输入项并校验。
+    """把 `parse_scene_output` 的记录转成 `l2_extraction._validate_item` 的输入项并校验。
 
     保留 2.0 元数据（type/subject/certainty/derivation/modality/route 直接进 item，
     feeling/trait/needs_review/l2_facts_json 在校验后回填），其余走既有校验逻辑，
     保证落库路径与 1.x 完全一致。
 
     Args:
-        records: `parse_l2_output` 的产物
+        records: `parse_scene_output` 的产物
         dimensions: 维度注册表
 
     Returns:
@@ -341,7 +341,7 @@ def records_to_items(
         for key in ("type", "subject", "certainty", "derivation", "modality"):
             if extra.get(key) is not None:
                 item[key] = extra[key]
-        validated = l1._validate_item(item, dimensions)
+        validated = l2_extraction._validate_item(item, dimensions)
         if validated is None:
             continue
         validated["feeling"] = extra.get("feeling")

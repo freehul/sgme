@@ -5,7 +5,6 @@
 - GET    /v1/admin/agents            只读列出已注册 Agent（脱敏，SCSM 镜像同步用）
 - GET    /v1/admin/stats             统计
 - POST   /v1/admin/refine/trigger    手动触发提炼（batch / 指定文件）
-- POST   /v1/admin/tier0/refresh     手动触发 Tier0 摘要生成
 - GET    /v1/admin/memories          记忆分页列表（0.8 T-15 / 契约 §5.3）
 - GET    /v1/admin/scenes            场景分页列表（0.8 T-15 / 契约 §5.4）
 - GET    /v1/admin/skill-candidates  技能候选池列表（2.0 D-67）
@@ -21,7 +20,7 @@
 - PUT    /v1/admin/templates/{name}  更新模板（§5.8.2，校验失败 400）
 - DELETE /v1/admin/templates/{name}  删除模板（§5.8.4，内置 400 / 不存在 404）
 
-提炼链路：refine_file (L0→L1) → l15.resolve_conflicts (L1.5 落库)。
+提炼链路：refine_file (L0→L1) → l3_adjudicate.resolve_conflicts (L1.5 落库)。
 L1.5 LLM 不可用时降级直存（保守不丢数据）。
 """
 from __future__ import annotations
@@ -58,7 +57,6 @@ from sgme.operations.stats import stats as stats_operation
 from sgme.operations.usage import query_usage as query_usage_operation
 from sgme.operations.refine import refine_trigger as refine_trigger_operation
 from sgme.operations.refine import refine_trigger_async as refine_trigger_async_operation
-from sgme.profile import tier0 as tier0_mod
 from sgme.server.app import _now_iso, api_error, mark_deprecated, require_admin_key, run_operation
 from sgme.security_log import (
     mask_key,
@@ -139,10 +137,6 @@ class RegisterAgentRequest(BaseModel):
 class RefineTriggerRequest(BaseModel):
     file_id: str | None = None
     limit: int = 100
-
-
-class Tier0RefreshRequest(BaseModel):
-    pass  # 无参数，触发即可
 
 
 # ---------- POST /v1/admin/agents/register ----------
@@ -443,22 +437,6 @@ def refine_trigger_async(
         limit=payload.limit,
     )
 
-
-# ---------- POST /v1/admin/tier0/refresh ----------
-
-@router.post("/v1/admin/tier0/refresh")
-def refresh_tier0(
-    request: Request,
-    _: str = Depends(require_admin_key),
-):
-    """手动触发 Tier0 摘要生成。"""
-    cfg = request.app.state.cfg
-    mem_conn: sqlite3.Connection = request.app.state.mem_conn
-    summary = tier0_mod.generate_summary(mem_conn, cfg)
-    if summary:
-        tier0_mod.save_summary(summary)
-        return {"status": "ok", "summary_length": len(summary)}
-    return {"status": "failed", "error": "LLM 不可用或生成失败"}
 
 
 # ---------- POST /v1/admin/scenes/{scene_id}/status ----------
@@ -1630,7 +1608,7 @@ def scene_gc_candidates(
         cfg = {**cfg, "scene_gc": {**gc_cfg, "merge_threshold": threshold}}
     candidates = scene_gc_mod.list_merge_candidates(mem_conn, cfg)
     active = scene_dao.count_scenes(mem_conn, "active")
-    l2_cfg = cfg.get("l2") or {}
+    l2_cfg = cfg.get("scene_aggregate") or {}
     orange = int((l2_cfg.get("warn_thresholds") or {}).get("orange", 180))
     trigger_at = int(gc_cfg.get("trigger_at") or orange)
     return {

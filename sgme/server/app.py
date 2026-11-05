@@ -615,26 +615,7 @@ class UsageMiddleware:
             pass  # 统计是旁路：任何失败不得影响响应
 
 
-# ---------- 后台定时任务（T12 Tier0 每日摘要 / T15 心跳） ----------
-
-async def daily_tier0_task(app) -> None:
-    """每日 00:00 UTC 触发 Tier0 摘要生成（独立 LLM 任务，失败不阻塞）。"""
-    from sgme.profile import tier0 as tier0_mod
-
-    while True:
-        now = datetime.now(timezone.utc)
-        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        wait_secs = (tomorrow - now).total_seconds()
-        await asyncio.sleep(wait_secs)
-        try:
-            summary = tier0_mod.generate_summary(app.state.mem_conn, app.state.cfg)
-            if summary:
-                tier0_mod.save_summary(summary)
-                logger.info("Tier0 摘要自动生成成功")
-            else:
-                logger.warning("Tier0 摘要生成失败（LLM 不可用）")
-        except Exception as e:
-            logger.exception("Tier0 定时任务异常: %s", e)
+# ---------- 后台定时任务（T15 心跳 / ST-34 版本检测；T12 Tier0 每日摘要已于 D-79 砍除） ----------
 
 
 async def heartbeat_task(app) -> None:
@@ -831,9 +812,9 @@ def create_app(
 
     测试可注入 cfg/mem_conn/session_conn/wiki_conn/credentials_conn 实现隔离（v0.7 三库；EP-11 加凭据库）；
     生产由 __main__ 调用并自动初始化。
-    start_background_tasks=True 时启动 Tier0 每日摘要 + 心跳定时任务
-    （生产模式），并按 refine.batch_scan.enabled 拉起 Batch 兜底提炼定时器
-    （daemon 线程，engine/batch_scan.py）。
+    start_background_tasks=True 时启动心跳 + 版本检测定时任务（生产模式；
+    T12 Tier0 每日摘要已于 D-79 砍除），并按 refine.batch_scan.enabled 拉起
+    Batch 兜底提炼定时器（daemon 线程，engine/batch_scan.py）。
     """
     if cfg is None:
         cfg = sgme_config.load_config()
@@ -995,7 +976,6 @@ def create_app(
                 sgme_config.write_install_json(cfg, host=host, port=port)
             except Exception as e:  # 不阻断启动：清单缺失不影响核心服务
                 print(f"[SGME install] 安装清单生成失败（不影响启动）: {e}")
-            asyncio.create_task(daily_tier0_task(app))
             asyncio.create_task(heartbeat_task(app))
             asyncio.create_task(update_check_task(app))
             # T-163：接口调用统计保留期清理（400 天，失败不阻断启动）
@@ -1165,6 +1145,7 @@ def create_app(
     from sgme.server.routes_registry import router as registry_router
     from sgme.server.routes_prompts import router as prompts_router
     from sgme.server.routes_ideas import router as ideas_router
+    from sgme.server.routes_cards import router as cards_router
     from sgme.server.routes_review import router as review_router
     from sgme.server.routes_ops import router as ops_router
     from sgme.server.routes_llm import router as llm_router
@@ -1187,6 +1168,7 @@ def create_app(
     app.include_router(prompts_router)
     app.include_router(ideas_router)
     app.include_router(review_router)
+    app.include_router(cards_router)
     app.include_router(ops_router)
     app.include_router(llm_router)
     app.include_router(capabilities_router)

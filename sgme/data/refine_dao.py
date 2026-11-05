@@ -378,8 +378,8 @@ def list_runs_page(
         conn: memory.db 连接（refine_runs 在 memory.db）。
         page: 页码（≥ 1，调用方已校验）。
         limit: 页大小（1..200，调用方已校验）。
-        stage: ``l1_extraction`` / ``l1_conflict`` / ``l2_scene`` / ``tier0_summary``；
-            None 不过滤。
+        stage: ``l1_extraction`` / ``l1_conflict`` / ``l2_scene``，或历史遗留的
+            ``tier0_summary``（D-79 已砍，仅存量 refine_runs 可查）；None 不过滤。
         status: ``running`` / ``ok`` / ``error``；None 不过滤。
         since / until: 作用于 ``started_at`` 的闭区间边界。
 

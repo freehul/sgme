@@ -35,7 +35,7 @@ _TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 
 
 def _decodable(text: str) -> bool:
-    """能否解析出首个完整 JSON 值（与 l15/l2 解析器的 `raw_decode` 口径一致）。"""
+    """能否解析出首个完整 JSON 值（与 l3_adjudicate/scene_aggregate 解析器的 `raw_decode` 口径一致）。"""
     try:
         json.JSONDecoder().raw_decode(text.lstrip())
         return True

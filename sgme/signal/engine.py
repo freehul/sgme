@@ -47,7 +47,7 @@ def publish(
     """发布事件到 signal_events 表。
 
     - event_type: 'memory_updated' | 'anomaly_warn'
-    - source: 事件来源标识（如 'refine', 'l2', 'health'）
+    - source: 事件来源标识（如 'refine', 'scene_aggregate', 'health'）
     - payload: 事件载荷 dict（内部 json.dumps 序列化，ensure_ascii=False）
     - 发布侧不做合并过滤（抑制窗口归 SCSM 消费端，§11.1）
     - 可选附 suppress_hint（同源同类型最近发布时间）辅助消费端抑制

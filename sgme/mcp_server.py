@@ -595,10 +595,16 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "review_approve", "description": "放行待审记忆（needs_review 置 0，恢复进主注入）"},
     {"name": "review_reject", "description": "拒绝待审记忆（软删 status=rejected，可恢复）"},
     {"name": "review_auto_resolve", "description": "触发超期自动消化（超 N 天未处理的待审记忆按保守直存放行）"},
+    {"name": "near_dup_list", "description": "近似重复隔离区列表（灰区待人工复核；每条带 matched_content 供左右对照，2026-11-05 补通道）"},
+    {"name": "near_dup_discard", "description": "丢弃一条近似重复（不写进记忆池；reason 可选，落 discard_reason 留痕）"},
+    {"name": "near_dup_restore", "description": "放行一条近似重复（补录进记忆池 + 向量即时回填；supersede=true 时替代旧记忆、新记忆用人工确认档 priority=80）"},
+    {"name": "card_list", "description": "core 记忆卡列表（D-79）：六张卡的人属性 + 槽位定义 + 字数上限；注入每次必带的就是这些"},
+    {"name": "card_update", "description": "写 core 记忆卡的一个槽位（覆盖式，旧值进历史；value=null 清除）；只装「人」不装「事」，需用户授权"},
+    {"name": "card_history", "description": "core 记忆卡修改历史（谁在何时改了什么、为什么）"},
     {"name": "refine_status", "description": "提炼进度：待提炼/已完成/失败计数 + 水位 + 最近失败"},
     {"name": "stats", "description": "统计：记忆数/维度分布/原始文件状态/水位"},
     {"name": "health", "description": "健康检查：LLM 可用性/提炼水位/心跳"},
-    {"name": "config_get", "description": "读取 SGME 运行时配置（section 可选：l1/l2/refine/search/backup）"},
+    {"name": "config_get", "description": "读取 SGME 运行时配置（section 可选：l2_extraction/scene_aggregate/refine/search/backup）"},
     {"name": "config_update", "description": "更新 SGME 配置段（热生效 + 落盘 sgme.yaml）"},
     {"name": "idea_add", "description": "人工添加创意（用户主动提出才记录；自动打 ideas 标签 + 长期保存 ttl=NULL）"},
     {"name": "demand_create", "description": "新建待办/需求（跨项目统一待办池；可指定 project_id 标记过滤）"},
@@ -1083,14 +1089,74 @@ def build_mcp_server():
 
     @mcp.tool()
     @tool
-    def review_reject(memory_id: str, reason: str) -> str:
-        """拒绝一条待审记忆（软删 status='rejected'，可恢复，不物理删除）。"""
+    def review_reject(memory_id: str, reason: str | None = None) -> str:
+        """拒绝一条待审记忆（软删 status='rejected'，可恢复，不物理删除）。
+
+        reason 可选（2026-11-05 用户定，与近似重复复核同口径）；空则记默认串。
+        """
         from sgme.operations.review import reject
         import json
         import sqlite3
 
         mem_conn: sqlite3.Connection = _app_state["mem_conn"]
         data = _op_json(reject, mem_conn, memory_id, reason=reason)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def near_dup_list(status: str = "pending", limit: int = 50, offset: int = 0) -> str:
+        """近似重复隔离区列表（灰区待人工复核）。
+
+        每条带 matched_content（被撞上的既有记忆原文）——灰区复核必须左右
+        并排看才能判断是不是同一件事。status 可选 pending/discarded/restored。
+        """
+        from sgme.operations.review import list_quarantine
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(list_quarantine, mem_conn, status=status, limit=limit, offset=offset)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def near_dup_discard(qid: int, reason: str | None = None) -> str:
+        """丢弃一条近似重复：置 discarded，不写进记忆池。
+
+        reason 可选（非空时落 discard_reason，供后续调阈值时回算「丢掉的是哪类」）。
+        仅 pending 可丢弃；重复调用返回 ok=false 并回带当前状态。
+        """
+        from sgme.operations.review import discard_quarantine
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(discard_quarantine, mem_conn, qid, reason=reason)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def near_dup_restore(
+        qid: int, reason: str | None = None, supersede: bool = True
+    ) -> str:
+        """放行一条近似重复：补录进记忆池 + 向量即时回填。
+
+        reason 可选（落 restore_reason）。已补录过的行返回错误，不重复补录。
+
+        supersede（默认 True）：人工放行 = 判定新内容更准，新记忆用人工确认档
+        priority=80，并把被撞上的旧记忆 mark_superseded（退出注入/召回，不删
+        可溯源）。传 false 则两条并存——适用于「都是独立事实、只是措辞相似」。
+        """
+        from sgme.operations.review import restore_quarantine
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        cfg = _app_state.get("cfg") or {}
+        data = _op_json(
+            restore_quarantine, mem_conn, qid,
+            reason=reason, cfg=cfg, supersede=bool(supersede),
+        )
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
@@ -1150,6 +1216,66 @@ def build_mcp_server():
         mem_conn: sqlite3.Connection = _app_state["mem_conn"]
         session_conn: sqlite3.Connection = _app_state["session_conn"]
         data = _op_json(refine_status_operation, mem_conn, session_conn)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def card_list() -> str:
+        """core 记忆卡列表（D-79）：六张卡的人属性 + 槽位定义 + 字数上限。
+
+        这是「每次注入必带」的那批信息——关于用户本人的稳定事实（家庭、作息、
+        偏好、协作准则、目标、身份）。未填的卡也会列出（filled=false）。
+        """
+        from sgme.operations.cards import list_cards, schema
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(list_cards, mem_conn)
+        if isinstance(data, dict) and "error" not in data:
+            s = _op_json(schema)
+            if isinstance(s, dict):
+                data["schema"] = s.get("cards")
+                data["limits"] = s.get("limits")
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def card_update(
+        card_id: str,
+        slot_key: str,
+        value: str | list[str] | None = None,
+        reason: str | None = None,
+    ) -> str:
+        """写 core 记忆卡的一个槽位（覆盖式更新，旧值进历史）。
+
+        card_id/slot_key 见 card_list 返回的 schema；family 的「成员」是多值槽
+        （传数组）。value 传 null 或空字符串 = 清除该槽位。
+
+        ⚠️ 只装「人」不装「事」：家庭、作息、偏好、协作准则、目标、身份。
+        项目进度、技术细节走记忆池，不要写卡。**写卡需用户明确授权。**
+        """
+        from sgme.operations.cards import update_slot
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(
+            update_slot, mem_conn, card_id, slot_key, value,
+            reason=reason, changed_by="agent",
+        )
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def card_history(card_id: str | None = None, limit: int = 50) -> str:
+        """core 记忆卡修改历史（谁在何时改了什么、为什么）。"""
+        from sgme.operations.cards import history
+        import json
+        import sqlite3
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+        data = _op_json(history, mem_conn, card_id, limit=limit)
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
@@ -1359,7 +1485,7 @@ def build_mcp_server():
     @mcp.tool()
     @tool
     def config_get(section: str | None = None) -> str:
-        """读取 SGME 运行时配置（section 可选：l1/l2/refine/search/backup）。
+        """读取 SGME 运行时配置（section 可选：l2_extraction/scene_aggregate/refine/search/backup）。
 
         v0.7：业务逻辑已下沉 sgme.operations.config，本工具只做协议翻译。
         输出与 v0.6 逐字段等价——沿用**宽松版** get_config（未知段不报错，

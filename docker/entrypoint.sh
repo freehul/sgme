@@ -1,7 +1,7 @@
 #!/bin/sh
 # SGME 容器入口（T-72，2026-08-16；T-142 资源内迁适配）
 # 首次启动（空数据卷）把默认 llm.yaml / providers.yaml / sgme.yaml 物化到
-# $SGME_HOME/config/（sgme.yaml 含生产调优：l15 prescreen 开启 + fallback: skip_conflict），
+# $SGME_HOME/config/（sgme.yaml 含生产调优：l3_adjudicate prescreen 开启 + fallback: skip_conflict），
 # 用户可编辑后重启生效。程序资源现位于镜像内 /app/sgme/resources/config/。
 set -e
 

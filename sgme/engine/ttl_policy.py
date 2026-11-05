@@ -1,6 +1,6 @@
 """TTL 回填策略（T-205 C2 / v0.4 案 A 变体）—— 全项目单一实现。
 
-历史包袱：此前 l15.py 与 l2.py 各有一份 ``_backfill_ttl``（同签名同语义），
+历史包袱：此前 l3_adjudicate.py 与 scene_aggregate.py 各有一份 ``_backfill_ttl``（同签名同语义），
 改一处漏一处即口径漂移（T-203 F1 同款教训）。现收敛为本模块，两处均委托。
 
 C2 规则（2026-09-25 用户批，v0.4 决策①）：
@@ -40,7 +40,7 @@ def backfill_ttl(
         memory_type: 记忆类型（episodic/fact/persona/instruction；None 按旧行为）。
     """
     # 创意池铁律（T-26，2026-08-13 强化，优先级最高——在显式值之前判定，与原
-    # l15 实现逐行为一致）：含 ideas 维度 → 强制 None——创意长期保存，覆盖
+    # l3_adjudicate 实现逐行为一致）：含 ideas 维度 → 强制 None——创意长期保存，覆盖
     # 其他维度 TTL 与记忆级显式值（否则 ideas+goals 共存的创意会取 90d，
     # 90 天后过期退出注入，违背创意池「ideas + ttl_days=NULL」定义）
     if "ideas" in dimension_ids:

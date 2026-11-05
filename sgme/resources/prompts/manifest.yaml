@@ -1,8 +1,4 @@
 stages:
-  tier0_summary:
-    active: '@working'
-    ab:
-      enabled: false
   answer_aggregate:
     active: '@working'
     ab:
@@ -38,12 +34,6 @@ stages:
     ab:
       enabled: false
 versions:
-  tier0_summary:
-  - version: v001
-    file: versions/tier0_summary/v001.txt
-    sha256: 5912307ab7d2c18982eb56bbed223a9da1c731991d90fdfb1b73a357573fedca
-    created_at: '2026-08-05T00:00:00Z'
-    note: 初始快照（与 v0.1 工作副本一致）
   l1_extraction:
   - version: v001
     file: versions/l1_extraction/v001.txt

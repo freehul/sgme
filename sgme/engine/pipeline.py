@@ -7,7 +7,7 @@
 
 职责边界（单一职责）：
 - refine.py：单文件提炼（L0→L1）+ finalize_refinement（L2 聚合 + embedding + 信号）
-- l15.py：冲突裁决（候选池 + LLM，含降级直存）
+- l3_adjudicate.py：冲突裁决（候选池 + LLM，含降级直存）
 - pipeline.py：串联 refine_file → L1.5 落库 → finalize，含批量逐文件容错
 
 conn 参数模式与 refine.refine_file 一致（不持有连接生命周期）。
@@ -22,7 +22,7 @@ from pathlib import Path
 
 from sgme.engine import cost_alert
 from sgme.migration import dual_write_enabled
-from sgme.engine import l15 as l15_mod
+from sgme.engine import l3_adjudicate as l15_mod
 from sgme.engine import refine as refine_mod
 from sgme.prompts import BucketCtx
 from sgme.data import memory_dao
@@ -281,6 +281,10 @@ def _fallback_direct_store(
             write_2_0=dual_write_enabled(cfg, m.get("agent_tag")),
         )
         m["memory_id"] = mid  # 写回，供 L2 场景关联
+        # E1（2026-11-05，B314 待办 1 补漏）：降级直存同样即时回填向量——否则 L1.5
+        # 不可用期间落库的新记忆在向量索引里不可见（near_dup/检索漏检）。复用 L3 的
+        # fail-open 实现（embed 不可达只 WARNING，不阻塞直存）。
+        l15_mod._backfill_memory_vector(mem_conn, mid, m.get("content"), cfg)
         stored += 1
     return {"stored": stored, "skipped": skipped, "updated": 0, "merged": 0, "archived": 0,
             "l15_error": "fallback_direct_store", "fallback": True}
@@ -289,7 +293,7 @@ def _fallback_direct_store(
 def should_commit(result, max_ratio: float = 0.0) -> bool:
     """块级失败的文件不得推进游标（2026-11-03）。
 
-    ``l1.extract_l1`` 单块失败只记 warning 后 continue；若不拦，整份文件照常
+    ``l2_extraction.extract_memories`` 单块失败只记 warning 后 continue；若不拦，整份文件照常
     commit 并标 ``refined``，失败块的内容**永久静默丢失**（2026-11-02 实测
     ed7c89fd 35% 块失败仍标 refined）。
 
@@ -329,7 +333,7 @@ def refine_one(
     现 persist 抛异常时本函数不达 commit 行，文件保持 status=new 可重扫重试。
     """
     result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
-    l15_stats = (
+    l3_stats = (
         persist_memories(result, mem_conn, cfg,
                          agent_tag=_resolve_file_agent(session_conn, file_id))
         if result.memories else dict(_ZERO_STATS)
@@ -343,7 +347,7 @@ def refine_one(
         result.status = "partial"
         logger.warning("refine_one file=%s 有 %d/%d 块失败，保持 status=new 待重跑",
                        file_id, result.failed_chunks, result.chunk_total)
-    return result, l15_stats
+    return result, l3_stats
 
 
 def refine_many(
@@ -365,7 +369,7 @@ def refine_many(
     """
     pairs: list[tuple[refine_mod.RefineResult, dict]] = []
     for r in refine_mod.refine_batch(mem_conn, session_conn, cfg, limit=limit):
-        l15_stats = (
+        l3_stats = (
             persist_memories(r, mem_conn, cfg,
                              agent_tag=_resolve_file_agent(session_conn, r.file_id))
             if r.memories else dict(_ZERO_STATS)
@@ -377,7 +381,7 @@ def refine_many(
             r.status = "partial"
             logger.warning("refine_many file=%s 有 %d/%d 块失败，保持 status=new 待重跑",
                            r.file_id, r.failed_chunks, r.chunk_total)
-        pairs.append((r, l15_stats))
+        pairs.append((r, l3_stats))
     return pairs
 
 

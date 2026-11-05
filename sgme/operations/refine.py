@@ -21,7 +21,7 @@ MCP  ``refine_status``                     ``refine_status``（无投影，data 
 同步/异步语义差异
 ----------------
 - 同步（``refine_trigger``）：**阻塞执行**，可能耗时数分钟（真实 LLM 分块），
-  返回完整结果（triggered=file/batch，含 status / memories_count / l15 /
+  返回完整结果（triggered=file/batch，含 status / memories_count / l3_adjudicate /
   new_last_refined_seq / anomaly_warn / error / prompt_versions）。
 - 异步（``refine_trigger_async``）：**后台线程立即返回**排队语义
   （triggered=async / status=queued / note），结果异步落库，
@@ -47,10 +47,10 @@ data_dir 由宿主连接经 ``PRAGMA database_list`` 推导（``_resolve_worker_
 HTTP 与 MCP 的 refine_trigger 响应形态**本就不同**，v0.7 抽取时不得强行统一：
 
 - HTTP 同步（file）：``{triggered, file_id, status, memories_count,
-  new_last_refined_seq, anomaly_warn, error, l15, prompt_versions}`` —— 信息超集
+  new_last_refined_seq, anomaly_warn, error, l3_adjudicate, prompt_versions}`` —— 信息超集
 - HTTP 同步（batch）：``{triggered, processed, total_memories, results: [...]}``
 - HTTP 异步：``{triggered, file_id, status, note}``
-- MCP 同步（file）：``{triggered, status, memories_count}``（子集，无 l15 等）
+- MCP 同步（file）：``{triggered, status, memories_count}``（子集，无 l3_adjudicate 等）
 - MCP 同步（batch）：``{triggered, processed}``（子集）
 - MCP 异步：``{triggered, status}``（子集）
 
@@ -161,7 +161,7 @@ def refine_trigger(
     Returns:
         - 成功：``OperationResult(ok=True)``，data 为 HTTP 形态超集
           （``triggered`` = "file" / "batch"，含 status / memories_count /
-          l15 / new_last_refined_seq / anomaly_warn / error / prompt_versions）。
+          l3_adjudicate / new_last_refined_seq / anomaly_warn / error / prompt_versions）。
         - file_id 不存在：``ok=False``，error_code=ERR_NOT_FOUND。
         - limit 非法：抛 ``InvalidArgs``（ERR_INVALID_ARGS）。
         - pipeline 非预期异常：``ok=False``，error_code=ERR_INTERNAL。
@@ -174,7 +174,7 @@ def refine_trigger(
             rf = session_dao.get_raw_file(session_conn, file_id)
             if rf is None:
                 return _not_found(file_id)
-            result, l15_stats = pipeline_mod.refine_one(
+            result, l3_stats = pipeline_mod.refine_one(
                 file_id, mem_conn, session_conn, cfg,
             )
             # —— HTTP 历史形态：键序即 v0.6 响应体顺序，勿调整 ——
@@ -186,7 +186,7 @@ def refine_trigger(
                 "new_last_refined_seq": result.new_last_refined_seq,
                 "anomaly_warn": result.anomaly_warn,
                 "error": result.error,
-                "l15": l15_stats,
+                "l3_adjudicate": l3_stats,
                 "prompt_versions": result.prompt_versions,
             }
             # T-143②：单文件提炼失败且模型 Key 缺失 → 附可行动引导 note。
@@ -209,10 +209,10 @@ def refine_trigger(
                     "new_last_refined_seq": r.new_last_refined_seq,
                     "anomaly_warn": r.anomaly_warn,
                     "error": r.error,
-                    "l15": l15_stats,
+                    "l3_adjudicate": l3_stats,
                     "prompt_versions": r.prompt_versions,
                 }
-                for r, l15_stats in pairs
+                for r, l3_stats in pairs
             ],
         })
     except Exception as e:
@@ -283,7 +283,7 @@ def http_payload(data: dict[str, Any]) -> dict[str, Any]:
 def mcp_payload(data: dict[str, Any]) -> dict[str, Any]:
     """投影为 MCP ``refine_trigger`` 工具的历史契约形态（v0.6 逐字段等价）。
 
-    按 ``triggered`` 分流裁剪为 MCP 子集（无 l15 / new_last_refined_seq /
+    按 ``triggered`` 分流裁剪为 MCP 子集（无 l3_adjudicate / new_last_refined_seq /
     anomaly_warn / prompt_versions / note 等）：
     - "async" → ``{"triggered", "status"}``
     - "file"  → ``{"triggered", "status", "memories_count"}``
@@ -309,12 +309,12 @@ def mcp_payload(data: dict[str, Any]) -> dict[str, Any]:
 # 便于两端共享同一消费逻辑）。
 _BATCH_ITEM_KEYS: tuple[str, ...] = (
     "file_id", "status", "memories_count", "new_last_refined_seq",
-    "anomaly_warn", "error", "l15", "prompt_versions",
+    "anomaly_warn", "error", "l3_adjudicate", "prompt_versions",
 )
 
 
 def _batch_item(
-    file_id: str, result: Any, l15_stats: dict[str, Any] | None,
+    file_id: str, result: Any, l3_stats: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """构造批量 results 单文件项（键序即 _BATCH_ITEM_KEYS）。"""
     return {
@@ -324,7 +324,7 @@ def _batch_item(
         "new_last_refined_seq": result.new_last_refined_seq,
         "anomaly_warn": result.anomaly_warn,
         "error": result.error,
-        "l15": l15_stats,
+        "l3_adjudicate": l3_stats,
         "prompt_versions": result.prompt_versions,
     }
 
@@ -463,8 +463,8 @@ def refine_batch(
             results: list[dict[str, Any]] = []
             for file_id in file_ids:
                 try:
-                    r, l15_stats = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
-                    results.append(_batch_item(file_id, r, l15_stats))
+                    r, l3_stats = pipeline_mod.refine_one(file_id, mem_conn, session_conn, cfg)
+                    results.append(_batch_item(file_id, r, l3_stats))
                 except Exception as e:
                     # 单文件非预期异常：记录 error 项、继续下一文件（与
                     # _async_batch_worker 同一容错取向）。
@@ -475,7 +475,7 @@ def refine_batch(
                         "new_last_refined_seq": None,
                         "anomaly_warn": None,
                         "error": str(e),
-                        "l15": None,
+                        "l3_adjudicate": None,
                         "prompt_versions": {},
                     })
             return OperationResult.succeed({
@@ -494,7 +494,7 @@ def refine_batch(
             "requested": None,
             "processed": len(pairs),
             "total_memories": sum(len(r.memories) for r, _ in pairs),
-            "results": [_batch_item(r.file_id, r, l15_stats) for r, l15_stats in pairs],
+            "results": [_batch_item(r.file_id, r, l3_stats) for r, l3_stats in pairs],
         })
     except Exception as e:
         # 非预期异常 → ERR_INTERNAL（与 refine_trigger 同一收敛策略）。

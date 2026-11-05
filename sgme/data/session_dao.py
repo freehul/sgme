@@ -157,6 +157,99 @@ def mark_status(conn: sqlite3.Connection, file_id: str, status: str, ended_at: s
     return cur.rowcount > 0
 
 
+# ======================================================================
+# E3/E4（2026-11-05）：失败熔断 + 体积闸的 raw_files 写入口
+# ======================================================================
+
+#: last_error 截断长度（防异常串无限增长；诊断够用）
+_LAST_ERROR_MAX_LEN = 500
+
+
+def record_refine_failure(
+    conn: sqlite3.Connection,
+    file_id: str,
+    error: str | None,
+    max_attempts: int = 5,
+    terminal: bool = False,
+) -> dict | None:
+    """记录一次提炼失败（E3 失败熔断）：fail_count+1 + last_error。
+
+    语义（对应 engine/refine.py 的两类失败路径）：
+    - 可重试失败（terminal=False，如块级缺口 / persist 落库异常）：未达上限时
+      status 显式置 'new'（保持可重扫；手工重试残留的 error 也一并拉回队列）；
+      累计达到上限 → status='error'，终止 batch_scan 重扫（历史教训：无上限
+      重试曾空转 5 天 / 4.9 万次提炼）。
+    - 终态失败（terminal=True，如 L0 解析失败 / LLM 全链失败）：status 直接置
+      'error'（与修复前 mark_status("error") 语义一致），fail_count 仅作可观测计数
+      ——终态失败本就不重试，阈值对它无意义。
+
+    Args:
+        conn: session.db 连接。
+        file_id: raw_files 主键。
+        error: 失败原因（截断 _LAST_ERROR_MAX_LEN；None 表示无详情）。
+        max_attempts: 熔断阈值（refine.max_file_attempts，调用方已做合法性回退）。
+        terminal: True = 本次失败直接定终态（不参与「累计 N 次」判定）。
+
+    Returns:
+        {"fail_count": int, "status": str}；file_id 不存在返回 None。
+        调用方只用于日志/断言，不依赖返回值做控制流。
+    """
+    msg = None if error is None else str(error)[:_LAST_ERROR_MAX_LEN]
+    cur = conn.execute(
+        """
+        UPDATE raw_files
+        SET fail_count = COALESCE(fail_count, 0) + 1,
+            last_error = ?,
+            status = CASE
+              WHEN ? = 1 OR COALESCE(fail_count, 0) + 1 >= ?
+              THEN 'error' ELSE 'new' END
+        WHERE file_id = ?
+        """,
+        (msg, 1 if terminal else 0, max(1, int(max_attempts)), file_id),
+    )
+    conn.commit()
+    if cur.rowcount <= 0:
+        return None
+    row = conn.execute(
+        "SELECT fail_count, status FROM raw_files WHERE file_id=?", (file_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    # index 访问：兼容 sqlite3.Row 与普通元组连接（本模块既有两路兜底惯例）
+    return {"fail_count": int(row[0] or 0), "status": row[1]}
+
+
+def clear_refine_failure(conn: sqlite3.Connection, file_id: str) -> bool:
+    """清零失败计数（E3：提炼成功路径，commit_refine 落库后调用）。幂等。"""
+    cur = conn.execute(
+        "UPDATE raw_files SET fail_count=0, last_error=NULL WHERE file_id=?",
+        (file_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def mark_file_too_large(
+    conn: sqlite3.Connection, file_id: str, size: int | None = None
+) -> bool:
+    """体积闸终态（E4）：超限文件直接标 error + last_error='file_too_large'。
+
+    不递增 fail_count——体积是静态事实，重试无意义；refine 入口在解析 / LLM
+    之前拦截（不消耗模型额度）。文件后续被 append 追加内容时 status 会回 new，
+    再入队会重新过一次体积闸。
+    """
+    cur = conn.execute(
+        """
+        UPDATE raw_files
+        SET status='error', last_error='file_too_large', size=COALESCE(?, size)
+        WHERE file_id=?
+        """,
+        (size, file_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def update_content_hash(conn: sqlite3.Connection, file_id: str, content_hash: str) -> bool:
     """更新 raw 文件内容哈希（append 追加后内容变化时调用）。"""
     cur = conn.execute(

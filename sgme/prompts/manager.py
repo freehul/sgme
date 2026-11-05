@@ -33,12 +33,12 @@ class PromptManifestError(Exception):
     """manifest 配置非法 / 版本操作失败。"""
 
 
-# 全部受管 stage（渲染点：l1.py / l15.py / l2.py / tier0.py）
-STAGES = ("tier0_summary", "l1_extraction", "l1_conflict", "l2_scene")
+# 全部受管 stage（渲染点：l2_extraction.py / l3_adjudicate.py / scene_aggregate.py）
+# 2026-11-05：tier0_summary 已随 D-79 砍除（整模块退役，不是关闭）
+STAGES = ("l1_extraction", "l1_conflict", "l2_scene")
 
 # 各 stage 必备占位符（publish 时校验，防发布残缺模板）
 STAGE_PLACEHOLDERS = {
-    "tier0_summary": ["{{memories}}"],
     "l1_extraction": ["{{conversation}}", "{{dimensions}}"],
     "l1_conflict": ["{{new_memories}}", "{{candidates}}"],
     "l2_scene": ["{{new_memories}}", "{{existing_scenes}}", "{{max_scenes}}"],

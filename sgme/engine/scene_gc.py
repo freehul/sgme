@@ -1,8 +1,11 @@
 """engine/scene_gc.py：L2 场景主动治理（T-97 治本方案）。
 
+⚠️ 冻结状态（D-53 / 收尾 A1·C2，2026-11-05）：配置 `scene_gc.enabled` 默认 false；
+场景层冻结只读后夜间合并会写四表，故一并停用。本模块保留供回滚与手动只读演练。
+
 背景
 ----
-L2 场景数超 max_scenes 后，finalize_refinement 仅调 l2.check_scene_threshold 发软告警，
+L2 场景数超 max_scenes 后，finalize_refinement 仅调 scene_aggregate.check_scene_threshold 发软告警，
 并不降数——新场景持续累积（生产 active 350 > max 300 红警常年触发）。手动跑
 merge_similar_scenes.py 只是临时降，治标不治本。
 
@@ -12,13 +15,13 @@ merge_similar_scenes.py 只是临时降，治标不治本。
 复用（不重写归档机制）
 ----------------------
 - 相似度检测直接读 scene_vectors 表（T-97 B102/B103 已回填，无需重新 embed）
-- 合并落库直接调 l2._apply_merge：一处完成「合并新场景 + 自动归档旧场景
+- 合并落库直接调 scene_aggregate._apply_merge：一处完成「合并新场景 + 自动归档旧场景
   (status='archived'，可恢复) + 写 scene_versions 快照 + 刷新场景向量」，
   符合「原件永不删」铁律与 Supersession 约束
 
 触发策略
 --------
-- 仅当 active 场景数 >= trigger_at（默认 = l2.warn_thresholds.orange）才执行，避免无谓 LLM 消耗
+- 仅当 active 场景数 >= trigger_at（默认 = scene_aggregate.warn_thresholds.orange）才执行，避免无谓 LLM 消耗
 - 单次上限 max_merges（默认 20）：仍超限则次日 Dream 继续压，渐进收敛（防一次 LLM 烧太多）
 - 相似度 >= merge_threshold（默认 0.80）的对入选
 
@@ -39,7 +42,7 @@ from typing import Any
 import numpy as np
 
 from sgme.data import scene_dao
-from sgme.engine import l2
+from sgme.engine import scene_aggregate
 from sgme.llm import chain as llm_chain
 
 logger = logging.getLogger("sgme.engine.scene_gc")
@@ -169,7 +172,7 @@ def run_scene_gc(
 
     - scene_gc.enabled=false -> skipped_reason='disabled'
     - active < trigger_at -> skipped_reason='below_trigger'（避免无谓 LLM 消耗）
-    - 否则逐对调 l2._apply_merge（自动合并 + 归档旧场景 + 刷向量），受 max_merges 上限
+    - 否则逐对调 scene_aggregate._apply_merge（自动合并 + 归档旧场景 + 刷向量），受 max_merges 上限
     """
     if not RUN_LOCK.acquire(blocking=False):
         return SceneGcResult(skipped_reason="running")
@@ -183,7 +186,7 @@ def _run_gc_locked(mem_conn, cfg, client) -> SceneGcResult:
     gc = _gc_cfg(cfg)
     if not bool(gc.get("enabled", True)):
         return SceneGcResult(skipped_reason="disabled")
-    l2_cfg = cfg.get("l2") or {}
+    l2_cfg = cfg.get("scene_aggregate") or {}
     thresholds = l2_cfg.get("warn_thresholds") or {}
     orange = int(thresholds.get("orange", 180))
     _trigger_cfg = gc.get("trigger_at")
@@ -237,9 +240,9 @@ def _run_gc_locked(mem_conn, cfg, client) -> SceneGcResult:
             "merged_from": [a, b],
             "reason": f"相似度 {sim:.3f} 自动合并（scene_gc）",
         }
-        l2res = l2.L2Result()
+        l2res = scene_aggregate.SceneAggregateResult()
         try:
-            l2._apply_merge(mem_conn, action, [], l2res, cfg)
+            scene_aggregate._apply_merge(mem_conn, action, [], l2res, cfg)
             result.merged += len(l2res.merged)
             result.archived += len(l2res.archived)
         except Exception as e:

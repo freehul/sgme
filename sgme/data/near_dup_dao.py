@@ -107,11 +107,21 @@ def upsert_hit(
     conn.commit()
 
 
-def mark_discarded(conn: sqlite3.Connection, id: int) -> bool:
-    """标记丢弃：仅 pending → discarded；非 pending（已丢弃/已补录）返回 False。"""
+def mark_discarded(
+    conn: sqlite3.Connection,
+    id: int,
+    reason: str | None = None,
+) -> bool:
+    """标记丢弃：仅 pending → discarded；非 pending（已丢弃/已补录）返回 False。
+
+    reason（2026-11-05 新增，用户拍板**不设必填**）：人工批复的理由，落
+    discard_reason 留痕。理由是调阈值时的唯一依据——「0.88 这一刀砍掉的是
+    什么」，没有理由两周后就没人记得为什么丢。
+    """
     cur = conn.execute(
-        "UPDATE near_dup_quarantine SET status='discarded' WHERE id=? AND status='pending'",
-        (id,),
+        "UPDATE near_dup_quarantine SET status='discarded', discard_reason=? "
+        "WHERE id=? AND status='pending'",
+        (reason, id),
     )
     conn.commit()
     return cur.rowcount > 0
@@ -123,6 +133,7 @@ def restore(
     reason: str,
     cfg: dict,
     client=None,
+    supersede: bool = True,
 ) -> str:
     """旁路补录：隔离行内容写入 memories（全字段）+ 向量即时回填 + 回写状态。返回新 memory_id。
 
@@ -131,7 +142,7 @@ def restore(
        priority=50、time_velocity='static'（L1.5 同款保守默认）；
     2. TTL 经 ``ttl_policy.backfill_ttl`` 按维度默认回填（延迟导入：避免 storage
        模块加载期跨层 import engine；ttl_policy 为全项目单一 TTL 实现、与
-       l15._backfill_ttl 同源、防两份漂移；storage 层直写豁免与 backup 裸连接同款、
+       l3_adjudicate._backfill_ttl 同源、防两份漂移；storage 层直写豁免与 backup 裸连接同款、
        不走 engine 裁决链）；
     3. 复用 ``memory_dao.insert_memory`` 全字段写入（content_seg / memory_tags /
        memory_sources 一并覆盖，杜绝「直接 INSERT 漏标签/分词」）；
@@ -139,6 +150,12 @@ def restore(
        ——backfill_vectors.py 无参重跑按「active 且无向量」LEFT JOIN 扫描天然捡起；
     5. 回写 status='restored' + restored_memory_id + restore_reason。
        补录后内容已 active，_near_dup_check 不会再拦（跳过 L1.5），杜绝补录死循环。
+
+    supersede（2026-11-05 用户定，默认 True）：人工审查放行 = 人工判定新内容更准，
+    故 ① priority 用「人工确认档」80（普通提炼是 50，人工看过的该压过自动判定的）；
+    ② 对被撞上的既有记忆 mark_superseded（lifecycle=archived + superseded_by 指针，
+    不删可溯源），新的占主位。传 False 则保持旧行为（两条并存）——用于「两条都是
+    独立事实、只是措辞相似」的场景。
 
     拒绝场景（ValueError）：id 不存在；该行已是 restored（已补录一次）。
     """
@@ -149,18 +166,20 @@ def restore(
         raise ValueError(f"隔离行已补录: id={id} → restored_memory_id={item.get('restored_memory_id')}")
 
     dims = item["dimension_ids"] or []
-    # 延迟导入（见 docstring：防加载期跨层循环；与 l15._backfill_ttl 同源）
+    # 延迟导入（见 docstring：防加载期跨层循环；与 l3_adjudicate._backfill_ttl 同源）
     from sgme.engine.ttl_policy import backfill_ttl
 
     ttl = backfill_ttl(None, dims, (cfg or {}).get("dimensions") or [], memory_type="persona")
 
     source_ref = item.get("source_ref")
     sources = [(source_ref, "session")] if source_ref else None
+    # 人工确认档：普通提炼落库是 priority=50，这里 80——人工看过左右对照后放行的，
+    # 判断质量高于 L3 自动裁决，池子里应当听它的（用户 2026-11-05 定）。
     new_id = memory_dao.insert_memory(
         conn,
         content=item["content"],
         memory_type="persona",
-        priority=50,
+        priority=80 if supersede else 50,
         time_velocity="static",
         ttl_days=ttl,
         dimension_ids=dims,
@@ -179,6 +198,13 @@ def restore(
             "——可无参重跑 scripts/backfill_vectors.py 兜底"
         )
 
+    # 替代：把被撞上的既有记忆退出注入/召回（lifecycle=archived + 指针，不删）
+    superseded_ok = False
+    if supersede and item.get("matched_memory_id"):
+        try:
+            superseded_ok = memory_dao.mark_superseded(conn, item["matched_memory_id"], new_id)
+        except Exception as e:  # noqa: BLE001 - 替代失败不阻塞补录（两条并存仍优于丢失）
+            logger.warning("near_dup restore: 替代旧记忆失败（%s）: %s", item["matched_memory_id"], e)
     conn.execute(
         """
         UPDATE near_dup_quarantine
@@ -188,6 +214,10 @@ def restore(
         (new_id, reason, id),
     )
     conn.commit()
+    if supersede and not superseded_ok:
+        logger.info(
+            "near_dup restore: 未产生替代（matched_memory_id=%s 可能已归档）", item.get("matched_memory_id"),
+        )
     return new_id
 
 
@@ -214,3 +244,41 @@ def list_items(
     sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
     params += [int(limit), int(offset)]
     return [_decode_item(d) for d in _fetch_all(conn, sql, params)]
+
+
+def list_items_with_matched(
+    conn: sqlite3.Connection,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """复核列表：隔离行 + 被撞上的既有记忆原文（对照视图的唯一数据源）。
+
+    灰区复核必须「左右并排看」——左边是新内容、右边是库里已有的原文，人
+    才能判断「是不是同一件事」。抽掉右侧，这个界面就没有判断依据。故这里
+    LEFT JOIN memories 带出 matched_content；用 LEFT 而非 INNER，是因为被
+    匹配的记忆可能已归档/删除，隔离行不能因此从列表里消失。
+    """
+    sql = (
+        "SELECT q.*, m.content AS matched_content "
+        "FROM near_dup_quarantine q "
+        "LEFT JOIN memories m ON m.memory_id = q.matched_memory_id"
+    )
+    params: list = []
+    if status:
+        sql += " WHERE q.status=?"
+        params.append(status)
+    sql += " ORDER BY q.id DESC LIMIT ? OFFSET ?"
+    params += [int(limit), int(offset)]
+    return [_decode_item(d) for d in _fetch_all(conn, sql, params)]
+
+
+def count_items(conn: sqlite3.Connection, status: str | None = None) -> int:
+    """隔离行计数（列表分页 total）。"""
+    if status:
+        row = _fetch_one(
+            conn, "SELECT COUNT(*) AS c FROM near_dup_quarantine WHERE status=?", (status,)
+        )
+    else:
+        row = _fetch_one(conn, "SELECT COUNT(*) AS c FROM near_dup_quarantine")
+    return int(row["c"]) if row else 0

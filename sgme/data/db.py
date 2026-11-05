@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS near_dup_quarantine (
     CHECK(status IN ('pending','discarded','restored')),
   restored_memory_id TEXT,               -- 旁路补录后的新记忆 id（追溯）
   restore_reason TEXT,                   -- 补录理由
+  discard_reason TEXT,                   -- 丢弃理由（人工批复留痕，2026-11-05 两侧对称）
   UNIQUE(matched_memory_id, content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_quarantine_matched ON near_dup_quarantine(matched_memory_id);
@@ -292,7 +293,12 @@ CREATE TABLE IF NOT EXISTS raw_files (
   file_id TEXT PRIMARY KEY, path TEXT NOT NULL, session_key TEXT NOT NULL,
   agent_id TEXT, agent_model TEXT, started_at TEXT, ended_at TEXT, refined_at TEXT,
   last_refined_seq INTEGER, status TEXT NOT NULL DEFAULT 'new', size INTEGER,
-  content_hash TEXT);
+  content_hash TEXT,
+  -- E3 失败熔断（2026-11-05）：连续提炼失败次数（成功路径清零）+ 最近失败原因。
+  -- 达 refine.max_file_attempts → status='error' 终止 batch_scan 重扫；
+  -- 体积闸（E4）写 last_error='file_too_large'。不新增 status 取值。
+  fail_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT);
 CREATE INDEX IF NOT EXISTS idx_raw_status ON raw_files(status, refined_at);
 
 -- 按日批次调度游标（D6：与 raw_files.last_refined_seq 并存互补，二者不是同一套东西）
@@ -607,6 +613,50 @@ CREATE INDEX IF NOT EXISTS idx_edges_to   ON memory_edges(to_id, relation);
 # 2. 内容只到类型级（上游保证，DAO 不自作主张清洗）
 # 3. is_secret=1 永不进注入；shared_at 记「已经说出口」，同一段只说一次
 # injected_at 是注入频率闸的记账列（每装配最多 1 条 / 每日上限按它统计）
+# ============ core 记忆卡（D-79，2026-11-05）============
+# 三层记忆分工的 core 层：只装「稳定的人属性」，每次注入必带。
+# 与 memories（recall 层）分离：卡片一槽一值、覆盖式更新、有硬上限（400 字/卡、120 字/槽）。
+# 不参与自动批量提炼——写入只走「用户对话授权」或「WebUI 编辑」，来源记在 updated_by。
+MEMORY_CARDS_DDL = """
+CREATE TABLE IF NOT EXISTS memory_cards (
+  card_id TEXT PRIMARY KEY,             -- identity/family/routine/preferences/principles/goals
+  title TEXT NOT NULL,                  -- 显示名（渲染用）
+  slots TEXT NOT NULL,                  -- JSON {slot_key: value | [values]}
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,                      -- user / agent / webui
+  version INTEGER NOT NULL DEFAULT 1
+);
+
+-- 修改留痕（用户 2026-11-05 定：每次修改必须可查）
+CREATE TABLE IF NOT EXISTS memory_card_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id TEXT NOT NULL,
+  slot_key TEXT NOT NULL,
+  old_value TEXT,
+  new_value TEXT,
+  changed_at TEXT NOT NULL,
+  changed_by TEXT,
+  reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_card_history_card ON memory_card_history(card_id, changed_at);
+"""
+
+# 槽位 schema（唯一的槽位真源；数据库只存值，不存结构）
+# 一槽一值；family 是多值槽（值可为字符串数组）
+CARD_SCHEMA: dict[str, dict] = {
+    "identity": {"title": "基本身份", "slots": ["称呼", "语言", "城市", "时区"]},
+    "family": {"title": "家庭", "slots": ["成员"], "multi": ["成员"]},
+    "routine": {"title": "作息", "slots": ["起床", "睡觉", "固定日程"]},
+    "preferences": {"title": "偏好", "slots": ["喜欢", "不喜欢", "忌讳"]},
+    "principles": {"title": "协作准则", "slots": ["诚实", "计划", "报备", "原件", "检索", "安装"]},
+    "goals": {"title": "目标", "slots": ["长期", "中期", "短期"]},
+}
+
+# 硬上限（防退化成段落；超限拒绝写入并记 anomaly_warn）
+CARD_MAX_CHARS = 400
+SLOT_MAX_CHARS = 120
+
+
 ROLE_LIFE_DDL = """
 CREATE TABLE IF NOT EXISTS role_life_events (
   event_id    TEXT PRIMARY KEY,
@@ -703,6 +753,8 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_2_0_tables(conn)
     _migrate_memory_pages_table(conn)
     _migrate_role_life_table(conn)
+    _migrate_quarantine_discard_reason(conn)
+    _migrate_memory_cards_table(conn)
     return conn
 
 
@@ -719,6 +771,8 @@ def connect_session(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _ensure_schema(conn, SESSION_DDL, SCHEMA_VERSION, "session_v1")
     _migrate_session_agent_model(conn)
     _migrate_raw_files_session_uniq(conn)
+    # E3（2026-11-05）：失败熔断两列（fail_count / last_error），老库幂等补列
+    _migrate_raw_files_fail_columns(conn)
     return conn
 
 
@@ -1164,6 +1218,31 @@ def _migrate_session_agent_model(conn: sqlite3.Connection) -> None:
     if "agent_model" not in cols:
         conn.execute("ALTER TABLE raw_files ADD COLUMN agent_model TEXT")
         conn.commit()
+
+
+def _migrate_raw_files_fail_columns(conn: sqlite3.Connection) -> None:
+    """老库迁移：raw_files 补 fail_count / last_error 列（E3 失败熔断，2026-11-05）。
+
+    背景（B312 待办 1）：块级失败的文件此前保持 status=new 无限重扫——实测同一批
+    超大文件空转 5 天 / 4.9 万次提炼。新增两列承载「连续失败次数 + 最后一次失败
+    原因」，由 engine/refine.py 与 engine/batch_scan.py 的失败路径递增，达
+    refine.max_file_attempts → status='error' 终止重扫；成功路径清零。
+
+    幂等：PRAGMA table_info 检查后逐列 ALTER；列已存在则跳过。新库由 SESSION_DDL
+    建全列。不更新 SCHEMA_VERSION——照 _migrate_refine_runs_elapsed_ms 先例：
+    _migrate_* 序列本就是启动时无条件串行执行的幂等函数，与版本号无依赖。
+    fail_count 带 NOT NULL DEFAULT 0 → 存量行自动回填 0（SQLite ALTER 语义）。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(raw_files)").fetchall()]
+    if not cols:  # 表不存在 → 交给 SESSION_DDL 建表负责（防御，正常链路不会发生）
+        return
+    if "fail_count" not in cols:
+        conn.execute(
+            "ALTER TABLE raw_files ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "last_error" not in cols:
+        conn.execute("ALTER TABLE raw_files ADD COLUMN last_error TEXT")
+    conn.commit()
 
 
 def _migrate_raw_files_session_uniq(conn: sqlite3.Connection) -> None:
@@ -1664,6 +1743,35 @@ def _migrate_wiki_2_0_columns(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_wiki_cat_order ON wiki_categories(sort_order);
         """
     )
+    conn.commit()
+
+
+def _migrate_quarantine_discard_reason(conn: sqlite3.Connection) -> None:
+    """老库迁移：near_dup_quarantine 补 discard_reason 列（2026-11-05，幂等）。
+
+    背景：灰区人工批复**只落实了「放行理由」**（restore_reason），丢弃侧
+    `mark_discarded` 连参数都没有——同一条意见只兑现了一半。
+    用户 2026-11-05 拍板：不设必填，但两侧都要留痕。理由是调阈值时要知道
+    「0.88 这一刀砍掉的是什么」，没有理由两周后就没人记得为什么丢。
+
+    与 `_migrate_skills_name_seg` 同模式：PRAGMA 查列 → 缺才 ALTER
+    （CREATE TABLE IF NOT EXISTS 对已存在的表不会补列，故必须走迁移）。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(near_dup_quarantine)").fetchall()]
+    if "discard_reason" in cols:
+        return
+    conn.execute("ALTER TABLE near_dup_quarantine ADD COLUMN discard_reason TEXT")
+    conn.commit()
+
+
+def _migrate_memory_cards_table(conn: sqlite3.Connection) -> None:
+    """老库迁移：建 core 记忆卡两表（D-79，2026-11-05）。幂等。
+
+    与 _migrate_ideas_table 同模式：独立 DDL 常量 + 本迁移函数——老库
+    （schema_versions 已登记 memory_v4）不会重跑 MEMORY_DDL 之外的变更，
+    必须走迁移函数才能补齐新表。
+    """
+    conn.executescript(MEMORY_CARDS_DDL)
     conn.commit()
 
 

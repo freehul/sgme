@@ -19,7 +19,7 @@ _FACT_FIELDS = ("subject", "predicate", "object")
 
 
 def _norm_fact(f: dict) -> dict | None:
-    """规范化单条三元组（T-136 与 l1/_validate_item 同构校验）。"""
+    """规范化单条三元组（T-136 与 l2_extraction/_validate_item 同构校验）。"""
     if not isinstance(f, dict):
         return None
     out = {}

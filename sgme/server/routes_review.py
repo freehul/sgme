@@ -22,8 +22,11 @@ from fastapi import APIRouter, Depends, Request
 from sgme.operations.review import (
     approve as approve_operation,
     auto_resolve_expired as auto_resolve_operation,
+    discard_quarantine as discard_quarantine_operation,
     list_pending as list_pending_operation,
+    list_quarantine as list_quarantine_operation,
     reject as reject_operation,
+    restore_quarantine as restore_quarantine_operation,
 )
 from sgme.server.app import require_agent_key, run_operation
 
@@ -110,3 +113,76 @@ def auto_resolve(
     except (TypeError, ValueError):
         days = 7
     return run_operation(auto_resolve_operation, mem_conn, days=days)
+
+
+# ---------- 近似重复隔离区人工批复（2026-11-05，B313） ----------
+#
+# 端点作用域刻意独立于 /v1/admin/review/{memory_id}/*：后者带路径参数，
+# 混排容易把 "near-dup" 当成 memory_id 吃掉。语义上同属「人工复核」，
+# WebUI 挂同一个菜单，但路径分开更安全。
+
+@router.get("/v1/admin/near-dup/quarantine")
+def list_quarantine(
+    request: Request,
+    status: str = "pending",
+    limit: str | None = None,
+    offset: str | None = None,
+    _: str = Depends(require_agent_key),
+):
+    """近似重复隔离区列表（只读）。每行带 matched_content 供左右对照。"""
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+
+    def _int_or(raw: str | None, default: int) -> int:
+        try:
+            return int(raw) if raw is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    return run_operation(
+        list_quarantine_operation,
+        mem_conn,
+        status=status,
+        limit=_int_or(limit, 50),
+        offset=_int_or(offset, 0),
+    )
+
+
+@router.post("/v1/admin/near-dup/{qid}/discard")
+def discard_quarantine(
+    request: Request,
+    qid: str,
+    body: dict | None = None,
+    _: str = Depends(require_agent_key),
+):
+    """丢弃一条近似重复（不写进记忆池）。
+
+    Body：reason（可选，非空时落 discard_reason 留痕）。
+    """
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    reason = (body or {}).get("reason")
+    return run_operation(discard_quarantine_operation, mem_conn, qid, reason=reason)
+
+
+@router.post("/v1/admin/near-dup/{qid}/restore")
+def restore_quarantine(
+    request: Request,
+    qid: str,
+    body: dict | None = None,
+    _: str = Depends(require_agent_key),
+):
+    """放行一条近似重复（补录进记忆池 + 向量即时回填）。
+
+    Body：reason（可选，落 restore_reason）。
+    """
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    cfg = getattr(request.app.state, "cfg", None) or {}
+    b = body or {}
+    reason = b.get("reason")
+    # supersede 默认 True（替代旧记忆）；显式传 false 则两条并存
+    supersede = b.get("supersede", True)
+    if isinstance(supersede, str):
+        supersede = supersede.strip().lower() not in ("false", "0", "no")
+    return run_operation(
+        restore_quarantine_operation, mem_conn, qid,
+        reason=reason, cfg=cfg, supersede=bool(supersede),
+    )
