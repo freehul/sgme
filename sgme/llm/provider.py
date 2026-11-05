@@ -213,6 +213,11 @@ def call_openai_compatible(
         # 供调用方记账（DeepSeek 用量统计，含 cache 明细）
         text = data["choices"][0]["message"]["content"]
         usage = data.get("usage") or {}
+        # E5 截断计量（2026-11-05）：finish_reason 并入 usage（键名与 OpenAI 原字段
+        # 一致）——"length" = 输出撞 max_tokens 被截断。仅新增一个字典键，不改
+        # (text, usage) 二元组签名：老调用方只按 token 键取值，零影响；字段缺失记
+        # None（显式「未知」≠「正常结束」）。消费方见 engine/l2_extraction.py。
+        usage["finish_reason"] = data["choices"][0].get("finish_reason")
         return text, usage
     finally:
         if own_client:

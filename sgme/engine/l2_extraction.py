@@ -878,7 +878,9 @@ def extract_memories(
     - bucket_ctx：A/B 分流上下文（提炼链路传 file_id）；mem_conn 提供时逐块记录 refine_run
     - 返回 (记忆列表, provider_name, prompt_meta)
       prompt_meta = {"stage": "l1_extraction", "version": ..., "variant": ...}；
-      分块混合版本时 version="chunked" 并附 chunks 明细
+      分块混合版本时 version="chunked" 并附 chunks 明细；
+      E5（2026-11-05）起恒带 l1_truncated_chunks（输出被 max_tokens 截断的块数，
+      仅计量；单块路径由 _extract_memories_chunk 提供，多块路径此处合计）
     """
     if chunk_size is None:
         chunk_size = 8000
@@ -948,6 +950,13 @@ def extract_memories(
     # 内容不全，不允许标 refined（否则静默缺内容）。
     meta["chunk_failures"] = failed_chunks
     meta["chunk_total"] = len(chunks)
+    # E5 截断计量（2026-11-05）：逐块合计（单块路径由 _extract_memories_chunk 自带
+    # 该键，此处只处理多块；仅计量，不影响提交/重试）。
+    truncated_total = sum(int(m.get("l1_truncated_chunks") or 0) for m in chunk_metas)
+    meta["l1_truncated_chunks"] = truncated_total
+    if truncated_total:
+        logger.warning("L1 输出截断 %d/%d 块（finish_reason=length，max_tokens 可能偏紧）",
+                       truncated_total, len(chunks))
     return all_memories, "chunked", meta
 
 
@@ -998,6 +1007,15 @@ def _parse_extraction_output(text: str, dimensions: list[dict]) -> list[dict]:
     return parse_extraction_output(text, dimensions)
 
 
+def _truncated_counts(truncated: int) -> dict:
+    """E5 截断计量（2026-11-05）：截断时的 action_counts 片段；未截断返回空 dict。
+
+    单独抽函数：error 路径/finally 兜底共用，且不给「无截断信号」的 run 插入
+    多余零值键（保持既有 refine_runs.action_counts 形态，老查询零影响）。
+    """
+    return {"l1_truncated_chunks": int(truncated)} if truncated else {}
+
+
 def _extract_memories_chunk(
     conversation: str,
     dimensions: list[dict],
@@ -1027,6 +1045,11 @@ def _extract_memories_chunk(
     last_error: Exception | None = None
     provider_name: str | None = None
     usage: dict | None = None
+    # E5 截断计量（2026-11-05）：本块是否有输出撞 max_tokens 被截断
+    # （usage.finish_reason == "length"）。**只计量**：不改重试/判定行为——
+    # 截断导致解析失败时照旧走既有重试；这里记「本块发生过截断」，供 max_tokens
+    # 决策回算（历史 127 次输出被截断，无计量无法评估参数是否偏紧）。
+    truncated = 0
 
     # T-289：批次开始（LLM 调用之前）
     run_id: str | None = None
@@ -1057,9 +1080,13 @@ def _extract_memories_chunk(
                 text, provider_name, usage = llm_chain.call_with_fallback(
                     llm_cfg, prompt, chain_name="refinement", client=client,
                 )
+                # E5：任一尝试的响应被截断即标记本块（重试后成功也算——
+                # 衡量的是「输出被切过」的发生率，不是最终解析成败）。
+                if (usage or {}).get("finish_reason") == "length":
+                    truncated = 1
             except llm_provider.LLMUnavailable as e:
                 last_error = e
-                _finish_run("error", 0, {}, str(e))
+                _finish_run("error", 0, _truncated_counts(truncated), str(e))
                 raise RefineError(f"LLM 全链失败: {e}") from e
 
             try:
@@ -1114,16 +1141,25 @@ def _extract_memories_chunk(
                 "empty": 1 if not memories else 0,
                 "violation_dim_overflow_cum": vc.get("dim_overflow", 0),
                 "violation_episodic_degraded_cum": vc.get("episodic_degraded", 0),
+                # E5（2026-11-05）：本块输出被截断计数（0 也显式记录，便于按批回算比例）
+                "l1_truncated_chunks": truncated,
             })
-            meta = {"stage": "l1_extraction", "version": pv.version, "variant": pv.variant}
+            if truncated:
+                logger.warning(
+                    "L1 输出截断（finish_reason=length）: version=%s memories=%d——"
+                    "仅计量，不改重试/判定", pv.version, len(memories),
+                )
+            meta = {"stage": "l1_extraction", "version": pv.version,
+                    "variant": pv.variant, "l1_truncated_chunks": truncated}
             logger.info("L1 块完成: version=%s variant=%s memories=%d",
                         pv.version, pv.variant, len(memories))
             return memories, provider_name, meta
 
         # 重试预算耗尽
-        _finish_run("error", 0, {}, str(last_error))
+        _finish_run("error", 0, _truncated_counts(truncated), str(last_error))
         raise RefineError(f"L1 提取失败（重试 {max_attempts - 1} 次仍失败）: {last_error}")
     finally:
         # 兜底：正常/已记账路径由 `_run_done` 短路；仅异常逃逸时补记 error，
         # 避免留下悬挂 running 行（T-289 把 start 前移后的主要风险面）。
-        _finish_run("error", 0, {}, "批次未正常收尾（finally 兜底）")
+        _finish_run("error", 0, _truncated_counts(truncated),
+                    "批次未正常收尾（finally 兜底）")

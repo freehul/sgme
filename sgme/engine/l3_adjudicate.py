@@ -95,6 +95,7 @@ class AdjudicationResult:
     prescreen_skipped: int = 0                              # T-132：本批因 embed 不可达走 skip_conflict 降级的新记忆数（可观测标记）
     near_dup_quarantined: int = 0                           # L1.5 F1（T1.6）：本批因近似重复被拦截（写隔离表）的新记忆数
     near_dup_gray: int = 0                                  # L1.5 F1（T1.6）：本批灰区命中数（放行落库 + 聚合计数）
+    near_dup_shadow: int = 0                                # E2（2026-11-05）：本批影子命中数——score ∈ [0.90, threshold)，即「若阈值=0.90 会被拦」；只计数不改判定
     semantic_edges_written: int = 0                         # T-135：本次落库写入的语义边数（source='l1_conflict'）
     #: ST-58/T-296（G3-c）：**逐条**裁决留痕，与 `new_memories` 下标对齐。
     #: 每项 ``{new_memory_index, action, candidate_ids, reason, idempotent_skip}``。
@@ -111,6 +112,7 @@ class NearDupResult:
     score: float             # 向量相似度（0-1，越高越相似）
     hit: bool                # True=score≥threshold：调用方写隔离表、不落 memories
     gray: bool = False       # True=灰区 [gray_zone, threshold)：放行落库 + 计数/抽样观测
+    shadow: bool = False     # E2（2026-11-05）：score ∈ [0.90, threshold)，即「若阈值下调到 0.90 会被拦」的影子候选；只计数，不改判定行为
 
 
 # ---------- prompt 渲染 ----------
@@ -677,6 +679,12 @@ DEFAULT_NEAR_DUP: dict = {
     "gray_zone": 0.85,
 }
 
+#: E2 影子计数阈值（2026-11-05）：score ∈ [0.90, threshold) 记 shadow——
+#: 回答「threshold 若下调到 0.90，会多拦多少」；**只计数不改判定**（真下调阈值
+#: 需另一决策）。刻意硬编码而非配置键：这是为阈值决策积累数据的观察口径，
+#: 不是可调产品参数（避免观察口径随部署漂移）。
+NEAR_DUP_SHADOW_THRESHOLD: float = 0.90
+
 
 def _near_dup_cfg(cfg: dict | None) -> dict:
     """读取并校验 l3_adjudicate.near_dup 配置，返回含 enabled/threshold/gray_zone 的字典。
@@ -750,6 +758,8 @@ def _near_dup_check(
     3. 检索空 → 放行（正常）；
     4. 有结果：score≥threshold → hit=True（调用方写隔离表）；gray_zone≤score<threshold
        → gray=True（放行落库，计数 + 10% 明细抽样日志）；score<gray_zone → 放行。
+       E2（2026-11-05）追加正交标记：score ∈ [0.90, threshold) → shadow=True
+       （只计数，判定仍按上面三分支走，行为零变化）。
 
     precomputed_sim（F3 复用位，P1 仅预留不接线）：传入值 < gray_zone 时直接放行
     免二次查询；≥ gray_zone 时正常检索（F1 需要 matched_id 与精确分数）。
@@ -784,15 +794,22 @@ def _near_dup_check(
     score = float(top.get("score", 0.0) or 0.0)
     if score >= nd["threshold"]:
         return NearDupResult(mid, score, hit=True)
+    # E2 影子计数（2026-11-05）：[0.90, threshold) → shadow=True（若阈值=0.90 会被拦）。
+    # 独立于 gray_zone 判定：默认 gray_zone=0.85 时 shadow 是灰区子集；若配置把
+    # gray_zone 调到 0.90 以上，score ∈ [0.90, gray_zone) 仍记 shadow（定义优先）。
+    shadow = score >= NEAR_DUP_SHADOW_THRESHOLD
     if score >= nd["gray_zone"]:
         # 灰区：调用方聚合计数；明细 10% 抽样日志（防日志淹没，用于阈值校准回算）
         if random.random() < 0.1:
             logger.info(
-                "near_dup 灰区命中（抽样）: score=%s matched_id=%s content=%s",
-                round(score, 4), mid, (content or "")[:80],
+                "near_dup 灰区命中（抽样）: score=%s matched_id=%s shadow=%s content=%s",
+                round(score, 4), mid, shadow, (content or "")[:80],
             )
-        return NearDupResult(mid, score, hit=False, gray=True)
-    return NearDupResult(None, 0.0, False)
+        return NearDupResult(mid, score, hit=False, gray=True, shadow=shadow)
+    if shadow:
+        # 仅当配置把 gray_zone 抬到 0.90 以上才会走到这里：影子区间仍要留痕。
+        return NearDupResult(mid, score, hit=False, shadow=True)
+    return NearDupResult(None, 0.0, False)  # 低于灰区：放行，与修复前逐字一致
 
 
 def _quarantine_if_near_dup(
@@ -806,6 +823,8 @@ def _quarantine_if_near_dup(
 
     返回 True = 调用方 skip 本记忆（不落 memories）；False = 照常落库。
     - 灰区（gray_zone ≤ score < threshold）：只聚合计数（result.near_dup_gray），放行；
+    - 影子（score ∈ [0.90, threshold)）：额外计数（result.near_dup_shadow），放行——
+      E2（2026-11-05）只记「阈值若=0.90 会被拦」的候选量，**不改判定**；
     - 命中（score ≥ threshold）：计数（result.near_dup_quarantined）+ 内容写隔离表
       （near_dup_dao.upsert_hit，UNIQUE 去重）；写入异常仅 WARNING（含 content 全文，
       留档待手工恢复），skip 照旧；
@@ -817,6 +836,10 @@ def _quarantine_if_near_dup(
     except Exception as e:  # 判定异常 → 放行（fail-open，绝不阻塞主链）
         logger.warning("L1.5 近似查重判定异常，放行（fail-open）: %s | content=%s", e, content)
         return False
+    # E2 影子计数（2026-11-05）：先记 shadow（可能同时是灰区），再走既有灰区/命中分支——
+    # 判定行为零变化，只是多一个计数。
+    if nd.shadow:
+        result.near_dup_shadow += 1
     if nd.gray:
         result.near_dup_gray += 1
         return False
@@ -849,11 +872,15 @@ def _record_near_dup_run(
     """F1 独立计数记录（L1.5 P1，T1.6）：近似查重拦截/灰区数写一条 refine_run。
 
     与 LLM 批裁决的 action_counts 分开记录（同型记录范式照 ``_record_prescreen_skip_run``），
-    避免同名混淆、事后可检索；near_dup_quarantined + near_dup_gray > 0 才写
+    避免同名混淆、事后可检索；near_dup_quarantined + near_dup_gray + shadow > 0 才写
     （无信号不产噪音记录）。
+
+    E2（2026-11-05）起 action_counts 恒带 near_dup_shadow_090（形如 0 也记录）——
+    阈值调参需要「灰区总量 vs 影子量」配对回算，缺键会让 SQL 聚合漏行。
     """
     n, m = result.near_dup_quarantined, result.near_dup_gray
-    if n + m <= 0:
+    s = result.near_dup_shadow
+    if n + m + s <= 0:
         return
     from sgme.data.refine_dao import RefineRunRecorder
 
@@ -865,7 +892,13 @@ def _record_near_dup_run(
     )
     RefineRunRecorder.finish(
         mem_conn, run_id, memories_count=n + m,
-        action_counts={"near_dup_quarantined": n, "near_dup_gray": m},
+        # shadow ⊂ gray（默认 gray_zone=0.85 < 0.90），memories_count 不重复累加；
+        # 键名带口径后缀 090：将来若观察 0.88/0.85 可并列加键，不覆盖历史语义。
+        action_counts={
+            "near_dup_quarantined": n,
+            "near_dup_gray": m,
+            "near_dup_shadow_090": s,
+        },
         status="ok", error=None,
     )
 

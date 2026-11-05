@@ -46,6 +46,10 @@ class RefineResult:
     # E3 失败熔断（2026-11-05）：本次失败是否已计入 raw_files.fail_count——
     # batch_scan 据此避免对同一文件重复计数（只有 refine 入口之外的异常才由它记账）。
     failure_recorded: bool = False
+    # E5 截断计量（2026-11-05）：本次 L1 有多块输出被 max_tokens 截断
+    # （finish_reason="length"）；**仅计量**，不参与提交闸/重试判定。
+    # 明细随逐块 refine_runs.action_counts["l1_truncated_chunks"] 落库。
+    truncated_chunks: int = 0
 
 
 #: 自注入画像块（dsh/hermes 把 Tier0 画像当 user 消息写进原件时的标记）
@@ -361,6 +365,14 @@ def refine_file(
         # 静默缺内容。这里把失败数报到结果上，由 pipeline 的提交闸拦下（不推进游标）。
         result.failed_chunks = int(prompt_meta.get("chunk_failures") or 0)
         result.chunk_total = int(prompt_meta.get("chunk_total") or 0)
+        # E5 截断计量（2026-11-05）：只计数（逐块明细已写 refine_runs.action_counts），
+        # 不改提交/重试/判定——max_tokens 是否偏紧靠这批数据回算。
+        result.truncated_chunks = int(prompt_meta.get("l1_truncated_chunks") or 0)
+        if result.truncated_chunks:
+            logger.warning(
+                "L1 输出截断 %d/%d 块（finish_reason=length，file=%s）——仅计量，"
+                "不改重试/判定", result.truncated_chunks, result.chunk_total or 0, file_id,
+            )
         if result.failed_chunks:
             result.anomaly_warn = True
             logger.warning(

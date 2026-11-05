@@ -179,6 +179,46 @@ def test_near_dup_gray_zone(mem_conn, monkeypatch):
     assert res.score == 0.88
 
 
+
+def test_near_dup_shadow_zone_boundaries(mem_conn, monkeypatch):
+    """E2 影子计数（2026-11-05）：score ∈ [0.90, threshold) → shadow=True。
+
+    边界矩阵：0.8999 无影子；0.90 起算（含端点）；0.9199 影子；0.92 命中（非影子）。
+    判定行为零变化：0.90~0.9199 仍是 gray=True（放行），0.92 仍 hit=True。
+    """
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+
+    def _vs(score):
+        return lambda *a, **kw: [
+            {"memory_id": "mem-shadow-1", "content": "旧记忆", "priority": 60,
+             "updated_at": "2026-01-01T00:00:00Z", "score": score},
+        ]
+
+    # 0.8999：灰区但未进影子区间
+    monkeypatch.setattr(vector_mod, "vector_search", _vs(0.8999))
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    assert res.hit is False and res.gray is True and res.shadow is False
+
+    # 0.90：影子区间含端点
+    monkeypatch.setattr(vector_mod, "vector_search", _vs(0.90))
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    assert res.hit is False and res.gray is True and res.shadow is True
+
+    # 0.9199：擦线未到 threshold
+    monkeypatch.setattr(vector_mod, "vector_search", _vs(0.9199))
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    assert res.hit is False and res.gray is True and res.shadow is True
+
+    # 0.92（= threshold）：命中，不再是影子
+    monkeypatch.setattr(vector_mod, "vector_search", _vs(0.92))
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    assert res.hit is True and res.shadow is False
+
+
+def test_near_dup_shadow_threshold_is_090():
+    """E2 观察口径硬编码 0.90（非配置键：口径随部署漂移会让回算失真）。"""
+    assert l3_adjudicate.NEAR_DUP_SHADOW_THRESHOLD == 0.90
+
 def test_near_dup_below_gray_zone_passes(mem_conn, monkeypatch):
     """分支4c：score < gray_zone(0.85) → 放行（无命中信号）。"""
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
@@ -362,7 +402,9 @@ def test_integration_empty_pool_hit_quarantines(mem_conn, cfg, monkeypatch):
     # refine_runs：near_dup 独立记录（action_counts 对账）
     nd_rows = _near_dup_rows(mem_conn)
     assert len(nd_rows) == 1
-    assert json.loads(nd_rows[0]["action_counts"]) == {"near_dup_quarantined": 1, "near_dup_gray": 0}
+    assert json.loads(nd_rows[0]["action_counts"]) == {
+        "near_dup_quarantined": 1, "near_dup_gray": 0, "near_dup_shadow_090": 0,
+    }
     assert nd_rows[0]["memories_count"] == 1
     assert nd_rows[0]["status"] == "ok"
     # T1.7：同分支另写 empty_pool 独立记录（stored_n=0），二者共存（写入顺序无关）
@@ -390,7 +432,9 @@ def test_integration_batch_store_path_quarantines(mem_conn, cfg, monkeypatch):
     assert len(near_dup_dao.list_items(mem_conn)) == 1
     nd_rows = _near_dup_rows(mem_conn)
     assert len(nd_rows) == 1
-    assert json.loads(nd_rows[0]["action_counts"]) == {"near_dup_quarantined": 1, "near_dup_gray": 0}
+    assert json.loads(nd_rows[0]["action_counts"]) == {
+        "near_dup_quarantined": 1, "near_dup_gray": 0, "near_dup_shadow_090": 0,
+    }
     # T1.7：批行候选留痕三列——candidate_count / ids_hash 与批候选集一致（reason 不传 → None）
     batch_rows = [r for r in _runs(mem_conn) if r["candidate_count"] is not None]
     assert len(batch_rows) == 1
@@ -450,11 +494,39 @@ def test_integration_gray_zone_passes_with_count(mem_conn, cfg, monkeypatch):
 
     assert len(res.stored) == 1 and res.skipped == []
     assert res.near_dup_gray == 1 and res.near_dup_quarantined == 0
+    assert res.near_dup_shadow == 0, "0.88 未进入 [0.90, threshold) 影子区间"
     assert _count_content(mem_conn, content) == 1
     assert near_dup_dao.list_items(mem_conn) == []
     nd_rows = _near_dup_rows(mem_conn)
     assert len(nd_rows) == 1
-    assert json.loads(nd_rows[0]["action_counts"]) == {"near_dup_quarantined": 0, "near_dup_gray": 1}
+    assert json.loads(nd_rows[0]["action_counts"]) == {
+        "near_dup_quarantined": 0, "near_dup_gray": 1, "near_dup_shadow_090": 0,
+    }
+    assert nd_rows[0]["memories_count"] == 1
+
+
+
+def test_integration_shadow_zone_counted(mem_conn, cfg, monkeypatch):
+    """E2 影子计数集成：0.90 ≤ score < threshold → 照常 store，shadow/gray 双计数 + 记录对账。"""
+    _apply_integ_cfg(cfg)
+    monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-shadow", 0.91))
+
+    content = "影子区间放行内容 H"
+    res = l3_adjudicate.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
+
+    # 判定行为不变：灰区照常落库、隔离表无行
+    assert len(res.stored) == 1 and res.skipped == []
+    assert res.near_dup_quarantined == 0
+    assert res.near_dup_gray == 1 and res.near_dup_shadow == 1
+    assert _count_content(mem_conn, content) == 1
+    assert near_dup_dao.list_items(mem_conn) == []
+    # refine_runs 对账：三键齐全，shadow 键恒存在（阈值回算要配对分母）
+    nd_rows = _near_dup_rows(mem_conn)
+    assert len(nd_rows) == 1
+    assert json.loads(nd_rows[0]["action_counts"]) == {
+        "near_dup_quarantined": 0, "near_dup_gray": 1, "near_dup_shadow_090": 1,
+    }
     assert nd_rows[0]["memories_count"] == 1
 
 
