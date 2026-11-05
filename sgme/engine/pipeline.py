@@ -332,6 +332,8 @@ def refine_one(
     （并发错误/磁盘满）后文件已 refined、批扫不再拾起 → 记忆永久丢失。
     现 persist 抛异常时本函数不达 commit 行，文件保持 status=new 可重扫重试。
     """
+    # llm_override（2026-11-06）：入口层统一应用，保证 L1 与 L3 用同一条动态链。
+    cfg = refine_mod.apply_llm_override(cfg)
     result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
     # 首链熔断（2026-11-05）：主动延后——不落库、不推游标、不计失败，文件保持 new。
     if getattr(result, "deferred", False):
@@ -412,6 +414,8 @@ def async_refine_worker(
     """
     from sgme.data import db as db_mod
 
+    # llm_override（2026-11-06）：L1 与 L3 统一用动态链。
+    cfg = refine_mod.apply_llm_override(cfg)
     mem_conn: sqlite3.Connection | None = None
     session_conn: sqlite3.Connection | None = None
     try:

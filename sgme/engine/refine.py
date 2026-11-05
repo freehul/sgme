@@ -27,6 +27,26 @@ from sgme.data import memory_dao, session_dao
 logger = logging.getLogger("sgme.engine.refine")
 
 
+def apply_llm_override(cfg: dict) -> dict:
+    """返回带 refine.llm_override 动态链的 cfg（幂等；未配置时原样返回）。
+
+    修复（2026-11-06）：此前 llm_override 只在 refine_file 内、且仅当文件带
+    agent_model 时才被 build_refinement_cfg 使用——没有 agent_model 的文件
+    （如 hermes-* 历史会话）里 sgme.yaml 的 llm_override 被静默忽略（B121 同类）。
+    现统一在入口层应用；已应用过（首链 provider 与 override 相同）则跳过，避免重复。
+    """
+    override = (cfg.get("refine") or {}).get("llm_override") or {}
+    if not override:
+        return cfg
+    chain = (((cfg.get("llm") or {}).get("chains") or {}).get("refinement")) or [{}]
+    head = (chain[0] or {}).get("provider")
+    if head == override.get("provider"):
+        return cfg
+    from sgme.llm.resolve import build_refinement_cfg
+
+    return build_refinement_cfg(cfg)
+
+
 @dataclass
 class RefineResult:
     """单次提炼结果。"""
@@ -272,10 +292,12 @@ def refine_file(
         logger.warning("首链熔断中，跳过提炼（file=%s，保持 status=new）", file_id)
         return result
 
-    # T-43：动态提炼链——session 声明的 agent_model（provider/model）→
-    # 未指定 refine.llm_override 时跟随 agent 当前 LLM（复制 providers 连接参数）
+    # 动态提炼链（T-43 + 2026-11-06 修复）：llm_override 显式指定优先于
+    # agent_model；无 agent_model 也必须生效（此前被静默忽略）。
+    cfg = apply_llm_override(cfg)
     agent_model = rf.get("agent_model")
-    if agent_model:
+    override = (cfg.get("refine") or {}).get("llm_override") or {}
+    if agent_model and not override:
         from sgme.llm.resolve import build_refinement_cfg
 
         cfg = build_refinement_cfg(cfg, agent_model=agent_model)
@@ -703,7 +725,7 @@ def refine_batch(
     for rf in new_files:
         file_id = rf["file_id"]
         try:
-            yield refine_file(file_id, mem_conn, session_conn, cfg, client=client)
+            yield refine_file(file_id, mem_conn, session_conn, apply_llm_override(cfg), client=client)
         except Exception as e:
             logger.warning("提炼异常（逐文件容错，继续下一文件）: file=%s error=%s", file_id, e)
             result = RefineResult(file_id=file_id)
