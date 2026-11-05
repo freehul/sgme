@@ -13,7 +13,7 @@ import json
 import pytest
 
 from sgme import config
-from sgme.engine import l15
+from sgme.engine import l3_adjudicate
 from sgme.data import db as db_mod, memory_dao
 from sgme.data.search import vector as vector_mod
 
@@ -58,13 +58,13 @@ def _ps_cfg(enabled=True, vector_top_k=50, dimension_top_n=50):
 # ---------- 0. 配置透传 ----------
 
 def test_load_config_exposes_l15_prescreen():
-    """load_config 组装结果含 l15.prescreen（T-25：sgme.yaml 透传 + 默认兜底）。"""
+    """load_config 组装结果含 l3_adjudicate.prescreen（T-25：sgme.yaml 透传 + 默认兜底）。"""
     from sgme import config as sgme_config
     # SGME_HOME 隔离下默认路径已重定向到 tmp，显式指包内真实配置验证透传
     cfg = sgme_config.load_config(
         sgme_path=sgme_config.RESOURCE_ROOT / "config" / "sgme.yaml"
     )
-    l15_cfg = cfg.get("l15", {})
+    l15_cfg = cfg.get("l3_adjudicate", {})
     assert "prescreen" in l15_cfg
     ps = l15_cfg["prescreen"]
     # 默认结构完整（生产 sgme.yaml 显式 enabled=true 覆盖默认 false）
@@ -87,7 +87,7 @@ def test_prescreen_limits_dimension_candidates(mem_conn, cfg, monkeypatch):
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: [])
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,  # 大预算，确保截断来自预筛而非预算
         cfg=cfg, prescreen=_ps_cfg(dimension_top_n=50),
@@ -108,7 +108,7 @@ def test_prescreen_dimension_candidates_recency_ordered(mem_conn, cfg, monkeypat
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: [])
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,
         cfg=cfg, prescreen=_ps_cfg(dimension_top_n=50),
@@ -136,7 +136,7 @@ def test_prescreen_merges_vector_candidates(mem_conn, cfg, monkeypatch):
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: fake_vectors)
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,
         cfg=cfg, prescreen=_ps_cfg(),
@@ -164,7 +164,7 @@ def test_prescreen_candidate_cap(mem_conn, cfg, monkeypatch):
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: fake_vectors)
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,
         cfg=cfg, prescreen=_ps_cfg(vector_top_k=50, dimension_top_n=50),
@@ -190,7 +190,7 @@ def test_prescreen_disabled_full_recall(mem_conn, cfg, monkeypatch):
     monkeypatch.setattr(vector_mod, "embed", fake_embed)
     monkeypatch.setattr(vector_mod, "vector_search", fake_vs)
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,
         cfg=cfg, prescreen=None,  # 未配置 → 完全现状
@@ -207,7 +207,7 @@ def test_prescreen_embed_failure_falls_back_full_recall(mem_conn, cfg, monkeypat
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)  # 端点不可达
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: pytest.fail("不应调用"))
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,
         cfg=cfg, prescreen=_ps_cfg(),
@@ -225,7 +225,7 @@ def test_prescreen_vector_search_exception_falls_back_full_recall(mem_conn, cfg,
         raise RuntimeError("vector_search 挂了")
     monkeypatch.setattr(vector_mod, "vector_search", boom)
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,
         cfg=cfg, prescreen=_ps_cfg(),
@@ -237,7 +237,7 @@ def test_prescreen_vector_search_exception_falls_back_full_recall(mem_conn, cfg,
 
 def test_resolve_conflicts_prescreen_limits_prompt(mem_conn, cfg, monkeypatch):
     """端到端：预筛开启时候选进 LLM 的 prompt 显著变小（候选数受限）。"""
-    from sgme.engine.l15 import resolve_conflicts
+    from sgme.engine.l3_adjudicate import resolve_conflicts
 
     for i in range(150):
         _insert_existing(mem_conn, f"旧记忆{i}内容", ["tech_stack"], priority=60)
@@ -259,7 +259,7 @@ def test_resolve_conflicts_prescreen_limits_prompt(mem_conn, cfg, monkeypatch):
     import sgme.llm.chain as llm_chain
     monkeypatch.setattr(llm_chain, "call_with_fallback", fake_call)
 
-    cfg["l15"] = {"prescreen": _ps_cfg(dimension_top_n=50)}
+    cfg["l3_adjudicate"] = {"prescreen": _ps_cfg(dimension_top_n=50)}
     result = resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
     assert result.error is None
     assert captured, "应发起 LLM 调用"
@@ -269,7 +269,7 @@ def test_resolve_conflicts_prescreen_limits_prompt(mem_conn, cfg, monkeypatch):
 
 def test_resolve_conflicts_prescreen_disabled_full_recall_prompt(mem_conn, cfg, monkeypatch):
     """端到端：预筛关闭 → 候选全量进 prompt（现状行为）。"""
-    from sgme.engine.l15 import resolve_conflicts
+    from sgme.engine.l3_adjudicate import resolve_conflicts
 
     for i in range(80):
         _insert_existing(mem_conn, f"旧记忆{i}内容", ["tech_stack"], priority=60)
@@ -287,7 +287,7 @@ def test_resolve_conflicts_prescreen_disabled_full_recall_prompt(mem_conn, cfg, 
     import sgme.llm.chain as llm_chain
     monkeypatch.setattr(llm_chain, "call_with_fallback", fake_call)
 
-    cfg["l15"] = {"prescreen": {"enabled": False}}
+    cfg["l3_adjudicate"] = {"prescreen": {"enabled": False}}
     result = resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
     assert result.error is None
     assert captured[0].count("[候选#") == 81  # 全量 80 + 模板示例 1
@@ -303,7 +303,7 @@ def test_prescreen_embed_failure_skip_conflict_clears_candidates(mem_conn, cfg, 
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)  # 端点不可达
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: pytest.fail("不应调用"))
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,
         cfg=cfg, prescreen=_ps_cfg() | {"fallback": "skip_conflict"},
@@ -322,7 +322,7 @@ def test_prescreen_vector_search_exception_skip_conflict_clears_candidates(mem_c
         raise RuntimeError("vector_search 挂了")
     monkeypatch.setattr(vector_mod, "vector_search", boom)
 
-    groups, _ = l15.build_candidate_groups(
+    groups, _ = l3_adjudicate.build_candidate_groups(
         mem_conn, [_new_mem()],
         per_memory_budget_tokens=10**7,
         cfg=cfg, prescreen=_ps_cfg() | {"fallback": "skip_conflict"},
@@ -332,7 +332,7 @@ def test_prescreen_vector_search_exception_skip_conflict_clears_candidates(mem_c
 
 def test_resolve_conflicts_skip_conflict_short_circuit_no_llm(mem_conn, cfg, monkeypatch):
     """端到端：embed 不可达 + fallback=skip_conflict → 全部直接 store，零 LLM 调用。"""
-    from sgme.engine.l15 import resolve_conflicts
+    from sgme.engine.l3_adjudicate import resolve_conflicts
 
     for i in range(120):
         _insert_existing(mem_conn, f"旧记忆{i}内容", ["tech_stack"], priority=60)
@@ -345,7 +345,7 @@ def test_resolve_conflicts_skip_conflict_short_circuit_no_llm(mem_conn, cfg, mon
     monkeypatch.setattr(llm_chain, "call_with_fallback", fake_call)
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)
 
-    cfg["l15"] = {"prescreen": _ps_cfg() | {"fallback": "skip_conflict"}}
+    cfg["l3_adjudicate"] = {"prescreen": _ps_cfg() | {"fallback": "skip_conflict"}}
     result = resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
     assert result.error is None
     assert len(result.stored) == 1  # 短路 store，未调 LLM
@@ -355,9 +355,9 @@ def test_resolve_conflicts_skip_conflict_short_circuit_no_llm(mem_conn, cfg, mon
 def test_config_merge_prescreen_fallback_default_full_recall():
     """配置合并：fallback 默认 full_recall（向后兼容），显式可覆盖为 skip_conflict。"""
     from sgme import config as sgme_config
-    base = sgme_config._merge_l15_config(None)
+    base = sgme_config._merge_l3_adjudicate_config(None)
     assert base["prescreen"]["fallback"] == "full_recall"
-    merged = sgme_config._merge_l15_config({"prescreen": {"fallback": "skip_conflict"}})
+    merged = sgme_config._merge_l3_adjudicate_config({"prescreen": {"fallback": "skip_conflict"}})
     assert merged["prescreen"]["fallback"] == "skip_conflict"
 
 
@@ -375,8 +375,8 @@ def test_prescreen_skip_conflict_records_observable_marker(mem_conn, cfg, monkey
 
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)  # 端点不可达
 
-    cfg["l15"] = {"prescreen": _ps_cfg() | {"fallback": "skip_conflict"}}
-    result = l15.resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
+    cfg["l3_adjudicate"] = {"prescreen": _ps_cfg() | {"fallback": "skip_conflict"}}
+    result = l3_adjudicate.resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
 
     # 1) 结果层标记
     assert result.prescreen_skipped == 1
@@ -429,8 +429,8 @@ def test_prescreen_normal_path_no_skip_marker(mem_conn, cfg, monkeypatch):
     import sgme.llm.chain as llm_chain
     monkeypatch.setattr(llm_chain, "call_with_fallback", fake_call)
 
-    cfg["l15"] = {"prescreen": _ps_cfg()}
-    result = l15.resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
+    cfg["l3_adjudicate"] = {"prescreen": _ps_cfg()}
+    result = l3_adjudicate.resolve_conflicts([_new_mem()], mem_conn, cfg, client=None)
 
     assert result.error is None
     assert called["llm"], "对照组应走批裁决路径（mock 记录调用）"

@@ -35,9 +35,6 @@ def conns(tmp_path, raw_dir):
 
 @pytest.fixture
 def app(tmp_path, monkeypatch, raw_dir):
-    from sgme.profile import tier0 as tier0_mod
-
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", tmp_path / "tier0_summary.json")
     cfg = sgme_config.load_config()
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
@@ -113,11 +110,11 @@ def test_refine_unchanged_uses_incremental(conns, monkeypatch):
     # mock L1：若被调用则标记
     called = {"n": 0}
 
-    def fake_extract_l1(conversation, dimensions, llm_cfg, client=None, **kwargs):
+    def fake_extract_memories(conversation, dimensions, llm_cfg, client=None, **kwargs):
         called["n"] += 1
         return [], "mock", {"stage": "l1_extraction", "version": "working-mock", "variant": None}
 
-    monkeypatch.setattr("sgme.engine.l1.extract_l1", fake_extract_l1)
+    monkeypatch.setattr("sgme.engine.l2_extraction.extract_memories", fake_extract_memories)
     result = refine_mod.refine_file(fid, mem_conn, session_conn, sgme_config.load_config())
     assert result.status == "refined"
     assert called["n"] == 0, "哈希相同且无增量 → 不应调 L1"
@@ -137,7 +134,7 @@ def test_refine_modified_triggers_full(conns, monkeypatch):
 
     called = {"n": 0}
 
-    def fake_extract_l1(conversation, dimensions, llm_cfg, client=None, **kwargs):
+    def fake_extract_memories(conversation, dimensions, llm_cfg, client=None, **kwargs):
         called["n"] += 1
         # v0.5: refine.py 传预分块列表（每个元素是格式化后的会话文本）
         # 全量重提炼：conversation 应含两条消息（seq 1 + seq 2）
@@ -146,7 +143,7 @@ def test_refine_modified_triggers_full(conns, monkeypatch):
         assert "新追加内容" in full_text
         return [], "mock", {"stage": "l1_extraction", "version": "working-mock", "variant": None}
 
-    monkeypatch.setattr("sgme.engine.l1.extract_l1", fake_extract_l1)
+    monkeypatch.setattr("sgme.engine.l2_extraction.extract_memories", fake_extract_memories)
     cfg = sgme_config.load_config()
     result = refine_mod.refine_file(fid, mem_conn, session_conn, cfg)
     assert called["n"] == 1, "哈希变化 → 应触发全量重提炼"

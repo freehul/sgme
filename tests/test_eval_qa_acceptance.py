@@ -412,7 +412,7 @@ class TestQAEvalDBIsolation:
                 GtMemory(content="test", dimensions=["identity"]),
             ]),
         )
-        result = runner.run_all([sample_case], stages=["l1"], dry_run=True)
+        result = runner.run_all([sample_case], stages=["l2_extraction"], dry_run=True)
 
         # 验证 DB 文件创建在 eval_tmp 下
         # _setup_eval_db 创建后 _teardown_eval_db 会清理
@@ -510,7 +510,7 @@ class TestQACLIDryRun:
         with json_files[0].open("r", encoding="utf-8") as f:
             data = json.load(f)
         assert "run_id" in data, "report.json 应包含 run_id"
-        assert "l1" in data, "report.json 应包含 l1 指标"
+        assert "l2_extraction" in data, "report.json 应包含 l2_extraction 指标"
         assert "summary" in data, "report.json 应包含 summary"
         assert data["summary"]["total_cases"] > 0, \
             "total_cases 应大于 0"
@@ -610,38 +610,38 @@ class TestQAMockLLMMeasurable:
         from eval.runner import EvalRunner
 
         runner = EvalRunner(cfg={})
-        result = runner.run_all(sample_cases, stages=["l1"], dry_run=True)
+        result = runner.run_all(sample_cases, stages=["l2_extraction"], dry_run=True)
 
-        assert result.l1 is not None, "L1 指标不应为 None"
+        assert result.l2_extraction is not None, "L1 指标不应为 None"
         # easy 用例 mock 返回完美预测 → F1 至少 > 0
         # medium 用例丢弃维度 → F1 < 1.0
         # hard 用例丢弃维度 + priority 扰动
-        assert result.l1.dimension_micro_f1 > 0.0, \
-            f"Mock L1 F1 应 > 0，实际 {result.l1.dimension_micro_f1}"
+        assert result.l2_extraction.dimension_micro_f1 > 0.0, \
+            f"Mock L1 F1 应 > 0，实际 {result.l2_extraction.dimension_micro_f1}"
 
         # 确认不是全 1.0（否则说明所有用例都测得完美，没有区分度）
         # 至少有一个 medium/hard 拉低分数
-        assert result.l1.dimension_micro_f1 < 1.0, \
-            f"Mock L1 F1 应 < 1.0（含 medium/hard 扰动），实际 {result.l1.dimension_micro_f1}"
+        assert result.l2_extraction.dimension_micro_f1 < 1.0, \
+            f"Mock L1 F1 应 < 1.0（含 medium/hard 扰动），实际 {result.l2_extraction.dimension_micro_f1}"
 
     def test_mock_produces_valid_metrics(self, sample_cases):
         """Mock 模式各指标在合理范围内。"""
         from eval.runner import EvalRunner
 
         runner = EvalRunner(cfg={})
-        result = runner.run_all(sample_cases, stages=["l1"], dry_run=True)
+        result = runner.run_all(sample_cases, stages=["l2_extraction"], dry_run=True)
 
         # 所有指标在 [0, 1] 范围内
-        assert 0.0 <= result.l1.dimension_micro_precision <= 1.0
-        assert 0.0 <= result.l1.dimension_micro_recall <= 1.0
-        assert 0.0 <= result.l1.strict_match_rate <= 1.0
-        assert 0.0 <= result.l1.memory_type_accuracy <= 1.0
-        assert 0.0 <= result.l1.time_velocity_accuracy <= 1.0
+        assert 0.0 <= result.l2_extraction.dimension_micro_precision <= 1.0
+        assert 0.0 <= result.l2_extraction.dimension_micro_recall <= 1.0
+        assert 0.0 <= result.l2_extraction.strict_match_rate <= 1.0
+        assert 0.0 <= result.l2_extraction.memory_type_accuracy <= 1.0
+        assert 0.0 <= result.l2_extraction.time_velocity_accuracy <= 1.0
 
         # TP/FP/FN 计数为非负整数
-        assert result.l1.total_tp >= 0
-        assert result.l1.total_fp >= 0
-        assert result.l1.total_fn >= 0
+        assert result.l2_extraction.total_tp >= 0
+        assert result.l2_extraction.total_fp >= 0
+        assert result.l2_extraction.total_fn >= 0
 
         # 3 条用例全部处理
         assert result.summary.total_cases == 3
@@ -665,12 +665,12 @@ class TestQAMockLLMMeasurable:
         )
 
         runner = EvalRunner(cfg={})
-        result = runner.run_all([easy_case], stages=["l1"], dry_run=True)
+        result = runner.run_all([easy_case], stages=["l2_extraction"], dry_run=True)
 
         # easy 用例：mock 直接返回 GT → F1=1.0
-        assert result.l1.dimension_micro_f1 == 1.0, \
-            f"easy mock 应 F1=1.0，实际 {result.l1.dimension_micro_f1}"
-        assert result.l1.strict_match_rate == 1.0
+        assert result.l2_extraction.dimension_micro_f1 == 1.0, \
+            f"easy mock 应 F1=1.0，实际 {result.l2_extraction.dimension_micro_f1}"
+        assert result.l2_extraction.strict_match_rate == 1.0
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -736,10 +736,10 @@ class TestQARedlineChecks:
         diff = {
             "report_a": "v001",
             "report_b": "v002",
-            "l1": {
+            "l2_extraction": {
                 "dimension_micro_f1": {"a": 0.75, "b": 0.78, "delta": 0.03},
             },
-            "l2": {
+            "scene_aggregate": {
                 "profile_quality": {"a": 0.5, "b": 0.55, "delta": 0.05},
             },
         }
@@ -909,11 +909,11 @@ class TestQARunnerReporterPipeline:
 
         cases = load_cases(baseline_path)
         runner = EvalRunner(cfg={})
-        result = runner.run_all(cases, stages=["l1"], dry_run=True)
+        result = runner.run_all(cases, stages=["l2_extraction"], dry_run=True)
 
         assert result.summary.total_cases == 50
         assert len(result.per_case) == 50
-        assert result.l1 is not None
+        assert result.l2_extraction is not None
 
         # 50 条全成功（无 error）
         errors = [cr for cr in result.per_case if cr.error]
@@ -921,7 +921,7 @@ class TestQARunnerReporterPipeline:
             f"有 {len(errors)} 条用例出错: {[(e.case_id, e.error) for e in errors]}"
 
         # F1 非零
-        assert result.l1.dimension_micro_f1 > 0.0
+        assert result.l2_extraction.dimension_micro_f1 > 0.0
 
     def test_reporter_json_roundtrip(self, tmp_path):
         """Report JSON 可序列化 → 反序列化，字段完整。"""
@@ -935,7 +935,7 @@ class TestQARunnerReporterPipeline:
 
         cases = load_cases(sample_path)
         runner = EvalRunner(cfg={})
-        result = runner.run_all(cases, stages=["l1"], dry_run=True)
+        result = runner.run_all(cases, stages=["l2_extraction"], dry_run=True)
 
         output_dir = tmp_path / "roundtrip"
         output_dir.mkdir()
@@ -948,17 +948,17 @@ class TestQARunnerReporterPipeline:
         # 关键字段存在
         assert "run_id" in data
         assert "timestamp" in data
-        assert "l1" in data
+        assert "l2_extraction" in data
         assert "per_case" in data
         assert "summary" in data
 
         # L1 字段完整
-        l1 = data["l1"]
+        l2_extraction = data["l2_extraction"]
         for field in ["dimension_micro_f1", "dimension_micro_precision",
                        "dimension_micro_recall", "strict_match_rate",
                        "memory_type_accuracy", "time_velocity_accuracy",
                        "priority_mae", "total_tp", "total_fp", "total_fn"]:
-            assert field in l1, f"report.json l1 缺少字段 {field}"
+            assert field in l2_extraction, f"report.json l2_extraction 缺少字段 {field}"
 
     def test_reporter_md_contains_required_sections(self, tmp_path):
         """Report MD 包含必需章节。"""
@@ -972,7 +972,7 @@ class TestQARunnerReporterPipeline:
 
         cases = load_cases(sample_path)
         runner = EvalRunner(cfg={})
-        result = runner.run_all(cases, stages=["l1"], dry_run=True)
+        result = runner.run_all(cases, stages=["l2_extraction"], dry_run=True)
 
         output_dir = tmp_path / "mdcheck"
         output_dir.mkdir()
@@ -1003,25 +1003,25 @@ class TestQAABEdgeCases:
         """相同报告对比 Δ=0。"""
         data = {
             "run_id": "test",
-            "l1": {"dimension_micro_f1": 0.75, "strict_match_rate": 0.5},
-            "l2": {"section_hit_rate": 0.7, "profile_quality": 0.525},
+            "l2_extraction": {"dimension_micro_f1": 0.75, "strict_match_rate": 0.5},
+            "scene_aggregate": {"section_hit_rate": 0.7, "profile_quality": 0.525},
         }
         diff = compare_reports(data, dict(data))
-        assert diff["l1"]["dimension_micro_f1"]["delta"] == 0.0
-        assert diff["l2"]["profile_quality"]["delta"] == 0.0
+        assert diff["l2_extraction"]["dimension_micro_f1"]["delta"] == 0.0
+        assert diff["scene_aggregate"]["profile_quality"]["delta"] == 0.0
 
     def test_compare_missing_l2_section(self):
         """只含 L1 不含 L2 的 report 也能对比。"""
         data_a = {
             "run_id": "a",
-            "l1": {"dimension_micro_f1": 0.5},
+            "l2_extraction": {"dimension_micro_f1": 0.5},
         }
         data_b = {
             "run_id": "b",
-            "l1": {"dimension_micro_f1": 0.6},
+            "l2_extraction": {"dimension_micro_f1": 0.6},
         }
         diff = compare_reports(data_a, data_b)
-        assert diff["l1"]["dimension_micro_f1"]["delta"] == 0.1
+        assert diff["l2_extraction"]["dimension_micro_f1"]["delta"] == 0.1
 
     def test_compare_from_file_paths(self, tmp_path):
         """从文件路径对比。"""
@@ -1029,24 +1029,24 @@ class TestQAABEdgeCases:
         b_path = tmp_path / "b.json"
 
         a_path.write_text(json.dumps({
-            "run_id": "a", "l1": {"dimension_micro_f1": 0.7},
-            "l2": {"profile_quality": 0.5},
+            "run_id": "a", "l2_extraction": {"dimension_micro_f1": 0.7},
+            "scene_aggregate": {"profile_quality": 0.5},
         }))
         b_path.write_text(json.dumps({
-            "run_id": "b", "l1": {"dimension_micro_f1": 0.8},
-            "l2": {"profile_quality": 0.6},
+            "run_id": "b", "l2_extraction": {"dimension_micro_f1": 0.8},
+            "scene_aggregate": {"profile_quality": 0.6},
         }))
 
         diff = compare_reports(str(a_path), str(b_path))
-        assert diff["l1"]["dimension_micro_f1"]["delta"] == 0.1
-        assert diff["l2"]["profile_quality"]["delta"] == 0.1
+        assert diff["l2_extraction"]["dimension_micro_f1"]["delta"] == 0.1
+        assert diff["scene_aggregate"]["profile_quality"]["delta"] == 0.1
 
     def test_format_diff_contains_no_auto_judgment(self):
         """format_diff_markdown 不做自动裁决。"""
         diff = {
             "report_a": "v001", "report_b": "v002",
-            "l1": {"dimension_micro_f1": {"a": 0.7, "b": 0.8, "delta": 0.1}},
-            "l2": {"profile_quality": {"a": 0.5, "b": 0.6, "delta": 0.1}},
+            "l2_extraction": {"dimension_micro_f1": {"a": 0.7, "b": 0.8, "delta": 0.1}},
+            "scene_aggregate": {"profile_quality": {"a": 0.5, "b": 0.6, "delta": 0.1}},
         }
         md = format_diff_markdown(diff)
         assert "不做自动裁决" in md

@@ -3,8 +3,8 @@
 覆盖：
 - insert_memory facts 落库（规范化 / 非法项丢弃 / 缺省 None）
 - facts_dao 符号层查询（精确 / 子串 / 组合 / status 过滤 / 对账）
-- l1 _validate_item facts 解析容错
-- l1 → l15 全链路：extract_l1(mock) 带 facts → resolve_conflicts store → 查询命中
+- l2_extraction _validate_item facts 解析容错
+- l2_extraction → l3_adjudicate 全链路：extract_memories(mock) 带 facts → resolve_conflicts store → 查询命中
 - _migrate_mem_facts_json 幂等
 """
 
@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from sgme import config
-from sgme.engine import l1, l15
+from sgme.engine import l2_extraction, l3_adjudicate
 from sgme.data import db as db_mod, facts_dao, memory_dao
 
 
@@ -153,19 +153,19 @@ def test_validate_item_facts_parse(mem_conn, cfg):
             "bad",                                              # → 丢
         ],
     }
-    v = l1._validate_item(item, dims)
+    v = l2_extraction._validate_item(item, dims)
     assert v["facts"] == [{"subject": "张伟", "predicate": "任职于", "object": "腾讯"}]
 
     item2 = dict(item, facts="not-a-list")
-    assert l1._validate_item(item2, dims)["facts"] == []
+    assert l2_extraction._validate_item(item2, dims)["facts"] == []
 
 
-# ---------- l1 → l15 全链路 ----------
+# ---------- l2_extraction → l3_adjudicate 全链路 ----------
 
 def test_full_pipeline_facts_stored_and_queryable(monkeypatch, mem_conn, cfg):
-    """extract_l1(mock 带 facts) → resolve_conflicts store → facts_json 落库 → 符号层命中。"""
-    monkeypatch.setattr(l1.llm_chain, "batch_budget", lambda *a, **k: 10000)
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    """extract_memories(mock 带 facts) → resolve_conflicts store → facts_json 落库 → 符号层命中。"""
+    monkeypatch.setattr(l2_extraction.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 10000)
 
     l1_body = json.dumps([{
         "content": "张伟在腾讯工作，负责 AI 平台",
@@ -179,7 +179,7 @@ def test_full_pipeline_facts_stored_and_queryable(monkeypatch, mem_conn, cfg):
             {"subject": "张伟", "predicate": "负责", "object": "AI 平台"},
         ],
     }])
-    memories, _, _ = l1.extract_l1(
+    memories, _, _ = l2_extraction.extract_memories(
         "# 2026-08-31T00:00:00Z user\n张伟在腾讯工作",
         cfg["dimensions"], cfg["llm"], client=_mock_llm_client(l1_body),
     )
@@ -188,7 +188,7 @@ def test_full_pipeline_facts_stored_and_queryable(monkeypatch, mem_conn, cfg):
     l15_body = json.dumps([{
         "new_memory_index": 0, "candidate_ids": [], "action": "store", "reason": "r",
     }])
-    result = l15.resolve_conflicts(
+    result = l3_adjudicate.resolve_conflicts(
         memories, mem_conn, cfg, client=_mock_llm_client(l15_body),
     )
     assert len(result.stored) == 1
@@ -228,7 +228,7 @@ def session_conn(tmp_path):
 
 def test_facts_survive_refine_file_normalization(monkeypatch, mem_conn, session_conn, cfg, tmp_path):
     """回归（B147）：refine.py 归一化重塑 dict 的字段白名单此前漏 facts →
-    L1 产出的三元组在进入 l15 落库前被静默丢弃，生产 facts_json 全 NULL
+    L1 产出的三元组在进入 l3_adjudicate 落库前被静默丢弃，生产 facts_json 全 NULL
     （冒烟实证 0 条；test_full_pipeline_facts_stored_and_queryable 因绕过
     refine_file 归一化层而未拦住）。修复后全链 facts 必须存活。"""
     from sgme import config as sgme_config
@@ -267,7 +267,7 @@ def test_facts_survive_refine_file_normalization(monkeypatch, mem_conn, session_
         "facts": [{"subject": "王五", "predicate": "任职于", "object": "字节跳动"}],
     }]
     monkeypatch.setattr(
-        refine_mod.l1, "extract_l1",
+        refine_mod.l2_extraction, "extract_memories",
         lambda *a, **k: (raw_with_facts, "mock",
                          {"stage": "l1_extraction", "version": "working-TEST"}),
     )
@@ -278,12 +278,12 @@ def test_facts_survive_refine_file_normalization(monkeypatch, mem_conn, session_
     assert result.memories, "归一化后应至少剩 1 条记忆"
     assert result.memories[0].get("facts"), "归一化白名单必须透传 facts"
 
-    # 继续走 l15 store → 落库 → 符号层可查
+    # 继续走 l3_adjudicate store → 落库 → 符号层可查
     l15_body = json.dumps([{
         "new_memory_index": 0, "candidate_ids": [], "action": "store", "reason": "r",
     }])
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 10000)
-    res = l15.resolve_conflicts(
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    res = l3_adjudicate.resolve_conflicts(
         result.memories, mem_conn, cfg, client=_mock_llm_client(l15_body),
     )
     assert len(res.stored) == 1

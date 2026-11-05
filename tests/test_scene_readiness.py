@@ -57,7 +57,7 @@ def make_memory_db(db_path: Path) -> Path:
     conn.execute("INSERT INTO scenes_fts (rowid, content) VALUES (1, 'fts')")
     conn.executemany(
         "INSERT INTO memory_edges (source, target) VALUES (?, ?)",
-        [("l2", "x"), ("l2", "y"), ("scene", "z")],
+        [("scene_aggregate", "x"), ("scene_aggregate", "y"), ("scene", "z")],
     )
     conn.executemany(
         "INSERT INTO memory_pages (kind, id) VALUES (?, ?)", [("scene", 1), ("wiki", 2)]
@@ -120,7 +120,7 @@ def test_report_fields_and_scene_rows(tmp_path: Path):
     assert scene["scene_rows"] == {"scenes": 3, "scene_vectors": 2, "scenes_fts": 1}
     assert scene["total_rows"] == 6
     assert scene["clear"] is False
-    assert scene["edge_sources"] == {"l2": 2, "scene": 1}
+    assert scene["edge_sources"] == {"scene_aggregate": 2, "scene": 1}
     assert scene["page_kinds"] == {"scene": 1, "wiki": 1}
 
     items = {item["item"]: item for item in report["prerequisites"]}

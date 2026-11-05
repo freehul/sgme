@@ -293,7 +293,7 @@ def test_mcp_project_register(mcp):
 
 
 def test_mcp_append_and_inject(mcp):
-    """append 写入 → inject 能查到（Tier0 摘要降级路径不崩）。"""
+    """append 写入 → inject 能查到（Tier0 已砍，无 core 卡片时也不能崩）。"""
     r = _call(mcp, "append", {
         "session_key": "mcp-test", "started_at": "2026-08-04T10:00:00Z",
         "content": "# 2026-08-04T10:00:00Z user\nMCP 测试写入\n",
@@ -1144,17 +1144,17 @@ def test_mcp_config_update_agent_key_forbidden(tmp_path, monkeypatch, raw_dir):
     client, app = next(gen)
     try:
         cfg_path = tmp_path / "sgme_test.yaml"
-        before_cfg = json.dumps(app.state.cfg.get("l1"), ensure_ascii=False, sort_keys=True)
+        before_cfg = json.dumps(app.state.cfg.get("l2_extraction"), ensure_ascii=False, sort_keys=True)
         before_disk = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else None
 
         text = _mcp_tool_text(_mcp_call_tool(client, None, "config_update", {
-            "section": "l1", "values": {"chunk_size": 4321},
+            "section": "l2_extraction", "values": {"chunk_size": 4321},
         }, api_key="test-agent-key"))
 
         assert "ERR_FORBIDDEN" in text, text
         assert '"ok": true' not in text.lower(), text
         # 零副作用：内存 cfg 未被改写、sgme.yaml 未被落盘
-        assert json.dumps(app.state.cfg.get("l1"), ensure_ascii=False, sort_keys=True) == before_cfg
+        assert json.dumps(app.state.cfg.get("l2_extraction"), ensure_ascii=False, sort_keys=True) == before_cfg
         after_disk = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else None
         assert after_disk == before_disk, "agent key 越权调用触发了配置落盘"
     finally:
@@ -1167,15 +1167,15 @@ def test_mcp_config_update_admin_key_applies(tmp_path, monkeypatch, raw_dir):
     client, app = next(gen)
     try:
         text = _mcp_tool_text(_mcp_call_tool(client, None, "config_update", {
-            "section": "l1", "values": {"chunk_size": 4321},
+            "section": "l2_extraction", "values": {"chunk_size": 4321},
         }, api_key="test-admin-key"))
 
         data = json.loads(text)
         assert "error" not in data, data
         assert data["status"] == "ok"
-        assert data["section"] == "l1"
+        assert data["section"] == "l2_extraction"
         assert data["config"]["chunk_size"] == 4321
-        assert app.state.cfg["l1"]["chunk_size"] == 4321  # 热生效（就地改同一 cfg 对象）
+        assert app.state.cfg["l2_extraction"]["chunk_size"] == 4321  # 热生效（就地改同一 cfg 对象）
     finally:
         gen.close()
 
@@ -1229,7 +1229,7 @@ def test_mcp_signal_clear_admin_key_consumes(tmp_path, monkeypatch, raw_dir):
 
 def test_mcp_admin_tools_direct_call_rejected(mcp):
     """T-224：无 HTTP 上下文直调（无法反查 Key）→ 安全默认拒绝（与 skill_put 同规则）。"""
-    for name, args in (("config_update", {"section": "l1", "values": {"chunk_size": 4096}}),
+    for name, args in (("config_update", {"section": "l2_extraction", "values": {"chunk_size": 4096}}),
                        ("signal_clear", {})):
         text, _ = _call(mcp, name, args)
         assert "ERR_FORBIDDEN" in text, f"{name} 直调未被拒: {text}"

@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from sgme.engine.l1 import _lang_mismatch
+from sgme.engine.l2_extraction import _lang_mismatch
 
 EN_CONV = ("user: I have been collecting vintage cameras for a few months now.\n"
            "assistant: That is a lovely hobby; which models do you own?\n") * 12
@@ -54,7 +54,7 @@ def test_drift_triggers_retry_with_language_hint():
     import httpx
 
     from sgme import config as sgme_config
-    from sgme.engine import l1 as l1_mod
+    from sgme.engine import l2_extraction as l1_mod
 
     cfg = sgme_config.load_config()
     dim_id = cfg["dimensions"][0]["id"]
@@ -74,7 +74,7 @@ def test_drift_triggers_retry_with_language_hint():
         return httpx.Response(200, json={"choices": [{"message": {"content": bodies[idx]}}]})
 
     cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
-    memories, _provider, _meta = l1_mod.extract_l1(EN_CONV, cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _provider, _meta = l1_mod.extract_memories(EN_CONV, cfg["dimensions"], cfg["llm"], client=cli)
 
     assert len(calls) == 2, f"应重试一次，实际调用 {len(calls)} 次"
     assert "vintage cameras" in memories[0]["content"]  # 采用重试后的英文结果

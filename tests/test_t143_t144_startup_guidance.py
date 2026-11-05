@@ -167,7 +167,7 @@ def _insert_raw_file(session_conn: sqlite3.Connection, file_id: str) -> None:
 def _error_refine_result(file_id: str) -> RefineResult:
     """构造业务失败（LLM 全链降级失败）的 RefineResult。
 
-    文案对齐 engine.l1.py 的 RefineError —— T-143② 实测场景触发路径。
+    文案对齐 engine.l2_extraction.py 的 RefineError —— T-143② 实测场景触发路径。
     """
     return RefineResult(
         file_id=file_id,

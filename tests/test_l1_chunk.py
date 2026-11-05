@@ -1,4 +1,4 @@
-"""L1 分块单元测试：chunk_conversation 边界场景 + extract_l1 合并去重。"""
+"""L1 分块单元测试：chunk_conversation 边界场景 + extract_memories 合并去重。"""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from sgme import config as sgme_config
-from sgme.engine import l1 as l1_mod
+from sgme.engine import l2_extraction as l1_mod
 
 
 @pytest.fixture
@@ -72,9 +72,9 @@ def test_chunk_huge_message_not_truncated():
     assert any("y" * 20000 in c for c in chunks)
 
 
-# ---------- extract_l1 分块合并 ----------
+# ---------- extract_memories 分块合并 ----------
 
-def test_extract_l1_chunked_merges_dedup(cfg, monkeypatch):
+def test_extract_memories_chunked_merges_dedup(cfg, monkeypatch):
     """分块提炼：多块合并 + 按 content 去重。"""
     conv = _conversation(40, 500)
 
@@ -101,7 +101,7 @@ def test_extract_l1_chunked_merges_dedup(cfg, monkeypatch):
         })
 
     cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
-    memories, provider, meta = l1_mod.extract_l1(
+    memories, provider, meta = l1_mod.extract_memories(
         conv, cfg["dimensions"], cfg["llm"], client=cli,
         chunk_size=8000, overlap=1500,
     )
@@ -121,7 +121,7 @@ def test_extract_l1_chunked_merges_dedup(cfg, monkeypatch):
     assert meta["variant"] is None
 
 
-def test_extract_l1_short_no_chunk(cfg, monkeypatch):
+def test_extract_memories_short_no_chunk(cfg, monkeypatch):
     """短会话不触发分块（provider 为原始名）。"""
     conv = _conversation(3, 100)
     body = json.dumps([
@@ -132,7 +132,7 @@ def test_extract_l1_short_no_chunk(cfg, monkeypatch):
         lambda req: httpx.Response(200, json={
             "choices": [{"message": {"content": body}}]})
     ), trust_env=False)
-    memories, provider, _ = l1_mod.extract_l1(
+    memories, provider, _ = l1_mod.extract_memories(
         conv, cfg["dimensions"], cfg["llm"], client=cli,
     )
     assert provider == "agnes"  # 非 chunked；链首为 agnes（2026-08-22 主序，B121 后维持）

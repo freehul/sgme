@@ -15,7 +15,7 @@ import pytest
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
-from sgme.engine import l1 as l1_mod
+from sgme.engine import l2_extraction as l1_mod
 from sgme.engine.surprise import compute_for_store
 
 

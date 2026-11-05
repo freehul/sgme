@@ -1,4 +1,4 @@
-"""ST-58/T-296：`L15Result.decisions` 逐条决策留痕（G3-c 门禁的必要使能）。
+"""ST-58/T-296：`AdjudicationResult.decisions` 逐条决策留痕（G3-c 门禁的必要使能）。
 
 背景：G3-c 要求「逐条比对 A/B 两臂的 L1.5 裁决」，而此前只有**批次级**
 `action_counts` 聚合，无法定位「是哪条新记忆被判成了别的动作」。
@@ -13,7 +13,7 @@ import pytest
 
 from sgme import config
 from sgme.data import db as db_mod, memory_dao
-from sgme.engine import l15
+from sgme.engine import l3_adjudicate
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ def test_decisions_aligned_with_new_memories(mem_conn, cfg):
         {"new_memory_index": 0, "candidate_ids": [], "action": "store", "reason": "全新"},
         {"new_memory_index": 1, "candidate_ids": [], "action": "skip", "reason": "重复"},
     ])
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=_mock_llm(body))
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=_mock_llm(body))
 
     assert [d["new_memory_index"] for d in result.decisions] == [0, 1]
     assert [d["action"] for d in result.decisions] == ["store", "skip"]
@@ -91,7 +91,7 @@ def test_decisions_record_candidate_ids_and_reason(mem_conn, cfg):
         "new_memory_index": 0, "candidate_ids": [old_id], "action": "update",
         "merged_content": "用户用 A 工具和 B 工具", "reason": "同主体+增量",
     }])
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=_mock_llm(body))
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=_mock_llm(body))
 
     d0 = result.decisions[0]
     assert d0["action"] == "update"
@@ -105,7 +105,7 @@ def test_decisions_fallback_store_recorded(mem_conn, cfg):
     new_memories = [_new("甲"), _new("乙")]
     # 只给 index 0 的裁决，index 1 缺失
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "skip"}])
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=_mock_llm(body))
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=_mock_llm(body))
 
     by_idx = {d["new_memory_index"]: d for d in result.decisions}
     assert by_idx[0]["action"] == "skip"
@@ -117,7 +117,7 @@ def test_decisions_not_persisted_to_db(mem_conn, cfg):
     """留痕**不落库**：refine_runs 无新列（零迁移约束）。"""
     _insert_existing(mem_conn, "旧", ["tech_stack"])
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
-    l15.resolve_conflicts([_new("甲")], mem_conn, cfg, client=_mock_llm(body))
+    l3_adjudicate.resolve_conflicts([_new("甲")], mem_conn, cfg, client=_mock_llm(body))
 
     cols = [r[1] for r in mem_conn.execute("PRAGMA table_info(refine_runs)").fetchall()]
     assert "decisions" not in cols
@@ -132,7 +132,7 @@ def test_decisions_not_persisted_to_db(mem_conn, cfg):
 def test_empty_pool_short_circuit_records_decisions(mem_conn, cfg):
     """候选池为空 → 全部 store 短路，同样要有逐条留痕（A/B 比对不能因短路而丢失样本）。"""
     body = json.dumps([])  # 不应被调用
-    result = l15.resolve_conflicts([_new("甲", "family")], mem_conn, cfg,
+    result = l3_adjudicate.resolve_conflicts([_new("甲", "family")], mem_conn, cfg,
                                    client=_mock_llm(body))
     assert len(result.decisions) == 1
     assert result.decisions[0]["action"] == "store"

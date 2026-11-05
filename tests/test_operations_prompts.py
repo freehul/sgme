@@ -59,7 +59,6 @@ ADMIN_HEADERS = {"X-API-Key": "test-admin-key"}
 AGENT_HEADERS = {"X-API-Key": "test-agent-key"}
 
 STAGE_TEXTS = {
-    "tier0_summary": "你是摘要器。\n{{memories}}",
     "l1_extraction": "你是提取器。\n{{dimensions}}\n{{conversation}}",
     "l1_conflict": "你是裁决器。\n{{new_memories}}\n{{candidates}}",
     "l2_scene": "你是聚合器。\n{{new_memories}}\n{{existing_scenes}}\n{{max_scenes}}",
@@ -80,7 +79,7 @@ def raw_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def prompts_root(tmp_path):
-    """隔离 prompts 目录（4 个工作副本，无 manifest → 默认全 @working）。"""
+    """隔离 prompts 目录（3 个工作副本，无 manifest → 默认全 @working；tier0_summary 已随 D-79 退役）。"""
     root = tmp_path / "prompts"
     root.mkdir()
     for stage, text in STAGE_TEXTS.items():
@@ -103,10 +102,8 @@ def ops_env(monkeypatch, prompts_root):
 @pytest.fixture
 def app(tmp_path, monkeypatch, raw_dir, prompts_root):
     """隔离 FastAPI 应用（与 test_prompts_api 同款 fixture，契约等价对照用）。"""
-    from sgme.profile import tier0 as tier0_mod
     from sgme.server.app import create_app
 
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", tmp_path / "tier0_summary.json")
     monkeypatch.setattr(PromptStore, "PROMPTS_ROOT", prompts_root)
     monkeypatch.setattr(PromptStore, "MANIFEST_PATH", prompts_root / "manifest.yaml")
     monkeypatch.delenv("SGME_BEARER_TOKEN", raising=False)
@@ -209,13 +206,13 @@ def test_list_data_shape_default_working(ops_env):
     """默认 @working：4 stage，每段字段齐全，active=@working，versions 空。"""
     data = prompts_list().data
     assert list(data.keys()) == LIST_TOP_KEYS
-    assert len(data["stages"]) == 4
+    assert len(data["stages"]) == 3
     for stage in data["stages"]:
         assert list(stage.keys()) == LIST_STAGE_KEYS
-    l1 = next(s for s in data["stages"] if s["stage"] == "l1_extraction")
-    assert l1["active"] == "@working"
-    assert l1["ab"] == {"enabled": False}
-    assert l1["versions"] == []
+    l2_extraction = next(s for s in data["stages"] if s["stage"] == "l1_extraction")
+    assert l2_extraction["active"] == "@working"
+    assert l2_extraction["ab"] == {"enabled": False}
+    assert l2_extraction["versions"] == []
 
 
 def test_publish_data_shape_complete(ops_env):
@@ -306,15 +303,15 @@ def test_http_list_contract_unchanged(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert list(body.keys()) == LIST_TOP_KEYS
-    assert len(body["stages"]) == 4
-    l1 = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
-    assert list(l1.keys()) == LIST_STAGE_KEYS
-    assert l1["active"] == "v001"
-    assert l1["ab"]["enabled"] is True
-    assert l1["ab"]["split"] == 0.3
-    assert set(l1["ab"].keys()) == {"enabled", "a", "b", "split", "bucket_by"}
-    assert list(l1["versions"][0].keys()) == VERSION_INFO_KEYS
-    assert l1["versions"][0]["version"] == "v001"
+    assert len(body["stages"]) == 3
+    l2_extraction = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
+    assert list(l2_extraction.keys()) == LIST_STAGE_KEYS
+    assert l2_extraction["active"] == "v001"
+    assert l2_extraction["ab"]["enabled"] is True
+    assert l2_extraction["ab"]["split"] == 0.3
+    assert set(l2_extraction["ab"].keys()) == {"enabled", "a", "b", "split", "bucket_by"}
+    assert list(l2_extraction["versions"][0].keys()) == VERSION_INFO_KEYS
+    assert l2_extraction["versions"][0]["version"] == "v001"
 
     # 等价性：同一状态下 operations 直调结果与端点响应逐字节一致
     assert prompts_list().data == body
@@ -530,11 +527,11 @@ def test_activate_and_ab_persist_to_manifest(client):
                       "bucket_by": "memory_id"},
                 headers=ADMIN_HEADERS)
     body = client.get("/v1/admin/prompts", headers=ADMIN_HEADERS).json()
-    l1 = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
-    assert l1["active"] == "v001"
-    assert l1["ab"]["enabled"] is True
-    assert l1["ab"]["split"] == 0.3
-    assert l1["ab"]["bucket_by"] == "memory_id"
+    l2_extraction = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
+    assert l2_extraction["active"] == "v001"
+    assert l2_extraction["ab"]["enabled"] is True
+    assert l2_extraction["ab"]["split"] == 0.3
+    assert l2_extraction["ab"]["bucket_by"] == "memory_id"
 
 
 # ---------- 6. 鉴权 ----------

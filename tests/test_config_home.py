@@ -106,11 +106,11 @@ def test_sgme_home_load_sgme_config_from_home(reload_config, tmp_path: Path):
     home = tmp_path / "sgme-home"
     (home / "config").mkdir(parents=True)
     (home / "config" / "sgme.yaml").write_text(
-        "l2:\n  max_scenes: 123\n", encoding="utf-8"
+        "scene_aggregate:\n  max_scenes: 123\n", encoding="utf-8"
     )
     mod = reload_config(SGME_HOME=str(home))
     cfg = mod.load_sgme_config()
-    assert cfg["l2"]["max_scenes"] == 123
+    assert cfg["scene_aggregate"]["max_scenes"] == 123
 
 
 # ---------- T-142 后续：覆盖层配置漂移不得导致启动崩溃 ----------

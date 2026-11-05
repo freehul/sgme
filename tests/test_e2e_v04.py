@@ -3,7 +3,7 @@
 覆盖：
 - test_e2e_full_pipeline：完整链路
     append → refine/trigger（含 L2 CREATE）→ 验证 L2 场景生成
-    → tier0/refresh → inject（tier0.present=True）→ search → events/pull（memory_updated）
+    → inject（core 记忆卡块）→ search → events/pull（memory_updated）
     → health（可观测性字段）→ backup/create → backup/restore
 - test_e2e_search_with_vector_rrf：造记忆 + 向量 → search 返回 RRF 融合结果
 - test_e2e_signal_flow：refine → events/pull 收到 memory_updated + anomaly_warn（如触发）
@@ -23,10 +23,9 @@ from fastapi.testclient import TestClient
 
 from sgme import config as sgme_config
 from sgme.engine import health as health_mod
-from sgme.engine import l15 as l15_mod
-from sgme.engine import l2 as l2_mod
+from sgme.engine import l3_adjudicate as l15_mod
+from sgme.engine import scene_aggregate as l2_mod
 from sgme.engine import refine as refine_mod
-from sgme.profile import tier0 as tier0_mod
 from sgme.raw import store as raw_store
 from sgme.data.search import vector as vector_mod
 from sgme import __version__  # health version 契约动态断言（B123 单源化）
@@ -47,6 +46,8 @@ def cfg():
     vec = cfg.setdefault("search", {}).setdefault("vector", {})
     vec["base_url"] = "http://mock-embed.test/v1"
     vec["enabled"] = True
+    # A1（2026-11-05）：场景层默认冻结（enabled=false）；本文件测完整链路（含 L2），显式开启
+    cfg.setdefault("scene_aggregate", {})["enabled"] = True
     return cfg
 
 
@@ -61,18 +62,10 @@ def raw_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def summary_path(tmp_path, monkeypatch):
-    """隔离 tier0_summary.json 路径到 tmp_path。"""
-    p = tmp_path / "tier0_summary.json"
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", p)
-    return p
-
-
-@pytest.fixture
-def app(tmp_path, cfg, raw_dir, summary_path, monkeypatch):
+def app(tmp_path, cfg, raw_dir, monkeypatch):
     """创建隔离的 FastAPI 应用。
 
-    - data_dir / raw_dir / tier0_summary 路径全部隔离到 tmp_path
+    - data_dir / raw_dir 路径全部隔离到 tmp_path
     - mock LLM 探测（避免 /v1/health 实际打 127.0.0.1:1014）
     - 备份目录指向 tmp_path（避免污染项目 data/backups）
     - 清理 SGME_BEARER_TOKEN 环境变量，防止其他测试污染
@@ -84,6 +77,16 @@ def app(tmp_path, cfg, raw_dir, summary_path, monkeypatch):
         lambda c, client=None: {
             "available": True, "provider": "lm-studio",
             "model": "mock-model", "error": None,
+        },
+    )
+    # mock 向量连通性探测：避免 /v1/health 对 mock-embed.test 发起真实 HTTP
+    from sgme.operations import health as health_ops_mod
+
+    monkeypatch.setattr(
+        health_ops_mod, "check_vector_model_connectivity",
+        lambda cfg, client=None: {
+            "available": True, "provider": "mock", "model": "mock-embed",
+            "latency_ms": 0, "error": None, "cached": False,
         },
     )
     # 备份配置覆盖到 tmp_path
@@ -141,6 +144,23 @@ def client(app):
 
 ADMIN_HEADERS = {"X-API-Key": "test-admin-key"}
 AGENT_HEADERS = {"X-API-Key": "test-agent-key"}
+
+
+@pytest.fixture(autouse=True)
+def _block_real_http(monkeypatch):
+    """单测禁止真实外发：httpx.MockTransport 不受影响，真实 HTTPTransport 一律失败。
+
+    背景（2026-11-05）：端点级 refine 用例依赖 mock client；漏传 client 的路径会
+    退化成真实 LLM 外发。此闸门把「漏 mock」从静默变显式失败。
+    """
+    def _blocked(self, request):
+        raise RuntimeError(f"测试禁止真实网络请求: {request.url}")
+
+    async def _blocked_async(self, request):
+        raise RuntimeError(f"测试禁止真实网络请求: {request.url}")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocked)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _blocked_async)
 
 
 def _now_iso() -> str:
@@ -281,13 +301,6 @@ def test_e2e_full_pipeline(client, monkeypatch):
     _patch_l15_with_client(monkeypatch, cli)
     _patch_l2_with_client(monkeypatch, cli)
 
-    # mock tier0 generate_summary 返回固定摘要
-    expected_summary = "独立开发者，注重简洁稳定的工程实践。"
-    monkeypatch.setattr(
-        tier0_mod, "generate_summary",
-        lambda mem_conn_arg, cfg_arg, client=None: expected_summary,
-    )
-
     # ---------- 1. POST /v1/append ----------
     content = (
         _msg_text("user", "我正在做 SGME 项目", "2024-01-01T10:00:00Z")
@@ -310,7 +323,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
     refine_body = r.json()
     assert refine_body["status"] == "refined"
     assert refine_body["memories_count"] >= 1
-    assert refine_body["l15"]["stored"] >= 1
+    assert refine_body["l3_adjudicate"]["stored"] >= 1
 
     # ---------- 3. 验证 L2 场景生成（memory.db scenes 表出现行，id 系统生成） ----------
     scene_count = _count_active_scenes(mem_conn)
@@ -322,21 +335,14 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert scene["heat"] == 1
     assert "独立开发者" in scene["content"]
 
-    # ---------- 4. POST /v1/admin/tier0/refresh ----------
-    r = client.post("/v1/admin/tier0/refresh", headers=ADMIN_HEADERS)
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "ok"
-    assert r.json()["summary_length"] == len(expected_summary)
-
-    # ---------- 5. POST /v1/inject：tier0.present=True ----------
+    # ---------- 4. POST /v1/inject：无 tier0 字段（D-79 已砍除） ----------
     r = client.post("/v1/inject", json={"mode": "daily"}, headers=AGENT_HEADERS)
     assert r.status_code == 200, r.text
     body = r.json()
     assert len(body["blocks"]) >= 1
-    assert body["tier0"]["present"] is True
-    assert body["tier0"]["content"] == expected_summary
+    assert "tier0" not in body
 
-    # ---------- 6. POST /v1/search：返回结果 ----------
+    # ---------- 5. POST /v1/search：返回结果 ----------
     r = client.post("/v1/search", json={
         "query": "记忆引擎",
         "scopes": ["memory"],
@@ -349,7 +355,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert len(first["trace"]) >= 1
     assert first["trace"][0]["file_id"] == file_id
 
-    # ---------- 7. GET /v1/events/pull：memory_updated 事件 ----------
+    # ---------- 6. GET /v1/events/pull：memory_updated 事件 ----------
     r = client.get(
         "/v1/events/pull",
         params={"subscriber_id": "e2e-v04-full", "limit": 50},
@@ -366,7 +372,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert len(refine_events) >= 1, "应至少有一条 source=refine 的 memory_updated 事件"
     assert refine_events[0]["payload"]["file_id"] == file_id
 
-    # ---------- 8. GET /v1/health：可观测性字段 ----------
+    # ---------- 7. GET /v1/health：可观测性字段 ----------
     r = client.get("/v1/health")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -384,7 +390,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert body["refinement"]["watermark_age_sec"] is not None
     assert body["refinement"]["watermark_age_sec"] >= 0
 
-    # ---------- 9. POST /v1/admin/backup/create ----------
+    # ---------- 8. POST /v1/admin/backup/create ----------
     r = client.post(
         "/v1/admin/backup/create",
         json={"level": "full"},
@@ -397,7 +403,7 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert body["snapshot_id"].startswith("full_")
     snapshot_id = body["snapshot_id"]
 
-    # ---------- 10. POST /v1/admin/backup/restore ----------
+    # ---------- 9. POST /v1/admin/backup/restore ----------
     r = client.post(
         "/v1/admin/backup/restore",
         json={"snapshot_id": snapshot_id},

@@ -626,7 +626,6 @@ def api_env(tmp_path, monkeypatch):
     from sgme import config as sgme_config
     from sgme.data import db as db_mod
     from sgme.data import memory_dao
-    from sgme.profile import tier0 as tier0_mod
     from sgme.raw import store as raw_store
     from sgme.server.app import create_app
 
@@ -634,7 +633,6 @@ def api_env(tmp_path, monkeypatch):
     rd.mkdir(exist_ok=True)
     monkeypatch.setattr(sgme_config, "RAW_DIR", rd)
     monkeypatch.setattr(raw_store, "config", sgme_config)
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", tmp_path / "tier0_summary.json")
     monkeypatch.setenv("SGME_CONFIG_PATH", str(tmp_path / "sgme_test.yaml"))
     # 清除 Bearer 令牌全局副作用（create_app 的 os.environ.setdefault 会从
     # 宿主环境拾取 SGME_BEARER_TOKEN 开启传输层鉴权 → 只有 X-API-Key 的

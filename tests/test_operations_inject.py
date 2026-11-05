@@ -1,9 +1,9 @@
 """tests/test_operations_inject.py：operations 层 inject 操作测试（v0.7 P2-T3）。
 
 覆盖：
-1. mode 分支成功（ok=True，blocks 存在，tier0.present/content 正确）
-2. mode 分支 Tier0 摘要缺失 → present=False / content=None（静态降级语义保留）
-3. custom_filter 分支成功（过滤正确 + stats.mode="custom" + tier0 字段）
+1. mode 分支成功（ok=True，blocks 存在，core 记忆卡块最前）
+2. mode 分支无 core 卡片 → 不渲染空占位（D-79 后画像由 core 记忆卡承担）
+3. custom_filter 分支成功（过滤正确 + stats.mode="custom"）
 4. custom_filter 无 dimensions → ERR_INVALID_ARGS「custom_filter 需指定 dimensions」
 5. custom_filter 含未注册维度 id → ERR_INVALID_ARGS
 6. mode 模板不存在 / load_template 抛 TemplateError → ERR_INVALID_ARGS「模板加载失败:」
@@ -22,7 +22,6 @@ from sgme import config as sgme_config
 from sgme.operations.errors import ERR_INTERNAL, ERR_INVALID_ARGS, OperationResult
 from sgme.operations.inject import inject as inject_operation
 from sgme.profile import template as template_mod
-from sgme.profile import tier0 as tier0_mod
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
 from sgme.data import db as db_mod
@@ -84,14 +83,6 @@ def client(app):
     return TestClient(app)
 
 
-@pytest.fixture
-def summary_path(tmp_path, monkeypatch):
-    """隔离 tier0_summary.json 路径到 tmp_path（照 test_server_v04.py 模式）。"""
-    p = tmp_path / "tier0_summary.json"
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", p)
-    return p
-
-
 # ---------- 工具 ----------
 
 
@@ -118,57 +109,36 @@ def _block_items(blocks: list[dict]) -> list[str]:
 
 # ---------- 1. mode 分支成功 ----------
 
-def test_inject_mode_ok_with_tier0(conns, cfg, summary_path):
-    """mode 分支：ok=True，blocks 存在，tier0.present/content 正确（有摘要）。"""
-    # Arrange：写一条 identity+family 记忆（daily 首段 match=all，需双标签）+ 生成 Tier0 摘要
+def test_inject_mode_ok(conns, cfg):
+    """mode 分支：ok=True，blocks 存在；Tier0 字段已整体砍除（D-79）。"""
+    # Arrange：写一条 identity+family 记忆（daily 首段 match=all，需双标签）
     mem_conn, _session_conn, _ = conns
     _insert(mem_conn, "我是测试用户", dims=["identity", "family"])
-    tier0_mod.save_summary("画像摘要：测试用户", path=summary_path)
 
     # Act
     res = inject_operation(mem_conn, cfg, mode="daily")
 
-    # Assert：返回契约 + tier0 字段（契约 4.2）
+    # Assert：返回契约（无 tier0 字段——D-79 砍除，画像由 core 记忆卡承担）
     assert isinstance(res, OperationResult)
     assert res.ok is True
     assert res.error_code is None
     data = res.data
-    assert isinstance(data["blocks"], list) and len(data["blocks"]) >= 2
+    assert isinstance(data["blocks"], list) and len(data["blocks"]) >= 1
     assert data["stats"]["mode"] == "daily"
-    assert data["stats"]["tier0_present"] is True
-    assert data["tier0"] == {"present": True, "content": "画像摘要：测试用户"}
-    # Tier0 摘要块在最前
-    assert data["blocks"][0]["title"] == "画像摘要"
-    assert data["blocks"][0]["present"] is True
+    assert "tier0" not in data
+    assert "tier0_present" not in data["stats"]
     # 记忆出现在某 section 块中
     assert "我是测试用户" in _block_items(data["blocks"])
 
 
-def test_inject_mode_ok_tier0_absent(conns, cfg, summary_path):
-    """mode 分支：无 Tier0 摘要 → present=False / content=None（静态降级语义保留）。"""
-    # Arrange：不写摘要文件
-    mem_conn, _session_conn, _ = conns
-
-    # Act
-    res = inject_operation(mem_conn, cfg, mode="daily")
-
-    # Assert
-    assert res.ok is True
-    assert res.data["tier0"] == {"present": False, "content": None}
-    assert res.data["stats"]["tier0_present"] is False
-    # 无摘要 → 不以「画像摘要」开头
-    assert res.data["blocks"][0]["title"] != "画像摘要"
-
-
 # ---------- 2. custom_filter 分支成功 ----------
 
-def test_inject_custom_filter_ok(conns, cfg, summary_path):
-    """custom_filter 分支：过滤正确，stats.mode="custom"，tier0 字段齐全。"""
+def test_inject_custom_filter_ok(conns, cfg):
+    """custom_filter 分支：过滤正确，stats.mode="custom"。"""
     # Arrange：goals 与 identity 各一条
     mem_conn, _session_conn, _ = conns
     _insert(mem_conn, "目标 A 进行中", dims=["goals"], time_velocity="dynamic", ttl_days=90)
     _insert(mem_conn, "我是测试用户", dims=["identity"])
-    tier0_mod.save_summary("画像摘要：测试用户", path=summary_path)
 
     # Act：只查 goals
     res = inject_operation(
@@ -180,7 +150,6 @@ def test_inject_custom_filter_ok(conns, cfg, summary_path):
     data = res.data
     assert data["stats"]["mode"] == "custom"
     assert data["stats"]["queries"] == 1
-    assert data["tier0"] == {"present": True, "content": "画像摘要：测试用户"}
     # 自定义 section 只含 goals 记忆
     assert "目标 A 进行中" in _block_items(data["blocks"])
     assert "我是测试用户" not in _block_items(data["blocks"])
@@ -280,7 +249,7 @@ def test_inject_pipeline_error_is_internal(conns, cfg, monkeypatch):
 
 # ---------- 6. mode 缺省回落（T-120） ----------
 
-def test_inject_mode_fallback_when_unspecified(conns, cfg, summary_path):
+def test_inject_mode_fallback_when_unspecified(conns, cfg):
     """mode 与 custom_filter 均未指定 → 回落 DEFAULT_INJECT_MODE（200，不再 400）。"""
     # Arrange：全空库（note 合并链路走 _attach_empty_note → fallback 追加）
     mem_conn, _session_conn, _ = conns
@@ -308,7 +277,7 @@ def test_inject_explicit_empty_custom_filter_still_invalid(conns, cfg):
     assert res.message == "需指定 mode 或 custom_filter"
 
 
-def test_inject_custom_filter_no_fallback(conns, cfg, summary_path):
+def test_inject_custom_filter_no_fallback(conns, cfg):
     """显式传 custom_filter → 行为完全不变（stats.mode="custom"，note 无回落提示）。"""
     # Arrange
     mem_conn, _session_conn, _ = conns
@@ -325,8 +294,8 @@ def test_inject_custom_filter_no_fallback(conns, cfg, summary_path):
 
 # ---------- 7. 空结果引导提示（ST-22④） ----------
 
-def test_inject_empty_result_has_note(conns, cfg, summary_path):
-    """空库 + 无 Tier0 → 全空 block + stats.note 引导（先 append 沉淀记忆）。"""
+def test_inject_empty_result_has_note(conns, cfg):
+    """空库 + 无 core 卡片 → 全空 block + stats.note 引导（先 append 沉淀记忆）。"""
     # Arrange：不写任何记忆与摘要
     mem_conn, _session_conn, _ = conns
 
@@ -341,7 +310,7 @@ def test_inject_empty_result_has_note(conns, cfg, summary_path):
     assert "POST /v1/append" in data["stats"]["note"]
 
 
-def test_inject_empty_custom_filter_has_note(conns, cfg, summary_path):
+def test_inject_empty_custom_filter_has_note(conns, cfg):
     """custom_filter 空结果 → 同样附加 note。"""
     # Arrange
     mem_conn, _session_conn, _ = conns
@@ -354,7 +323,7 @@ def test_inject_empty_custom_filter_has_note(conns, cfg, summary_path):
     assert "note" in (res.data or {})["stats"]
 
 
-def test_inject_nonempty_no_note(conns, cfg, summary_path, monkeypatch):
+def test_inject_nonempty_no_note(conns, cfg, monkeypatch):
     """有记忆命中 → 不加 note（字段不存在，向后兼容）。"""
     # Arrange：打桩模型 Key——note 仅在 Key 缺失时出现，不打桩会依赖宿主
     # config/.env（未跟踪文件），在干净 checkout/CI 上必然翻车（T-113 密封性）
@@ -370,18 +339,3 @@ def test_inject_nonempty_no_note(conns, cfg, summary_path, monkeypatch):
     assert res.ok is True
     assert "note" not in (res.data or {})["stats"]
 
-
-def test_inject_empty_with_tier0_no_note(conns, cfg, summary_path, monkeypatch):
-    """空库但有 Tier0 摘要 → 摘要块占 1 item，不加 note。"""
-    # Arrange：只写摘要；Key 打桩同上（密封性）
-    monkeypatch.setenv("AGNESAI_API_KEY", "test-key")
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
-    mem_conn, _session_conn, _ = conns
-    tier0_mod.save_summary("画像摘要：测试用户", path=summary_path)
-
-    # Act
-    res = inject_operation(mem_conn, cfg, mode="daily")
-
-    # Assert
-    assert res.ok is True
-    assert "note" not in (res.data or {})["stats"]

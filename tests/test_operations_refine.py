@@ -2,7 +2,7 @@
 
 覆盖：
 1. 同步触发（单文件）成功：ok=True，data 为 HTTP 历史形态
-   （triggered=file，status/memories_count/l15/new_last_refined_seq/prompt_versions 齐全）
+   （triggered=file，status/memories_count/l3_adjudicate/new_last_refined_seq/prompt_versions 齐全）
 2. 同步触发（批量）成功：processed/total_memories/results 正确
 3. 异步触发成功：立即返回 queued 排队语义；后台线程按
    (file_id, limit, mem_conn, session_conn, cfg) 参数、daemon=True 启动
@@ -155,12 +155,12 @@ L15_STATS: dict[str, Any] = {
 # 单文件响应的 v0.6 冻结键序（改造前逐字段抄录，任何变动即破坏性变更）
 FILE_RESPONSE_KEYS = [
     "triggered", "file_id", "status", "memories_count",
-    "new_last_refined_seq", "anomaly_warn", "error", "l15", "prompt_versions",
+    "new_last_refined_seq", "anomaly_warn", "error", "l3_adjudicate", "prompt_versions",
 ]
 # 批量响应 results 内单文件项的 v0.6 冻结键序
 RESULT_ITEM_KEYS = [
     "file_id", "status", "memories_count",
-    "new_last_refined_seq", "anomaly_warn", "error", "l15", "prompt_versions",
+    "new_last_refined_seq", "anomaly_warn", "error", "l3_adjudicate", "prompt_versions",
 ]
 
 
@@ -195,7 +195,7 @@ def test_refine_trigger_file_success(conns, cfg, monkeypatch):
     assert res.data["new_last_refined_seq"] == 2
     assert res.data["anomaly_warn"] is False
     assert res.data["error"] is None
-    assert res.data["l15"] == L15_STATS
+    assert res.data["l3_adjudicate"] == L15_STATS
     assert res.data["prompt_versions"]["l1_extraction"]["version"] == "v1"
     assert calls == ["f-sync"]  # pipeline 只被调一次
 
@@ -226,7 +226,7 @@ def test_refine_trigger_batch_success(conns, cfg, monkeypatch):
     assert res.data["results"][0]["file_id"] == "f-a"
     assert res.data["results"][0]["status"] == "refined"
     assert res.data["results"][0]["memories_count"] == 2
-    assert res.data["results"][0]["l15"] == L15_STATS
+    assert res.data["results"][0]["l3_adjudicate"] == L15_STATS
     assert res.data["results"][1]["file_id"] == "f-b"
     assert res.data["results"][1]["memories_count"] == 1
 
@@ -398,7 +398,7 @@ def test_refine_trigger_async_thread_start_failure_maps_to_internal(conns, cfg, 
         # file：MCP 子集 {triggered, status, memories_count}
         ({"triggered": "file", "file_id": "f1", "status": "refined",
           "memories_count": 2, "new_last_refined_seq": 2, "anomaly_warn": False,
-          "error": None, "l15": L15_STATS, "prompt_versions": {}},
+          "error": None, "l3_adjudicate": L15_STATS, "prompt_versions": {}},
          {"triggered": "file", "status": "refined", "memories_count": 2}),
         # batch：MCP 子集 {triggered, processed}
         ({"triggered": "batch", "processed": 3, "total_memories": 5, "results": []},

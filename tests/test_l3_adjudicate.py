@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from sgme import config
-from sgme.engine import l15
+from sgme.engine import l3_adjudicate
 from sgme.data import db as db_mod, memory_dao
 
 
@@ -24,7 +24,7 @@ def cfg():
 
 @pytest.fixture(autouse=True)
 def _vector_enabled(monkeypatch):
-    """B169：出厂基线默认关闭向量端点（enabled:false）+ l15.prescreen.fallback=skip_conflict，
+    """B169：出厂基线默认关闭向量端点（enabled:false）+ l3_adjudicate.prescreen.fallback=skip_conflict，
     于是 embed 不可达时 L1.5 会短路跳过冲突检测（本文件测的正是冲突裁决，必然全挂）。
 
     这里自备启用态：mock 掉 embed（返回固定向量），不再真连部署端点的 HTTP——
@@ -101,10 +101,10 @@ def _insert_existing(mem_conn, content, dim_ids, **kw):
     )
 
 
-# ---------- render_l15 ----------
+# ---------- render_adjudication ----------
 
-def test_render_l15_replaces_placeholders(cfg):
-    prompt = l15.render_l15(
+def test_render_adjudication_replaces_placeholders(cfg):
+    prompt = l3_adjudicate.render_adjudication(
         [{"content": "新事实", "dimension_ids": ["tech_stack"], "memory_type": "persona",
           "priority": 80, "time_velocity": "static"}],
         [{"memory_id": "c1", "content": "旧事实", "tags": ["tech_stack"],
@@ -116,48 +116,48 @@ def test_render_l15_replaces_placeholders(cfg):
     assert "旧事实" in prompt
 
 
-# ---------- parse_l15_output ----------
+# ---------- parse_adjudication_output ----------
 
-def test_parse_l15_output_valid():
+def test_parse_adjudication_output_valid():
     text = json.dumps([
         {"new_memory_index": 0, "candidate_ids": ["c1"], "action": "update",
          "merged_content": "合并", "reason": "更具体"},
     ])
-    decisions = l15.parse_l15_output(text)
+    decisions = l3_adjudicate.parse_adjudication_output(text)
     assert len(decisions) == 1
     assert decisions[0].action == "update"
     assert decisions[0].candidate_ids == ["c1"]
 
 
-def test_parse_l15_output_bad_action_defaults_store():
+def test_parse_adjudication_output_bad_action_defaults_store():
     text = json.dumps([
         {"new_memory_index": 0, "candidate_ids": [], "action": "invalid"},
     ])
-    decisions = l15.parse_l15_output(text)
+    decisions = l3_adjudicate.parse_adjudication_output(text)
     assert decisions[0].action == "store"
 
 
-def test_parse_l15_output_markdown_block():
+def test_parse_adjudication_output_markdown_block():
     text = '```json\n[{"new_memory_index":0,"candidate_ids":[],"action":"store"}]\n```'
-    decisions = l15.parse_l15_output(text)
+    decisions = l3_adjudicate.parse_adjudication_output(text)
     assert len(decisions) == 1
 
 
-def test_parse_l15_output_bad_json_raises():
-    with pytest.raises(l15.L15Error):
-        l15.parse_l15_output("not json")
+def test_parse_adjudication_output_bad_json_raises():
+    with pytest.raises(l3_adjudicate.AdjudicationError):
+        l3_adjudicate.parse_adjudication_output("not json")
 
 
-def test_parse_l15_output_unescaped_quotes_raises_l15error():
-    """T1.10 回归：模型输出含未转义引号（实测形态）→ 收敛为 L15Error（进重试链），
+def test_parse_adjudication_output_unescaped_quotes_raises_l15error():
+    """T1.10 回归：模型输出含未转义引号（实测形态）→ 收敛为 AdjudicationError（进重试链），
     不得逃逸原始 JSONDecodeError。"""
     bad = (
         '[{"new_memory_index": 0, "candidate_ids": [], "action": "store", '
         '"merged_content": null, "reason": "新记忆内容为占位符"新记忆内容"，'
         '候选记忆均为"旧记忆X内容"占位符，无法判定共享主体", "relations": []}]'
     )
-    with pytest.raises(l15.L15Error):
-        l15.parse_l15_output(bad)
+    with pytest.raises(l3_adjudicate.AdjudicationError):
+        l3_adjudicate.parse_adjudication_output(bad)
 
 
 # ---------- 候选池 ----------
@@ -170,7 +170,7 @@ def test_candidate_pool_or_semantics(mem_conn):
     new_memories = [
         {"content": "新", "dimension_ids": ["tech_stack", "identity"]},
     ]
-    candidates, warn = l15.build_candidate_pool(mem_conn, new_memories)
+    candidates, warn = l3_adjudicate.build_candidate_pool(mem_conn, new_memories)
     contents = {c["content"] for c in candidates}
     # tech_stack 或 identity 维度的旧记忆都应召回（OR）
     assert "旧 A" in contents
@@ -184,7 +184,7 @@ def test_candidate_pool_empty_when_no_shared_dim(mem_conn):
     """新记忆维度无任何旧记忆 → 候选池空。"""
     _insert_existing(mem_conn, "旧", ["tech_stack"])
     new_memories = [{"content": "新", "dimension_ids": ["status"]}]
-    candidates, _ = l15.build_candidate_pool(mem_conn, new_memories)
+    candidates, _ = l3_adjudicate.build_candidate_pool(mem_conn, new_memories)
     assert candidates == []
 
 
@@ -194,7 +194,7 @@ def test_candidate_pool_topk_truncation_warns(mem_conn):
     for i in range(60):
         _insert_existing(mem_conn, f"旧 {i}", ["tech_stack"])
     new_memories = [{"content": "新", "dimension_ids": ["tech_stack"]}]
-    candidates, warn = l15.build_candidate_pool(mem_conn, new_memories)
+    candidates, warn = l3_adjudicate.build_candidate_pool(mem_conn, new_memories)
     # 60 条短内容不超 char_budget → 全量返回，无 warn
     assert len(candidates) == 60
     assert warn is False
@@ -206,7 +206,7 @@ def test_candidate_pool_1000_candidates_truncation(mem_conn):
     for i in range(200):
         _insert_existing(mem_conn, f"{long_content} {i}", ["tech_stack"])
     new_memories = [{"content": "新", "dimension_ids": ["tech_stack"]}]
-    candidates, warn = l15.build_candidate_pool(mem_conn, new_memories)
+    candidates, warn = l3_adjudicate.build_candidate_pool(mem_conn, new_memories)
     # 200 × 200 = 40K > 24K char_budget → 截断，warn=True
     assert len(candidates) < 200
     assert warn is True
@@ -225,7 +225,7 @@ def test_candidate_pool_no_whole_pool_truncation_across_groups(mem_conn):
         for i in range(60):
             _insert_existing(mem_conn, f"{long} {dim}-{i}", [dim])
     new_memories = [{"content": f"新-{d}", "dimension_ids": [d]} for d in dims]
-    candidates, warn = l15.build_candidate_pool(mem_conn, new_memories)
+    candidates, warn = l3_adjudicate.build_candidate_pool(mem_conn, new_memories)
     # 5×60=300 条共 ~61K 字符 > 24000，但每组 60 条 ~12K 字符 < 24000 → 全量召回无 warn
     assert len(candidates) == 300
     assert warn is False
@@ -236,9 +236,9 @@ def test_candidate_pool_per_memory_topk_truncation_warns(mem_conn):
     for i in range(100):
         _insert_existing(mem_conn, f"{'y' * 500}-{i:03d}", ["tech_stack"], priority=100 - i)
     new_memories = [{"content": "新", "dimension_ids": ["tech_stack"]}]
-    candidates, warn = l15.build_candidate_pool(mem_conn, new_memories)
+    candidates, warn = l3_adjudicate.build_candidate_pool(mem_conn, new_memories)
     assert warn is True
-    assert len(candidates) == l15.DEFAULT_TOP_K
+    assert len(candidates) == l3_adjudicate.DEFAULT_TOP_K
     # top-k 保留 priority 最高的 50 条（100..51）
     kept = {c["content"] for c in candidates}
     assert kept == {f"{'y' * 500}-{i:03d}" for i in range(50)}
@@ -247,9 +247,9 @@ def test_candidate_pool_per_memory_topk_truncation_warns(mem_conn):
 
 # ---------- T-18 分批：按上下文预算贪心装箱（铁律 #7） ----------
 
-def _mk_group(idx: int, n_cands: int, content_len: int) -> l15.CandidateGroup:
+def _mk_group(idx: int, n_cands: int, content_len: int) -> l3_adjudicate.CandidateGroup:
     """构造候选分组（不落库）：新记忆 + n_cands 条指定长度候选。"""
-    return l15.CandidateGroup(
+    return l3_adjudicate.CandidateGroup(
         new_memory_index=idx,
         new_memory={"content": f"NM{idx}", "dimension_ids": ["tech_stack"]},
         candidates=[{"memory_id": f"c{idx}_{j}", "content": "x" * content_len}
@@ -260,10 +260,10 @@ def _mk_group(idx: int, n_cands: int, content_len: int) -> l15.CandidateGroup:
 def test_build_batches_packs_groups_within_budget():
     """T-18：贪心装箱——同一新记忆只进一批、每批不超预算、全部候选均参与比对。"""
     g0, g1, g2 = _mk_group(0, 2, 3000), _mk_group(1, 2, 3000), _mk_group(2, 2, 3000)
-    c0, c1, c2 = (l15.estimate_group_tokens(g) for g in (g0, g1, g2))
+    c0, c1, c2 = (l3_adjudicate.estimate_group_tokens(g) for g in (g0, g1, g2))
     # 预算 = 模板开销 + 前两组估算，恰好容纳前两组 → 2 批
-    budget = l15.TEMPLATE_OVERHEAD_TOKENS + c0 + c1
-    batches = l15.build_batches([g0, g1, g2], budget)
+    budget = l3_adjudicate.TEMPLATE_OVERHEAD_TOKENS + c0 + c1
+    batches = l3_adjudicate.build_batches([g0, g1, g2], budget)
     assert len(batches) == 2
     assert [b.start_index for b in batches] == [0, 2]
     assert [m["content"] for m in batches[0].new_memories] == ["NM0", "NM1"]
@@ -273,8 +273,8 @@ def test_build_batches_packs_groups_within_budget():
     assert len(all_ids) == 6 and len(set(all_ids)) == 6
     # 每批估算成本（含模板开销）不超过预算
     for b in batches:
-        cost = l15.TEMPLATE_OVERHEAD_TOKENS + sum(
-            l15.estimate_group_tokens(g) for g in (g0, g1, g2)
+        cost = l3_adjudicate.TEMPLATE_OVERHEAD_TOKENS + sum(
+            l3_adjudicate.estimate_group_tokens(g) for g in (g0, g1, g2)
             if any(m is g.new_memory for m in b.new_memories)
         )
         assert cost <= budget
@@ -283,15 +283,15 @@ def test_build_batches_packs_groups_within_budget():
 def test_build_batches_boundary_exact_fit_and_overflow():
     """T-18：批次边界——恰好等于预算放入一批，超 1 token 拆批；单组超预算独立成批不丢弃。"""
     g0, g1 = _mk_group(0, 1, 3000), _mk_group(1, 1, 3000)
-    c0, c1 = l15.estimate_group_tokens(g0), l15.estimate_group_tokens(g1)
-    overhead = l15.TEMPLATE_OVERHEAD_TOKENS
+    c0, c1 = l3_adjudicate.estimate_group_tokens(g0), l3_adjudicate.estimate_group_tokens(g1)
+    overhead = l3_adjudicate.TEMPLATE_OVERHEAD_TOKENS
     # 恰好放下（模板开销 + 两组）→ 一批
-    assert len(l15.build_batches([g0, g1], overhead + c0 + c1)) == 1
+    assert len(l3_adjudicate.build_batches([g0, g1], overhead + c0 + c1)) == 1
     # 少 1 token → 拆成两批
-    assert len(l15.build_batches([g0, g1], overhead + c0 + c1 - 1)) == 2
+    assert len(l3_adjudicate.build_batches([g0, g1], overhead + c0 + c1 - 1)) == 2
     # 单组自身超预算 → 独立成批不丢弃
     ghuge = _mk_group(2, 1, 100000)
-    batches = l15.build_batches([ghuge], 100)
+    batches = l3_adjudicate.build_batches([ghuge], 100)
     assert len(batches) == 1
     assert batches[0].candidates[0]["memory_id"] == "c2_0"
     assert batches[0].start_index == 2
@@ -308,7 +308,7 @@ def test_action_store_inserts_new_memory(mem_conn, cfg):
     }]
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.stored) == 1
     assert result.archived == []
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
@@ -325,7 +325,7 @@ def test_action_skip_no_change(mem_conn, cfg):
     }]
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": ["x"], "action": "skip"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert result.skipped == [0]
     assert result.stored == []
     assert result.updated == []
@@ -347,7 +347,7 @@ def test_action_update_archives_old(mem_conn, cfg):
         "action": "update", "reason": "版本更新",
     }])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.updated) == 1
     new_id = result.updated[0]
     # 旧行已归档
@@ -388,7 +388,7 @@ def test_action_merge_combines_and_archives(mem_conn, cfg):
         "reason": "互补片段合并",
     }])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.merged) == 1
     new_id = result.merged[0]
     # 两个候选都归档
@@ -415,7 +415,7 @@ def test_action_update_no_candidate_falls_back_to_store(mem_conn, cfg):
         "action": "update", "reason": "无候选",
     }])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.stored) == 1
     assert result.updated == []
 
@@ -432,7 +432,7 @@ def test_action_merge_no_merged_content_falls_back_to_store(mem_conn, cfg):
         "action": "merge", "merged_content": None,
     }])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.stored) == 1
     assert result.merged == []
 
@@ -448,7 +448,7 @@ def test_ttl_backfill_from_dimension_default(mem_conn, cfg):
     }]
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
     assert mem["ttl_days"] == 7  # status 维度默认 TTL
 
@@ -462,7 +462,7 @@ def test_ttl_keeps_explicit_value(mem_conn, cfg):
     }]
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
     assert mem["ttl_days"] == 14
 
@@ -476,7 +476,7 @@ def test_ttl_static_dimension_remains_null(mem_conn, cfg):
     }]
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
     assert mem["ttl_days"] is None
 
@@ -495,7 +495,7 @@ def test_ttl_ideas_forces_null_over_other_dimensions(mem_conn, cfg):
     }]
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
     assert mem["ttl_days"] is None  # ideas 覆盖 goals 的 90d
 
@@ -510,7 +510,7 @@ def test_ttl_ideas_forces_null_even_with_explicit_value(mem_conn, cfg):
     }]
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
     assert mem["ttl_days"] is None
 
@@ -529,7 +529,7 @@ def test_same_new_memory_only_in_one_batch(mem_conn, cfg):
     # 两批候选，每批都返回 store（如果跨批重复裁决，会插入 2 条）
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     # 只插入 1 条（同一新记忆只进一批/只裁决一次）
     assert len(result.stored) == 1
 
@@ -538,7 +538,7 @@ def test_same_new_memory_only_in_one_batch(mem_conn, cfg):
 
 def test_resolve_conflicts_multi_batch_full_recall_no_dup(monkeypatch, mem_conn, cfg):
     """T-18：超大候选池分批后全部候选均参与比对，同一新记忆只进一批，不整池截断。"""
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 10000)
     captured: list[str] = []
     cli = _mock_llm_client_capture(captured)
     inserted: list[str] = []
@@ -551,7 +551,7 @@ def test_resolve_conflicts_multi_batch_full_recall_no_dup(monkeypatch, mem_conn,
          "memory_type": "persona", "priority": 80, "time_velocity": "static"}
         for d in ("tech_stack", "identity", "status")
     ]
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     # 3 组 ~71K 字符总候选 > 旧 24000 整池预算；新语义下不整池截断、无 anomaly_warn
     assert result.anomaly_warn is False
     # 按上下文预算分批：tech_stack+identity 一批，status 一批（组不拆散）
@@ -568,7 +568,7 @@ def test_resolve_conflicts_multi_batch_full_recall_no_dup(monkeypatch, mem_conn,
 
 def test_resolve_conflicts_decision_index_remap(monkeypatch, mem_conn, cfg):
     """T-18：批内裁决索引重映射回全局——第 2 批的 index 0 作用于全局第 2 条新记忆。"""
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 1000)
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 1000)
     for i in range(10):
         _insert_existing(mem_conn, f"{'x' * 200} 旧A {i}", ["tech_stack"])
     old1 = _insert_existing(mem_conn, f"{'x' * 200} 旧B", ["identity"])
@@ -584,7 +584,7 @@ def test_resolve_conflicts_decision_index_remap(monkeypatch, mem_conn, cfg):
         json.dumps([{"new_memory_index": 0, "candidate_ids": [old1], "action": "update", "reason": "r"}]),
     ]
     cli = _mock_llm_client_sequence(bodies)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert result.skipped == [0]
     assert len(result.updated) == 1
     assert result.archived == [old1]
@@ -604,7 +604,7 @@ def test_resolve_conflicts_candidate_less_memory_skips_llm(mem_conn, cfg):
         {"content": "NM1", "dimension_ids": ["family"],
          "memory_type": "persona", "priority": 80, "time_velocity": "static"},
     ]
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.stored) == 2
     # 只调一次 LLM，且 prompt 中只有有候选的 NM0
     assert len(captured) == 1
@@ -614,7 +614,7 @@ def test_resolve_conflicts_candidate_less_memory_skips_llm(mem_conn, cfg):
 
 def test_resolve_conflicts_per_memory_truncation_warns(monkeypatch, mem_conn, cfg):
     """T-18：单记忆候选超上下文预算 → top-k 截断 + anomaly_warn（保留告警语义）。"""
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 500)
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 500)
     for i in range(60):
         _insert_existing(mem_conn, f"{'x' * 200} {i}", ["tech_stack"])
     new_memories = [{
@@ -623,20 +623,20 @@ def test_resolve_conflicts_per_memory_truncation_warns(monkeypatch, mem_conn, cf
     }]
     captured: list[str] = []
     cli = _mock_llm_client_capture(captured)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert result.anomaly_warn is True
     assert len(result.stored) == 1
     # 截断后候选 = top-50（60 → 50）；候选区从最后一个「# 输入：候选记忆」标题起计数
     assert len(captured) == 1
     cand_section = captured[0].rsplit("# 输入：候选记忆", 1)[1]
-    assert cand_section.count("[候选#") == l15.DEFAULT_TOP_K
+    assert cand_section.count("[候选#") == l3_adjudicate.DEFAULT_TOP_K
 
 
 # ---------- 空输入 ----------
 
 def test_resolve_conflicts_empty_input(mem_conn, cfg):
     """空新记忆列表 → 空结果。"""
-    result = l15.resolve_conflicts([], mem_conn, cfg)
+    result = l3_adjudicate.resolve_conflicts([], mem_conn, cfg)
     assert result.stored == []
     assert result.skipped == []
 
@@ -654,7 +654,7 @@ def test_resolve_conflicts_no_candidates_short_circuit(mem_conn, cfg):
     def handler(req):
         raise httpx.ConnectError("connection refused")
     cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert result.error is None
     assert len(result.stored) == 2
     assert result.stored == [m["memory_id"] for m in new_memories]
@@ -674,7 +674,7 @@ def test_resolve_conflicts_llm_unavailable_marks_error(mem_conn, cfg):
         "content": "x", "dimension_ids": ["tech_stack"],
         "memory_type": "persona", "priority": 80, "time_velocity": "static",
     }]
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert result.error is not None
     assert result.anomaly_warn is True
     assert result.stored == []
@@ -688,7 +688,7 @@ def test_resolve_conflicts_bad_json_falls_back_to_store(mem_conn, cfg):
         "memory_type": "persona", "priority": 80, "time_velocity": "static",
     }]
     cli = _mock_llm_client("not json at all")
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     # 默认 store
     assert len(result.stored) == 1
 
@@ -705,7 +705,7 @@ def test_resolve_conflicts_records_refine_run_and_prompt_version(mem_conn, cfg):
     }]
     body = json.dumps([{"new_memory_index": 0, "candidate_ids": [], "action": "store"}])
     cli = _mock_llm_client(body)
-    result = l15.resolve_conflicts(
+    result = l3_adjudicate.resolve_conflicts(
         new_memories, mem_conn, cfg, client=cli, prompt_version="l1_extraction:v002",
     )
     # prompt_meta 透传
@@ -737,7 +737,7 @@ def test_resolve_conflicts_short_circuit_writes_prompt_version(mem_conn, cfg):
         "content": "全新事实", "dimension_ids": ["identity"],
         "memory_type": "persona", "priority": 80, "time_velocity": "static",
     }]
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, prompt_version="l1_extraction:v001")
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, prompt_version="l1_extraction:v001")
     assert len(result.stored) == 1
     mem = memory_dao.get_memory(mem_conn, result.stored[0])
     assert mem["prompt_version"] == "l1_extraction:v001"
@@ -748,30 +748,30 @@ def test_resolve_conflicts_short_circuit_writes_prompt_version(mem_conn, cfg):
     assert json.loads(runs[0]["action_counts"]) == {"empty_pool_store": 1}
 
 
-def test_parse_l15_output_trailing_text_after_array():
+def test_parse_adjudication_output_trailing_text_after_array():
     """数组后跟多余文字（模型附加说明）→ 取首段解析，不抛错。
 
     实测对应：「L1.5 异常降级直存: Extra data: line 2 column 1 (char 3)」。
     """
     text = '[]\n注意：本次无需合并的记忆。'
-    decisions = l15.parse_l15_output(text)
+    decisions = l3_adjudicate.parse_adjudication_output(text)
     assert decisions == []
 
 
-def test_parse_l15_output_trailing_text_after_items():
+def test_parse_adjudication_output_trailing_text_after_items():
     """有内容 + 尾随说明文字 → 取首段解析成功。"""
     text = ('[{"new_memory_index":0,"candidate_ids":[],"action":"store"}]\n'
             '以上为本次裁决结果。')
-    decisions = l15.parse_l15_output(text)
+    decisions = l3_adjudicate.parse_adjudication_output(text)
     assert len(decisions) == 1
     assert decisions[0].action == "store"
 
 
-def test_parse_l15_output_trailing_text_with_brackets():
+def test_parse_adjudication_output_trailing_text_with_brackets():
     """说明文字里含方括号 → 现有「找首 [ 到末 ]」切片会取错区间，raw_decode 取首段才对。
 
     实测对应：「L1.5 异常降级直存: Extra data: line 2 column 1 (char 3)」。
     """
     text = '[]\n注意[1]：本次无需合并的记忆。'
-    decisions = l15.parse_l15_output(text)
+    decisions = l3_adjudicate.parse_adjudication_output(text)
     assert decisions == []

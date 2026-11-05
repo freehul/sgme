@@ -27,7 +27,7 @@ from anyio import move_on_after
 from fastapi.testclient import TestClient
 
 from sgme import config as sgme_config
-from sgme.engine import l1, refine as refine_mod
+from sgme.engine import l2_extraction, refine as refine_mod
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
 from sgme.signal import engine as signal_engine
@@ -380,6 +380,9 @@ def test_refine_publishes_memory_updated(mem_conn, session_conn, cfg, raw_dir, m
             sources=[(fid, "session")],
         )
         m["memory_id"] = mid
+    # D-53 / 收尾 A1（2026-11-05）：场景层默认冻结；本用例测 L2 的 memory_updated 信号
+    # → 显式开启场景聚合，避免默认值变化导致信号不发布。
+    cfg["scene_aggregate"]["enabled"] = True
     refine_mod.finalize_refinement(result, mem_conn, cfg, client=cli)
 
     # Assert

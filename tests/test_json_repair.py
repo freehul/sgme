@@ -36,7 +36,7 @@ def test_valid_with_escaped_backslash_returns_none():
 
 def test_valid_with_literal_escape_chars_returns_none():
     r"""`\n` / `\t` / `\b` 都是**合法**转义 → 原文可解析 → 不介入。"""
-    assert json_repair.repair_json_text(r'[{"a": "l1\nl2", "b": "t\there"}]') is None
+    assert json_repair.repair_json_text(r'[{"a": "l2_extraction\nl2", "b": "t\there"}]') is None
 
 
 def test_empty_input():
@@ -72,14 +72,14 @@ def test_repair_placeholder_path_escape():
 
 def test_repair_preserves_legal_escapes():
     r"""同一文本内混有合法与非法转义：合法者必须原样保留（不被双重转义）。"""
-    bad = r'[{"a": "l1\nl2", "b": "t\there", "c": "D:\Proj"}]'
+    bad = r'[{"a": "l2_extraction\nl2", "b": "t\there", "c": "D:\Proj"}]'
     with pytest.raises(json.JSONDecodeError):
         json.loads(bad)
 
     fixed = json_repair.repair_json_text(bad)
     assert fixed is not None
     data = json.loads(fixed)
-    assert data[0]["a"] == "l1\nl2"        # 换行语义保留（未退化成字面 \n）
+    assert data[0]["a"] == "l2_extraction\nl2"        # 换行语义保留（未退化成字面 \n）
     assert data[0]["b"] == "t\there"       # 制表语义保留
     assert data[0]["c"] == r"D:\Proj"      # 非法转义被补齐为字面反斜杠
 

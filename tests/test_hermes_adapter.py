@@ -620,8 +620,6 @@ def test_tool_count_and_names():
     开启后恢复 55，见 test_catalog_remediation）。"""
     p, _ = _tool_provider()
     names = [s["name"] for s in p.get_tool_schemas()]
-    assert len(names) == 54, f"工具数应为 54（credential_get 默认隐藏），实际 {len(names)}"
-    assert len(set(names)) == 54, "工具名重复"
     assert "sgme_credential_get" not in names, "credential_get 默认不应在工具面"
     assert set(EXEMPT_TOOLS).isdisjoint({n[len("sgme_"):] for n in names}), "豁免工具不应被实现"
     expected = (
@@ -629,6 +627,10 @@ def test_tool_count_and_names():
         | set(ALIASED.values())
         | HERMES_EXTRA_TOOLS
     )
+    # 2026-11-05：硬编码 54 改为跟随基准计算——新增 MCP 工具时只改 sgme 侧即可，
+    # 断言自动跟随（原硬编码导致 near_dup_* 三工具接入后必红，且每次加工具都要改测试）。
+    assert len(names) == len(expected), f"工具数应为 {len(expected)}，实际 {len(names)}"
+    assert len(set(names)) == len(names), "工具名重复"
     assert set(names) == expected, f"工具名单与基准不一致：缺 {sorted(expected - set(names))}，多 {sorted(set(names) - set(expected))}"
 
 

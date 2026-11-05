@@ -115,7 +115,7 @@ def _make_raw_file(session_conn, file_id="f-audit", messages=None,
 
 
 def _stub_l1_one_memory(monkeypatch, calls: list):
-    """把 l1.extract_l1 替换为固定产出一条记忆（无网络、确定性）。"""
+    """把 l2_extraction.extract_memories 替换为固定产出一条记忆（无网络、确定性）。"""
     def fake(conversations, dimensions, llm_cfg, client=None, **kwargs):
         calls.append(1)
         return ([{
@@ -125,7 +125,7 @@ def _stub_l1_one_memory(monkeypatch, calls: list):
             "source_message_ids": [2],
         }], "mock", {"stage": "l1_extraction", "version": "test-mock", "variant": None})
 
-    monkeypatch.setattr("sgme.engine.l1.extract_l1", fake)
+    monkeypatch.setattr("sgme.engine.l2_extraction.extract_memories", fake)
 
 
 # ======================================================================
@@ -404,7 +404,7 @@ def test_t223_no_incremental_converges_refined_via_commit(conns, raw_dir, cfg, m
     mem_conn, session_conn = conns
     fid = _make_raw_file(session_conn, file_id="f-noinc", last_refined_seq=2)
     monkeypatch.setattr(
-        "sgme.engine.l1.extract_l1",
+        "sgme.engine.l2_extraction.extract_memories",
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("无增量不应调 L1")),
     )
 

@@ -345,7 +345,7 @@ def test_finish_candidate_columns_three_states(mem_conn):
 
 def test_candidate_ids_hash_stable():
     """F2 候选哈希稳定性：同集两次同值、与顺序无关（排序拼接）、异集异值、定长 16。"""
-    from sgme.engine import l15 as l15_mod
+    from sgme.engine import l3_adjudicate as l15_mod
 
     h1 = l15_mod._candidate_ids_hash(["a", "b"])
     assert h1 == l15_mod._candidate_ids_hash(["a", "b"])   # 同集两次同值

@@ -21,7 +21,6 @@ from sgme.operations.llm import (
 )
 from sgme.operations.inject import inject as inject_operation
 from sgme.operations.inject import _attach_key_missing_note
-from sgme.profile import tier0 as tier0_mod
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
 from sgme.data import db as db_mod
@@ -93,13 +92,6 @@ def app(conns, cfg, raw_dir, tmp_path, monkeypatch):
 @pytest.fixture
 def client(app):
     return TestClient(app)
-
-
-@pytest.fixture
-def summary_path(tmp_path, monkeypatch):
-    p = tmp_path / "tier0_summary.json"
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", p)
-    return p
 
 
 @pytest.fixture
@@ -214,20 +206,18 @@ def _insert(mem_conn, content, dims):
     )
 
 
-def test_inject_note_attached_when_missing(conns, cfg, summary_path, all_keys_unset, monkeypatch):
+def test_inject_note_attached_when_missing(conns, cfg, all_keys_unset, monkeypatch):
     mem_conn, _session, _ = conns
     _insert(mem_conn, "我是测试用户", ["identity", "family"])
-    tier0_mod.save_summary("画像摘要", path=summary_path)
     res = inject_operation(mem_conn, cfg, mode="daily")
     assert res.ok
     note = res.data["stats"].get("note", "")
     assert "申请免费 Key" in note
 
 
-def test_inject_note_not_attached_when_configured(conns, cfg, summary_path, all_keys_set):
+def test_inject_note_not_attached_when_configured(conns, cfg, all_keys_set):
     mem_conn, _session, _ = conns
     _insert(mem_conn, "我是测试用户", ["identity", "family"])
-    tier0_mod.save_summary("画像摘要", path=summary_path)
     res = inject_operation(mem_conn, cfg, mode="daily")
     assert res.ok
     note = res.data["stats"].get("note", "")

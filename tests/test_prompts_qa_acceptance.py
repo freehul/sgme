@@ -5,8 +5,8 @@
 - A/B 语义：sha256 确定性分流公式；跨 key 分布；variant 在 refine_runs 正确落账
 - 版本可观测：逐块 refine_run；metrics 无自动裁决字段（红线 §6 #1）；旧库 NULL 不追溯（红线 §6 #4）
 - 向后兼容：manifest 缺失默认 @working（引擎渲染层）；全新库 schema v3
-- 最小侵入红线：4 渲染点全部经 PromptStore（无 read_text 直读残留）
-- 红线：bucket_by 默认 file_id（§6 #2）；tier0 A/B 默认不启用（§6 #5）
+- 最小侵入红线：3 渲染点（L2 提取 / L3 裁决 / 遗留场景聚合）全部经 PromptStore（无 read_text 直读残留）
+- 红线：bucket_by 默认 file_id（§6 #2）
 - 维度联动：refresh_dimensions 函数级验证（DB 型资源变更即刷新）
 
 只读验证，不修改任何 sgme/ 业务代码。
@@ -21,16 +21,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sgme import config as sgme_config
-from sgme.engine import l1 as l1_mod
-from sgme.engine import l15 as l15_mod
-from sgme.engine import l2 as l2_mod
+from sgme.engine import l2_extraction as l1_mod
+from sgme.engine import l3_adjudicate as l15_mod
+from sgme.engine import scene_aggregate as l2_mod
 from sgme.prompts import BucketCtx, PromptStore
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
 from sgme.data.refine_dao import RefineRunRecorder
 
 STAGE_TEXTS = {
-    "tier0_summary": "你是摘要器。\n{{memories}}",
     "l1_extraction": "你是提取器。\n{{dimensions}}\n{{conversation}}",
     "l1_conflict": "你是裁决器。\n{{new_memories}}\n{{candidates}}",
     "l2_scene": "你是聚合器。\n{{new_memories}}\n{{existing_scenes}}\n{{max_scenes}}",
@@ -41,7 +40,7 @@ STAGE_TEXTS = {
 
 @pytest.fixture
 def prompts_root(tmp_path):
-    """临时 prompts 目录（4 个工作副本，无 manifest）。"""
+    """临时 prompts 目录（3 个工作副本，无 manifest；tier0_summary 已随 D-79 退役）。"""
     root = tmp_path / "prompts"
     root.mkdir()
     for stage, text in STAGE_TEXTS.items():
@@ -100,15 +99,15 @@ def _setup_ab(store):
 # ---------- 热更新语义 ----------
 
 def test_working_hot_reload_at_engine_render(prompts_root, monkeypatch):
-    """@working 编辑后引擎渲染立即生效（无缓存）——render_l1 读最新工作副本。"""
+    """@working 编辑后引擎渲染立即生效（无缓存）——render_extraction 读最新工作副本。"""
     monkeypatch.setattr(PromptStore, "PROMPTS_ROOT", prompts_root)
     monkeypatch.setattr(PromptStore, "MANIFEST_PATH", prompts_root / "manifest.yaml")
     dims = [{"id": "identity", "display_name": "身份", "active": 1}]
-    out1 = l1_mod.render_l1("会话内容", dims)
+    out1 = l1_mod.render_extraction("会话内容", dims)
     (prompts_root / "l1_extraction.txt").write_text(
         STAGE_TEXTS["l1_extraction"] + "\n# 新增指令\n{{conversation}}", encoding="utf-8",
     )
-    out2 = l1_mod.render_l1("会话内容", dims)
+    out2 = l1_mod.render_extraction("会话内容", dims)
     assert out1 != out2
     assert "# 新增指令" not in out1
     assert "# 新增指令" in out2
@@ -188,7 +187,7 @@ def test_ab_bucket_by_defaults_file_id(store, prompts_root):
 
 
 def test_ab_variant_recorded_in_refine_runs(prompts_root, mem_conn, monkeypatch):
-    """A/B 命中变体正确落账：engine 链路 extract_l1 + mem_conn → refine_runs 记录 version/variant。"""
+    """A/B 命中变体正确落账：engine 链路 extract_memories + mem_conn → refine_runs 记录 version/variant。"""
     monkeypatch.setattr(PromptStore, "PROMPTS_ROOT", prompts_root)
     monkeypatch.setattr(PromptStore, "MANIFEST_PATH", prompts_root / "manifest.yaml")
     store = PromptStore(prompts_root=prompts_root)
@@ -202,7 +201,7 @@ def test_ab_variant_recorded_in_refine_runs(prompts_root, mem_conn, monkeypatch)
     cli = _mock_llm_client(body)
 
     key = "file-abtest-1"
-    memories, provider, meta = l1_mod.extract_l1(
+    memories, provider, meta = l1_mod.extract_memories(
         "一段会话", cfg["dimensions"], cfg["llm"], client=cli,
         bucket_ctx=BucketCtx(bucket_key=key), mem_conn=mem_conn,
     )
@@ -224,7 +223,7 @@ def test_ab_variant_recorded_in_refine_runs(prompts_root, mem_conn, monkeypatch)
 
 # ---------- 版本可观测 ----------
 
-def test_extract_l1_records_run_per_chunk(prompts_root, mem_conn, monkeypatch):
+def test_extract_memories_records_run_per_chunk(prompts_root, mem_conn, monkeypatch):
     """逐批记录：多块会话 → 每块一条 refine_run（L1 分块每块一条，设计 §7）。"""
     monkeypatch.setattr(PromptStore, "PROMPTS_ROOT", prompts_root)
     monkeypatch.setattr(PromptStore, "MANIFEST_PATH", prompts_root / "manifest.yaml")
@@ -245,7 +244,7 @@ def test_extract_l1_records_run_per_chunk(prompts_root, mem_conn, monkeypatch):
         return httpx.Response(200, json={"choices": [{"message": {"content": body}}]})
 
     cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
-    memories, _, meta = l1_mod.extract_l1(
+    memories, _, meta = l1_mod.extract_memories(
         conv, cfg["dimensions"], cfg["llm"], client=cli,
         chunk_size=2500, overlap=500,
         bucket_ctx=BucketCtx(bucket_key="file-chunk"), mem_conn=mem_conn,
@@ -271,7 +270,7 @@ def test_refine_runs_records_error_status(prompts_root, mem_conn, monkeypatch):
 
     cli = httpx.Client(transport=httpx.MockTransport(boom), trust_env=False)
     with pytest.raises(l1_mod.RefineError):
-        l1_mod.extract_l1(
+        l1_mod.extract_memories(
             "会话", cfg["dimensions"], cfg["llm"], client=cli,
             bucket_ctx=BucketCtx(bucket_key="file-err"), mem_conn=mem_conn,
         )
@@ -288,8 +287,7 @@ def test_refine_runs_records_error_status(prompts_root, mem_conn, monkeypatch):
 
 @pytest.fixture
 def api_env(tmp_path, monkeypatch):
-    """隔离 FastAPI app：临时 prompts 目录 + 临时双库 + 临时 raw/ 与 tier0 摘要路径。"""
-    from sgme.profile import tier0 as tier0_mod
+    """隔离 FastAPI app：临时 prompts 目录 + 临时双库 + 临时 raw/。"""
     from sgme.raw import store as raw_store
     from sgme.server.app import create_app
 
@@ -301,7 +299,6 @@ def api_env(tmp_path, monkeypatch):
     raw_dir.mkdir()
     monkeypatch.setattr(sgme_config, "RAW_DIR", raw_dir)
     monkeypatch.setattr(raw_store, "config", sgme_config)
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", tmp_path / "tier0_summary.json")
     monkeypatch.setattr(PromptStore, "PROMPTS_ROOT", root)
     monkeypatch.setattr(PromptStore, "MANIFEST_PATH", root / "manifest.yaml")
     monkeypatch.delenv("SGME_BEARER_TOKEN", raising=False)
@@ -393,7 +390,7 @@ def test_manifest_missing_engine_render_works(prompts_root, monkeypatch):
     monkeypatch.setattr(PromptStore, "MANIFEST_PATH", prompts_root / "manifest.yaml")
     assert not (prompts_root / "manifest.yaml").exists()
     dims = [{"id": "identity", "display_name": "身份", "active": 1}]
-    out = l1_mod.render_l1("会话", dims)
+    out = l1_mod.render_extraction("会话", dims)
     assert "会话" in out
     pv = PromptStore(prompts_root=prompts_root).get("l1_extraction")
     assert pv.version.startswith("working-")
@@ -438,10 +435,10 @@ def test_insert_memory_old_signature_backward_compat(mem_conn):
     assert row["prompt_version"] is None
 
 
-# ---------- 最小侵入：4 渲染点全部经 PromptStore ----------
+# ---------- 最小侵入：3 渲染点全部经 PromptStore ----------
 
 class _FakePV:
-    """模拟 PromptVersion：render 层只消费 text；tier0 还消费 version/variant。"""
+    """模拟 PromptVersion：render 层只消费 text；部分渲染点还消费 version/variant。"""
 
     def __init__(self, text, version="working-fake1234", variant=None):
         self.text = text
@@ -450,9 +447,7 @@ class _FakePV:
 
 
 def test_all_render_points_route_through_promptstore(monkeypatch, tmp_path):
-    """红线（§1.6 只改 1 行的点）：4 渲染点全部经 PromptStore.get，无 read_text 直读残留。"""
-    from sgme.profile import tier0 as tier0_mod
-
+    """红线（§1.6 只改 1 行的点）：3 渲染点全部经 PromptStore.get，无 read_text 直读残留。"""
     calls: list[str] = []
 
     def fake_get(self, stage, ctx=None):
@@ -462,31 +457,19 @@ def test_all_render_points_route_through_promptstore(monkeypatch, tmp_path):
     monkeypatch.setattr(PromptStore, "get", fake_get)
 
     # L1
-    l1_mod.render_l1("会话", [{"id": "identity", "display_name": "身份", "active": 1}])
+    l1_mod.render_extraction("会话", [{"id": "identity", "display_name": "身份", "active": 1}])
     # L1.5
-    l15_mod.render_l15(
+    l15_mod.render_adjudication(
         [{"content": "新记忆", "dimension_ids": ["identity"], "memory_type": "persona",
           "priority": 50, "time_velocity": "static"}],
         [],
     )
     # L2
-    l2_mod.render_l2(
+    l2_mod.render_scene(
         [{"content": "记忆", "memory_id": "m1", "dimension_ids": ["identity"]}],
-        [], {"l2": {"max_scenes": 10}},
+        [], {"scene_aggregate": {"max_scenes": 10}},
     )
-    # Tier0：generate_summary 内部经 PromptStore（mock LLM + 空记忆库）
-    conn = db_mod.connect_memory(tmp_path)
-    try:
-        from sgme.llm import chain as llm_chain
-        monkeypatch.setattr(llm_chain, "call_with_fallback",
-                            lambda *a, **k: ("测试摘要", "mock", {}))
-        cfg = sgme_config.load_config()
-        result = tier0_mod.generate_summary(conn, cfg)
-        assert result == "测试摘要"
-    finally:
-        db_mod.close(conn)
-
-    assert calls == ["l1_extraction", "l1_conflict", "l2_scene", "tier0_summary"]
+    assert calls == ["l1_extraction", "l1_conflict", "l2_scene"]
 
 
 # ---------- 维度联动（函数级） ----------
@@ -518,8 +501,8 @@ def test_refine_trigger_prompt_version_end_to_end(api_env, monkeypatch):
     """T05 全链路：/v1/admin/refine/trigger 响应含 prompt_versions + memories.prompt_version 落 L1 钉版版本。"""
     import uuid
 
-    from sgme.engine import l15 as l15_mod
-    from sgme.engine import l2 as l2_mod
+    from sgme.engine import l3_adjudicate as l15_mod
+    from sgme.engine import scene_aggregate as l2_mod
     from sgme.engine import refine as refine_mod
     from sgme.data.search import vector as vector_mod
 

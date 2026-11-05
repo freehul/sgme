@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from sgme import config
-from sgme.engine import l15
+from sgme.engine import l3_adjudicate
 from sgme.data import db as db_mod, memory_dao
 
 
@@ -69,7 +69,7 @@ def test_resolve_conflicts_idempotent_skip(mem_conn, cfg):
     )
 
     # 关闭 prescreen（避免测试环境依赖 embedding 端点），用维度召回路径
-    cfg["l15"] = {"prescreen": None}
+    cfg["l3_adjudicate"] = {"prescreen": None}
 
     new_memories = [{
         "content": "X 已被 Y 替代",
@@ -80,7 +80,7 @@ def test_resolve_conflicts_idempotent_skip(mem_conn, cfg):
         "source_message_ids": [],
         "supersedes": [],
     }]
-    res = l15.resolve_conflicts(
+    res = l3_adjudicate.resolve_conflicts(
         new_memories, mem_conn, cfg, client=_mock_llm_empty(),
         source_ref="F:1", prompt_version="l1_extraction:v1",
     )
@@ -97,7 +97,7 @@ def test_resolve_conflicts_idempotent_skip(mem_conn, cfg):
 
 def test_resolve_conflicts_no_source_ref_no_skip(mem_conn, cfg):
     """无 source_ref 时退化为原行为：正常 store（幂等守卫不触发）。"""
-    cfg["l15"] = {"prescreen": None}
+    cfg["l3_adjudicate"] = {"prescreen": None}
     new_memories = [{
         "content": "全新事实 Z",
         "dimension_ids": ["goals"],
@@ -107,7 +107,7 @@ def test_resolve_conflicts_no_source_ref_no_skip(mem_conn, cfg):
         "source_message_ids": [],
         "supersedes": [],
     }]
-    res = l15.resolve_conflicts(
+    res = l3_adjudicate.resolve_conflicts(
         new_memories, mem_conn, cfg, client=_mock_llm_empty(),
         source_ref=None, prompt_version="l1_extraction:v1",
     )

@@ -20,7 +20,7 @@ from sgme import config
 from sgme.data import db as db_mod, memory_dao, near_dup_dao
 from sgme.data.refine_dao import RefineRunRecorder
 from sgme.data.search import vector as vector_mod
-from sgme.engine import l15
+from sgme.engine import l3_adjudicate
 
 
 @pytest.fixture
@@ -37,20 +37,20 @@ def mem_conn(tmp_path, cfg):
 
 
 def _nd_cfg(enabled=True, threshold=0.92, gray_zone=0.85) -> dict:
-    """构造 l15.near_dup 配置（判定用例默认出厂示值）。"""
-    return {"l15": {"near_dup": {"enabled": enabled, "threshold": threshold,
+    """构造 l3_adjudicate.near_dup 配置（判定用例默认出厂示值）。"""
+    return {"l3_adjudicate": {"near_dup": {"enabled": enabled, "threshold": threshold,
                                  "gray_zone": gray_zone}}}
 
 
 # ---------- 0. 配置透传与回退（T1.4） ----------
 
 def test_load_config_exposes_l15_near_dup():
-    """load_config 组装结果含 l15.near_dup（包内基线透传 + 三键齐全）。"""
+    """load_config 组装结果含 l3_adjudicate.near_dup（包内基线透传 + 三键齐全）。"""
     # SGME_HOME 隔离下默认路径已重定向到 tmp，显式指包内真实配置验证透传
     cfg = config.load_config(
         sgme_path=config.RESOURCE_ROOT / "config" / "sgme.yaml"
     )
-    l15_cfg = cfg.get("l15", {})
+    l15_cfg = cfg.get("l3_adjudicate", {})
     assert "near_dup" in l15_cfg
     nd = l15_cfg["near_dup"]
     # 出厂保守示值（部署覆盖层由主仓同步显式 true）
@@ -62,24 +62,24 @@ def test_load_config_exposes_l15_near_dup():
 def test_near_dup_cfg_fallback_defaults():
     """空/缺段配置 → 出厂保守值；单键类型非法 → 该键回退（不静默降档）。"""
     factory = {"enabled": True, "threshold": 0.92, "gray_zone": 0.85}
-    assert l15._near_dup_cfg(None) == factory
-    assert l15._near_dup_cfg({}) == factory
-    assert l15._near_dup_cfg({"l15": {}}) == factory
+    assert l3_adjudicate._near_dup_cfg(None) == factory
+    assert l3_adjudicate._near_dup_cfg({}) == factory
+    assert l3_adjudicate._near_dup_cfg({"l3_adjudicate": {}}) == factory
     # 部分键：enabled=false 生效，其余键回退出厂值
-    assert l15._near_dup_cfg({"l15": {"near_dup": {"enabled": False}}}) == {
+    assert l3_adjudicate._near_dup_cfg({"l3_adjudicate": {"near_dup": {"enabled": False}}}) == {
         "enabled": False, "threshold": 0.92, "gray_zone": 0.85,
     }
     # 类型非法：字符串/布尔 → 对应键回退出厂值
-    assert l15._near_dup_cfg(
-        {"l15": {"near_dup": {"threshold": "高", "gray_zone": True}}}
+    assert l3_adjudicate._near_dup_cfg(
+        {"l3_adjudicate": {"near_dup": {"threshold": "高", "gray_zone": True}}}
     ) == factory
 
 
 def test_near_dup_cfg_invalid_fallback(caplog):
     """gray_zone >= threshold 非法 → WARNING + 回退全组出厂值。"""
-    caplog.set_level(logging.WARNING, logger="sgme.engine.l15")
-    nd = l15._near_dup_cfg(
-        {"l15": {"near_dup": {"enabled": False, "threshold": 0.8, "gray_zone": 0.9}}}
+    caplog.set_level(logging.WARNING, logger="sgme.engine.l3_adjudicate")
+    nd = l3_adjudicate._near_dup_cfg(
+        {"l3_adjudicate": {"near_dup": {"enabled": False, "threshold": 0.8, "gray_zone": 0.9}}}
     )
     assert nd == {"enabled": True, "threshold": 0.92, "gray_zone": 0.85}
     warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
@@ -87,24 +87,24 @@ def test_near_dup_cfg_invalid_fallback(caplog):
 
 
 def test_config_merge_l15_near_dup():
-    """_merge_l15_config：near_dup 默认段随白名单合并 + 逐键透传 + 防可变默认共享。"""
-    base = config._merge_l15_config(None)
+    """_merge_l3_adjudicate_config：near_dup 默认段随白名单合并 + 逐键透传 + 防可变默认共享。"""
+    base = config._merge_l3_adjudicate_config(None)
     assert base["near_dup"] == {"enabled": True, "threshold": 0.92, "gray_zone": 0.85}
-    merged = config._merge_l15_config({"near_dup": {"threshold": 0.9}})
+    merged = config._merge_l3_adjudicate_config({"near_dup": {"threshold": 0.9}})
     assert merged["near_dup"] == {"enabled": True, "threshold": 0.9, "gray_zone": 0.85}
     # 防可变默认共享：合并产物不是默认段的同一对象
-    assert base["near_dup"] is not config.DEFAULT_L15_CONFIG["near_dup"]
+    assert base["near_dup"] is not config.DEFAULT_L3_ADJUDICATE_CONFIG["near_dup"]
 
 
 # ---------- 1. _near_dup_check 四分支（T1.5） ----------
 
 def test_near_dup_embed_failed_passes(mem_conn, monkeypatch, caplog):
     """分支1：embed 不可达（None）→ 放行 + WARNING near_dup embed failed。"""
-    caplog.set_level(logging.WARNING, logger="sgme.engine.l15")
+    caplog.set_level(logging.WARNING, logger="sgme.engine.l3_adjudicate")
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: None)
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: pytest.fail("不应调用"))
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
     assert res.hit is False and res.gray is False and res.matched_id is None
     warns = [r.getMessage() for r in caplog.records]
     assert any("near_dup embed failed" in m for m in warns), warns
@@ -112,7 +112,7 @@ def test_near_dup_embed_failed_passes(mem_conn, monkeypatch, caplog):
 
 def test_near_dup_embed_exception_passes(mem_conn, monkeypatch, caplog):
     """分支1 变体：embed 抛异常 → 放行 + WARNING（异常形态带 : %s）。"""
-    caplog.set_level(logging.WARNING, logger="sgme.engine.l15")
+    caplog.set_level(logging.WARNING, logger="sgme.engine.l3_adjudicate")
 
     def boom(*a, **kw):
         raise RuntimeError("embed 端点挂了")
@@ -120,7 +120,7 @@ def test_near_dup_embed_exception_passes(mem_conn, monkeypatch, caplog):
     monkeypatch.setattr(vector_mod, "embed", boom)
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: pytest.fail("不应调用"))
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
     assert res.hit is False and res.gray is False
     warns = [r.getMessage() for r in caplog.records]
     assert any("near_dup embed failed" in m for m in warns), warns
@@ -131,13 +131,13 @@ def test_near_dup_empty_search_passes(mem_conn, monkeypatch):
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: [])
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
     assert res.hit is False and res.gray is False and res.matched_id is None
 
 
 def test_near_dup_search_exception_passes(mem_conn, monkeypatch, caplog):
     """分支3：vector_search 抛异常 → 放行 + WARNING near_dup vector_search failed。"""
-    caplog.set_level(logging.WARNING, logger="sgme.engine.l15")
+    caplog.set_level(logging.WARNING, logger="sgme.engine.l3_adjudicate")
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
 
     def boom(*a, **kw):
@@ -145,7 +145,7 @@ def test_near_dup_search_exception_passes(mem_conn, monkeypatch, caplog):
 
     monkeypatch.setattr(vector_mod, "vector_search", boom)
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
     assert res.hit is False and res.gray is False
     warns = [r.getMessage() for r in caplog.records]
     assert any("near_dup vector_search failed" in m for m in warns), warns
@@ -159,7 +159,7 @@ def test_near_dup_hit_over_threshold(mem_conn, monkeypatch):
          "updated_at": "2026-01-01T00:00:00Z", "score": 0.95},
     ])
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
     assert res.hit is True and res.gray is False
     assert res.matched_id == "mem-hit-1"
     assert res.score == 0.95
@@ -173,7 +173,7 @@ def test_near_dup_gray_zone(mem_conn, monkeypatch):
          "updated_at": "2026-01-01T00:00:00Z", "score": 0.88},
     ])
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
     assert res.hit is False and res.gray is True
     assert res.matched_id == "mem-gray-1"
     assert res.score == 0.88
@@ -187,7 +187,7 @@ def test_near_dup_below_gray_zone_passes(mem_conn, monkeypatch):
          "updated_at": "2026-01-01T00:00:00Z", "score": 0.5},
     ])
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
     assert res.hit is False and res.gray is False and res.matched_id is None
 
 
@@ -201,7 +201,7 @@ def test_near_dup_search_uses_limit_1(mem_conn, monkeypatch):
         return []
 
     monkeypatch.setattr(vector_mod, "vector_search", fake_vs)
-    l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
+    l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg())
     assert captured.get("limit") == 1
 
 
@@ -220,7 +220,7 @@ def test_near_dup_precomputed_sim_low_skips_search(mem_conn, monkeypatch):
     monkeypatch.setattr(vector_mod, "embed", fake_embed)
     monkeypatch.setattr(vector_mod, "vector_search", fake_vs)
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg(), precomputed_sim=0.3)
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg(), precomputed_sim=0.3)
     assert res.hit is False and res.gray is False
     assert calls["search"] == 0  # 不调 vector_search
     assert calls["embed"] == 0   # 直接放行，连 embed 都免
@@ -237,7 +237,7 @@ def test_near_dup_precomputed_sim_high_goes_normal_search(mem_conn, monkeypatch)
                  "updated_at": "2026-01-01T00:00:00Z", "score": 0.93}]
 
     monkeypatch.setattr(vector_mod, "vector_search", fake_vs)
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg(), precomputed_sim=0.9)
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg(), precomputed_sim=0.9)
     assert calls["search"] == 1
     assert res.hit is True and res.matched_id == "mem-pc-1"
 
@@ -247,22 +247,22 @@ def test_near_dup_disabled_passes(mem_conn, monkeypatch):
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: pytest.fail("不应调用"))
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: pytest.fail("不应调用"))
 
-    res = l15._near_dup_check(mem_conn, "新记忆内容", _nd_cfg(enabled=False))
+    res = l3_adjudicate._near_dup_check(mem_conn, "新记忆内容", _nd_cfg(enabled=False))
     assert res.hit is False and res.gray is False
 
 
 def test_near_dup_gray_sample_log(mem_conn, monkeypatch, caplog):
     """分支4b 观测：灰区明细日志 10% 采样（random<0.1 时输出 score/matched_id/content 前 80 字）。"""
-    caplog.set_level(logging.INFO, logger="sgme.engine.l15")
+    caplog.set_level(logging.INFO, logger="sgme.engine.l3_adjudicate")
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: [
         {"memory_id": "mem-gray-2", "content": "旧记忆", "priority": 60,
          "updated_at": "2026-01-01T00:00:00Z", "score": 0.87},
     ])
-    monkeypatch.setattr(l15.random, "random", lambda: 0.05)  # 命中 10% 采样窗口
+    monkeypatch.setattr(l3_adjudicate.random, "random", lambda: 0.05)  # 命中 10% 采样窗口
     content = "用于抽样日志断言的新记忆内容" * 12  # > 80 字，验证截断
 
-    l15._near_dup_check(mem_conn, content, _nd_cfg())
+    l3_adjudicate._near_dup_check(mem_conn, content, _nd_cfg())
     hits = [r.getMessage() for r in caplog.records if "灰区" in r.getMessage()]
     assert hits, "应输出灰区抽样日志"
     msg = hits[0]
@@ -281,7 +281,7 @@ _INTEG_L15_CFG = {
 
 def _apply_integ_cfg(cfg) -> dict:
     """隔离集成用例配置（深拷贝一层，避免跨用例共享可变默认）。"""
-    cfg["l15"] = {k: (dict(v) if isinstance(v, dict) else v) for k, v in _INTEG_L15_CFG.items()}
+    cfg["l3_adjudicate"] = {k: (dict(v) if isinstance(v, dict) else v) for k, v in _INTEG_L15_CFG.items()}
     return cfg
 
 
@@ -344,7 +344,7 @@ def test_integration_empty_pool_hit_quarantines(mem_conn, cfg, monkeypatch):
     monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-0001", 0.95))
 
     content = "近似重复的新内容 A"
-    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg, source_ref="F:1")
+    res = l3_adjudicate.resolve_conflicts([_new_mem(content)], mem_conn, cfg, source_ref="F:1")
 
     assert res.stored == [] and res.skipped == [0]
     assert res.near_dup_quarantined == 1 and res.near_dup_gray == 0
@@ -382,7 +382,7 @@ def test_integration_batch_store_path_quarantines(mem_conn, cfg, monkeypatch):
     ])
 
     content = "批路径命中内容 B"
-    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
+    res = l3_adjudicate.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
 
     assert res.stored == [] and res.skipped == [0]
     assert res.near_dup_quarantined == 1
@@ -395,7 +395,7 @@ def test_integration_batch_store_path_quarantines(mem_conn, cfg, monkeypatch):
     batch_rows = [r for r in _runs(mem_conn) if r["candidate_count"] is not None]
     assert len(batch_rows) == 1
     assert batch_rows[0]["candidate_count"] == 1
-    assert batch_rows[0]["candidate_ids_hash"] == l15._candidate_ids_hash([old_id])
+    assert batch_rows[0]["candidate_ids_hash"] == l3_adjudicate._candidate_ids_hash([old_id])
     assert batch_rows[0]["short_circuit_reason"] is None
 
 
@@ -410,7 +410,7 @@ def test_integration_update_fallback_quarantines(mem_conn, cfg, monkeypatch):
     ])
 
     content = "update 退化命中内容 C"
-    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
+    res = l3_adjudicate.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
 
     assert res.updated == [] and res.stored == [] and res.skipped == [0]
     assert res.near_dup_quarantined == 1
@@ -430,7 +430,7 @@ def test_integration_merge_fallback_quarantines(mem_conn, cfg, monkeypatch):
     ])
 
     content = "merge 退化命中内容 D"
-    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
+    res = l3_adjudicate.resolve_conflicts([_new_mem(content)], mem_conn, cfg, client=client)
 
     assert res.merged == [] and res.stored == [] and res.skipped == [0]
     assert res.near_dup_quarantined == 1
@@ -446,7 +446,7 @@ def test_integration_gray_zone_passes_with_count(mem_conn, cfg, monkeypatch):
     monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-0004", 0.88))
 
     content = "灰区放行内容 E"
-    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
+    res = l3_adjudicate.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
 
     assert len(res.stored) == 1 and res.skipped == []
     assert res.near_dup_gray == 1 and res.near_dup_quarantined == 0
@@ -461,7 +461,7 @@ def test_integration_gray_zone_passes_with_count(mem_conn, cfg, monkeypatch):
 def test_integration_quarantine_write_failure_not_blocking(mem_conn, cfg, monkeypatch, caplog):
     """第五档：隔离表写入异常 → 主流程不崩、skip 照旧、WARNING 含 content 全文。"""
     _apply_integ_cfg(cfg)
-    caplog.set_level(logging.WARNING, logger="sgme.engine.l15")
+    caplog.set_level(logging.WARNING, logger="sgme.engine.l3_adjudicate")
     monkeypatch.setattr(vector_mod, "embed", lambda *a, **kw: [0.1, 0.2, 0.3])
     monkeypatch.setattr(vector_mod, "vector_search", _mock_vs_hit("mem-old-0005", 0.95))
 
@@ -471,7 +471,7 @@ def test_integration_quarantine_write_failure_not_blocking(mem_conn, cfg, monkey
     monkeypatch.setattr(near_dup_dao, "upsert_hit", boom)
 
     content = "隔离表写入失败仍需 skip 的内容 F"
-    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
+    res = l3_adjudicate.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
 
     assert res.stored == [] and res.skipped == [0]
     assert res.near_dup_quarantined == 1
@@ -489,7 +489,7 @@ def test_integration_empty_pool_record_written(mem_conn, cfg, monkeypatch):
     monkeypatch.setattr(vector_mod, "vector_search", lambda *a, **kw: pytest.fail("不应调用"))
 
     content = "空池直存内容 G"
-    res = l15.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
+    res = l3_adjudicate.resolve_conflicts([_new_mem(content)], mem_conn, cfg)
 
     assert len(res.stored) == 1 and res.skipped == []
     assert res.near_dup_quarantined == 0 and res.near_dup_gray == 0

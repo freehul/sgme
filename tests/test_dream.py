@@ -228,7 +228,7 @@ def _wait_until(cond, timeout: float = 5.0) -> bool:
 def test_dream_config_defaults_and_merge(tmp_path):
     """dream 段缺失 → 默认兜底；部分配置 → 与默认合并；类型非法 → 回退默认。"""
     yml = tmp_path / "sgme.yaml"
-    yml.write_text("l2:\n  max_scenes: 10\n", encoding="utf-8")
+    yml.write_text("scene_aggregate:\n  max_scenes: 10\n", encoding="utf-8")
     cfg = sgme_config.load_sgme_config(yml)
     assert cfg["dream"] == {
         "enabled": True, "schedule": "03:00", "max_files": 200,

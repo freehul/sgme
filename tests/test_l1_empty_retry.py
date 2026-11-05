@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from sgme import config as sgme_config
-from sgme.engine import l1 as l1_mod
+from sgme.engine import l2_extraction as l1_mod
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ def _client_seq(bodies: list[str]):
 def test_empty_then_memories_retries(cfg):
     """首次空数组 → 重试 → 第二次返回记忆：应拿到记忆，且确实调了 2 次。"""
     cli, calls = _client_seq(["[]", _MEM_BODY])
-    memories, _, _ = l1_mod.extract_l1(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l1_mod.extract_memories(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
     assert len(calls) == 2, f"空结果应重试一次，实际调用 {len(calls)} 次"
     assert len(memories) == 1, "重试后应拿到记忆"
     assert "45" in memories[0]["content"]
@@ -76,7 +76,7 @@ def test_empty_then_memories_retries(cfg):
 def test_empty_twice_returns_empty_without_raise(cfg):
     """两次都空 → 正常返回空列表，不抛异常（空块合法）。"""
     cli, calls = _client_seq(["[]", "[]"])
-    memories, _, _ = l1_mod.extract_l1(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l1_mod.extract_memories(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
     assert len(calls) == 2, f"空结果应重试且只重试一次，实际调用 {len(calls)} 次"
     assert memories == []
 
@@ -84,7 +84,7 @@ def test_empty_twice_returns_empty_without_raise(cfg):
 def test_nonempty_no_extra_call(cfg):
     """首次就有记忆 → 不重试。"""
     cli, calls = _client_seq([_MEM_BODY])
-    memories, _, _ = l1_mod.extract_l1("用户说每天通勤 45 分钟", cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l1_mod.extract_memories("用户说每天通勤 45 分钟", cfg["dimensions"], cfg["llm"], client=cli)
     assert len(calls) == 1, f"非空结果不应重试，实际调用 {len(calls)} 次"
     assert len(memories) == 1
 
@@ -92,7 +92,7 @@ def test_nonempty_no_extra_call(cfg):
 def test_retry_prompt_adds_empty_hint(cfg):
     """重试时的提示词应带上「上次为空」的追加提示。"""
     cli, calls = _client_seq(["[]", _MEM_BODY])
-    l1_mod.extract_l1(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
+    l1_mod.extract_memories(_LONG_CONV, cfg["dimensions"], cfg["llm"], client=cli)
     assert len(calls) == 2
     first, second = calls[0], calls[1]
     assert "上次" in second or "空" in second, "重试提示词应说明上次输出为空"
@@ -105,6 +105,6 @@ def test_short_conv_empty_no_retry(cfg):
     v007 允许空数组后，寒暄类会话若仍走空重试会平白多花一次 LLM 调用。
     """
     cli, calls = _client_seq(["[]", _MEM_BODY])
-    memories, _, _ = l1_mod.extract_l1("嗯嗯好的", cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l1_mod.extract_memories("嗯嗯好的", cfg["dimensions"], cfg["llm"], client=cli)
     assert len(calls) == 1, f"短会话空结果不应重试，实际调用 {len(calls)} 次"
     assert memories == []

@@ -543,7 +543,7 @@ class TestABCompare:
         """比较两份 dict report 产生 diff。"""
         report_a = {
             "run_id": "run-a",
-            "l1": {
+            "l2_extraction": {
                 "dimension_micro_f1": 0.75,
                 "dimension_micro_precision": 0.80,
                 "dimension_micro_recall": 0.70,
@@ -556,7 +556,7 @@ class TestABCompare:
                     "skills": {"f1": 0.7},
                 },
             },
-            "l2": {
+            "scene_aggregate": {
                 "section_hit_rate": 0.70,
                 "section_misentry_rate": 0.15,
                 "section_miss_rate": 0.15,
@@ -565,7 +565,7 @@ class TestABCompare:
         }
         report_b = {
             "run_id": "run-b",
-            "l1": {
+            "l2_extraction": {
                 "dimension_micro_f1": 0.78,
                 "dimension_micro_precision": 0.82,
                 "dimension_micro_recall": 0.74,
@@ -578,7 +578,7 @@ class TestABCompare:
                     "skills": {"f1": 0.75},
                 },
             },
-            "l2": {
+            "scene_aggregate": {
                 "section_hit_rate": 0.72,
                 "section_misentry_rate": 0.13,
                 "section_miss_rate": 0.12,
@@ -586,11 +586,11 @@ class TestABCompare:
             },
         }
         diff = compare_reports(report_a, report_b)
-        assert diff["l1"]["dimension_micro_f1"]["delta"] == pytest.approx(0.03)
-        assert diff["l2"]["profile_quality"]["delta"] == pytest.approx(0.037)
+        assert diff["l2_extraction"]["dimension_micro_f1"]["delta"] == pytest.approx(0.03)
+        assert diff["scene_aggregate"]["profile_quality"]["delta"] == pytest.approx(0.037)
         # 逐维度
-        assert diff["l1"]["per_dimension_f1"]["identity"]["delta"] == pytest.approx(0.02)
-        assert diff["l1"]["per_dimension_f1"]["skills"]["delta"] == pytest.approx(0.05)
+        assert diff["l2_extraction"]["per_dimension_f1"]["identity"]["delta"] == pytest.approx(0.02)
+        assert diff["l2_extraction"]["per_dimension_f1"]["skills"]["delta"] == pytest.approx(0.05)
 
     def test_compare_from_files(self, tmp_path):
         """从文件路径加载 report 比较。"""
@@ -599,31 +599,31 @@ class TestABCompare:
 
         data_a = {
             "run_id": "a",
-            "l1": {"dimension_micro_f1": 0.5, "strict_match_rate": 0.3},
-            "l2": {"section_hit_rate": 0.6, "profile_quality": 0.3},
+            "l2_extraction": {"dimension_micro_f1": 0.5, "strict_match_rate": 0.3},
+            "scene_aggregate": {"section_hit_rate": 0.6, "profile_quality": 0.3},
         }
         data_b = {
             "run_id": "b",
-            "l1": {"dimension_micro_f1": 0.6, "strict_match_rate": 0.4},
-            "l2": {"section_hit_rate": 0.7, "profile_quality": 0.42},
+            "l2_extraction": {"dimension_micro_f1": 0.6, "strict_match_rate": 0.4},
+            "scene_aggregate": {"section_hit_rate": 0.7, "profile_quality": 0.42},
         }
 
         report_a.write_text(json.dumps(data_a), encoding="utf-8")
         report_b.write_text(json.dumps(data_b), encoding="utf-8")
 
         diff = compare_reports(str(report_a), str(report_b))
-        assert diff["l1"]["dimension_micro_f1"]["delta"] == 0.1
+        assert diff["l2_extraction"]["dimension_micro_f1"]["delta"] == 0.1
 
     def test_format_diff_markdown(self):
         """diff 格式化为 Markdown 报告。"""
         diff = {
             "report_a": "v001",
             "report_b": "v002",
-            "l1": {
+            "l2_extraction": {
                 "dimension_micro_f1": {"a": 0.75, "b": 0.78, "delta": 0.03},
                 "strict_match_rate": {"a": 0.50, "b": 0.55, "delta": 0.05},
             },
-            "l2": {
+            "scene_aggregate": {
                 "section_hit_rate": {"a": 0.70, "b": 0.72, "delta": 0.02},
                 "profile_quality": {"a": 0.525, "b": 0.562, "delta": 0.037},
             },
@@ -704,11 +704,11 @@ class TestRunnerDryRun:
             eval_tmp_dir=eval_tmp,
         )
 
-        result = runner.run_all(sample_cases, stages=["l1"], dry_run=True)
+        result = runner.run_all(sample_cases, stages=["l2_extraction"], dry_run=True)
 
         assert result.run_id != ""
         assert result.summary.total_cases == 3
-        assert result.l1 is not None
+        assert result.l2_extraction is not None
         assert len(result.per_case) == 3
         # dry-run 每个 case 应有 l1_f1 值（mock 产生可度量输出）
         for cr in result.per_case:
@@ -731,7 +731,7 @@ class TestRunnerDryRun:
             eval_tmp_dir=eval_tmp,
         )
 
-        result = runner.run_all(sample_cases, stages=["l1"], dry_run=True)
+        result = runner.run_all(sample_cases, stages=["l2_extraction"], dry_run=True)
 
         report_path = generate_report_json(result, output_dir)
         assert report_path.exists()
@@ -740,7 +740,7 @@ class TestRunnerDryRun:
             data = json.load(f)
         assert data["run_id"] == result.run_id
         assert data["summary"]["total_cases"] == 3
-        assert "l1" in data
+        assert "l2_extraction" in data
 
     def test_runner_generates_report_md(self, tmp_path, sample_cases):
         """runner + reporter 产出 report.md。"""
@@ -758,7 +758,7 @@ class TestRunnerDryRun:
             eval_tmp_dir=eval_tmp,
         )
 
-        result = runner.run_all(sample_cases, stages=["l1"], dry_run=True)
+        result = runner.run_all(sample_cases, stages=["l2_extraction"], dry_run=True)
 
         md_path = generate_report_md(result, output_dir)
         assert md_path.exists()

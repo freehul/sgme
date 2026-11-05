@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from sgme import config
-from sgme.engine import l1, normalize, refine
+from sgme.engine import l2_extraction, normalize, refine
 from sgme.raw import store
 from sgme.data import db as db_mod, memory_dao, session_dao
 
@@ -194,11 +194,11 @@ def test_normalize_dedup(cfg, mem_conn):
     assert result == ["tech_stack"]
 
 
-# ---------- l1.render_l1 测试 ----------
+# ---------- l2_extraction.render_extraction 测试 ----------
 
-def test_render_l1_replaces_placeholders(cfg):
-    """render_l1 替换 {{dimensions}} 与 {{conversation}}。"""
-    prompt = l1.render_l1("这是会话内容", cfg["dimensions"])
+def test_render_extraction_replaces_placeholders(cfg):
+    """render_extraction 替换 {{dimensions}} 与 {{conversation}}。"""
+    prompt = l2_extraction.render_extraction("这是会话内容", cfg["dimensions"])
     assert "{{dimensions}}" not in prompt
     assert "{{conversation}}" not in prompt
     assert "这是会话内容" in prompt
@@ -206,34 +206,34 @@ def test_render_l1_replaces_placeholders(cfg):
     assert "tech_stack：技术栈" in prompt
 
 
-def test_render_l1_only_active_dimensions(cfg):
+def test_render_extraction_only_active_dimensions(cfg):
     """只渲染 active=1 的维度。"""
     dims = [
         {"id": "a", "display_name": "甲", "active": 1},
         {"id": "b", "display_name": "乙", "active": 0},
     ]
-    prompt = l1.render_l1("conv", dims)
+    prompt = l2_extraction.render_extraction("conv", dims)
     assert "- a：甲" in prompt
     assert "- b：乙" not in prompt
 
 
-def test_render_l1_injects_boundaries(cfg):
+def test_render_extraction_injects_boundaries(cfg):
     """T-11：维度行附 boundaries（vs 对照消歧说明）——送达 LLM 消歧。"""
     dims = [
         {"id": "a", "display_name": "甲", "active": 1,
          "boundaries": "vs 家庭：家庭=成员与关系"},
         {"id": "b", "display_name": "乙", "active": 1},  # 无 boundaries
     ]
-    prompt = l1.render_l1("conv", dims)
+    prompt = l2_extraction.render_extraction("conv", dims)
     assert "- a：甲（边界：vs 家庭：家庭=成员与关系）" in prompt
     # b 无 boundaries → 不带括号
     assert "- b：乙" in prompt
     assert "（边界：" not in prompt.split("- a：甲（边界：vs 家庭：家庭=成员与关系）")[1]
 
 
-# ---------- l1.parse_l1_output 测试 ----------
+# ---------- l2_extraction.parse_extraction_output 测试 ----------
 
-def test_parse_l1_output_valid_json(cfg):
+def test_parse_extraction_output_valid_json(cfg):
     """合法 JSON 数组 → 记忆列表。"""
     text = json.dumps([
         {
@@ -245,64 +245,64 @@ def test_parse_l1_output_valid_json(cfg):
             "source_message_ids": [1, 2],
         }
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert len(result) == 1
     assert result[0]["content"] == "用户使用 Python 3.11"
     assert result[0]["dimensions"] == ["技术栈"]
     assert result[0]["priority"] == 80
 
 
-def test_parse_l1_output_priority_clamp(cfg):
+def test_parse_extraction_output_priority_clamp(cfg):
     """priority 钳制 0-100。"""
     text = json.dumps([
         {"content": "x", "dimensions": ["技术栈"], "memory_type": "persona",
          "priority": 150, "time_velocity": "static"},
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert result[0]["priority"] == 100
 
 
-def test_parse_l1_output_invalid_memory_type_defaults_persona(cfg):
+def test_parse_extraction_output_invalid_memory_type_defaults_persona(cfg):
     """memory_type 不合法 → 默认 persona。"""
     text = json.dumps([
         {"content": "x", "dimensions": ["技术栈"], "memory_type": "unknown",
          "priority": 50, "time_velocity": "static"},
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert result[0]["memory_type"] == "persona"
 
 
-def test_parse_l1_output_invalid_time_velocity_backfill(cfg):
+def test_parse_extraction_output_invalid_time_velocity_backfill(cfg):
     """time_velocity 不合法 → 按维度默认回填。"""
     text = json.dumps([
         {"content": "x", "dimensions": ["status"], "memory_type": "persona",
          "priority": 50, "time_velocity": "wrong"},
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     # status 维度 time_velocity=dynamic
     assert result[0]["time_velocity"] == "dynamic"
 
 
-def test_parse_l1_output_markdown_code_block(cfg):
+def test_parse_extraction_output_markdown_code_block(cfg):
     """LLM 输出带 ```json 包裹 → 仍能解析。"""
     text = '```json\n[{"content":"x","dimensions":["技术栈"],"memory_type":"persona","priority":50,"time_velocity":"static"}]\n```'
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert len(result) == 1
 
 
-def test_parse_l1_output_bad_json_raises(cfg):
+def test_parse_extraction_output_bad_json_raises(cfg):
     """坏 JSON → RefineError。"""
-    with pytest.raises(l1.RefineError, match="JSON"):
-        l1.parse_l1_output("not a json at all", cfg["dimensions"])
+    with pytest.raises(l2_extraction.RefineError, match="JSON"):
+        l2_extraction.parse_extraction_output("not a json at all", cfg["dimensions"])
 
 
-def test_parse_l1_output_empty_dimensions_skipped(cfg):
+def test_parse_extraction_output_empty_dimensions_skipped(cfg):
     """dimensions 为空 → 跳过该条。"""
     text = json.dumps([
         {"content": "x", "dimensions": [], "memory_type": "persona",
          "priority": 50, "time_velocity": "static"},
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert result == []
 
 
@@ -310,55 +310,55 @@ def test_parse_l1_output_empty_dimensions_skipped(cfg):
 
 def test_t201_dimension_cap_truncates(cfg):
     """维度标签超上限（4 个）→ 截断到 3 个并计数。"""
-    l1.reset_violation_counts()
+    l2_extraction.reset_violation_counts()
     text = json.dumps([
         {"content": "x", "dimensions": ["identity", "tech_stack", "environment", "status"],
          "memory_type": "persona", "priority": 70, "time_velocity": "static"},
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
-    assert len(result[0]["dimensions"]) == l1.MAX_DIMENSIONS_PER_MEMORY
-    assert l1.violation_counts()["dim_overflow"] == 1
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
+    assert len(result[0]["dimensions"]) == l2_extraction.MAX_DIMENSIONS_PER_MEMORY
+    assert l2_extraction.violation_counts()["dim_overflow"] == 1
 
 
 def test_t201_episodic_static_dim_degraded_to_dynamic(cfg):
     """episodic 打静态维度 → 降级为动态维度（防事件流水永久滞留）。"""
-    l1.reset_violation_counts()
+    l2_extraction.reset_violation_counts()
     text = json.dumps([
         {"content": "用户今天把 D 盘目录整理了一遍",
          "dimensions": ["tech_stack", "identity"],
          "memory_type": "episodic", "priority": 60, "time_velocity": "dynamic"},
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     # 两个静态标签均被剔除 → 兜底 status（带 TTL，会自动过期）
-    assert result[0]["dimensions"] == [l1.EPISODIC_FALLBACK_DIM]
-    assert l1.violation_counts()["episodic_degraded"] == 1
+    assert result[0]["dimensions"] == [l2_extraction.EPISODIC_FALLBACK_DIM]
+    assert l2_extraction.violation_counts()["episodic_degraded"] == 1
 
 
 def test_t201_episodic_keeps_dynamic_dim(cfg):
     """episodic 打动态维度 → 原样保留，不计违规。"""
-    l1.reset_violation_counts()
+    l2_extraction.reset_violation_counts()
     text = json.dumps([
         {"content": "SGME 治理方案已定稿", "dimensions": ["status"],
          "memory_type": "episodic", "priority": 70, "time_velocity": "dynamic"},
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert result[0]["dimensions"] == ["status"]
-    assert l1.violation_counts()["episodic_degraded"] == 0
+    assert l2_extraction.violation_counts()["episodic_degraded"] == 0
 
 
 def test_t201_persona_and_fact_unrestricted(cfg):
     """persona / fact 不受维度限制（fact 保留原维度，避免知识资产被赶进短期维度）。"""
-    l1.reset_violation_counts()
+    l2_extraction.reset_violation_counts()
     text = json.dumps([
         {"content": "用户是 Python 开发者", "dimensions": ["identity"],
          "memory_type": "persona", "priority": 85, "time_velocity": "static"},
         {"content": "LM Studio 的 64K 上下文限制会截断长会话", "dimensions": ["tech_stack"],
          "memory_type": "fact", "priority": 80, "time_velocity": "static"},
     ])
-    result = l1.parse_l1_output(text, cfg["dimensions"])
+    result = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert result[0]["dimensions"] == ["identity"]
     assert result[1]["dimensions"] == ["tech_stack"]
-    assert l1.violation_counts()["episodic_degraded"] == 0
+    assert l2_extraction.violation_counts()["episodic_degraded"] == 0
 
 
 def test_t201_degradation_survives_refine_file_normalization(raw_dir, mem_conn, session_conn, cfg):
@@ -393,7 +393,7 @@ def test_t201_short_conversation_empty_result_no_retry(cfg):
 
     cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
     short_conv = "user: 继续。\nassistant: 好的。"  # 远低于 EMPTY_RETRY_MIN_CONV_CHARS
-    memories, _, _ = l1.extract_l1(short_conv, cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l2_extraction.extract_memories(short_conv, cfg["dimensions"], cfg["llm"], client=cli)
     assert memories == []
     assert calls["n"] == 1, "短会话空结果不应重试"
 
@@ -408,21 +408,21 @@ def test_t201_long_conversation_empty_result_still_retries(cfg):
 
     cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
     long_conv = "user: " + "内容" * 300  # 远超门槛
-    memories, _, _ = l1.extract_l1(long_conv, cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l2_extraction.extract_memories(long_conv, cfg["dimensions"], cfg["llm"], client=cli)
     assert memories == []
     assert calls["n"] == 2, "长会话空结果应重试 1 次"
 
 
-# ---------- l1.extract_l1 测试（含重试） ----------
+# ---------- l2_extraction.extract_memories 测试（含重试） ----------
 
-def test_extract_l1_success(cfg):
+def test_extract_memories_success(cfg):
     """L1 提取成功（返回 3 元组：记忆 / provider / prompt_meta）。"""
     body = json.dumps([
         {"content": "用户用 Python", "dimensions": ["技术栈"], "memory_type": "persona",
          "priority": 80, "time_velocity": "static", "source_message_ids": [1]},
     ])
     cli = _mock_llm_client(body)
-    memories, provider, meta = l1.extract_l1("会话", cfg["dimensions"], cfg["llm"], client=cli)
+    memories, provider, meta = l2_extraction.extract_memories("会话", cfg["dimensions"], cfg["llm"], client=cli)
     assert len(memories) == 1
     assert memories[0]["content"] == "用户用 Python"
     # v0.5 主模型已切云端：provider 名随配置首链（当前为 deepseek），不写死 lm-studio
@@ -434,7 +434,7 @@ def test_extract_l1_success(cfg):
     assert meta["variant"] is None
 
 
-def test_extract_l1_bad_json_retry_then_success(cfg):
+def test_extract_memories_bad_json_retry_then_success(cfg):
     """坏 JSON → 重试 1 次成功。"""
     bodies = [
         "not json",
@@ -442,16 +442,16 @@ def test_extract_l1_bad_json_retry_then_success(cfg):
                      "priority": 70, "time_velocity": "static"}]),
     ]
     cli = _mock_llm_client_sequence(bodies)
-    memories, _, _ = l1.extract_l1("会话", cfg["dimensions"], cfg["llm"], client=cli)
+    memories, _, _ = l2_extraction.extract_memories("会话", cfg["dimensions"], cfg["llm"], client=cli)
     assert len(memories) == 1
     assert memories[0]["content"] == "ok"
 
 
-def test_extract_l1_retry_still_fails_raises(cfg):
+def test_extract_memories_retry_still_fails_raises(cfg):
     """重试后仍失败 → RefineError。"""
     cli = _mock_llm_client("not json at all")
-    with pytest.raises(l1.RefineError, match="重试"):
-        l1.extract_l1("会话", cfg["dimensions"], cfg["llm"], client=cli)
+    with pytest.raises(l2_extraction.RefineError, match="重试"):
+        l2_extraction.extract_memories("会话", cfg["dimensions"], cfg["llm"], client=cli)
 
 
 # ---------- refine.refine_file 测试 ----------

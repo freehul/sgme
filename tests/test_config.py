@@ -205,7 +205,7 @@ def test_skills_hub_remote_source_env_override_with_defaults(monkeypatch, tmp_pa
     """yaml 无 skills_hub 段（全默认兜底）时 env 仍覆盖 source。"""
     monkeypatch.setenv("SGME_SKILLS_HUB_REMOTE", "user@nas:/srv/skills-hub.git")
     yaml_path = tmp_path / "sgme.yaml"
-    yaml_path.write_text("l2:\n  max_scenes: 200\n", encoding="utf-8")
+    yaml_path.write_text("scene_aggregate:\n  max_scenes: 200\n", encoding="utf-8")
     cfg = config.load_config(sgme_path=str(yaml_path))
     assert cfg["skills_hub"]["remote"]["source"] == "user@nas:/srv/skills-hub.git"
 
@@ -344,7 +344,6 @@ def test_t257_server_defaults_complete():
         "/v1/answer": 10,
         "/v1/admin/refine": 5,
         "/v1/admin/dream": 5,
-        "/v1/admin/tier0": 5,
         "/v1/wiki": 5,
         "/v1/admin/skills": 5,
     }

@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import json
 
-from sgme.engine.l1 import (
+from sgme.engine.l2_extraction import (
     DOMAIN_TYPES,
     _normalize_dimensions,
     _parse_item,
     _redact_sensitive,
     _validate_item,
-    parse_l1_output,
+    parse_extraction_output,
     reset_violation_counts,
     violation_counts,
 )
@@ -227,7 +227,7 @@ def test_certainty_missing_defaults_confirmed_for_fact_derivation():
 # ---------- 6. 逐条语言判定 ----------
 
 def test_item_lang_drift_only_drops_the_bad_item():
-    from sgme.engine.l1 import _item_lang_drift
+    from sgme.engine.l2_extraction import _item_lang_drift
 
     assert _item_lang_drift({"content": "用户已经收集复古相机三个月了。"}, english_session=True) is True
     assert _item_lang_drift({"content": "User has collected vintage cameras."}, english_session=True) is False
@@ -240,7 +240,7 @@ def test_chinese_item_with_email_is_still_detected_as_drift():
 
     这段来自 v010 的真实产物（p911），必须判为漂移。
     """
-    from sgme.engine.l1 import _item_lang_drift
+    from sgme.engine.l2_extraction import _item_lang_drift
 
     text = ("用户收到来自 Daniel Price（daniel.price@communitysports.org.uk）的邮件，"
             "Daniel 询问用户今年是否仍愿意为下月青年锦标赛提供赞助")
@@ -253,7 +253,7 @@ def test_lang_drift_kept_by_default_in_english_session():
     背景：判会话语言靠字符占比，中文技术会话夹大量英文代码/路径时会被误判成英文会话，
     实测两轮全量分别丢了 23 / 86 条纯中文记忆。检索与语言无关，留比丢安全。
     """
-    from sgme.engine.l1 import _drop_lang_drift_items
+    from sgme.engine.l2_extraction import _drop_lang_drift_items
 
     en_conv = ("user: I have been collecting vintage cameras for months now.\n"
                "assistant: Lovely hobby, which models do you own?\n") * 8
@@ -264,14 +264,14 @@ def test_lang_drift_kept_by_default_in_english_session():
          "dimensions": ["preferences"], "memory_type": "persona", "priority": 70},
     ])
     reset_violation_counts()
-    memories = parse_l1_output(payload, DIMS)
+    memories = parse_extraction_output(payload, DIMS)
     kept = _drop_lang_drift_items(memories, en_conv)
     assert len(kept) == 2, "默认必须保留，包括那条中文"
 
 
 def test_lang_drift_dropped_when_explicitly_enabled():
     """显式 drop=True 时才丢（保留旧口径，供极端场景使用）。"""
-    from sgme.engine.l1 import _drop_lang_drift_items
+    from sgme.engine.l2_extraction import _drop_lang_drift_items
 
     en_conv = ("user: I have been collecting vintage cameras for months now.\n"
                "assistant: Lovely hobby, which models do you own?\n") * 8
@@ -281,7 +281,7 @@ def test_lang_drift_dropped_when_explicitly_enabled():
         {"content": "用户已经收集复古相机三个月了。",
          "dimensions": ["preferences"], "memory_type": "persona", "priority": 70},
     ])
-    memories = parse_l1_output(payload, DIMS)
+    memories = parse_extraction_output(payload, DIMS)
     kept = _drop_lang_drift_items(memories, en_conv, drop=True)
     assert len(kept) == 1
     assert "vintage cameras" in kept[0]["content"]

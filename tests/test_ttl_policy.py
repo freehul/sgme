@@ -4,7 +4,7 @@
 - episodic = min(维度默认, 30)：status 7d 维持、纯静态维 30d（不可一律 30）
 - fact 案 A 变体：动态维随维度 TTL、静态维 90d
 - persona/instruction 维持旧行为（动态随维度、静态 None）
-- l15._store_memory / l2 接线：委托后语义一致
+- l3_adjudicate._store_memory / scene_aggregate 接线：委托后语义一致
 """
 from __future__ import annotations
 
@@ -87,9 +87,9 @@ def test_unknown_type_legacy_behavior():
 
 
 def test_l15_store_memory_wires_memory_type(mem_conn_and_cfg):
-    """l15 落库链：episodic 打静态维 → 落库 ttl=30（C2 生效穿过 _store_memory）。"""
+    """l3_adjudicate 落库链：episodic 打静态维 → 落库 ttl=30（C2 生效穿过 _store_memory）。"""
     conn, cfg = mem_conn_and_cfg
-    from sgme.engine.l15 import _store_memory
+    from sgme.engine.l3_adjudicate import _store_memory
 
     mid = _store_memory(
         conn,

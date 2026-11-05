@@ -30,7 +30,7 @@ def fake_env(monkeypatch):
         "dimensions": [{"id": "status", "display_name": "状态"}],
         "llm": {"chain": []},
     })
-    monkeypatch.setattr("sgme.engine.l1.extract_l1", _fake_extract)
+    monkeypatch.setattr("sgme.engine.l2_extraction.extract_memories", _fake_extract)
 
 
 def test_predictions_schema_and_limit(tmp_path, fake_env):
@@ -51,7 +51,7 @@ def test_dry_run_does_not_call_llm(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise AssertionError("dry-run 不应调用 LLM")
 
-    monkeypatch.setattr("sgme.engine.l1.extract_l1", boom)
+    monkeypatch.setattr("sgme.engine.l2_extraction.extract_memories", boom)
     rc = pp.main(["--dry-run", "--limit", "3", "--out", str(tmp_path / "x.json")])
     assert rc == 0
     assert not (tmp_path / "x.json").exists()
@@ -63,7 +63,7 @@ def test_error_recorded_per_case(tmp_path, fake_env, monkeypatch):
             raise RuntimeError("provider down")
         return _fake_extract(conversation, dimensions, llm_cfg)
 
-    monkeypatch.setattr("sgme.engine.l1.extract_l1", flaky)
+    monkeypatch.setattr("sgme.engine.l2_extraction.extract_memories", flaky)
     out = tmp_path / "preds.json"
     rc = pp.main(["--only", "pa-001,pa-004", "--out", str(out)])
     assert rc == 0

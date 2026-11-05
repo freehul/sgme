@@ -24,7 +24,7 @@ import httpx
 import pytest
 
 from sgme import config
-from sgme.engine import l1, l15 as l15_mod, pipeline as pipeline_mod, refine as refine_mod
+from sgme.engine import l2_extraction, l3_adjudicate as l15_mod, pipeline as pipeline_mod, refine as refine_mod
 from sgme.raw import store
 from sgme.data import db as db_mod, memory_dao, session_dao
 
@@ -92,7 +92,7 @@ def test_l1_parse_passes_supersedes_string(cfg):
         "priority": 80, "time_velocity": "dynamic",
         "source_message_ids": [3], "supersedes": "AIXM",
     }])
-    memories = l1.parse_l1_output(text, cfg["dimensions"])
+    memories = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert memories[0]["supersedes"] == ["AIXM"]
 
 
@@ -104,7 +104,7 @@ def test_l1_parse_passes_supersedes_list(cfg):
         "priority": 80, "time_velocity": "dynamic",
         "source_message_ids": [1], "supersedes": ["AIXM", "旧方案"],
     }])
-    memories = l1.parse_l1_output(text, cfg["dimensions"])
+    memories = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert memories[0]["supersedes"] == ["AIXM", "旧方案"]
 
 
@@ -116,7 +116,7 @@ def test_l1_parse_supersedes_absent_defaults_empty(cfg):
         "priority": 85, "time_velocity": "static",
         "source_message_ids": [1],
     }])
-    memories = l1.parse_l1_output(text, cfg["dimensions"])
+    memories = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert memories[0]["supersedes"] == []
 
 
@@ -133,7 +133,7 @@ def test_l1_parse_supersedes_invalid_types(cfg):
          "priority": 60, "time_velocity": "static", "source_message_ids": [1],
          "supersedes": ["AIXM", "", 7]},
     ])
-    memories = l1.parse_l1_output(text, cfg["dimensions"])
+    memories = l2_extraction.parse_extraction_output(text, cfg["dimensions"])
     assert memories[0]["supersedes"] == []
     assert memories[1]["supersedes"] == []
     assert memories[2]["supersedes"] == ["AIXM"]

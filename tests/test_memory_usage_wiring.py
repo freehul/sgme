@@ -25,7 +25,6 @@ from sgme.mcp_server import ApiKeyMiddleware, mount_mcp
 from sgme.operations import memory_usage as op
 from sgme.operations.inject import inject as inject_operation
 from sgme.operations.search import search as search_operation
-from sgme.profile import tier0 as tier0_mod
 from sgme.server.app import create_app
 
 AGENT_HEADERS = {"X-API-Key": "test-agent-key"}
@@ -44,14 +43,6 @@ def conns(tmp_path, cfg):
     db_mod.close(mem_conn)
     db_mod.close(session_conn)
     db_mod.close(wiki_conn)
-
-
-@pytest.fixture
-def summary_path(tmp_path, monkeypatch):
-    """隔离 tier0 摘要路径（照 test_operations_inject 模式，避免读真实画像文件）。"""
-    p = tmp_path / "tier0_summary.json"
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", p)
-    return p
 
 
 @pytest.fixture
@@ -152,7 +143,7 @@ def test_search_no_hit_writes_nothing(conns, cfg):
     assert _rows(mem_conn) == []
 
 
-def test_inject_mode_records_source_inject(conns, cfg, summary_path):
+def test_inject_mode_records_source_inject(conns, cfg):
     """mode 分支：section_results 即注入集 → inject 行（跨 section 去重后 hits=1）。"""
     mem_conn, _, _ = conns
     mid = _insert(mem_conn, "模式注入记账用例", dims=["identity", "family"])
@@ -226,7 +217,7 @@ def test_record_memory_usage_silent_on_dao_error(conns, monkeypatch):
 # ---------- 4. 入口传参：HTTP 路由 ----------
 
 
-def test_http_inject_route_passes_caller(conns, app, summary_path):
+def test_http_inject_route_passes_caller(conns, app):
     """POST /v1/inject：env 主 key → caller=default（与 search 路由同款反查）。"""
     mem_conn, _, _ = conns
     mid = _insert(mem_conn, "HTTP 注入调用方用例", dims=["goals"])
@@ -317,7 +308,7 @@ def _mcp_call_tool(client, name, arguments, api_key):
     return None
 
 
-def test_mcp_inject_tool_passes_caller(conns, app, summary_path):
+def test_mcp_inject_tool_passes_caller(conns, app):
     """MCP inject 工具经 _usage_caller(ctx) 反查注册 key 绑定 agent_id → caller。"""
     mem_conn, _, _ = conns
     mid = _insert(mem_conn, "MCP 注入调用方用例", dims=["identity", "family"])

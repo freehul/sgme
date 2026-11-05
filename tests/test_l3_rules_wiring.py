@@ -17,7 +17,7 @@ import pytest
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
-from sgme.engine import l15
+from sgme.engine import l3_adjudicate
 
 
 @pytest.fixture
@@ -48,8 +48,8 @@ def _seed(conn, content: str) -> str:
     )
 
 
-def _group(idx: int, new_mem: dict, cands: list[dict]) -> l15.CandidateGroup:
-    return l15.CandidateGroup(new_memory_index=idx, new_memory=new_mem, candidates=cands)
+def _group(idx: int, new_mem: dict, cands: list[dict]) -> l3_adjudicate.CandidateGroup:
+    return l3_adjudicate.CandidateGroup(new_memory_index=idx, new_memory=new_mem, candidates=cands)
 
 
 def test_exact_duplicate_decided_by_rules_without_llm(conn):
@@ -57,7 +57,7 @@ def test_exact_duplicate_decided_by_rules_without_llm(conn):
     cand = {"memory_id": old, "content": "用户偏好全程中文沟通", "subject": "self"}
     new = {"content": "用户偏好全程中文沟通", "subject": "self", "dimension_ids": ["preferences"]}
 
-    decisions, remaining = l15._apply_l3_rules(
+    decisions, remaining = l3_adjudicate._apply_l3_rules(
         conn, [_group(0, new, [cand])], set(), {},
     )
     assert decisions[0].action == "skip"
@@ -74,7 +74,7 @@ def test_explicit_change_signal_supersedes(conn):
         "dimension_ids": ["preferences"],
     }
 
-    decisions, remaining = l15._apply_l3_rules(
+    decisions, remaining = l3_adjudicate._apply_l3_rules(
         conn, [_group(0, new, [cand])], set(), {},
     )
     assert decisions[0].action == "update", "显式改口应走 update（旧记忆归档不删）"
@@ -92,7 +92,7 @@ def test_gray_zone_goes_to_llm(conn):
         "dimension_ids": ["preferences"],
     }
 
-    decisions, remaining = l15._apply_l3_rules(
+    decisions, remaining = l3_adjudicate._apply_l3_rules(
         conn, [_group(0, new, [cand])], set(), {},
     )
     assert remaining, "灰区必须留给 LLM，不能规则直接吞掉"

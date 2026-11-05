@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sgme import config as sgme_config
-from sgme.engine import l1
+from sgme.engine import l2_extraction
 from sgme.llm import chain as llm_chain
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
@@ -70,10 +70,10 @@ def raw_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def mock_llm(monkeypatch):
     """mock L1 + L1.5 LLM 调用。"""
-    # L1: 替换 extract_l1
-    def fake_extract_l1(conversation, dimensions, llm_cfg, client=None, **kwargs):
+    # L1: 替换 extract_memories
+    def fake_extract_memories(conversation, dimensions, llm_cfg, client=None, **kwargs):
         return json.loads(_L1_OUTPUT), "mock", {"stage": "l1_extraction", "version": "working-mock", "variant": None}
-    monkeypatch.setattr(l1, "extract_l1", fake_extract_l1)
+    monkeypatch.setattr(l2_extraction, "extract_memories", fake_extract_memories)
 
     # L1.5: 替换 call_with_fallback（L1.5 prompt 含 "新记忆#"）
     # v0.5 契约：返回三元组 (text, provider_name, usage)
@@ -144,7 +144,7 @@ def test_e2e_full_pipeline(client, raw_dir):
     body = r.json()
     assert body["status"] == "refined"
     assert body["memories_count"] >= 1
-    assert body["l15"]["stored"] >= 1
+    assert body["l3_adjudicate"]["stored"] >= 1
 
     # 4. inject: blocks ≥ 1
     r = client.post("/v1/inject", json={"mode": "daily"}, headers=AGENT)

@@ -550,6 +550,8 @@ def test_refine_runs_item_shape_and_filters(client, seeded):
         "run_id", "file_id", "stage", "version", "provider", "status", "error",
         "started_at", "finished_at", "memories_count", "action_counts",
         "prompt_tokens", "completion_tokens", "total_tokens",
+        # 2.0 展示层附加字段（stage_map 口径，原始 stage 键保留；契约 §5.5 扩展）
+        "stage_label",
     }
     # action_counts 按库内 JSON 字符串原样透传
     assert isinstance(body["items"][0]["action_counts"], str)

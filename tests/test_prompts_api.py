@@ -25,7 +25,6 @@ ADMIN_HEADERS = {"X-API-Key": "test-admin-key"}
 AGENT_HEADERS = {"X-API-Key": "test-agent-key"}
 
 STAGE_TEXTS = {
-    "tier0_summary": "你是摘要器。\n{{memories}}",
     "l1_extraction": "你是提取器。\n{{dimensions}}\n{{conversation}}",
     "l1_conflict": "你是裁决器。\n{{new_memories}}\n{{candidates}}",
     "l2_scene": "你是聚合器。\n{{new_memories}}\n{{existing_scenes}}\n{{max_scenes}}",
@@ -43,7 +42,7 @@ def raw_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def prompts_root(tmp_path):
-    """隔离 prompts 目录（4 个工作副本 + manifest 全 @working）。"""
+    """隔离 prompts 目录（3 个工作副本 + manifest 全 @working；tier0_summary 已随 D-79 退役）。"""
     root = tmp_path / "prompts"
     root.mkdir()
     for stage, text in STAGE_TEXTS.items():
@@ -53,10 +52,8 @@ def prompts_root(tmp_path):
 
 @pytest.fixture
 def app(tmp_path, monkeypatch, raw_dir, prompts_root):
-    from sgme.profile import tier0 as tier0_mod
     from sgme.server.app import create_app
 
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", tmp_path / "tier0_summary.json")
     monkeypatch.setattr(PromptStore, "PROMPTS_ROOT", prompts_root)
     monkeypatch.setattr(PromptStore, "MANIFEST_PATH", prompts_root / "manifest.yaml")
     monkeypatch.delenv("SGME_BEARER_TOKEN", raising=False)
@@ -82,15 +79,15 @@ def client(app):
 # ---------- list ----------
 
 def test_prompts_list_default_working(client):
-    """默认 @working：列出 4 stage，active=@working，versions 空。"""
+    """默认 @working：列出 3 stage，active=@working，versions 空。"""
     resp = client.get("/v1/admin/prompts", headers=ADMIN_HEADERS)
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert len(body["stages"]) == 4
-    l1 = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
-    assert l1["active"] == "@working"
-    assert l1["ab"]["enabled"] is False
-    assert l1["versions"] == []
+    assert len(body["stages"]) == 3
+    l2_extraction = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
+    assert l2_extraction["active"] == "@working"
+    assert l2_extraction["ab"]["enabled"] is False
+    assert l2_extraction["versions"] == []
 
 
 def test_prompts_list_after_publish(client):
@@ -98,10 +95,10 @@ def test_prompts_list_after_publish(client):
     client.post("/v1/admin/prompts/publish", json={"stage": "l1_extraction", "note": "基线"},
                 headers=ADMIN_HEADERS)
     body = client.get("/v1/admin/prompts", headers=ADMIN_HEADERS).json()
-    l1 = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
-    assert l1["versions"][0]["version"] == "v001"
-    assert l1["versions"][0]["sha256"]
-    assert l1["versions"][0]["note"] == "基线"
+    l2_extraction = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
+    assert l2_extraction["versions"][0]["version"] == "v001"
+    assert l2_extraction["versions"][0]["sha256"]
+    assert l2_extraction["versions"][0]["note"] == "基线"
 
 
 # ---------- publish ----------
@@ -146,15 +143,15 @@ def test_activate_pinned_and_working(client):
                        headers=ADMIN_HEADERS)
     assert resp.status_code == 200
     body = client.get("/v1/admin/prompts", headers=ADMIN_HEADERS).json()
-    l1 = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
-    assert l1["active"] == "v001"
+    l2_extraction = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
+    assert l2_extraction["active"] == "v001"
 
     client.post("/v1/admin/prompts/activate",
                 json={"stage": "l1_extraction", "version_ref": "@working"},
                 headers=ADMIN_HEADERS)
     body = client.get("/v1/admin/prompts", headers=ADMIN_HEADERS).json()
-    l1 = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
-    assert l1["active"] == "@working"
+    l2_extraction = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
+    assert l2_extraction["active"] == "@working"
 
 
 def test_activate_missing_version_400(client):
@@ -180,18 +177,18 @@ def test_ab_configure_and_disable(client):
                        headers=ADMIN_HEADERS)
     assert resp.status_code == 200, resp.text
     body = client.get("/v1/admin/prompts", headers=ADMIN_HEADERS).json()
-    l1 = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
-    assert l1["ab"]["enabled"] is True
-    assert l1["ab"]["split"] == 0.3
-    assert l1["ab"]["bucket_by"] == "file_id"
+    l2_extraction = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
+    assert l2_extraction["ab"]["enabled"] is True
+    assert l2_extraction["ab"]["split"] == 0.3
+    assert l2_extraction["ab"]["bucket_by"] == "file_id"
 
     resp2 = client.post("/v1/admin/prompts/ab",
                         json={"stage": "l1_extraction", "enabled": False},
                         headers=ADMIN_HEADERS)
     assert resp2.status_code == 200
     body = client.get("/v1/admin/prompts", headers=ADMIN_HEADERS).json()
-    l1 = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
-    assert l1["ab"]["enabled"] is False
+    l2_extraction = next(s for s in body["stages"] if s["stage"] == "l1_extraction")
+    assert l2_extraction["ab"]["enabled"] is False
 
 
 def test_ab_invalid_400(client):

@@ -27,7 +27,6 @@ from sgme.prompts import (
 # ---------- fixtures ----------
 
 STAGE_TEXTS = {
-    "tier0_summary": "你是摘要器。\n{{memories}}",
     "l1_extraction": "你是提取器。\n{{dimensions}}\n{{conversation}}",
     "l1_conflict": "你是裁决器。\n{{new_memories}}\n{{candidates}}",
     "l2_scene": "你是聚合器。\n{{new_memories}}\n{{existing_scenes}}\n{{max_scenes}}",
@@ -36,7 +35,7 @@ STAGE_TEXTS = {
 
 @pytest.fixture
 def prompts_root(tmp_path):
-    """构造临时 prompts 目录：4 个工作副本（含占位符）。"""
+    """构造临时 prompts 目录：3 个工作副本（含占位符；tier0_summary 已随 D-79 退役）。"""
     root = tmp_path / "prompts"
     root.mkdir()
     for stage, text in STAGE_TEXTS.items():

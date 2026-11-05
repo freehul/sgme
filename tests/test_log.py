@@ -100,7 +100,7 @@ def test_config_parse_missing_section_defaults() -> None:
     expected = {"level": DEFAULT_LEVEL, "format": DEFAULT_FORMAT, "output": None}
     assert parse_logging_config(None) == expected
     assert parse_logging_config({}) == expected
-    assert parse_logging_config({"l2": {"max_scenes": 5}}) == expected
+    assert parse_logging_config({"scene_aggregate": {"max_scenes": 5}}) == expected
 
 
 def test_config_parse_invalid_values_raise() -> None:

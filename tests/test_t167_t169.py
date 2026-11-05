@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from sgme.data import db as db_mod, memory_dao
-from sgme.engine.l15 import _exact_dup_check
+from sgme.engine.l3_adjudicate import _exact_dup_check
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_exact_dup_check_ignores_non_active(mem_conn):
 def test_persist_short_circuits_exact_duplicate(mem_conn, monkeypatch):
     """T-167 集成：persist_memories 对全池已有 content 的新记忆短路为 skip，不落库。"""
     conn, cfg = mem_conn
-    from sgme.engine.l15 import resolve_conflicts
+    from sgme.engine.l3_adjudicate import resolve_conflicts
 
     existing = memory_dao.insert_memory(
         conn, content="重复内容：用户每天通勤 45 分钟", memory_type="fact",
@@ -89,9 +89,7 @@ def test_refine_status_http_endpoint(tmp_path, monkeypatch):
 
     from sgme import config as sgme_config
     from sgme.data import db as db_mod
-    from sgme.profile import tier0 as tier0_mod
 
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", tmp_path / "tier0_summary.json")
     monkeypatch.setenv("SGME_CONFIG_PATH", str(tmp_path / "sgme_test.yaml"))
     cfg = sgme_config.load_config()
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")

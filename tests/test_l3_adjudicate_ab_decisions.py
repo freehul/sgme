@@ -1,6 +1,6 @@
 """ST-58/T-296：L1.5 决策级 A/B 对照器的语料不变量与对照逻辑单测。
 
-**不跑真 LLM**（真链路对照见 `eval/l15_ab_decisions.py` 实跑报告）——本文件只锁：
+**不跑真 LLM**（真链路对照见 `eval/l3_adjudicate_ab_decisions.py` 实跑报告）——本文件只锁：
 ① 语料的确定性/覆盖度不变量（否则门禁测不出东西）；
 ② 一致率/准确率/成本聚合的纯逻辑（这部分错了会给出**假绿灯**，必须锁死）；
 ③ 单变量保证（臂只改声明的配置项）。
@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from eval import l15_ab_decisions as H
-from eval import l15_decision_corpus as C
+from eval import l3_adjudicate_ab_decisions as H
+from eval import l3_adjudicate_decision_corpus as C
 
 
 # ---------- 语料不变量 ----------
@@ -251,9 +251,9 @@ def test_build_cfg_applies_only_declared_overrides():
                   use_vector=False)
     base = H.build_cfg(H.ARMS["baseline"], **kwargs)
     arm = H.build_cfg(H.ARMS["b2_30_30"], **kwargs)
-    assert base["l15"]["prescreen"]["vector_top_k"] == 50
-    assert arm["l15"]["prescreen"]["vector_top_k"] == 30
-    assert arm["l15"]["prescreen"]["dimension_top_n"] == 30
+    assert base["l3_adjudicate"]["prescreen"]["vector_top_k"] == 50
+    assert arm["l3_adjudicate"]["prescreen"]["vector_top_k"] == 30
+    assert arm["l3_adjudicate"]["prescreen"]["dimension_top_n"] == 30
     # 其余段落必须逐字段一致
     assert base["llm"] == arm["llm"]
     assert base["search"] == arm["search"]
@@ -291,7 +291,7 @@ def test_summarize_costs_reports_providers():
 
 def test_probe_ranks_output_shape(monkeypatch, tmp_path):
     """排名探针的输出结构（不真连向量/LLM：桩掉 build_candidate_groups）。"""
-    from sgme.engine import l15 as l15_mod
+    from sgme.engine import l3_adjudicate as l15_mod
 
     class _G:
         def __init__(self, ids):

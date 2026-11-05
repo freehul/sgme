@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from sgme import config
-from sgme.engine import l2, refine
+from sgme.engine import scene_aggregate, refine
 from sgme.raw import store
 from sgme.data import db as db_mod, memory_dao, scene_dao, session_dao
 
@@ -81,59 +81,59 @@ def _make_memory(content="x", dim_ids=("tech_stack",), memory_id=None, **kw):
     }
 
 
-# ---------- render_l2 ----------
+# ---------- render_scene ----------
 
-def test_render_l2_replaces_placeholders(cfg):
-    """render_l2 替换 {{new_memories}} / {{existing_scenes}} / {{max_scenes}}。"""
+def test_render_scene_replaces_placeholders(cfg):
+    """render_scene 替换 {{new_memories}} / {{existing_scenes}} / {{max_scenes}}。"""
     mem = _make_memory(content="用户用 Python", dim_ids=["tech_stack"])
     scenes = [{"scene_id": "s1", "title": "工作", "content": "工作场景正文" * 50}]
-    prompt = l2.render_l2([mem], scenes, cfg)
+    prompt = scene_aggregate.render_scene([mem], scenes, cfg)
     assert "{{new_memories}}" not in prompt
     assert "{{existing_scenes}}" not in prompt
     assert "{{max_scenes}}" not in prompt
     assert "用户用 Python" in prompt
     assert "s1" in prompt
-    # max_scenes 来自 cfg['l2']['max_scenes']
-    assert str(cfg["l2"]["max_scenes"]) in prompt
+    # max_scenes 来自 cfg['scene_aggregate']['max_scenes']
+    assert str(cfg["scene_aggregate"]["max_scenes"]) in prompt
 
 
-# ---------- parse_l2_output ----------
+# ---------- parse_scene_output ----------
 
-def test_parse_l2_output_valid():
+def test_parse_scene_output_valid():
     """合法 JSON 数组 → 动作列表。"""
     text = json.dumps([
         {"action": "create", "target_scene_id": "s-new",
          "merged_content": "# 新\n正文", "reason": "新主题"},
     ])
-    actions = l2.parse_l2_output(text)
+    actions = scene_aggregate.parse_scene_output(text)
     assert len(actions) == 1
     assert actions[0]["action"] == "create"
     assert actions[0]["target_scene_id"] == "s-new"
     assert actions[0]["merged_content"] == "# 新\n正文"
 
 
-def test_parse_l2_output_markdown_block():
+def test_parse_scene_output_markdown_block():
     """```json 包裹 → 仍能解析。"""
     text = '```json\n[{"action":"create","target_scene_id":"s1","merged_content":"# x","reason":"r"}]\n```'
-    actions = l2.parse_l2_output(text)
+    actions = scene_aggregate.parse_scene_output(text)
     assert len(actions) == 1
     assert actions[0]["action"] == "create"
 
 
-def test_parse_l2_output_bad_json_raises():
-    """坏 JSON → L2Error。"""
-    with pytest.raises(l2.L2Error):
-        l2.parse_l2_output("not json at all")
+def test_parse_scene_output_bad_json_raises():
+    """坏 JSON → SceneAggregateError。"""
+    with pytest.raises(scene_aggregate.SceneAggregateError):
+        scene_aggregate.parse_scene_output("not json at all")
 
 
-def test_parse_l2_output_invalid_action_raises():
-    """非法 action → L2Error。"""
+def test_parse_scene_output_invalid_action_raises():
+    """非法 action → SceneAggregateError。"""
     text = json.dumps([
         {"action": "delete", "target_scene_id": "s1",
          "merged_content": "# x", "reason": "r"},
     ])
-    with pytest.raises(l2.L2Error):
-        l2.parse_l2_output(text)
+    with pytest.raises(scene_aggregate.SceneAggregateError):
+        scene_aggregate.parse_scene_output(text)
 
 
 # ---------- aggregate: create ----------
@@ -147,7 +147,7 @@ def test_aggregate_create_new_scene(mem_conn, cfg):
          "merged_content": "# Rust 学习\n用户开始学 Rust", "reason": "新主题"},
     ])
     cli = _mock_llm_client(body)
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     # create 场景 id 由系统生成（不信 LLM 编造的假 uuid）
     assert len(result.created) == 1
     created_sid = result.created[0]
@@ -178,7 +178,7 @@ def test_aggregate_update_existing_scene(mem_conn, cfg):
          "merged_content": "# 工作\n新正文含新项目", "reason": "补充进展"},
     ])
     cli = _mock_llm_client(body)
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     assert sid in result.updated
     scene = scene_dao.get_scene(mem_conn, sid)
     assert scene["heat"] == 2  # 1 + 1
@@ -223,7 +223,7 @@ def test_aggregate_merge_archives_old(mem_conn, cfg):
          "merged_from": [sid1, sid2], "reason": "主题重合"},
     ])
     cli = _mock_llm_client(body)
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     # merge 新场景 id 由系统生成
     assert len(result.merged) == 1
     merged_sid = result.merged[0]
@@ -243,7 +243,7 @@ def test_aggregate_merge_archives_old(mem_conn, cfg):
 
 def test_aggregate_empty_memories_returns_empty(mem_conn, cfg):
     """空输入 → 空结果。"""
-    result = l2.aggregate([], mem_conn, cfg)
+    result = scene_aggregate.aggregate([], mem_conn, cfg)
     assert result.created == []
     assert result.updated == []
     assert result.merged == []
@@ -260,7 +260,7 @@ def test_aggregate_llm_failure_marks_error(mem_conn, cfg):
         raise httpx.ConnectError("connection refused")
     cli = httpx.Client(transport=httpx.MockTransport(handler), trust_env=False)
     mem = _make_memory(content="x", dim_ids=["tech_stack"])
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     assert result.error is not None
     assert result.anomaly_warn is True
     assert result.created == []
@@ -272,7 +272,7 @@ def test_aggregate_bad_json_marks_error(mem_conn, cfg):
     """LLM 返回坏 JSON → error + anomaly_warn（不重试）。"""
     mem = _make_memory(content="x", dim_ids=["tech_stack"])
     cli = _mock_llm_client("not json at all")
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     assert result.error is not None
     assert result.anomaly_warn is True
     assert result.created == []
@@ -289,7 +289,7 @@ def test_aggregate_records_refine_run(mem_conn, cfg):
          "merged_content": "# Rust 学习\n用户开始学 Rust", "reason": "新主题"},
     ])
     cli = _mock_llm_client(body)
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     assert len(result.created) == 1
     # prompt_meta
     assert result.prompt_meta is not None
@@ -322,7 +322,7 @@ def test_prescreen_disabled_keeps_legacy(mem_conn, cfg, monkeypatch):
     的正确行为（场景正文变更需保持向量一致），与预筛无关，此处不拦。
     """
     from sgme.data.search import vector as vector_mod
-    cfg.setdefault("l2", {})["prescreen"] = {"enabled": False}
+    cfg.setdefault("scene_aggregate", {})["prescreen"] = {"enabled": False}
     sid = str(uuid.uuid4())
     scene_dao.insert_scene(mem_conn, scene_id=sid, title="工作", content="# 工作\n旧正文")
     called = {"svs": 0}
@@ -338,7 +338,7 @@ def test_prescreen_disabled_keeps_legacy(mem_conn, cfg, monkeypatch):
          "merged_content": "# 工作\n新正文", "reason": "补充"},
     ])
     cli = _mock_llm_client(body)
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     assert sid in result.updated
     assert called["svs"] == 0  # 未启用 → 不碰场景向量预筛
 
@@ -346,7 +346,7 @@ def test_prescreen_disabled_keeps_legacy(mem_conn, cfg, monkeypatch):
 def test_prescreen_uses_vector_topk(mem_conn, cfg, monkeypatch):
     """预筛启用：向量 Top-K 命中的场景被喂给 LLM → update 命中该场景。"""
     from sgme.data.search import vector as vector_mod
-    cfg.setdefault("l2", {})["prescreen"] = {"enabled": True, "vector_top_k": 5, "heat_top_n": 5}
+    cfg.setdefault("scene_aggregate", {})["prescreen"] = {"enabled": True, "vector_top_k": 5, "heat_top_n": 5}
     sid = str(uuid.uuid4())
     scene_dao.insert_scene(mem_conn, scene_id=sid, title="Rust", content="# Rust\n用户学 Rust")
     other = str(uuid.uuid4())
@@ -365,13 +365,13 @@ def test_prescreen_uses_vector_topk(mem_conn, cfg, monkeypatch):
          "merged_content": "# Rust\n用户学 Rust 进阶", "reason": "补充"},
     ])
     cli = _mock_llm_client(body)
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     assert sid in result.updated
 
 
 def test_prescreen_fallback_when_embed_unavailable(mem_conn, cfg):
     """预筛启用但 embed 不可达（autouse fixture）→ 回退固定 50 摘要（零回归）。"""
-    cfg.setdefault("l2", {})["prescreen"] = {"enabled": True}
+    cfg.setdefault("scene_aggregate", {})["prescreen"] = {"enabled": True}
     sid = str(uuid.uuid4())
     scene_dao.insert_scene(mem_conn, scene_id=sid, title="工作", content="# 工作\n旧正文")
     mem = _make_memory(content="用户换了新项目", dim_ids=["projects"])
@@ -380,7 +380,7 @@ def test_prescreen_fallback_when_embed_unavailable(mem_conn, cfg):
          "merged_content": "# 工作\n新正文", "reason": "补充"},
     ])
     cli = _mock_llm_client(body)
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     assert sid in result.updated
 
 
@@ -404,7 +404,7 @@ def test_prescreen_union_dedup(mem_conn, cfg, monkeypatch):
     )
 
     prescreen = {"enabled": True, "vector_top_k": 10, "heat_top_n": 2}
-    cands = l2._prescreen_scenes(mem_conn, [_make_memory(content="A")], cfg, prescreen)
+    cands = scene_aggregate._prescreen_scenes(mem_conn, [_make_memory(content="A")], cfg, prescreen)
     ids = [c["scene_id"] for c in cands]
     # 向量（A,C）+ 热度 top2（A,B）并集 → A,B,C 各一次，无重复
     assert len(ids) == len(set(ids)) == 3
@@ -417,7 +417,7 @@ def test_aggregate_create_backfills_scene_vector(mem_conn, cfg, monkeypatch):
     回归保护：upsert_scene_vector 此前无调用方，新建场景无向量 → 预筛不可见。
     """
     from sgme.data.search import vector as vector_mod
-    cfg.setdefault("l2", {})["prescreen"] = {"enabled": True}
+    cfg.setdefault("scene_aggregate", {})["prescreen"] = {"enabled": True}
     # embed 返回固定向量 → upsert 走真实落库
     monkeypatch.setattr(vector_mod, "embed", lambda text, cfg, client=None: [0.1, 0.2, 0.3])
 
@@ -427,7 +427,7 @@ def test_aggregate_create_backfills_scene_vector(mem_conn, cfg, monkeypatch):
          "merged_content": "# Rust 学习\n用户开始学 Rust", "reason": "新主题"},
     ])
     cli = _mock_llm_client(body)
-    result = l2.aggregate([mem], mem_conn, cfg, client=cli)
+    result = scene_aggregate.aggregate([mem], mem_conn, cfg, client=cli)
     assert len(result.created) == 1
     created_sid = result.created[0]
     # scene_vectors 已有该场景的向量行
@@ -442,38 +442,38 @@ def test_aggregate_create_backfills_scene_vector(mem_conn, cfg, monkeypatch):
 
 def test_check_scene_threshold_yellow(mem_conn, cfg):
     """场景数 >= yellow 阈值 → ('yellow', N)。"""
-    cfg["l2"]["warn_thresholds"] = {"yellow": 2, "orange": 3, "red": 4}
+    cfg["scene_aggregate"]["warn_thresholds"] = {"yellow": 2, "orange": 3, "red": 4}
     for i in range(2):
         scene_dao.insert_scene(
             mem_conn, scene_id=str(uuid.uuid4()),
             title=f"s{i}", content=f"# s{i}",
         )
-    level, count = l2.check_scene_threshold(mem_conn, cfg)
+    level, count = scene_aggregate.check_scene_threshold(mem_conn, cfg)
     assert level == "yellow"
     assert count == 2
 
 
 def test_check_scene_threshold_red(mem_conn, cfg):
     """场景数 >= red 阈值 → ('red', N)。"""
-    cfg["l2"]["warn_thresholds"] = {"yellow": 2, "orange": 3, "red": 4}
+    cfg["scene_aggregate"]["warn_thresholds"] = {"yellow": 2, "orange": 3, "red": 4}
     for i in range(4):
         scene_dao.insert_scene(
             mem_conn, scene_id=str(uuid.uuid4()),
             title=f"s{i}", content=f"# s{i}",
         )
-    level, count = l2.check_scene_threshold(mem_conn, cfg)
+    level, count = scene_aggregate.check_scene_threshold(mem_conn, cfg)
     assert level == "red"
     assert count == 4
 
 
 def test_check_scene_threshold_under_limit(mem_conn, cfg):
     """未达 yellow 阈值 → (None, N)。"""
-    cfg["l2"]["warn_thresholds"] = {"yellow": 5, "orange": 10, "red": 20}
+    cfg["scene_aggregate"]["warn_thresholds"] = {"yellow": 5, "orange": 10, "red": 20}
     scene_dao.insert_scene(
         mem_conn, scene_id=str(uuid.uuid4()),
         title="only", content="# only",
     )
-    level, count = l2.check_scene_threshold(mem_conn, cfg)
+    level, count = scene_aggregate.check_scene_threshold(mem_conn, cfg)
     assert level is None
     assert count == 1
 
@@ -482,7 +482,7 @@ def test_check_scene_threshold_under_limit(mem_conn, cfg):
 
 def test_refine_file_triggers_l2(raw_dir, mem_conn, session_conn, cfg):
     """refine_file 完成后 wiki.db 出现 active 场景行（L1 + L2 串联）。"""
-    fid = "f-l2-integration"
+    fid = "f-scene_aggregate-integration"
     msgs = [
         {"timestamp": "2026-08-04T10:00:00Z", "role": "user",
          "content": "我开始用 Rust 写新项目"},
@@ -528,6 +528,9 @@ def test_refine_file_triggers_l2(raw_dir, mem_conn, session_conn, cfg):
             sources=[(fid, "session")],
         )
         m["memory_id"] = mid
+    # D-53 / 收尾 A1（2026-11-05）：场景层默认冻结（scene_aggregate.enabled=false），
+    # 本用例专测 L2 场景链路 → 显式开启，避免默认值变化把用例变成假绿/假红。
+    cfg["scene_aggregate"]["enabled"] = True
     refine.finalize_refinement(result, mem_conn, cfg, client=cli)
     # wiki.db 出现 active 场景（id 由系统生成）
     scenes = scene_dao.list_active_scenes(mem_conn, limit=10)
@@ -540,7 +543,7 @@ def test_refine_file_triggers_l2(raw_dir, mem_conn, session_conn, cfg):
 
 # ---------- B168 解析容错 ----------
 
-def test_parse_l2_output_unbalanced_brackets():
+def test_parse_scene_output_unbalanced_brackets():
     """外层数组缺 "]"（实测真实主因）→ 括号平衡修复后解析成功。
 
     形态取自真实失败样本：json 报 Expecting ',' delimiter 且位置黏在
@@ -548,67 +551,67 @@ def test_parse_l2_output_unbalanced_brackets():
     """
     text = ('[{"action":"create","target_scene_id":"s1",'
             '"merged_content":"# x","memory_ids":["m1"],"merged_from":[]}')
-    actions = l2.parse_l2_output(text)
+    actions = scene_aggregate.parse_scene_output(text)
     assert len(actions) == 1
     assert actions[0]["action"] == "create"
 
 
-def test_parse_l2_output_extra_closing_brace():
+def test_parse_scene_output_extra_closing_brace():
     """末尾多出一个 "}"（实测另一形态）→ 丢弃多余闭合符后解析成功。"""
     text = ('[{"action":"create","target_scene_id":"s1",'
             '"merged_content":"# x","memory_ids":["m1"],"merged_from":[]}]}')
-    actions = l2.parse_l2_output(text)
+    actions = scene_aggregate.parse_scene_output(text)
     assert len(actions) == 1
     assert actions[0]["target_scene_id"] == "s1"
 
 
-def test_parse_l2_output_bracket_in_content_not_misjudged():
+def test_parse_scene_output_bracket_in_content_not_misjudged():
     """正文里含未配对的括号（引号内）→ 不计入配平，不被误改。"""
     text = ('[{"action":"create","target_scene_id":"s1",'
             '"merged_content":"代码用 { 和 ] 混排，还有半句 \\"引号",'
             '"memory_ids":["m1"],"merged_from":[]}]')
-    actions = l2.parse_l2_output(text)
+    actions = scene_aggregate.parse_scene_output(text)
     assert len(actions) == 1
     assert "{ 和 ]" in actions[0]["merged_content"]
 
 
-def test_parse_l2_output_missing_comma_after_string_value():
+def test_parse_scene_output_missing_comma_after_string_value():
     """字符串值后直接跟下一个键（漏逗号）→ 自动补逗号，解析成功。
 
     实测最高频场景：merged_content 长正文后漏逗号（评测日志 88 次失败全为此类）。
     """
     text = ('[{"action":"create","target_scene_id":"s1",'
             '"merged_content":"# x" "reason":"r"}]')
-    actions = l2.parse_l2_output(text)
+    actions = scene_aggregate.parse_scene_output(text)
     assert len(actions) == 1
     assert actions[0]["action"] == "create"
     assert actions[0]["merged_content"] == "# x"
     assert actions[0]["reason"] == "r"
 
 
-def test_parse_l2_output_missing_comma_between_array_items():
+def test_parse_scene_output_missing_comma_between_array_items():
     """数组元素之间漏逗号 → 自动补逗号。"""
     text = ('[{"action":"create","target_scene_id":"s1",'
             '"merged_content":"# x","reason":"r",'
             '"memory_ids":["m1" "m2"]}]')
-    actions = l2.parse_l2_output(text)
+    actions = scene_aggregate.parse_scene_output(text)
     assert len(actions) == 1
     assert actions[0]["action"] == "create"
 
 
-def test_parse_l2_output_missing_comma_multiple():
+def test_parse_scene_output_missing_comma_multiple():
     """多处漏逗号（含对象之间）→ 全部修复。"""
     text = ('[{"action":"create","target_scene_id":"s1",'
             '"merged_content":"# x" "reason":"r"},'
             '{"action":"update","target_scene_id":"s2",'
             '"merged_content":"# y" "reason":"r2"}]')
-    actions = l2.parse_l2_output(text)
+    actions = scene_aggregate.parse_scene_output(text)
     assert len(actions) == 2
     assert [a["action"] for a in actions] == ["create", "update"]
     assert actions[1]["reason"] == "r2"
 
 
-def test_parse_l2_output_comma_repair_has_bounded_attempts():
-    """非缺逗号的坏 JSON 仍抛 L2Error（修复器不吞错、不死循环）。"""
-    with pytest.raises(l2.L2Error):
-        l2.parse_l2_output('[{"action":"create" "target_scene_id":"s1"')
+def test_parse_scene_output_comma_repair_has_bounded_attempts():
+    """非缺逗号的坏 JSON 仍抛 SceneAggregateError（修复器不吞错、不死循环）。"""
+    with pytest.raises(scene_aggregate.SceneAggregateError):
+        scene_aggregate.parse_scene_output('[{"action":"create" "target_scene_id":"s1"')

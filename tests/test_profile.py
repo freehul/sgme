@@ -5,7 +5,7 @@
 - extends 继承展开
 - query_section：TTL 过滤 / 排序 / time_window / match / priority_min 下推
 - build_inject_blocks：blocks + stats
-- Tier0 降级：摘要不存在 → present:false
+- 注入：Tier0 已随 D-79 砍除，画像由 core 记忆卡承担
 
 T-203（2026-09-25）：注入层三项修正 —— match:any / F1 排序改 updated_at /
 G1 priority_min 下推 SQL / G2 style 维度并入 preferences。
@@ -490,24 +490,6 @@ def test_build_inject_blocks_structure(cfg):
     assert result["stats"]["tokens_est"] > 0
     assert result["blocks"][0]["title"] == "段1"
     assert result["blocks"][0]["items"][0]["content"] == "用户是开发者"
-
-
-def test_build_inject_blocks_tier0_absent_present_false(cfg):
-    """Tier0 摘要不存在 → 静态维度直出（stats.tier0_present=False）。"""
-    t = {"name": "test", "sections": [{"title": "x", "query": {"dimensions": ["identity"], "limit": 5}}]}
-    result = inject.build_inject_blocks(t, [[]], tier0_summary=None)
-    assert result["stats"]["tier0_present"] is False
-    # 无 tier0 摘要 block
-    assert all(b["title"] != "画像摘要" for b in result["blocks"])
-
-
-def test_build_inject_blocks_tier0_present(cfg):
-    """Tier0 摘要存在 → 第一个 block 是画像摘要。"""
-    t = {"name": "test", "sections": [{"title": "x", "query": {"dimensions": ["identity"], "limit": 5}}]}
-    result = inject.build_inject_blocks(t, [[]], tier0_summary="用户摘要文本")
-    assert result["stats"]["tier0_present"] is True
-    assert result["blocks"][0]["title"] == "画像摘要"
-    assert result["blocks"][0]["present"] is True
 
 
 def test_build_inject_blocks_relative_time(mem_conn, cfg):

@@ -24,9 +24,6 @@ def raw_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def app(tmp_path, monkeypatch, raw_dir):
-    from sgme.profile import tier0 as tier0_mod
-
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", tmp_path / "tier0_summary.json")
     cfg = sgme_config.load_config()
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])

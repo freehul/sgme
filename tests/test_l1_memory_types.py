@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from sgme import config as sgme_config
-from sgme.engine.l1 import VALID_MEMORY_TYPES, _validate_item
+from sgme.engine.l2_extraction import VALID_MEMORY_TYPES, _validate_item
 
 
 def _cfg():

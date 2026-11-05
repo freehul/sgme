@@ -46,11 +46,6 @@ def raw_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def app(tmp_path, cfg, raw_dir, monkeypatch):
     """创建隔离的 FastAPI 应用（tmp_path data/ + raw/）。"""
-    from sgme.profile import tier0 as tier0_mod
-
-    # 隔离 tier0_summary.json（防真实 data/ 摘要污染测试）
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", tmp_path / "tier0_summary.json")
-
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
     app = create_app(
@@ -276,14 +271,14 @@ def test_append_invalid_content_returns_400(client):
 # ---------- /v1/inject ----------
 
 def test_inject_daily_returns_blocks_and_stats(client):
-    """/v1/inject mode=daily → blocks + stats + tier0。"""
+    """/v1/inject mode=daily → blocks + stats（D-79 后不再有 tier0 字段）。"""
     resp = client.post("/v1/inject", json={"mode": "daily"}, headers=AGENT_HEADERS)
     assert resp.status_code == 200
     body = resp.json()
     assert "blocks" in body
     assert "stats" in body
     assert body["stats"]["mode"] == "daily"
-    assert body["tier0"]["present"] is False
+    assert "tier0" not in body  # D-79（2026-11-05）：Tier0 字段已砍
 
 
 def test_inject_custom_filter(client):
@@ -437,9 +432,9 @@ def test_health_watermark_advances_after_refine(client, raw_dir, monkeypatch):
 
     # mock LLM 注入到 app.state（refine 会调 LLM）
     from sgme.engine import refine as refine_mod
-    from sgme.engine import l1
+    from sgme.engine import l2_extraction
 
-    def fake_extract_l1(conversation, dimensions, llm_cfg, client=None, **kwargs):
+    def fake_extract_memories(conversation, dimensions, llm_cfg, client=None, **kwargs):
         return ([{
             "content": "用户是独立开发者",
             "memory_type": "persona",
@@ -449,7 +444,7 @@ def test_health_watermark_advances_after_refine(client, raw_dir, monkeypatch):
             "source_message_ids": [1],
         }], "mock", {"stage": "l1_extraction", "version": "working-mock", "variant": None})
 
-    monkeypatch.setattr(l1, "extract_l1", fake_extract_l1)
+    monkeypatch.setattr(l2_extraction, "extract_memories", fake_extract_memories)
 
     # L2 场景聚合会调真实 LLM 降级链：整体打桩为「全链不可用」→ 走降级分支，
     # 测试零网络、结果确定（2026-09-28 修本地全量回归挂起：此前依赖网络快速失败）

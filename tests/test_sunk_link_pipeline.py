@@ -11,7 +11,7 @@ import pytest
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
 from sgme.data import memory_dao, session_dao
-from sgme.engine import l1, pipeline
+from sgme.engine import l2_extraction, pipeline
 from sgme.raw import store as raw_store
 
 PAGE_ID = "雷池-safeline-waf-部署到-vps-全记录-2026-10-26-324963fb"
@@ -68,7 +68,7 @@ def test_memory_gets_linked_to_sunk_page(env, monkeypatch):
         "route": "memory",
     }
     monkeypatch.setattr(
-        l1, "extract_l1",
+        l2_extraction, "extract_memories",
         lambda *a, **kw: ([fake_memory], "fake", {"stage": "l1_extraction", "version": "test"}),
     )
 

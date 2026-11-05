@@ -34,7 +34,7 @@ def test_invalid_values_fall_back():
 
 
 def test_loaded_config_has_l3_section(tmp_path, monkeypatch):
-    """load_config 组装结果里必须有 l3 段（此前不在白名单 → l15 读不到，开关形同虚设）。"""
+    """load_config 组装结果里必须有 l3 段（此前不在白名单 → l3_adjudicate 读不到，开关形同虚设）。"""
     loaded = cfg.load_config()
     assert "l3" in loaded
     assert loaded["l3"]["rules"]["enabled"] is False

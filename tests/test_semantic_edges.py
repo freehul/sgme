@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from sgme import config
-from sgme.engine import l15
+from sgme.engine import l3_adjudicate
 from sgme.data import db as db_mod, edge_dao, memory_dao
 
 
@@ -25,7 +25,7 @@ def cfg():
 
 @pytest.fixture(autouse=True)
 def _vector_enabled(monkeypatch):
-    """B169：出厂基线默认关闭向量端点（enabled:false）+ l15.prescreen.fallback=skip_conflict，
+    """B169：出厂基线默认关闭向量端点（enabled:false）+ l3_adjudicate.prescreen.fallback=skip_conflict，
     embed 不可达时 L1.5 会短路跳过冲突检测（本文件测的正是 resolve_conflicts 挂接写边，必然全挂）。
 
     自备启用态：mock 掉 embed（返回固定向量），不真连任何部署端点；
@@ -75,36 +75,36 @@ def test_parse_relations_valid():
         {"candidate_id": "c2", "relation": "causes", "confidence": 0.9},
         {"candidate_id": "c3", "relation": "contradicts", "confidence": 0.7},
     ]
-    rels = l15._parse_relations(raw)
+    rels = l3_adjudicate._parse_relations(raw)
     assert len(rels) == 3
-    assert rels[0] == l15.RelationEdge("c1", "similar", 0.85)
+    assert rels[0] == l3_adjudicate.RelationEdge("c1", "similar", 0.85)
     assert rels[1].relation == "causes"
     assert rels[2].confidence == 0.7
 
 
 def test_parse_relations_tolerant():
     """脏输入容错：非 list / 字段缺失 / 非法 relation / confidence 越界 / 非 dict 项。"""
-    assert l15._parse_relations(None) == []
-    assert l15._parse_relations("not-a-list") == []
-    assert l15._parse_relations([{"candidate_id": "c1"}]) == []            # 缺 relation
-    assert l15._parse_relations([{"relation": "similar", "confidence": 0.8}]) == []  # 缺 candidate
-    assert l15._parse_relations([{"candidate_id": "c1", "relation": "friends_with", "confidence": 0.8}]) == []  # 非法 relation
-    assert l15._parse_relations([{"candidate_id": "c1", "relation": "similar", "confidence": "abc"}]) == []
-    rels = l15._parse_relations([{"candidate_id": "c1", "relation": "similar", "confidence": 1.7}])
+    assert l3_adjudicate._parse_relations(None) == []
+    assert l3_adjudicate._parse_relations("not-a-list") == []
+    assert l3_adjudicate._parse_relations([{"candidate_id": "c1"}]) == []            # 缺 relation
+    assert l3_adjudicate._parse_relations([{"relation": "similar", "confidence": 0.8}]) == []  # 缺 candidate
+    assert l3_adjudicate._parse_relations([{"candidate_id": "c1", "relation": "friends_with", "confidence": 0.8}]) == []  # 非法 relation
+    assert l3_adjudicate._parse_relations([{"candidate_id": "c1", "relation": "similar", "confidence": "abc"}]) == []
+    rels = l3_adjudicate._parse_relations([{"candidate_id": "c1", "relation": "similar", "confidence": 1.7}])
     assert rels[0].confidence == 1.0                                        # 越界钳制
-    rels = l15._parse_relations([{"candidate_id": "c1", "relation": "similar", "confidence": -0.3}])
+    rels = l3_adjudicate._parse_relations([{"candidate_id": "c1", "relation": "similar", "confidence": -0.3}])
     assert rels[0].confidence == 0.0
-    assert l15._parse_relations([42, "x"]) == []                            # 非 dict 项跳过
+    assert l3_adjudicate._parse_relations([42, "x"]) == []                            # 非 dict 项跳过
 
 
-def test_parse_l15_output_with_relations_and_legacy():
+def test_parse_adjudication_output_with_relations_and_legacy():
     text = json.dumps([
         {"new_memory_index": 0, "candidate_ids": ["c1"], "action": "merge",
          "merged_content": "m", "reason": "r",
          "relations": [{"candidate_id": "c2", "relation": "similar", "confidence": 0.8}]},
         {"new_memory_index": 1, "candidate_ids": [], "action": "store", "reason": "r"},  # 旧格式无 relations
     ])
-    decisions = l15.parse_l15_output(text)
+    decisions = l3_adjudicate.parse_adjudication_output(text)
     assert len(decisions) == 2
     assert decisions[0].relations[0].candidate_id == "c2"
     assert decisions[0].relations[0].relation == "similar"
@@ -115,11 +115,11 @@ def test_parse_l15_output_with_relations_and_legacy():
 
 def test_write_edges_writes_valid(mem_conn, cfg):
     cand = _insert_existing(mem_conn, "旧记忆：用户喜欢打飞盘", ["tech_stack"])
-    decision = l15.ConflictDecision(
+    decision = l3_adjudicate.ConflictDecision(
         new_memory_index=0, candidate_ids=[], action="store",
-        relations=[l15.RelationEdge(cand, "similar", 0.85)],
+        relations=[l3_adjudicate.RelationEdge(cand, "similar", 0.85)],
     )
-    n = l15._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg)
+    n = l3_adjudicate._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg)
     assert n == 1
     assert edge_dao.count_edges(mem_conn, source="l1_conflict") == 1
     edges = edge_dao.list_edges(mem_conn, source="l1_conflict")
@@ -130,62 +130,62 @@ def test_write_edges_writes_valid(mem_conn, cfg):
 
 def test_write_edges_below_min_weight_skipped(mem_conn, cfg):
     cand = _insert_existing(mem_conn, "旧记忆", ["tech_stack"])
-    decision = l15.ConflictDecision(
+    decision = l3_adjudicate.ConflictDecision(
         0, [], "store",
-        relations=[l15.RelationEdge(cand, "similar", 0.4)],  # < 0.6 默认阈值
+        relations=[l3_adjudicate.RelationEdge(cand, "similar", 0.4)],  # < 0.6 默认阈值
     )
-    assert l15._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg) == 0
+    assert l3_adjudicate._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg) == 0
     assert edge_dao.count_edges(mem_conn) == 0
 
 
 def test_write_edges_skips_archived_candidates(mem_conn, cfg):
     """被 update/merge 归档的候选跳过（替代关系由 archive 链承载）。"""
     cand = _insert_existing(mem_conn, "旧记忆", ["tech_stack"])
-    decision = l15.ConflictDecision(
+    decision = l3_adjudicate.ConflictDecision(
         0, [cand], "update",  # candidate_ids 命中 → 归档 → relations 里的它跳过
-        relations=[l15.RelationEdge(cand, "similar", 0.95)],
+        relations=[l3_adjudicate.RelationEdge(cand, "similar", 0.95)],
     )
-    assert l15._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg) == 0
+    assert l3_adjudicate._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg) == 0
     assert edge_dao.count_edges(mem_conn) == 0
 
 
 def test_write_edges_skips_inactive_candidate(mem_conn, cfg):
     cand = _insert_existing(mem_conn, "旧记忆", ["tech_stack"])
     memory_dao.reject_memory(mem_conn, cand, "测试 reject")
-    decision = l15.ConflictDecision(
+    decision = l3_adjudicate.ConflictDecision(
         0, [], "store",
-        relations=[l15.RelationEdge(cand, "similar", 0.9)],
+        relations=[l3_adjudicate.RelationEdge(cand, "similar", 0.9)],
     )
-    assert l15._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg) == 0
+    assert l3_adjudicate._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg) == 0
     assert edge_dao.count_edges(mem_conn) == 0
 
 
 def test_write_edges_disabled_by_config(mem_conn, cfg):
     cand = _insert_existing(mem_conn, "旧记忆", ["tech_stack"])
     cfg2 = json.loads(json.dumps(cfg))
-    cfg2["l15"]["semantic_edges"]["enabled"] = False
-    decision = l15.ConflictDecision(
+    cfg2["l3_adjudicate"]["semantic_edges"]["enabled"] = False
+    decision = l3_adjudicate.ConflictDecision(
         0, [], "store",
-        relations=[l15.RelationEdge(cand, "similar", 0.95)],
+        relations=[l3_adjudicate.RelationEdge(cand, "similar", 0.95)],
     )
-    assert l15._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg2) == 0
+    assert l3_adjudicate._write_semantic_edges(mem_conn, {"memory_id": "new1"}, decision, cfg2) == 0
 
 
 def test_write_edges_no_memory_id_or_no_relations(mem_conn, cfg):
     cand = _insert_existing(mem_conn, "旧记忆", ["tech_stack"])
     # 无 memory_id（skip 决策路径）
-    d1 = l15.ConflictDecision(0, [], "skip", relations=[l15.RelationEdge(cand, "similar", 0.9)])
-    assert l15._write_semantic_edges(mem_conn, {}, d1, cfg) == 0
+    d1 = l3_adjudicate.ConflictDecision(0, [], "skip", relations=[l3_adjudicate.RelationEdge(cand, "similar", 0.9)])
+    assert l3_adjudicate._write_semantic_edges(mem_conn, {}, d1, cfg) == 0
     # 无 relations
-    d2 = l15.ConflictDecision(0, [], "store")
-    assert l15._write_semantic_edges(mem_conn, {"memory_id": "new1"}, d2, cfg) == 0
+    d2 = l3_adjudicate.ConflictDecision(0, [], "store")
+    assert l3_adjudicate._write_semantic_edges(mem_conn, {"memory_id": "new1"}, d2, cfg) == 0
 
 
 # ---------- resolve_conflicts 端到端挂接 ----------
 
 def test_resolve_conflicts_writes_semantic_edges(monkeypatch, mem_conn, cfg):
     """LLM 输出带 relations 的 store 裁决 → 落库后写边 + 计数。"""
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 10000)
     cand1 = _insert_existing(mem_conn, "旧记忆：经常去公园打飞盘", ["tech_stack"])
     cand2 = _insert_existing(mem_conn, "旧记忆：喜欢喝咖啡", ["tech_stack"])
     body = json.dumps([{
@@ -200,7 +200,7 @@ def test_resolve_conflicts_writes_semantic_edges(monkeypatch, mem_conn, cfg):
         "content": "新记忆：上周末和朋友去公园玩飞盘", "dimension_ids": ["tech_stack"],
         "memory_type": "persona", "priority": 80, "time_velocity": "static",
     }]
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.stored) == 1
     assert result.semantic_edges_written == 1
     edges = edge_dao.list_edges(mem_conn, source="l1_conflict")
@@ -212,7 +212,7 @@ def test_resolve_conflicts_writes_semantic_edges(monkeypatch, mem_conn, cfg):
 
 def test_resolve_conflicts_update_archives_no_semantic_edge(monkeypatch, mem_conn, cfg):
     """update 命中候选 → 候选归档 → relations 里的它不写边（archive 链承载替代关系）。"""
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 10000)
     cand = _insert_existing(mem_conn, "旧记忆：喜欢喝咖啡", ["tech_stack"])
     body = json.dumps([{
         "new_memory_index": 0, "candidate_ids": [cand], "action": "update", "reason": "r",
@@ -223,7 +223,7 @@ def test_resolve_conflicts_update_archives_no_semantic_edge(monkeypatch, mem_con
         "content": "新记忆：更喜欢喝美式咖啡", "dimension_ids": ["tech_stack"],
         "memory_type": "persona", "priority": 80, "time_velocity": "static",
     }]
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.updated) == 1
     assert result.semantic_edges_written == 0
     assert edge_dao.count_edges(mem_conn) == 0
@@ -232,7 +232,7 @@ def test_resolve_conflicts_update_archives_no_semantic_edge(monkeypatch, mem_con
 def test_resolve_conflicts_multiple_memories_first_with_edges(monkeypatch, mem_conn, cfg):
     """回归：多条新记忆且首条带语义边——_write_semantic_edges 隐式事务必须提交，
     否则第二条 insert_memory 的 BEGIN 抛 "cannot start a transaction within a transaction"。"""
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 10000)
     cand = _insert_existing(mem_conn, "旧记忆：飞盘俱乐部", ["tech_stack"])
     body = json.dumps([
         {
@@ -248,7 +248,7 @@ def test_resolve_conflicts_multiple_memories_first_with_edges(monkeypatch, mem_c
         {"content": "新记忆2：喝咖啡", "dimension_ids": ["tech_stack"],
          "memory_type": "persona", "priority": 80, "time_velocity": "static"},
     ]
-    result = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
+    result = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli)
     assert len(result.stored) == 2          # 第二条不崩、正常落库
     assert result.semantic_edges_written == 1
     assert edge_dao.count_edges(mem_conn, source="l1_conflict") == 1
@@ -256,7 +256,7 @@ def test_resolve_conflicts_multiple_memories_first_with_edges(monkeypatch, mem_c
 
 def test_resolve_conflicts_rerun_idempotent(monkeypatch, mem_conn, cfg):
     """确定性 edge_id 幂等：同一裁决重跑不产生重复边。"""
-    monkeypatch.setattr(l15.llm_chain, "batch_budget", lambda *a, **k: 10000)
+    monkeypatch.setattr(l3_adjudicate.llm_chain, "batch_budget", lambda *a, **k: 10000)
     cand = _insert_existing(mem_conn, "旧记忆：打飞盘", ["tech_stack"])
     body = json.dumps([{
         "new_memory_index": 0, "candidate_ids": [], "action": "store", "reason": "r",
@@ -268,9 +268,9 @@ def test_resolve_conflicts_rerun_idempotent(monkeypatch, mem_conn, cfg):
         "memory_type": "persona", "priority": 80, "time_velocity": "static",
     }]
     # 第一次：store 新记忆 + 写 1 边（带 source_ref 供幂等比对）
-    r1 = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli, source_ref="f1.txt")
+    r1 = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli, source_ref="f1.txt")
     assert r1.semantic_edges_written == 1
     # 第二次：同源同内容幂等跳过（不落库、不写边）
-    r2 = l15.resolve_conflicts(new_memories, mem_conn, cfg, client=cli, source_ref="f1.txt")
+    r2 = l3_adjudicate.resolve_conflicts(new_memories, mem_conn, cfg, client=cli, source_ref="f1.txt")
     assert r2.semantic_edges_written == 0
     assert edge_dao.count_edges(mem_conn, source="l1_conflict") == 1

@@ -44,7 +44,7 @@ def test_candidates_detect_similar_pair(tmp_path):
     _add_scene(mem, "a1", "场景A", "内容A", [1.0, 0.0, 0.0])
     _add_scene(mem, "b1", "场景B", "内容B", [0.99, 0.01, 0.0])  # 与 A 高相似
     _add_scene(mem, "c1", "场景C", "内容C", [0.0, 1.0, 0.0])    # 与 A 不相似
-    cfg = {"scene_gc": {"merge_threshold": 0.80}, "l2": {}}
+    cfg = {"scene_gc": {"merge_threshold": 0.80}, "scene_aggregate": {}}
     cands = scene_gc.list_merge_candidates(mem, cfg)
     assert len(cands) == 1
     assert {cands[0]["scene_a"], cands[0]["scene_b"]} == {"a1", "b1"}
@@ -58,7 +58,7 @@ def test_candidates_greedy_dedup(tmp_path):
     _add_scene(mem, "b1", "B", "内容B", [0.99, 0.01, 0.0])
     _add_scene(mem, "c1", "C", "内容C", [0.98, 0.02, 0.0])  # 与 b 也相似
     _add_scene(mem, "d1", "D", "内容D", [0.0, 1.0, 0.0])
-    cfg = {"scene_gc": {"merge_threshold": 0.80}, "l2": {}}
+    cfg = {"scene_gc": {"merge_threshold": 0.80}, "scene_aggregate": {}}
     cands = scene_gc.list_merge_candidates(mem, cfg)
     assert len(cands) == 1
     assert {cands[0]["scene_a"], cands[0]["scene_b"]} == {"a1", "b1"}
@@ -68,7 +68,7 @@ def test_candidates_below_threshold_empty(tmp_path):
     mem = _make_mem(tmp_path)
     _add_scene(mem, "a1", "A", "内容A", [1.0, 0.0, 0.0])
     _add_scene(mem, "b1", "B", "内容B", [0.0, 1.0, 0.0])
-    cfg = {"scene_gc": {"merge_threshold": 0.95}, "l2": {}}
+    cfg = {"scene_gc": {"merge_threshold": 0.95}, "scene_aggregate": {}}
     assert scene_gc.list_merge_candidates(mem, cfg) == []
 
 
@@ -78,7 +78,7 @@ def test_candidates_skips_scenes_without_vector(tmp_path):
     scene_dao.insert_scene(mem, "a1", "A", "内容A")  # 无向量
     _add_scene(mem, "b1", "B", "内容B", [1.0, 0.0, 0.0])
     _add_scene(mem, "c1", "C", "内容C", [0.99, 0.01, 0.0])
-    cfg = {"scene_gc": {"merge_threshold": 0.80}, "l2": {}}
+    cfg = {"scene_gc": {"merge_threshold": 0.80}, "scene_aggregate": {}}
     cands = scene_gc.list_merge_candidates(mem, cfg)
     ids = {c["scene_a"] for c in cands} | {c["scene_b"] for c in cands}
     assert "a1" not in ids
@@ -91,7 +91,7 @@ def test_candidates_skips_scenes_without_vector(tmp_path):
 def test_run_skips_below_trigger(tmp_path):
     mem = _make_mem(tmp_path)
     _add_scene(mem, "a1", "A", "内容", [1.0, 0.0, 0.0])
-    cfg = {"scene_gc": {"trigger_at": 10, "enabled": True}, "l2": {}}
+    cfg = {"scene_gc": {"trigger_at": 10, "enabled": True}, "scene_aggregate": {}}
     res = scene_gc.run_scene_gc(mem, cfg)
     assert res.skipped_reason is not None
     assert res.active_before == 1
@@ -101,7 +101,7 @@ def test_run_skips_below_trigger(tmp_path):
 def test_run_disabled(tmp_path):
     mem = _make_mem(tmp_path)
     _add_scene(mem, "a1", "A", "内容", [1.0, 0.0, 0.0])
-    cfg = {"scene_gc": {"enabled": False}, "l2": {}}
+    cfg = {"scene_gc": {"enabled": False}, "scene_aggregate": {}}
     res = scene_gc.run_scene_gc(mem, cfg)
     assert res.skipped_reason == "disabled"
 
@@ -115,7 +115,7 @@ def test_run_merges_and_archives(tmp_path, monkeypatch):
     cfg = {
         "scene_gc": {"trigger_at": 2, "max_merges": 5, "enabled": True,
                      "merge_threshold": 0.80},
-        "l2": {"warn_thresholds": {"orange": 2}},
+        "scene_aggregate": {"warn_thresholds": {"orange": 2}},
         "llm": {},
     }
 
@@ -147,7 +147,7 @@ def test_run_max_merges_cap(tmp_path, monkeypatch):
     cfg = {
         "scene_gc": {"trigger_at": 2, "max_merges": 1, "enabled": True,
                      "merge_threshold": 0.80},
-        "l2": {"warn_thresholds": {"orange": 2}},
+        "scene_aggregate": {"warn_thresholds": {"orange": 2}},
         "llm": {},
     }
 

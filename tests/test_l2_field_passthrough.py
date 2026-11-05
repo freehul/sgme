@@ -1,13 +1,13 @@
 """2.0 字段「白名单穿透」回归（T-319）。
 
 背景：2.0 元数据要穿四层才落库，其中三层用白名单重建 dict：
-解析后（records_to_items）→ 归一化（refine_file）→ L1.5 存储（l15._store_memory）
+解析后（records_to_items）→ 归一化（refine_file）→ L1.5 存储（l3_adjudicate._store_memory）
 → INSERT（memory_dao.insert_memory）。实测三层都曾静默吃掉字段：一次真实跑批
 产出 22 条记忆，type/subject/route 全为 NULL，而日志无任何报错。
 
 本文件断言两处最容易被漏改的地方：
 1. `refine_file` 归一化后仍保留 2.0 字段（否则解析层算得再对也白搭）
-2. `l15._store_memory` 把这些字段以 `extra=` 形式交给 insert_memory
+2. `l3_adjudicate._store_memory` 把这些字段以 `extra=` 形式交给 insert_memory
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from sgme import config as sgme_config
 from sgme.data import db as db_mod
 from sgme.data import memory_dao, session_dao
 from sgme.raw import store as raw_store
-from sgme.engine import l1, l15, refine
+from sgme.engine import l2_extraction, l3_adjudicate, refine
 
 CASE_FIELDS = {
     "type": "约束",
@@ -85,7 +85,7 @@ def test_refine_normalization_keeps_2_0_fields(conns, monkeypatch):
         **CASE_FIELDS,
     }
     monkeypatch.setattr(
-        l1, "extract_l1",
+        l2_extraction, "extract_memories",
         lambda *a, **kw: ([raw_memory], "fake-provider", {"stage": "l1_extraction", "version": "v013", "variant": None}),
     )
 
@@ -116,7 +116,7 @@ def test_store_memory_passes_extra(conns, monkeypatch):
         "occurred_at": None,
         **CASE_FIELDS,
     }
-    mid = l15._store_memory(mem, new_mem, cfg["dimensions"], source_ref=None, prompt_version="v013")
+    mid = l3_adjudicate._store_memory(mem, new_mem, cfg["dimensions"], source_ref=None, prompt_version="v013")
     assert mid == "mid-x"
     extra = captured.get("extra") or {}
     for key in ("type", "subject", "route", "feeling", "trait", "scene_key", "needs_review"):

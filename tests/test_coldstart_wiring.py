@@ -25,7 +25,6 @@ from sgme.data import memory_dao
 from sgme.engine.conversation_state import assess as cs_assess
 from sgme.engine.conversation_state import repair_hint as cs_repair_hint
 from sgme.operations.inject import inject as inject_operation
-from sgme.profile import tier0 as tier0_mod
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
 
@@ -84,13 +83,6 @@ def conns(tmp_path, cfg):
     db_mod.close(mem_conn)
     db_mod.close(session_conn)
     db_mod.close(wiki_conn)
-
-
-@pytest.fixture
-def summary_path(tmp_path, monkeypatch):
-    p = tmp_path / "tier0_summary.json"
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", p)
-    return p
 
 
 @pytest.fixture
@@ -161,18 +153,19 @@ def _repair_blocks(data: dict) -> list[dict]:
 # ---------- 1. 向后兼容：不传 history ----------
 
 
-def test_mode_inject_without_history_has_no_repair(conns, cfg, summary_path):
+def test_mode_inject_without_history_has_no_repair(conns, cfg):
     mem_conn, _s, _w = conns
     data = _data(inject_operation(mem_conn, cfg, mode="daily"))
     assert _repair_blocks(data) == []
     # 不新增顶层字段，既有契约不变
-    assert set(data) == {"blocks", "stats", "tier0"}
+    # D-79（2026-11-05）：tier0 字段已整体砍除，响应只剩 blocks + stats
+    assert set(data) == {"blocks", "stats"}
 
 
 # ---------- 2. 冷场 history → 追加修复块 ----------
 
 
-def test_cold_history_appends_repair_block(conns, cfg, summary_path):
+def test_cold_history_appends_repair_block(conns, cfg):
     mem_conn, _s, _w = conns
     data = _data(inject_operation(mem_conn, cfg, mode="daily", history=COLD_HISTORY))
     blocks = _repair_blocks(data)
@@ -186,19 +179,18 @@ def test_cold_history_appends_repair_block(conns, cfg, summary_path):
     assert data["blocks"][-1] is block
 
 
-def test_cold_history_does_not_alter_existing_blocks(conns, cfg, summary_path):
+def test_cold_history_does_not_alter_existing_blocks(conns, cfg):
     mem_conn, _s, _w = conns
     base = _data(inject_operation(mem_conn, cfg, mode="daily"))
     wired = _data(inject_operation(mem_conn, cfg, mode="daily", history=COLD_HISTORY))
     assert wired["blocks"][: len(base["blocks"])] == base["blocks"]
     assert wired["stats"] == base["stats"]
-    assert wired["tier0"] == base["tier0"]
 
 
 # ---------- 3. 正常 history → 不追加 ----------
 
 
-def test_normal_history_no_repair(conns, cfg, summary_path):
+def test_normal_history_no_repair(conns, cfg):
     mem_conn, _s, _w = conns
     data = _data(inject_operation(mem_conn, cfg, mode="daily", history=NORMAL_HISTORY))
     assert _repair_blocks(data) == []
@@ -207,7 +199,7 @@ def test_normal_history_no_repair(conns, cfg, summary_path):
 # ---------- 4. 修补闸：已修补过不重复 ----------
 
 
-def test_already_repaired_suppresses_repair(conns, cfg, summary_path):
+def test_already_repaired_suppresses_repair(conns, cfg):
     mem_conn, _s, _w = conns
     data = _data(inject_operation(
         mem_conn, cfg, mode="daily", history=COLD_HISTORY, already_repaired=True,
@@ -218,7 +210,7 @@ def test_already_repaired_suppresses_repair(conns, cfg, summary_path):
 # ---------- 5. custom_filter 分支同样接线 ----------
 
 
-def test_custom_filter_cold_history_appends_repair(conns, cfg, summary_path):
+def test_custom_filter_cold_history_appends_repair(conns, cfg):
     mem_conn, _s, _w = conns
     data = _data(inject_operation(
         mem_conn, cfg,
@@ -232,7 +224,7 @@ def test_custom_filter_cold_history_appends_repair(conns, cfg, summary_path):
 # ---------- 6. 脏 history 容错 ----------
 
 
-def test_malformed_history_entries_are_tolerated(conns, cfg, summary_path):
+def test_malformed_history_entries_are_tolerated(conns, cfg):
     mem_conn, _s, _w = conns
     dirty = ["not-a-dict", None, {"role": "user"}, _u("嗯"), _u("哦")]
     data = _data(inject_operation(mem_conn, cfg, mode="daily", history=dirty))  # type: ignore[arg-type]

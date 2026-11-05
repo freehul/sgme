@@ -1,11 +1,11 @@
 """T16 测试：HTTP 服务集成（v0.4 全新端点 + 升级端点回归）。
 
 覆盖：
-- Tier0 注入：摘要有效 present:true / 无摘要降级 present:false
+- 注入：mode/custom_filter 分支 + 无 tier0 字段（D-79 已砍）
 - 搜索 RRF：向量可用 RRF 融合 / 向量不可达降级纯 BM25
 - 健康检查：返回完整可观测性字段（llm.available / refinement.stalled / heartbeat_ok / last_refined_at）
 - 信号端点：/v1/events/pull 返回事件 + next_cursor / /v1/events/stream SSE 可连接
-- Admin 端点：refine/trigger 发布 memory_updated + 触发 L2 / tier0/refresh / backup create/list/restore
+- Admin 端点：refine/trigger 发布 memory_updated + 触发 L2 / backup create/list/restore
 - 鉴权：新端点 admin key 强制 / events 端点 agent key 强制
 
 mock LLM 用 httpx.MockTransport 拦截 /chat/completions 与 /embeddings。
@@ -25,9 +25,8 @@ from fastapi.testclient import TestClient
 from sgme import __version__  # health 契约 version 动态断言（防版本 bump 漂移）
 from sgme import config as sgme_config
 from sgme.engine import health as health_mod
-from sgme.engine import l2 as l2_mod
+from sgme.engine import scene_aggregate as l2_mod
 from sgme.engine import refine as refine_mod
-from sgme.profile import tier0 as tier0_mod
 from sgme.raw import store as raw_store
 from sgme.data.search import vector as vector_mod
 from sgme.server.app import create_app
@@ -47,6 +46,8 @@ def cfg():
     vec = cfg.setdefault("search", {}).setdefault("vector", {})
     vec["base_url"] = "http://mock-embed.test/v1"
     vec["enabled"] = True
+    # A1（2026-11-05）：场景层默认冻结（enabled=false）；本文件测 L2 行为，显式开启
+    cfg.setdefault("scene_aggregate", {})["enabled"] = True
     return cfg
 
 
@@ -61,18 +62,10 @@ def raw_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def summary_path(tmp_path, monkeypatch):
-    """隔离 tier0_summary.json 路径到 tmp_path。"""
-    p = tmp_path / "tier0_summary.json"
-    monkeypatch.setattr(tier0_mod, "SUMMARY_PATH", p)
-    return p
-
-
-@pytest.fixture
-def app(tmp_path, cfg, raw_dir, summary_path, monkeypatch):
+def app(tmp_path, cfg, raw_dir, monkeypatch):
     """创建隔离的 FastAPI 应用。
 
-    - data_dir / raw_dir / tier0_summary 路径全部隔离到 tmp_path
+    - data_dir / raw_dir 路径全部隔离到 tmp_path
     - mock LLM 探测（避免 /v1/health 实际打 127.0.0.1:1014）
     - 备份目录指向 tmp_path（避免污染项目 data/backups）
     - 配置落盘经 SGME_CONFIG_PATH 指向 tmp_path/sgme_test.yaml，
@@ -86,6 +79,16 @@ def app(tmp_path, cfg, raw_dir, summary_path, monkeypatch):
         lambda c, client=None: {
             "available": True, "provider": "lm-studio",
             "model": "mock-model", "error": None,
+        },
+    )
+    # mock 向量连通性探测：避免 /v1/health 对 mock-embed.test 发起真实 HTTP
+    from sgme.operations import health as health_ops_mod
+
+    monkeypatch.setattr(
+        health_ops_mod, "check_vector_model_connectivity",
+        lambda cfg, client=None: {
+            "available": True, "provider": "mock", "model": "mock-embed",
+            "latency_ms": 0, "error": None, "cached": False,
         },
     )
     # 备份配置覆盖到 tmp_path
@@ -141,6 +144,23 @@ def client(app):
 
 ADMIN_HEADERS = {"X-API-Key": "test-admin-key"}
 AGENT_HEADERS = {"X-API-Key": "test-agent-key"}
+
+
+@pytest.fixture(autouse=True)
+def _block_real_http(monkeypatch):
+    """单测禁止真实外发：httpx.MockTransport 不受影响，真实 HTTPTransport 一律失败。
+
+    背景（2026-11-05）：端点级 refine 用例依赖 mock client；若某条路径漏传 client，
+    会退化成真实 LLM 外发（联网+非确定性）。此闸门把「漏 mock」从静默变显式失败。
+    """
+    def _blocked(self, request):
+        raise RuntimeError(f"测试禁止真实网络请求: {request.url}")
+
+    async def _blocked_async(self, request):
+        raise RuntimeError(f"测试禁止真实网络请求: {request.url}")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocked)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _blocked_async)
 
 
 def _now_iso() -> str:
@@ -235,8 +255,8 @@ def _block_llm_chain_egress(monkeypatch) -> None:
 
 
 def _patch_l15_with_client(monkeypatch, mock_client: httpx.Client) -> None:
-    """patch l15.resolve_conflicts 注入 mock client（B123 家族：L1.5 默认走真实 LLM，防外发）。"""
-    from sgme.engine import l15 as _l15_mod
+    """patch l3_adjudicate.resolve_conflicts 注入 mock client（B123 家族：L1.5 默认走真实 LLM，防外发）。"""
+    from sgme.engine import l3_adjudicate as _l15_mod
 
     original_resolve = _l15_mod.resolve_conflicts
 
@@ -248,43 +268,16 @@ def _patch_l15_with_client(monkeypatch, mock_client: httpx.Client) -> None:
     monkeypatch.setattr(_l15_mod, "resolve_conflicts", patched_resolve)
 
 
-# ---------- Tier0 注入测试 ----------
+# ---------- 注入端点（D-79 后无 tier0 字段） ----------
 
-def test_inject_tier0_present_when_summary_valid(client, summary_path, monkeypatch):
-    """先调 /v1/admin/tier0/refresh（mock LLM 返回摘要）→ 再调 /v1/inject → present=True。"""
-    # Arrange：mock generate_summary 返回固定摘要
-    expected_summary = "用户是名资深工程师，追求简洁稳定的工程实践。"
-
-    def fake_generate(mem_conn_arg, cfg_arg, client=None):
-        return expected_summary
-
-    monkeypatch.setattr(tier0_mod, "generate_summary", fake_generate)
-
-    # Act：先刷新 Tier0 摘要
-    refresh_resp = client.post("/v1/admin/tier0/refresh", headers=ADMIN_HEADERS)
-    assert refresh_resp.status_code == 200, refresh_resp.text
-    assert refresh_resp.json()["status"] == "ok"
-
-    # 再调 inject
-    inject_resp = client.post("/v1/inject", json={"mode": "daily"}, headers=AGENT_HEADERS)
-    assert inject_resp.status_code == 200, inject_resp.text
-
-    # Assert：tier0.present=True 且内容匹配
-    body = inject_resp.json()
-    assert body["tier0"]["present"] is True
-    assert body["tier0"]["content"] == expected_summary
-
-
-def test_inject_tier0_fallback_when_no_summary(client, summary_path):
-    """无摘要文件 → /v1/inject → tier0.present=False（静态降级）。"""
-    # Act：未生成摘要直接 inject
+def test_inject_has_no_tier0_field(client):
+    """D-79（2026-11-05）：Tier0 已砍，/v1/inject 响应只剩 blocks + stats。"""
     resp = client.post("/v1/inject", json={"mode": "daily"}, headers=AGENT_HEADERS)
-
-    # Assert
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["tier0"]["present"] is False
-    assert body["tier0"]["content"] is None
+    assert "tier0" not in body
+    assert "blocks" in body
+    assert "stats" in body
 
 
 # ---------- 搜索 RRF 测试 ----------
@@ -704,7 +697,7 @@ def test_refine_trigger_creates_l2_scenes(client, monkeypatch):
     mem_conn = app.state.mem_conn
     session_conn = app.state.session_conn
 
-    fid = "f-trigger-l2"
+    fid = "f-trigger-scene_aggregate"
     msgs = [
         {"timestamp": "2026-08-04T10:00:00Z", "role": "user",
          "content": "我开始学习 Rust 写新项目"},
@@ -767,29 +760,6 @@ def test_refine_trigger_creates_l2_scenes(client, monkeypatch):
     assert scene["status"] == "active"
     assert scene["heat"] == 1
     assert "Rust" in scene["content"]
-
-
-def test_tier0_refresh_endpoint(client, monkeypatch):
-    """/v1/admin/tier0/refresh 手动触发成功。"""
-    # Arrange：mock generate_summary 返回固定摘要
-    expected = "用户是名资深工程师，追求简洁稳定。"
-
-    def fake_generate(mem_conn_arg, cfg_arg, client=None):
-        return expected
-
-    monkeypatch.setattr(tier0_mod, "generate_summary", fake_generate)
-
-    # Act
-    resp = client.post("/v1/admin/tier0/refresh", headers=ADMIN_HEADERS)
-
-    # Assert
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "ok"
-    assert body["summary_length"] == len(expected)
-    # 摘要文件已落盘
-    loaded = tier0_mod.load_summary()
-    assert loaded == expected
 
 
 def test_backup_create_endpoint(client):
@@ -885,11 +855,6 @@ def test_new_endpoints_require_admin_key(client):
     )
     assert r3.status_code == 403
     assert r3.json()["error"]["code"] == "ERR_FORBIDDEN"
-
-    # tier0/refresh 也需 admin key
-    r4 = client.post("/v1/admin/tier0/refresh", headers=AGENT_HEADERS)
-    assert r4.status_code == 403
-    assert r4.json()["error"]["code"] == "ERR_FORBIDDEN"
 
 
 def test_events_endpoints_require_agent_key(client):

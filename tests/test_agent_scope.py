@@ -143,10 +143,10 @@ def test_persist_memories_tags_agent(monkeypatch, tmp_path, cfg):
         status="ok",
     )
     # mock L1.5：resolve_conflicts 直接 store（短路 LLM 依赖）
-    from sgme.engine import l15 as l15_mod
+    from sgme.engine import l3_adjudicate as l15_mod
 
     def _fake_resolve(new_memories, mem_conn, cfg, **kw):
-        res = l15_mod.L15Result()
+        res = l15_mod.AdjudicationResult()
         for i, m in enumerate(new_memories):
             mid = memory_dao.insert_memory(
                 mem_conn, content=m["content"], memory_type=m.get("memory_type", "persona"),

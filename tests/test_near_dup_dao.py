@@ -110,7 +110,9 @@ def test_restore_full_backfill(mem_conn, cfg, monkeypatch):
     assert mem is not None
     assert mem["content"] == "用户偏好浅色主题界面"
     assert mem["memory_type"] == "persona"
-    assert mem["priority"] == 50
+    # 2026-11-05（B314 尾）：restore 默认 supersede=True → 用「人工确认档」80
+    # （普通提炼 50；人工左右对照后放行的判断质量更高，池子里应当听它的）
+    assert mem["priority"] == 80
     assert mem["time_velocity"] == "static"
     assert mem["status"] == "active"
     assert mem["tags"] == ["identity"]

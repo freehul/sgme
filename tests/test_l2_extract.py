@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import json
 
-from sgme.engine import l1
-from sgme.engine.l2_extract import parse_l2_output, records_to_items
+from sgme.engine import l2_extraction
+from sgme.engine.l2_extract import parse_scene_output, records_to_items
 
 DIMS = [
     {"id": "preferences", "display_name": "偏好", "active": 1, "time_velocity": "static"},
@@ -40,7 +40,7 @@ def test_main_plus_side_records():
         {"type": "偏好", "content": "用户偏好上午就诊", "subject": "self", "certainty": "confirmed"},
         {"type": "状态", "content": "用户本周腰疼", "subject": "self", "certainty": "tentative"},
     ])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
 
     assert len(recs) == 2
     main, side = recs
@@ -61,7 +61,7 @@ def test_main_plus_side_records():
 
 def test_causes_and_trait_kept_on_main():
     unit = _unit(causes=[{"from": "复查结果正常", "to": "用户安心"}], trait="重视健康")
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     assert len(recs) == 1
     assert recs[0]["extra"]["trait"] == "重视健康"
     payload = json.loads(recs[0]["extra"]["l2_facts_json"])
@@ -70,12 +70,12 @@ def test_causes_and_trait_kept_on_main():
 
 def test_discard_route_drops_whole_unit():
     unit = _unit(route="discard")
-    assert parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS) == []
+    assert parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS) == []
 
 
 def test_experience_routes_to_skill():
     unit = _unit(facts=[{"type": "经验", "content": "先分段摘要再总装"}])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     side = [r for r in recs if r["extra"].get("type") == "经验"][0]
     assert side["route"] == "skill_candidate"
 
@@ -83,7 +83,7 @@ def test_experience_routes_to_skill():
 def test_missing_main_content_falls_back_and_flags_review():
     unit = _unit(main_event={"content": "", "occurred_at": None},
                  facts=[{"type": "偏好", "content": "用户喜欢安静的诊室"}])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     assert recs[0]["extra"]["needs_review"] == 1
     assert recs[0]["extra"]["derivation"] == "inferred"
     assert recs[0]["content"] == "用户喜欢安静的诊室"
@@ -91,31 +91,31 @@ def test_missing_main_content_falls_back_and_flags_review():
 
 def test_missing_dimensions_flags_review():
     unit = _unit(dimensions={})
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     assert recs[0]["extra"]["needs_review"] == 1
     assert recs[0]["dimensions"] == []
 
 
 def test_overlong_fields_are_clipped_not_dropped():
     unit = _unit(main_event={"content": "主" * 300, "occurred_at": None}, trait="特" * 80)
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     assert len(recs[0]["content"]) == 200
     assert len(recs[0]["extra"]["trait"]) == 50
 
 
 def test_1_x_payload_is_delegated():
-    """1.x 平铺数组 → 交给 parse_l1_output，行为不变。"""
+    """1.x 平铺数组 → 交给 parse_extraction_output，行为不变。"""
     old = [{"content": "用户拥有三台相机", "dimensions": ["preferences"],
             "memory_type": "persona", "priority": 70}]
-    recs = parse_l2_output(json.dumps(old, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(old, ensure_ascii=False), DIMS)
     assert recs[0]["content"] == "用户拥有三台相机"
     assert "extra" not in recs[0]
 
 
 def test_invalid_json_raises_refine_error():
     try:
-        parse_l2_output("not json", DIMS)
-    except l1.RefineError:
+        parse_scene_output("not json", DIMS)
+    except l2_extraction.RefineError:
         pass
     else:  # pragma: no cover
         raise AssertionError("应当抛 RefineError")
@@ -125,7 +125,7 @@ def test_invalid_json_raises_refine_error():
 
 def test_records_to_items_preserves_2_0_fields():
     unit = _unit(facts=[{"type": "偏好", "content": "用户偏好上午就诊", "subject": "self"}])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     items = records_to_items(recs, DIMS)
     assert len(items) == 2
     side = [i for i in items if i.get("type") == "偏好"][0]
@@ -139,7 +139,7 @@ def test_records_to_items_preserves_2_0_fields():
 def test_records_to_items_falls_back_dimension_for_pending():
     """缺维度的待审项仍要落库：给兜底维度 + needs_review=1。"""
     unit = _unit(dimensions={})
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     items = records_to_items(recs, DIMS)
     assert len(items) == 1
     assert items[0]["needs_review"] == 1
@@ -148,28 +148,28 @@ def test_records_to_items_falls_back_dimension_for_pending():
 
 def test_schema_switch_defaults_to_1_x(monkeypatch):
     """开关未设时行为不变（1.x 解析）。"""
-    from sgme.engine import l1
+    from sgme.engine import l2_extraction
 
     monkeypatch.delenv("SGME_L2_SCHEMA", raising=False)
     old = json.dumps([{"content": "用户喜欢喝茶", "dimensions": ["preferences"],
                        "memory_type": "persona", "priority": 70}], ensure_ascii=False)
-    items = l1._parse_extraction_output(old, DIMS)
+    items = l2_extraction._parse_extraction_output(old, DIMS)
     assert items and "extra" not in items[0]
 
 
 def test_schema_switch_2_0_parses_2_0_payload(monkeypatch):
-    from sgme.engine import l1
+    from sgme.engine import l2_extraction
 
     monkeypatch.setenv("SGME_L2_SCHEMA", "2.0")
     payload = json.dumps(_unit(), ensure_ascii=False)
-    items = l1._parse_extraction_output(payload, DIMS)
+    items = l2_extraction._parse_extraction_output(payload, DIMS)
     assert items and items[0].get("feeling") == "安心"
 
 
 def test_main_without_static_facts_is_fact():
     """没有长期属性事实的主干用 fact —— 也是唯一不会被强制改维度的另一类型。"""
     unit = _unit(facts=[{"type": "状态", "content": "用户本周腰疼"}])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     assert recs[0]["memory_type"] == "fact"
 
 
@@ -187,7 +187,7 @@ def test_main_event_as_string_is_tolerated():
         "route": "memory",
         "facts": [],
     }], ensure_ascii=False)
-    recs = parse_l2_output(payload, dims)
+    recs = parse_scene_output(payload, dims)
     assert len(recs) == 1
     assert "回收站" in recs[0]["content"]
 
@@ -206,7 +206,7 @@ def test_side_record_uses_model_modality():
         {"type": "偏好", "content": "用户打算试试新方案", "subject": "self",
          "certainty": "confirmed", "derivation": "fact", "modality": "planned"},
     ])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     side = next(r for r in recs if "新方案" in r["content"])
     assert side["extra"]["modality"] == "planned"
     assert side["extra"]["derivation"] == "fact"
@@ -218,7 +218,7 @@ def test_main_modality_follows_single_planned_fact():
         {"type": "状态", "content": "用户计划下周三去上海出差", "subject": "self",
          "certainty": "confirmed", "derivation": "fact", "modality": "planned"},
     ])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     assert recs[0]["extra"]["modality"] == "planned"
 
 
@@ -228,7 +228,7 @@ def test_side_record_falls_back_when_axis_missing():
         {"type": "偏好", "content": "用户偏好深色主题", "subject": "self",
          "certainty": "confirmed"},
     ])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     side = next(r for r in recs if "深色" in r["content"])
     assert side["extra"]["modality"] == "unknown"
     assert side["extra"]["derivation"] == "fact"
@@ -244,7 +244,7 @@ def test_main_takes_majority_of_facts_axes():
         {"type": "状态", "content": "用户计划出差", "subject": "self",
          "certainty": "confirmed", "derivation": "fact", "modality": "planned"},
     ])
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     main = recs[0]
     assert main["extra"]["modality"] == "done"
 
@@ -254,7 +254,7 @@ def test_main_derivation_inferred_when_needs_review():
     unit = _unit(facts=[], main_event={"content": "用户在聊技术", "occurred_at": None,
                                        "feeling": None})
     unit[0]["dimensions"] = {"primary": None, "secondary": []}
-    recs = parse_l2_output(json.dumps(unit, ensure_ascii=False), DIMS)
+    recs = parse_scene_output(json.dumps(unit, ensure_ascii=False), DIMS)
     main = recs[0]
     if main["extra"]["needs_review"]:
         assert main["extra"]["derivation"] == "inferred"

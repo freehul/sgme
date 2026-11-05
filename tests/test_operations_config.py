@@ -305,11 +305,11 @@ def test_update_config_empty_values_is_noop_but_persists(cfg, empty):
 def test_update_config_section_mcp_version(cfg):
     """MCP 单段写：与 HTTP 单段写成功态同形。"""
     # Act
-    res = update_config_section(cfg, section="l1", values={"chunk_size": 999})
+    res = update_config_section(cfg, section="l2_extraction", values={"chunk_size": 999})
 
     # Assert
     assert res.ok is True
-    assert cfg["l1"]["chunk_size"] == 999
+    assert cfg["l2_extraction"]["chunk_size"] == 999
     assert list(update_payload(res.data).keys()) == UPDATE_SINGLE_KEYS
 
 
@@ -509,7 +509,7 @@ def test_http_config_persists_to_tmp_file_only(client, tmp_path):
     """落盘只写 tmp_path（SGME_CONFIG_PATH 隔离生效），绝不污染仓库 config/sgme.yaml。"""
     # Act
     resp = client.put("/v1/admin/config", headers=ADMIN_HEADERS,
-                      json={"section": "l1", "values": {"chunk_size": 4242}})
+                      json={"section": "l2_extraction", "values": {"chunk_size": 4242}})
 
     # Assert
     assert resp.status_code == 200, resp.text
@@ -568,14 +568,14 @@ def test_mcp_config_update_contract_unchanged(mcp, cfg, admin_gate_passed):
     """MCP config_update 成功体键集合与顺序仍与 v0.6 一致。"""
     # Act
     body = json.loads(_call_mcp(mcp, "config_update",
-                                {"section": "l1", "values": {"chunk_size": 1234}}))
+                                {"section": "l2_extraction", "values": {"chunk_size": 1234}}))
 
     # Assert
     assert list(body.keys()) == UPDATE_SINGLE_KEYS
     assert body["status"] == "ok"
-    assert body["section"] == "l1"
+    assert body["section"] == "l2_extraction"
     assert body["config"]["chunk_size"] == 1234
-    assert cfg["l1"]["chunk_size"] == 1234  # 热生效（就地改同一 cfg 对象）
+    assert cfg["l2_extraction"]["chunk_size"] == 1234  # 热生效（就地改同一 cfg 对象）
 
 
 def test_mcp_config_update_unknown_section_contract_unchanged(mcp, admin_gate_passed):

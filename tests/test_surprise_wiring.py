@@ -4,7 +4,7 @@
 1. ``memory_dao.insert_memory`` 的 extra 通路能写 surprise 列（schema 已迁移）
 2. ``surprise.compute_for_store`` 是旁路——任何异常返回 None 而不是抛出
 
-接线点在 ``l15._store_memory`` 与 ``l2._ensure_persisted`` 两处落库路径；
+接线点在 ``l3_adjudicate._store_memory`` 与 ``scene_aggregate._ensure_persisted`` 两处落库路径；
 本用例锁住底层契约，避免「模块写好了但落库字段被吞」的旧坑重演。
 """
 from __future__ import annotations
