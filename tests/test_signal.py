@@ -398,6 +398,37 @@ def test_refine_publishes_memory_updated(mem_conn, session_conn, cfg, raw_dir, m
     assert body["memories_count"] == 1
 
 
+def test_finalize_scene_disabled_still_publishes_refine_signal(mem_conn, cfg, monkeypatch):
+    """A1 冻结场景层时，finalize 仍发 source=refine 的 memory_updated 且不建场景。
+
+    回归锁（2026-11-05）：旧实现用 `return` 提前退出场景块，把 embedding、信号发布、
+    特质抽取一并跳过——场景默认关后生产提炼成功却不再发信号/不写向量。
+    """
+    cfg.setdefault("scene_aggregate", {})["enabled"] = False
+    # 阻断 embed 外发（本用例只测冻结分支的副作用保留）
+    from sgme.data.search import vector as vector_mod
+    monkeypatch.setattr(vector_mod, "upsert_memory_vector", lambda *a, **k: None)
+
+    mid = memory_dao.insert_memory(
+        mem_conn, content="用户偏好简洁回复", memory_type="persona",
+        priority=80, time_velocity="static", ttl_days=None,
+        dimension_ids=["preferences"], sources=None,
+    )
+    result = refine_mod.RefineResult(file_id="f-scene-freeze", status="refined")
+    result.memories = [{"memory_id": mid, "content": "用户偏好简洁回复"}]
+    refine_mod.finalize_refinement(result, mem_conn, cfg, client=None)
+
+    # 1) 场景四表零写入
+    cnt = mem_conn.execute("SELECT COUNT(*) AS c FROM scenes").fetchone()["c"]
+    assert cnt == 0
+    # 2) 提炼成功信号仍发布（source=refine）
+    rows = [dict(r) for r in mem_conn.execute(
+        "SELECT * FROM signal_events WHERE source='refine' AND type='memory_updated'"
+    ).fetchall()]
+    assert rows, "场景冻结不应吞掉 source=refine 的 memory_updated"
+    assert json.loads(rows[0]["payload"])["file_id"] == "f-scene-freeze"
+
+
 # ---------- 8. SSE 端点推送事件 ----------
 
 @pytest.mark.asyncio
