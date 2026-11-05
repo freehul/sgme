@@ -306,21 +306,113 @@ def archive_role(roles_dir: Path, role_id: str) -> bool:
 
 # ---------- character_book 懒补全读写（D-76 / T-306） ----------
 
+# 归一化：只留中文/字母/数字（去标点、空白、全角符号），用于字面比对
+_NORM_RE = re.compile(r"[\W_]+", re.UNICODE)
+# 停用字：公共子串若全由这些字组成，视为噪音不参与命中（防「在哪」「的」类误判）
+_HIT_STOP_CHARS = frozenset(
+    "的了吗呢吧啊呀是在有和与或就都也还又很太不没我你他她它们这那些个一"
+    "什么哪怎如何上下里外吗呀哈嘛"
+)
+# 单条命中阈值：有效公共子串长度 ≥2 才算认出同一段人生（1 个字撑不起判断）
+_HIT_MIN_SCORE = 2
+
+
+def _norm_text(s: str) -> str:
+    """归一化文本：去标点与空白，仅保留中文/字母/数字。"""
+    return _NORM_RE.sub("", str(s or ""))
+
+
+def _lcs_str(a: str, b: str) -> str:
+    """最长公共子串本体（同长取先出现的）；问题与 key 都很短，O(n*m) 足够。"""
+    if not a or not b:
+        return ""
+    best_len, end = 0, 0
+    prev = [0] * (len(b) + 1)
+    for i in range(1, len(a) + 1):
+        cur = [0] * (len(b) + 1)
+        ai = a[i - 1]
+        for j in range(1, len(b) + 1):
+            if ai == b[j - 1]:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best_len:
+                    best_len, end = cur[j], i
+        prev = cur
+    return a[end - best_len:end]
+
+
+def _has_content_char(s: str) -> bool:
+    """子串里至少一个非停用字（否则是「在哪」「的」这类噪音）。"""
+    return any(ch not in _HIT_STOP_CHARS for ch in s)
+
+
+def _hit_score(entry: dict[str, Any], qnorm: str) -> int:
+    """单条 character_book 条目的命中分（0 = 不命中）。
+
+    分层（自高到低）：
+    - 原问题归一化后完全相同 → 100：同一句话再问，事实必须一模一样
+    - 原问题与问句互相包含且都 ≥4 字 → 40：换口气复述同一问题
+    - key 归一化后是问句子串 → 10 + len(key)：key 原样被问到
+    - 兜底：key 与问句的最长公共子串（≥2 且含实字）→ 分值为子串长度
+
+    修复背景（2026-11-05 生产实测）：原实现只做「key in question」单向字面
+    包含，而 LLM 生成的 keys 是概念标签（普通乡镇小学/下雨天/操场泥），用户
+    复述时用自然句式（你小学在哪上的）——两者几乎不可能字面相交，命中率≈0，
+    表现为同一件事每次重新生成、换个说法（生产 insertion_order 100 → 110）。
+    """
+    if not qnorm:
+        return 0
+    score = 0
+    for sq in entry.get("source_questions") or []:
+        sqn = _norm_text(sq)
+        if not sqn:
+            continue
+        if sqn == qnorm:
+            return 100
+        if len(sqn) >= 4 and len(qnorm) >= 4 and (sqn in qnorm or qnorm in sqn):
+            score = max(score, 40)
+    for k in entry.get("keys") or []:
+        kn = _norm_text(k)
+        if not kn:
+            continue
+        if kn in qnorm:
+            score = max(score, 10 + len(kn))
+            continue
+        if len(kn) < _HIT_MIN_SCORE:
+            continue
+        common = _lcs_str(kn, qnorm)
+        if len(common) >= _HIT_MIN_SCORE and _has_content_char(common):
+            score = max(score, len(common))
+    return score
+
+
 def find_book_entry(card: dict[str, Any], question: str) -> dict[str, Any] | None:
-    """D-76 命中判定：character_book 条目的任一 keys 出现在问题里即命中。
+    """D-76 命中判定：给条目打分，取最高分那条（同分取最早写回的）。
 
     constant 条目不算懒补全命中——它们是恒注入设定（习惯细节），不是被追问的
     人生事实；懒补全只针对「被问才讲」的条目。命中后措辞可变、事实不变（②）。
     """
+    qnorm = _norm_text(question)
+    if not qnorm:
+        return None
     data = card.get("data") or {}
     book = data.get("character_book") or {}
+    best: dict[str, Any] | None = None
+    best_score = 0
+    best_order = 0
     for e in book.get("entries") or []:
-        if e.get("constant"):
+        if not isinstance(e, dict) or e.get("constant"):
             continue
-        for k in e.get("keys") or []:
-            if k and k in question:
-                return e
-    return None
+        score = _hit_score(e, qnorm)
+        if score < _HIT_MIN_SCORE:
+            continue
+        try:
+            order = int(e.get("insertion_order") or 0)
+        except (TypeError, ValueError):
+            order = 0
+        # 同分取最早写回的：事实最原始的那条优先，避免后来的重新生成顶掉第一条
+        if best is None or score > best_score or (score == best_score and order < best_order):
+            best, best_score, best_order = e, score, order
+    return best
 
 
 def append_book_entry(
@@ -329,12 +421,17 @@ def append_book_entry(
     keys: list[str],
     content: str,
     generated: bool = True,
+    question: str | None = None,
 ) -> dict[str, Any] | None:
     """D-76 写回：向角色卡 character_book 追加条目并落盘。
 
     角色不存在返回 None；正常返回新条目。落盘走 save_role（校验+刷新
     updated_at），**只写角色卡文件，绝不触碰 memory.db**——角色的人生事实
     是角色档案，不是用户事实（隔离铁律）。
+
+    ``question``：触发这次补全的原始追问，落进 ``source_questions``。
+    只靠 LLM 生成的 keys 记不住「同一句话再问」——keys 是概念标签，用户复述
+    时的措辞对不上；存原问题才能做到同问必同答（2026-11-05 生产实测修复）。
     """
     card = get_role(roles_dir, role_id)
     if card is None:
@@ -354,6 +451,9 @@ def append_book_entry(
     }
     if generated:
         entry["generated"] = True
+    q = str(question or "").strip()
+    if q:
+        entry["source_questions"] = [q]
     entries.append(entry)
     data["character_book"] = book
     save_role(roles_dir, role_id, {

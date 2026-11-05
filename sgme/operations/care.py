@@ -370,8 +370,10 @@ def persona_fill(
                 "answer": "这个我没提过。",
                 "provider": provider_name,
             })
-        # ④ 立即落盘（角色卡 character_book）
-        entry = roles_mod.append_book_entry(_roles_dir(), role_id, keys, answer)
+        # ④ 立即落盘（角色卡 character_book；同时记下原问题，供二次追问精确命中）
+        entry = roles_mod.append_book_entry(
+            _roles_dir(), role_id, keys, answer, question=question,
+        )
     except Exception as e:
         if isinstance(e, llm_provider.LLMUnavailable):
             return OperationResult.fail(ERR_INTERNAL, f"LLM 不可用: {e}")

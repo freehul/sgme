@@ -72,8 +72,8 @@ FILES = {
     "wiki_dao": S / "data" / "wiki_dao.py",
     "memory_stats_dao": S / "data" / "memory_stats_dao.py",
     "llm_usage_dao": S / "data" / "llm_usage_dao.py",
-    "l1": S / "engine" / "l1.py",
-    "l2": S / "engine" / "l2.py",
+    "l2_extraction": S / "engine" / "l2_extraction.py",
+    "scene_aggregate": S / "engine" / "scene_aggregate.py",
     "l2_extract": S / "engine" / "l2_extract.py",
     "l2_split": S / "engine" / "l2_split.py",
     "l3_rules": S / "engine" / "l3_rules.py",
@@ -221,8 +221,8 @@ def check(did: str, name: str, doc: str):
 @check("D-5", "分层整数编号 L1 捕获→L2 提取→L3 裁决→L4 梦境", "done")
 def _(self):
     return [
-        ("L1 捕获模块", *has("l1", "def parse_l1_output")),
-        ("L2 提取模块", *has("l2_extract", "def parse_l2_output")),
+        ("L1 捕获模块", *has("l2_extraction", "def parse_extraction_output")),
+        ("L2 提取模块", *has("l2_extract", "def parse_scene_output")),
         ("L3 裁决模块", *has("l3_rules", "def adjudicate")),
         ("L4 梦境模块", *has("dream", "def ensure_scheduler")),
     ]
@@ -300,10 +300,10 @@ def _(self):
 @check("D-23", "L2 输出 schema + 解析失败降级默认值", "done")
 def _(self):
     return [
-        ("2.0 解析入口", *has("l2_extract", "def parse_l2_output")),
+        ("2.0 解析入口", *has("l2_extract", "def parse_scene_output")),
         ("needs_review 待审闸门", *has("l2_extract", "needs_review")),
         ("降级默认 derivation=inferred", *has("l2_extract", '"inferred"')),
-        ("复用 l1 校验链（主干仍入库）", *has("l2_extract", "_validate_item")),
+        ("复用 l2_extraction 校验链（主干仍入库）", *has("l2_extract", "_validate_item")),
     ]
 
 
@@ -331,7 +331,7 @@ def _(self):
 def _(self):
     # 文档 §八第 25 条明写「D-29 合并闸无代码」→ 断言用于探测是否已偷偷落地。
     return [
-        ("merge 三闸实现", *has("l2", "proof_count", "merge_gate")),
+        ("merge 三闸实现", *has("scene_aggregate", "proof_count", "merge_gate")),
     ]
 
 
@@ -595,8 +595,8 @@ def _(self):
 @check("D-66", "七值 type + certainty + subject 必填", "done")
 def _(self):
     return [
-        ("七值 type 白名单", *has("l1", "DOMAIN_TYPES")),
-        ("certainty 三值", *has("l1", "VALID_CERTAINTY")),
+        ("七值 type 白名单", *has("l2_extraction", "DOMAIN_TYPES")),
+        ("certainty 三值", *has("l2_extraction", "VALID_CERTAINTY")),
         ("subject 列", *has("db", '"subject"')),
         ("注入侧 subject 过滤（消费侧）", *has("profile_inject", "subject_filter=")),
     ]
@@ -607,7 +607,7 @@ def _(self):
     # 已落地 = 分流白名单 + 候选池；未落地 = ⑤ route 代码侧后置校验（§八第 17 条 ⬜）
     return [
         ("route 列", *has("db", '"route"')),
-        ("route 白名单", *has("l1", "VALID_ROUTES")),
+        ("route 白名单", *has("l2_extraction", "VALID_ROUTES")),
         ("注入侧只放行 memory", *has("profile_inject", 'routes=("memory",)')),
         ("候选池表", *has("db", "skill_candidates")),
     ]
@@ -616,11 +616,11 @@ def _(self):
 @check("D-68", "软遗忘两层语义（正文脱敏 + 可回溯）", "done")
 def _(self):
     return [
-        ("正文强制重写", *has("l1", "_enforce_forget_content")),
+        ("正文强制重写", *has("l2_extraction", "_enforce_forget_content")),
         ("forget_topic 列", *has("db", "forget_topic")),
         ("forget 落库（extra 白名单）", *has("memory_dao", '"forget_topic"')),
-        ("memory_type 含 forget_request", *has("l1", "forget_request")),
-        ("写入时置 forget_request", *has("l1", 'memory_type = "forget_request"')),
+        ("memory_type 含 forget_request", *has("l2_extraction", "forget_request")),
+        ("写入时置 forget_request", *has("l2_extraction", 'memory_type = "forget_request"')),
         ("注入侧排除遗忘请求", *has("profile_inject", "exclude_memory_types")),
     ]
 
@@ -696,7 +696,14 @@ def _(self):
 
 @check("D-76", "人设懒补全", "done")
 def _(self):
-    return [("persona_fill 实现", *has("care_ops", "def persona_fill"))]
+    return [
+        ("persona_fill 实现", *has("care_ops", "def persona_fill")),
+        # 2026-11-05：生产实测「二次追问不命中、每次重新生成」。根因是命中判定只做
+        # key in question 单向字面包含，而 keys 是 LLM 给的概念标签。三条断言钉住修复：
+        ("命中打分（非单向字面子串）", *has("care_roles", "def _hit_score")),
+        ("写回记原问题", *has("care_roles", "source_questions")),
+        ("按分值取最优条目", *has("care_roles", "best_score")),
+    ]
 
 
 @check("D-77", "越界代价（三级，当前仅观测）", "done")

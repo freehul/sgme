@@ -238,3 +238,67 @@ def test_http_persona_fill_endpoint(app, roles_dir, card_with_book, fake_llm):
     body = r.json()
     assert body["status"] == "filled"
     assert "外贸" in body["answer"]
+
+# ---------- ⑦ 真实链路回归：概念标签 ≠ 问题原文（2026-11-05 生产实测发现） ----------
+
+# 真实 LLM 产出的 keys 是「概念标签」，不是用户问句里的原文。
+# 生产实测（companion 角色）：第一次写入 keys=普通乡镇小学/下雨天/操场泥/童年记忆，
+# 第二次问「你小学在哪上的」时全部不命中（key 不在问句里字面出现）→ 重新生成，
+# insertion_order 100 → 110，同一件事换个说法，用户看到「每次都在现编」。
+REAL_SHAPE_ANSWER = (
+    "上的是一所普通乡镇小学，最记得下雨天操场全是泥，鞋陷进去拔不出来。\n"
+    "KEYS: 普通乡镇小学, 下雨天, 操场泥, 童年记忆"
+)
+
+
+def test_hit_when_keys_are_conceptual_labels(roles_dir, card_with_book, cfg, fake_llm):
+    """keys 是概念标签时，二次追问仍须命中同一条（零重生成）。"""
+    calls = fake_llm(REAL_SHAPE_ANSWER)
+
+    r1 = care_operation.persona_fill(
+        "butler", "你小学在哪上的，记忆最深刻的事是什么？", cfg
+    )
+    assert r1.ok is True and r1.data["status"] == "filled"
+
+    # 人类第二次会换个问法，只留主干
+    r2 = care_operation.persona_fill("butler", "你小学在哪上的？", cfg)
+
+    assert r2.ok is True
+    assert r2.data["status"] == "hit", "概念标签未被命中 → 每次都会重新编一段"
+    assert r2.data["answer"] == r1.data["answer"]
+    assert len(calls) == 1, "命中必须零 LLM；重建说明又生成了一遍"
+
+
+def test_source_question_is_recorded_and_hits(roles_dir, card_with_book, cfg, fake_llm):
+    """写回条目必须记下原问题；同一句复问走原问题精确匹配。"""
+    calls = fake_llm(REAL_SHAPE_ANSWER)
+    q = "你小学在哪上的，记忆最深刻的事是什么？"
+
+    care_operation.persona_fill("butler", q, cfg)
+
+    card = roles_mod.get_role(roles_dir, "butler")
+    entry = card["data"]["character_book"]["entries"][-1]
+    assert entry.get("source_questions") == [q]
+
+    r2 = care_operation.persona_fill("butler", q, cfg)
+    assert r2.data["status"] == "hit"
+    assert len(calls) == 1
+
+
+def test_no_false_hit_on_unrelated_question(roles_dir, card_with_book, cfg, fake_llm):
+    """放宽命中不得误伤：无关问题仍走生成，不能把人生条目乱套。"""
+    fake_llm(REAL_SHAPE_ANSWER)
+    care_operation.persona_fill("butler", "你小学在哪上的？", cfg)
+
+    fake_llm("UNSET")
+    r = care_operation.persona_fill("butler", "你第一份工作月薪多少？", cfg)
+    assert r.data["status"] == "unset"
+
+
+def test_existing_entry_still_hits_without_source_questions(roles_dir, card_with_book, cfg, fake_llm):
+    """存量条目没有 source_questions（老数据）也要能靠 keys 命中。"""
+    calls = fake_llm("不该被调用")
+    res = care_operation.persona_fill("butler", "你中学在哪上的？", cfg)
+    assert res.data["status"] == "hit"
+    assert calls == []
+
