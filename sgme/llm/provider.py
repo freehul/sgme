@@ -46,6 +46,20 @@ class LLMUnavailable(LLMError):
         super().__init__(message, error_type="drop_batch")
 
 
+class PrimaryUnavailable(LLMError):
+    """首链熔断中（降级保护）：本次调用被主动跳过，不做付费降级。
+
+    与 LLMUnavailable 的语义区别（2026-11-05 加）：
+    - LLMUnavailable = 全链真的打完了都失败 → rule 兜底丢弃（终态）
+    - PrimaryUnavailable = **主动不调用**：首链连续失败已触发熔断，为避免静默
+      降级到付费备用模型而暂停本次提炼；调用方应把文件视为「延后」
+      （保持 status=new、不计 fail_count），冷却期后再试。
+    """
+
+    def __init__(self, message: str = "首链熔断中，暂停提炼"):
+        super().__init__(message, error_type="primary_unavailable")
+
+
 class ContextOverflow(LLMError):
     """输入超当前模型窗口。"""
 

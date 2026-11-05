@@ -55,3 +55,13 @@ rules:
   allowed_models:
     deny_prefixes: [pro, reasoner, thinking]
     deny_exact: [gemma-4-12b-qat]
+  # 首链熔断（2026-11-05）：首链连续失败 failure_threshold 次 → 暂停提炼
+  # cooldown_minutes 分钟，期间**不做降级**（避免静默切到付费备用模型烧钱）；
+  # 文件保持 status=new、不计失败次数，冷却后自动重试。
+  # 出厂默认关闭（通用部署可能没有付费备用，不必拦截）；生产部署按需开启。
+  # health_fail_threshold：/v1/health 与心跳探测连续失败几次才判不可用（默认 2，降噪用）。
+  primary_guard:
+    enabled: false
+    failure_threshold: 3
+    cooldown_minutes: 30
+    health_fail_threshold: 2

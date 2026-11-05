@@ -143,6 +143,18 @@ def _run_batch_scan_locked(
     max_files: int | None,
 ) -> dict[str, Any]:
     """提炼锁已持有的扫描体（run_batch_scan 内部使用，勿直接调用）。"""
+    # 首链熔断（2026-11-05）：熔断期内整轮暂停——此时任何提炼都会降级到付费
+    # 备用模型（生产实测一天 975 次）；文件保持 status=new，冷却后自动重试。
+    from sgme.llm import chain as llm_chain
+
+    if llm_chain.is_primary_open("refinement"):
+        logger.warning("Batch 兜底扫描暂停：提炼首链熔断中（避免降级烧付费模型）")
+        return {
+            "status": "deferred",
+            "message": "首链熔断中，暂停本轮（文件保持 status=new）",
+            "scanned": 0, "refined": 0, "failed": 0, "memory_count": 0,
+            "errors": [],
+        }
     limit = int(max_files or DEFAULT_MAX_FILES)
     new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
     refined_count = 0
@@ -164,6 +176,14 @@ def _run_batch_scan_locked(
             # 只让文件保持 status=new 无限重扫——计入失败计数，达上限转 error。
             _record_failure(session_conn, file_id, f"异常: {e}", cfg)
             continue
+        # 首链熔断（2026-11-05）：本文件被延后（未真正提炼）→ 不计失败，
+        # 本轮剩余文件同样会被延后，直接收尾等待冷却。
+        if getattr(result, "deferred", False):
+            logger.warning(
+                "Batch 首链熔断中，暂停本轮剩余文件（已处理 %d 个，保持 status=new）",
+                refined_count + failed_count,
+            )
+            break
         if result.status == "refined":
             refined_count += 1
             memory_count += int((l3_stats or {}).get("stored", 0) or 0)

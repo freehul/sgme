@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from typing import Any
 
@@ -19,6 +20,109 @@ from sgme import config as sgme_config
 from sgme.llm import provider
 
 logger = logging.getLogger("sgme.llm.chain")
+
+
+# ---------- 首链熔断（降级保护，2026-11-05） ----------
+# 背景：生产 agnes 首链长时间不可用时，链路会静默降级到 deepseek（付费）——
+# 2026-11-05 一天实测 975 次降级、无任何显式告警（只有逐次 refine_cost 节流告警）。
+# 策略：首链连续失败 failure_threshold 次 → 打开熔断 cooldown_minutes 分钟；
+# 熔断期内**不做任何降级**（含 rule 丢弃），直接抛 PrimaryUnavailable，由上层把
+# 文件视为「延后」（保持 status=new、不计失败），冷却后自动半开重试。
+# 配置：llm.yaml rules.primary_guard（缺省 enabled=false，显式开启才生效）。
+_GUARD_LOCK = threading.Lock()
+_GUARD_STATES: dict[str, dict] = {}
+
+
+def _guard_cfg(rules: dict | None) -> dict:
+    return ((rules or {}).get("primary_guard") or {})
+
+
+def reset_primary_guard() -> None:
+    """清空熔断状态（测试隔离 / 运维手动恢复）。"""
+    with _GUARD_LOCK:
+        _GUARD_STATES.clear()
+
+
+def is_primary_open(chain_name: str = "refinement") -> bool:
+    """熔断是否处于打开状态（冷却期内）。未配置/未触发 → False。"""
+    st = _GUARD_STATES.get(chain_name)
+    if not st:
+        return False
+    return time.monotonic() < float(st.get("open_until") or 0.0)
+
+
+def primary_guard_state(chain_name: str = "refinement") -> dict:
+    """只读熔断状态快照（运维/测试观测用）。"""
+    st = _GUARD_STATES.get(chain_name) or {}
+    return {
+        "open": is_primary_open(chain_name),
+        "fails": int(st.get("fails") or 0),
+        "open_until": float(st.get("open_until") or 0.0),
+        "last_error": st.get("last_error"),
+    }
+
+
+def take_primary_alert(chain_name: str = "refinement") -> dict | None:
+    """取出一次「熔断打开」告警载荷（每次打开只取到一次；用于上报告警）。"""
+    st = _GUARD_STATES.get(chain_name)
+    if not st:
+        return None
+    with _GUARD_LOCK:
+        payload = st.get("alert")
+        st["alert"] = None
+    return payload
+
+
+def _note_primary_failure(
+    chain_name: str, rules: dict | None, provider_name: str, error: Exception | None
+) -> None:
+    """记一次首链失败；达到阈值 → 打开熔断并准备一次告警载荷。"""
+    cfg = _guard_cfg(rules)
+    threshold = max(1, int(cfg.get("failure_threshold", 3)))
+    cooldown_min = max(1.0, float(cfg.get("cooldown_minutes", 30)))
+    now = time.monotonic()
+    with _GUARD_LOCK:
+        st = _GUARD_STATES.setdefault(
+            chain_name, {"fails": 0, "open_until": 0.0, "last_error": None, "alert": None}
+        )
+        # 冷却期已过：保留 threshold-1，让一次失败即可重新熔断（半开快速失败）
+        if st["fails"] >= threshold and now >= float(st.get("open_until") or 0.0):
+            st["fails"] = threshold - 1
+        st["fails"] += 1
+        st["last_error"] = f"{type(error).__name__}: {error}"[:300] if error else None
+        if st["fails"] >= threshold and now >= float(st.get("open_until") or 0.0):
+            st["open_until"] = now + cooldown_min * 60.0
+            st["alert"] = {
+                "provider": provider_name,
+                "consecutive_failures": st["fails"],
+                "failure_threshold": threshold,
+                "cooldown_minutes": cooldown_min,
+                "last_error": st["last_error"],
+                "action": "primary_circuit_open",
+                "message": (
+                    f"提炼首链 {provider_name} 连续失败 {st['fails']} 次 → 熔断 "
+                    f"{cooldown_min:g} 分钟：期间暂停提炼、不降级付费模型"
+                ),
+            }
+            logger.warning(
+                "首链熔断打开 chain=%s provider=%s fails=%s cooldown=%gmin last_error=%s",
+                chain_name, provider_name, st["fails"], cooldown_min, st["last_error"],
+            )
+
+
+def _note_primary_success(chain_name: str) -> None:
+    """首链成功：清零失败计数并解除熔断。"""
+    st = _GUARD_STATES.get(chain_name)
+    if not st:
+        return
+    with _GUARD_LOCK:
+        was_open = time.monotonic() < float(st.get("open_until") or 0.0)
+        st["fails"] = 0
+        st["open_until"] = 0.0
+        st["last_error"] = None
+        st["alert"] = None
+        if was_open:
+            logger.warning("首链恢复 chain=%s 熔断解除", chain_name)
 
 
 # ---------- 配置加载 ----------
@@ -128,6 +232,21 @@ def call_with_fallback(
     fallback_on = rules.get("fallback_on", [])
 
     own_client = client is None
+    primary_name = (chain[0] or {}).get("provider") if chain else None
+    # 熔断只在生产形态（client=None）生效：测试注入 mock client 时保留旧行为，
+    # 避免熔断状态跨用例污染。
+    guard_on = (
+        own_client
+        and bool(_guard_cfg(rules).get("enabled", False))
+        and bool(primary_name)
+        and primary_name != "rule"
+    )
+    # 熔断检查放在建 client 之前：命中即抛，不泄漏连接。
+    if guard_on and is_primary_open(chain_name):
+        raise provider.PrimaryUnavailable(
+            f"首链 {primary_name} 熔断中（chain={chain_name}），本次不做降级调用"
+        )
+
     cli = client or provider.make_client(timeout_s=rules.get("timeout_s", 120))
     last_error: Exception | None = None
     tried_providers: list[str] = []
@@ -158,6 +277,8 @@ def call_with_fallback(
                             "LLM 调用成功 chain=%s provider=%s attempt=%s",
                             chain_name, p_name, attempt,
                         )
+                    if guard_on and idx == 0:
+                        _note_primary_success(chain_name)
                     return text, p_name, usage
                 except provider.LLMError as e:
                     last_error = e
@@ -195,6 +316,15 @@ def call_with_fallback(
             logger.warning(
                 "provider=%s 重试 %s 次耗尽，降级到下一级", p_name, max_retries
             )
+            # 首链熔断（2026-11-05）：首链重试耗尽 → 记失败；达到阈值立即熔断，
+            # 本次**不再执行付费降级**（直接抛 PrimaryUnavailable，由上层延后）。
+            if guard_on and idx == 0:
+                _note_primary_failure(chain_name, rules, p_name, last_error)
+                if is_primary_open(chain_name):
+                    raise provider.PrimaryUnavailable(
+                        f"首链 {p_name} 连续失败触发熔断（chain={chain_name}），"
+                        "暂停提炼以避免付费降级"
+                    )
 
         # 全链失败
         raise provider.LLMUnavailable(

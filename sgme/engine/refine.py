@@ -19,6 +19,7 @@ from typing import Any, Iterator
 
 from sgme import config
 from sgme.engine import l2_extraction, scene_aggregate, normalize
+from sgme.llm import provider as llm_provider
 from sgme.prompts import BucketCtx
 from sgme.raw import store
 from sgme.data import memory_dao, session_dao
@@ -46,6 +47,9 @@ class RefineResult:
     # E3 失败熔断（2026-11-05）：本次失败是否已计入 raw_files.fail_count——
     # batch_scan 据此避免对同一文件重复计数（只有 refine 入口之外的异常才由它记账）。
     failure_recorded: bool = False
+    # 首链熔断延后（2026-11-05）：True = 本次没有真正提炼（LLM 首链熔断中，
+    # 主动跳过以免降级烧付费模型）；文件保持 status=new、不计 fail_count，冷却后再试。
+    deferred: bool = False
     # E5 截断计量（2026-11-05）：本次 L1 有多块输出被 max_tokens 截断
     # （finish_reason="length"）；**仅计量**，不参与提交闸/重试判定。
     # 明细随逐块 refine_runs.action_counts["l1_truncated_chunks"] 落库。
@@ -258,6 +262,16 @@ def refine_file(
         )
         return result
 
+    # 首链熔断（2026-11-05）：熔断期内直接延后——不解析/不分块/不调 LLM，
+    # 文件保持 status=new、不计失败；冷却后自动恢复。
+    from sgme.llm import chain as llm_chain
+    if llm_chain.is_primary_open("refinement"):
+        result.status = "deferred"
+        result.deferred = True
+        result.error = "primary_circuit_open"
+        logger.warning("首链熔断中，跳过提炼（file=%s，保持 status=new）", file_id)
+        return result
+
     # T-43：动态提炼链——session 声明的 agent_model（provider/model）→
     # 未指定 refine.llm_override 时跟随 agent 当前 LLM（复制 providers 连接参数）
     agent_model = rf.get("agent_model")
@@ -379,6 +393,26 @@ def refine_file(
                 "L1 块级失败 %d/%d（file=%s）：内容有缺口，本次不推进游标，文件保持待重跑",
                 result.failed_chunks, result.chunk_total, file_id,
             )
+    except llm_provider.PrimaryUnavailable as e:
+        # 首链熔断（2026-11-05）：主动延后——不降级、不调备用模型、不计失败次数，
+        # 文件保持 status=new（batch_scan/append 联动在冷却期后自动重试）。
+        result.status = "deferred"
+        result.deferred = True
+        result.error = str(e)
+        logger.warning(
+            "首链熔断，本次提炼延后（file=%s，保持 status=new，不计失败）: %s",
+            file_id, e,
+        )
+        # 每次「熔断打开」发布一条 anomaly_warn（source=llm_primary）；已打开期间不重复发。
+        try:
+            from sgme.llm import chain as llm_chain
+            from sgme.signal import engine as signal_engine
+            alert = llm_chain.take_primary_alert("refinement")
+            if alert:
+                signal_engine.publish("anomaly_warn", "llm_primary", alert, mem_conn)
+        except Exception as e2:  # noqa: BLE001——告警是旁路，不影响延后语义
+            logger.warning("首链熔断告警发布失败（不阻塞）: %s", e2)
+        return result
     except l2_extraction.RefineError as e:
         result.status = "error"
         result.error = str(e)

@@ -40,6 +40,12 @@ _llm_cache: dict | None = None  # {"data": dict, "ts": monotonic, "head": tuple}
 _llm_cache_lock = threading.Lock()
 _llm_refreshing = threading.Event()  # 后台刷新防重入
 
+# 心跳降噪（2026-11-05）：agnes 首链偶发网络抖动（>12s）会让单次 /models 探测超时。
+# 单次失败不再翻转 available——连续 health_fail_threshold 次才判不可用并告警。
+_LLM_PROBE_STREAK = 0
+_LLM_PROBE_LAST_GOOD: dict | None = None
+_LLM_PROBE_LOCK = threading.Lock()
+
 
 def reset_llm_cache() -> None:
     """清空 LLM 探测缓存（测试隔离 / 配置热更新后可显式调用）。
@@ -47,10 +53,46 @@ def reset_llm_cache() -> None:
     同时清除后台刷新防重入标记——否则上一个过期周期的刷新线程未结束时
     （如真实网络 5s 超时期间），新周期的刷新会被 Event 拦截，缓存永不更新。
     """
-    global _llm_cache
+    global _llm_cache, _LLM_PROBE_STREAK, _LLM_PROBE_LAST_GOOD
     with _llm_cache_lock:
         _llm_cache = None
+    with _LLM_PROBE_LOCK:
+        _LLM_PROBE_STREAK = 0
+        _LLM_PROBE_LAST_GOOD = None
     _llm_refreshing.clear()
+
+
+def _probe_with_streak(cfg: dict) -> dict:
+    """生产路径 LLM 探测（连续失败阈值降噪）。
+
+    - 成功：清零连败计数，记录「上次可用」快照
+    - 失败但未达阈值：沿用上次可用状态（error 置空，只记 warning 日志）——避免
+      一次网络抖动就把 available 翻成 false 并产 anomaly_warn
+    - 连续失败达到 health_fail_threshold（默认 2）：如实返回不可用
+    测试注入 client 的路径不走本函数（jest 语义：立即返回真实探测结果）。
+    """
+    global _LLM_PROBE_STREAK, _LLM_PROBE_LAST_GOOD
+    data = _probe_llm(cfg, None)
+    rules = ((cfg.get("llm") or {}).get("rules") or {}) if isinstance(cfg, dict) else {}
+    guard = (rules.get("primary_guard") or {}) if isinstance(rules, dict) else {}
+    threshold = max(1, int(guard.get("health_fail_threshold", 2) or 2))
+    with _LLM_PROBE_LOCK:
+        if data.get("available"):
+            _LLM_PROBE_STREAK = 0
+            _LLM_PROBE_LAST_GOOD = dict(data)
+            return data
+        _LLM_PROBE_STREAK += 1
+        if _LLM_PROBE_STREAK < threshold and _LLM_PROBE_LAST_GOOD is not None:
+            logger.warning(
+                "LLM 探测第 %d/%d 次失败（未达阈值，沿用上次可用状态）: %s",
+                _LLM_PROBE_STREAK, threshold, data.get("error"),
+            )
+            return dict(_LLM_PROBE_LAST_GOOD)
+        logger.warning(
+            "LLM 探测连续 %d 次失败（阈值 %d）→ 判不可用: %s",
+            _LLM_PROBE_STREAK, threshold, data.get("error"),
+        )
+        return data
 
 
 def _now_dt() -> datetime:
@@ -243,7 +285,7 @@ def check_llm_available(
         return snap["data"]
 
     # 无缓存 / head 变化：同步探测并写缓存（保持原首调行为）
-    data = _probe_llm(cfg, None)
+    data = _probe_with_streak(cfg)
     with _llm_cache_lock:
         _llm_cache = {"data": data, "ts": _time.monotonic(), "head": head_key}
     return data
@@ -258,7 +300,7 @@ def _spawn_llm_refresh(cfg: dict, head_key: tuple) -> None:
     def _bg() -> None:
         global _llm_cache
         try:
-            data = _probe_llm(cfg, None)
+            data = _probe_with_streak(cfg)
             with _llm_cache_lock:
                 _llm_cache = {"data": data, "ts": _time.monotonic(), "head": head_key}
         except Exception as e:  # 刷新失败保旧值，下轮过期再试

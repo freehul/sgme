@@ -333,6 +333,10 @@ def refine_one(
     现 persist 抛异常时本函数不达 commit 行，文件保持 status=new 可重扫重试。
     """
     result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
+    # 首链熔断（2026-11-05）：主动延后——不落库、不推游标、不计失败，文件保持 new。
+    if getattr(result, "deferred", False):
+        logger.warning("refine_one file=%s 首链熔断中，本次延后（保持 status=new）", file_id)
+        return result, dict(_ZERO_STATS)
     l3_stats = (
         persist_memories(result, mem_conn, cfg,
                          agent_tag=_resolve_file_agent(session_conn, file_id))
@@ -414,6 +418,10 @@ def async_refine_worker(
         mem_conn, session_conn, _ = db_mod.init_databases(data_dir)
         if file_id:
             result = refine_mod.refine_file(file_id, mem_conn, session_conn, cfg)
+            if getattr(result, "deferred", False):
+                logger.warning(
+                    "async refine file=%s 首链熔断中，本次延后（保持 status=new）", file_id)
+                return
             if result.memories:
                 persist_memories(result, mem_conn, cfg,
                                  agent_tag=_resolve_file_agent(session_conn, file_id))
@@ -431,6 +439,11 @@ def async_refine_worker(
             for rf in new_files:
                 try:
                     r = refine_mod.refine_file(rf["file_id"], mem_conn, session_conn, cfg)
+                    if getattr(r, "deferred", False):
+                        logger.warning(
+                            "async refine 首链熔断中，暂停本批（已处理 %d 个，剩余保持 new）",
+                            processed)
+                        break
                     if r.memories:
                         # F-5（2026-09-24 深度审查）：批量分支补 agent_tag——
                         # 此前漏传，T-140 多 Agent 隔离打标在异步默认路径静默缺失。
@@ -646,6 +659,11 @@ def _maybe_refine_on_append(
         t_session: sqlite3.Connection | None = None
         try:
             t_mem, t_session, _ = db_mod.init_databases(data_dir)
+            # 首链熔断（2026-11-05）：熔断期内跳过联动提炼，避免降级烧付费模型。
+            from sgme.llm import chain as llm_chain
+            if llm_chain.is_primary_open("refinement"):
+                logger.warning("append 联动提炼跳过：首链熔断中（file=%s）", file_id)
+                return
             result, _ = refine_one(file_id, t_mem, t_session, cfg)
             logger.info("append 联动提炼 file=%s status=%s", file_id, result.status)
         except Exception as e:
