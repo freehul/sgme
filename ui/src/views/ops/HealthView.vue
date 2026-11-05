@@ -2,7 +2,8 @@
 // 运维健康总览：存储体检（DB/WAL/raw/备份）+ 9.6 场景层下线就绪
 // 数据源 GET /v1/admin/ops/health-overview（Admin Key；后端未就绪时显示空态，不白屏）
 import { computed, onMounted, ref } from 'vue'
-import { getHealthOverview, type OpsHealthOverview } from '../../api/ops'
+import { getHealthOverview, getRefineStatus, type OpsHealthOverview, type RefineStatus } from '../../api/ops'
+import { getRefineRuns, type RefineRun, type RefineRuns } from '../../api/dashboard'
 import { ApiError } from '../../api/client'
 import { fmtTs } from '../../utils/format'
 import { compatPhaseLabel, formatBytes, formatCount, isOverviewUsable } from './healthFormat'
@@ -11,13 +12,34 @@ const data = ref<OpsHealthOverview | null>(null)
 const loading = ref(false)
 const error = ref('')
 
+// ---------- 提炼状态（GET /v1/admin/refine/status + 最近批次 GET /v1/admin/refine_runs） ----------
+const refine = ref<RefineStatus | null>(null)
+const runs = ref<RefineRuns | null>(null)
+const refineLoading = ref(false)
+const refineError = ref('')
+
+// 阶段展示名对齐 sgme/engine/stage_map.py（L1 捕获 / L2 提取 / L3 裁决 / L4 梦境）
+const STAGE_LABEL: Record<string, string> = {
+  l1_extraction: 'L2 提取',
+  l1_conflict: 'L3 裁决',
+  l2_scene: '遗留场景聚合',
+  // D-79（2026-11-05）：Tier0 已砍，仅历史 refine_runs 行展示用
+  tier0_summary: '用户画像（历史）',
+}
+const RUN_STATUS_LABEL: Record<string, string> = { running: '运行中', ok: '成功', error: '失败' }
+
 // 存储体检卡片：三库体积 + raw（数+字节）+ 备份（数+字节）
 const storageCards = computed(() => {
   const s = data.value?.storage
   if (!s) return []
   return [
     { key: 'memory_db', label: 'memory.db', value: formatBytes(s.memory_db_bytes) },
-    { key: 'memory_wal', label: 'memory.db WAL', value: formatBytes(s.memory_wal_bytes) },
+    {
+      key: 'memory_wal',
+      label: s.memory_wal_alert ? 'memory.db WAL ⚠ 超阈值' : 'memory.db WAL',
+      value: formatBytes(s.memory_wal_bytes),
+      warn: !!s.memory_wal_alert,
+    },
     { key: 'wiki_db', label: 'wiki.db', value: formatBytes(s.wiki_db_bytes) },
     { key: 'raw_files', label: 'raw 文件数', value: `${formatCount(s.raw_files)} 个` },
     { key: 'raw_bytes', label: 'raw 体积', value: formatBytes(s.raw_bytes) },
@@ -38,6 +60,72 @@ const sceneCards = computed(() => {
     { key: 'conflict_rules', label: '冲突规则', value: formatCount(s.conflict_rules) },
   ]
 })
+
+// 提炼队列水位（refine/status 四计数）
+const refineQueue = computed(() => {
+  const s = refine.value
+  if (!s) return []
+  return [
+    { key: 'pending', label: '待提炼', value: formatCount(s.pending) },
+    { key: 'completed', label: '已完成', value: formatCount(s.completed) },
+    { key: 'failed', label: '失败', value: formatCount(s.failed) },
+    { key: 'total', label: 'raw 总数', value: formatCount(s.total) },
+  ]
+})
+
+// 秒级时长 → 人话（水位年龄 / 批次耗时共用）
+function ageText(sec: number | null | undefined): string {
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return '—'
+  if (sec < 60) return Math.round(sec) + ' 秒'
+  if (sec < 3600) return Math.round(sec / 60) + ' 分钟'
+  if (sec < 86400) return (sec / 3600).toFixed(1) + ' 小时'
+  return (sec / 86400).toFixed(1) + ' 天'
+}
+
+const watermarkText = computed(() => {
+  const wm = refine.value?.watermark
+  if (!wm) return '—'
+  if (wm.watermark_age_sec == null || wm.watermark_age_sec < 0) return '从未提炼'
+  return '距上次 ' + ageText(wm.watermark_age_sec)
+})
+
+// 阶段展示名：优先取后端行内 stage_label（stage_map 权威口径，2.0.4 起返回），
+// 旧后端无该字段时回退上面本地映射
+function stageLabel(r: RefineRun): string {
+  const label = (r as unknown as { stage_label?: string }).stage_label
+  return label || STAGE_LABEL[r.stage] || r.stage
+}
+
+// 单批次耗时：finished_at - started_at（运行中/缺字段时给状态文案）
+function runDuration(r: RefineRun): string {
+  const start = Date.parse(r.started_at)
+  const end = r.finished_at ? Date.parse(r.finished_at) : NaN
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return r.status === 'running' ? '运行中' : '—'
+  }
+  const sec = Math.max(0, (end - start) / 1000)
+  if (sec < 60) return sec.toFixed(1) + 's'
+  if (sec < 3600) return Math.floor(sec / 60) + 'm' + Math.round(sec % 60) + 's'
+  return (sec / 3600).toFixed(1) + 'h'
+}
+
+// 两个端点独立容错：队列水位是核心（refine/status），最近批次缺失不影响出图
+async function loadRefine() {
+  refineLoading.value = true
+  refineError.value = ''
+  try {
+    refine.value = await getRefineStatus()
+  } catch (e) {
+    refine.value = null
+    refineError.value = e instanceof ApiError ? e.message : String(e)
+  }
+  try {
+    runs.value = await getRefineRuns({ limit: 5 })
+  } catch {
+    runs.value = null
+  }
+  refineLoading.value = false
+}
 
 const phaseLabel = computed(() => compatPhaseLabel(data.value?.scenes.compat_phase))
 const blockers = computed(() => data.value?.scenes.blockers || [])
@@ -69,7 +157,10 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  void loadRefine()
+})
 </script>
 
 <template>
@@ -95,12 +186,77 @@ onMounted(load)
       暂无健康数据——接口可能尚未上线，或返回体缺少 storage / scenes 段；后端就绪后点「刷新」即可。
     </p>
 
+    <!-- ⓪ 提炼状态（T-169 refine/status：队列水位 + 最近失败；最近批次取自 refine_runs） -->
+    <section class="panel">
+      <h3>
+        提炼状态
+        <span class="sub">待提炼队列 / 水位 / 最近批次</span>
+      </h3>
+      <div class="ready-line">
+        <button class="btn btn-sm" :disabled="refineLoading" @click="loadRefine">
+          {{ refineLoading ? '刷新中…' : '刷新状态' }}
+        </button>
+        <span v-if="refine" class="kv">水位：<b>{{ watermarkText }}</b></span>
+        <span v-if="refine?.watermark?.last_refined_at" class="kv">
+          上次提炼：<b>{{ fmtTs(refine.watermark.last_refined_at) }}</b>
+        </span>
+      </div>
+
+      <p v-if="refineError" class="error">
+        提炼状态读取失败：{{ refineError }}（端点未上线、鉴权失败或服务不可达）
+      </p>
+
+      <template v-if="refine">
+        <div class="stat-grid">
+          <div v-for="c in refineQueue" :key="c.key" class="stat-card">
+            <span class="v">{{ c.value }}</span>
+            <span class="l">{{ c.label }}</span>
+          </div>
+        </div>
+
+        <div v-if="refine.last_failure" class="fail-box">
+          <div class="fail-head">
+            <span class="status error">最近一次失败</span>
+            <span class="kv">阶段 <b>{{ STAGE_LABEL[refine.last_failure.stage] || refine.last_failure.stage }}</b></span>
+            <span class="kv">文件 <code class="mono">{{ refine.last_failure.file_id }}</code></span>
+            <span class="kv">开始于 <b>{{ fmtTs(refine.last_failure.started_at) }}</b></span>
+          </div>
+          <p class="fail-msg">{{ refine.last_failure.error || '（后端未回错误详情）' }}</p>
+        </div>
+        <p v-else class="desc">最近没有失败批次。</p>
+      </template>
+
+      <template v-if="runs && runs.items.length">
+        <h4 class="blockers-title">
+          最近批次 <span class="sub">{{ runs.items.length }} 条 / 累计 {{ formatCount(runs.total) }} 条提炼记录</span>
+        </h4>
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead>
+              <tr><th>开始时间</th><th>文件</th><th>阶段</th><th>状态</th><th>耗时</th><th>错误</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in runs.items" :key="r.run_id">
+                <td>{{ fmtTs(r.started_at) }}</td>
+                <td class="mono">{{ r.file_id }}</td>
+                <td>{{ stageLabel(r) }}</td>
+                <td><span class="st" :class="r.status">{{ RUN_STATUS_LABEL[r.status] || r.status }}</span></td>
+                <td class="num">{{ runDuration(r) }}</td>
+                <td class="run-err">{{ r.error || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+      <p v-else-if="!refineError" class="desc">暂无提炼记录（refine_runs 为空，或端点尚未返回数据）。</p>
+    </section>
+
     <template v-if="data">
       <!-- ① 存储体检 -->
       <section class="panel">
         <h3>存储体检 <span class="sub">磁盘占用与文件规模</span></h3>
         <div class="stat-grid">
-          <div v-for="c in storageCards" :key="c.key" class="stat-card">
+          <div v-for="c in storageCards" :key="c.key" class="stat-card" :class="{ warn: (c as any).warn }">
             <span class="v">{{ c.value }}</span>
             <span class="l">{{ c.label }}</span>
           </div>
@@ -193,10 +349,54 @@ onMounted(load)
   color: var(--text);
   font-weight: 600;
 }
+/* 提炼状态：失败详情 + 批次表 */
+.fail-box {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--danger-soft);
+}
+.fail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.fail-head code {
+  background: var(--surface);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+.fail-msg {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+.fail-head .status { background: var(--surface); }
+.tbl-wrap { overflow-x: auto; }
+.tbl-wrap .tbl { min-width: 640px; }
+.tbl-wrap .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tbl-wrap .run-err {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  max-width: 320px;
+  word-break: break-word;
+}
+
 .blockers-title {
   margin: var(--space-3) 0 var(--space-2);
   font-size: var(--fs-md);
   font-weight: 600;
+}
+.blockers-title .sub {
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-left: var(--space-2);
 }
 .blockers {
   margin: 0;
@@ -206,5 +406,10 @@ onMounted(load)
 }
 .blockers li {
   margin: 2px 0;
+}
+/* F4：WAL 超阈值徽标（>200MB 或 > memory.db 50%） */
+.stat-card.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 </style>

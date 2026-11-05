@@ -8,6 +8,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ApiError } from '../../api/client'
 import {
   cardHistory,
+  cardHistoryOf,
   cardSchema,
   listCards,
   updateSlot,
@@ -15,6 +16,7 @@ import {
   type CardItem,
   type CardSpec,
 } from '../../api/cards'
+import { fmtTs } from '../../utils/format'
 
 const specs = ref<CardSpec[]>([])
 const cards = ref<CardItem[]>([])
@@ -25,6 +27,14 @@ const loading = ref(false)
 const saving = ref<string | null>(null)
 const error = ref('')
 const msg = ref('')
+
+// 单卡修改历史（GET /v1/admin/cards/{card_id}/history?limit=50）——点某张卡的「历史」打开
+const histOpen = ref(false)
+const histCardId = ref('')
+const histCardTitle = ref('')
+const histItems = ref<CardHistoryItem[]>([])
+const histLoading = ref(false)
+const histError = ref('')
 
 function key(cardId: string, slot: string): string {
   return cardId + '.' + slot
@@ -142,6 +152,39 @@ async function saveCard(spec: CardSpec) {
   }
 }
 
+// ---------- 单卡修改历史（含理由列；全卡历史见页尾「修改记录」，不带理由） ----------
+
+async function loadCardHistory() {
+  if (!histCardId.value) return
+  histLoading.value = true
+  histError.value = ''
+  try {
+    const r = await cardHistoryOf(histCardId.value, 50)
+    histItems.value = r.items || []
+  } catch (e) {
+    histItems.value = []
+    histError.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    histLoading.value = false
+  }
+}
+
+function openHistory(spec: CardSpec) {
+  histCardId.value = spec.card_id
+  histCardTitle.value = spec.title
+  histItems.value = []
+  histOpen.value = true
+  void loadCardHistory()
+}
+
+function closeHistory() {
+  histOpen.value = false
+  histCardId.value = ''
+  histCardTitle.value = ''
+  histItems.value = []
+  histError.value = ''
+}
+
 const filledCount = computed(() => cards.value.filter((c) => c.filled).length)
 
 onMounted(() => { void load() })
@@ -180,6 +223,7 @@ onMounted(() => { void load() })
           <span class="chars" :class="{ over: cardChars(spec) > limits.card_max_chars }">
             {{ cardChars(spec) }} / {{ limits.card_max_chars }}
           </span>
+          <button class="btn btn-sm" @click="openHistory(spec)">历史</button>
           <button
             class="btn btn-sm btn-primary"
             :disabled="saving === spec.card_id || !dirtySlots(spec).length"
@@ -231,6 +275,48 @@ onMounted(() => { void load() })
         </tbody>
       </table>
     </section>
+
+    <!-- 单卡修改历史抽屉：GET /v1/admin/cards/{card_id}/history?limit=50（最新在前） -->
+    <div v-if="histOpen" class="overlay" @click.self="closeHistory">
+      <div class="drawer">
+        <div class="drawer-head">
+          <span class="drawer-title">修改历史 · {{ histCardTitle }}</span>
+          <button class="close" @click="closeHistory">✕</button>
+        </div>
+        <div class="drawer-body hist-body">
+          <p class="hist-sub">
+            卡片 <code class="mono">{{ histCardId }}</code> · 单卡最近 50 条，最新在前
+          </p>
+          <p v-if="histError" class="alert err">{{ histError }}</p>
+          <p v-else-if="histLoading" class="empty">加载中…</p>
+          <p v-else-if="!histItems.length" class="empty">这张卡还没有修改记录</p>
+          <div v-else class="hist-wrap">
+            <table class="tbl hist-tbl">
+              <thead>
+                <tr><th>时间</th><th>槽位</th><th>变更</th><th>改的人</th><th>理由</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="h in histItems" :key="h.id">
+                  <td class="mono">{{ fmtTs(h.changed_at) }}</td>
+                  <td class="mono">{{ h.slot_key }}</td>
+                  <td class="diff">
+                    <span class="old" v-if="h.old_value">{{ h.old_value }}</span>
+                    <span class="arrow" v-if="h.old_value">→</span>
+                    <span class="new">{{ h.new_value || '（清除）' }}</span>
+                  </td>
+                  <td>{{ h.changed_by || '—' }}</td>
+                  <td class="reason">{{ h.reason || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="drawer-foot">
+          <button class="btn" :disabled="histLoading" @click="loadCardHistory">刷新</button>
+          <button class="btn" @click="closeHistory">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -273,6 +359,14 @@ onMounted(() => { void load() })
 .old { color: var(--text-faint); text-decoration: line-through; }
 .arrow { color: var(--text-faint); margin: 0 6px; }
 .new { color: var(--text); }
+
+/* 单卡历史抽屉 */
+.hist-body { padding: var(--space-4) var(--space-5); }
+.hist-sub { margin: 0 0 var(--space-3); font-size: var(--fs-xs); color: var(--text-muted); }
+.hist-sub code { background: var(--surface-muted); padding: 1px 6px; border-radius: var(--radius-sm); }
+.hist-wrap { overflow-x: auto; }
+.hist-tbl { min-width: 620px; }
+.hist-tbl .reason { color: var(--text-muted); font-size: var(--fs-xs); max-width: 220px; word-break: break-word; }
 
 .alert { padding: 8px 12px; border-radius: var(--radius-sm); font-size: var(--fs-sm); margin-bottom: var(--space-3); }
 .alert.err { background: var(--danger-soft); color: var(--danger); }

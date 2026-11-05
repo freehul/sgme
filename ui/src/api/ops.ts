@@ -104,6 +104,14 @@ export interface OpsStorageHealth {
   memory_db_bytes: number
   /** memory.db WAL 字节数（未开 WAL 时为 0） */
   memory_wal_bytes: number
+  /** WAL 是否超阈值告警（>200MB 或 > memory.db 的 50%） */
+  memory_wal_alert?: boolean
+  /** 绝对字节阈值（默认 200MB） */
+  memory_wal_threshold_bytes?: number
+  /** 与主库比例阈值（默认 0.5） */
+  memory_wal_ratio_threshold?: number
+  /** WAL / memory.db 实际比例（主库缺失时为 null） */
+  memory_wal_db_ratio?: number | null
   /** wiki.db 字节数 */
   wiki_db_bytes: number
   /** raw 原始会话文件数 */
@@ -154,4 +162,62 @@ export interface OpsHealthOverview {
 
 export function getHealthOverview() {
   return api.get<OpsHealthOverview>('/v1/admin/ops/health-overview')
+}
+
+// ---------- 提炼状态 / 手动触发（T-169；Admin Key） ----------
+// GET  /v1/admin/refine/status      队列水位 + 最近一次失败（数据源与 MCP refine_status 同源）
+// POST /v1/admin/refine/trigger-async  异步批量提炼，立即返回 queued（不是 202）
+//      ⚠️ 规范路径是 kebab-case `trigger-async`；旧下划线 `trigger_async` 是同函数
+//      兼容别名（响应带 Deprecation 头），新调用一律走规范路径。
+
+export interface RefineWatermark {
+  /** 最近一次提炼的落库时刻（ISO 8601；无记录时 null） */
+  last_refined_at: string | null
+  /** 距上次提炼的秒数（null = 从未提炼） */
+  watermark_age_sec: number | null
+}
+
+export interface RefineFailure {
+  file_id: string
+  /** 失败阶段（stage_map：l1_extraction=L2 提取 / l1_conflict=L3 裁决 …） */
+  stage: string
+  started_at: string
+  error: string | null
+}
+
+export interface RefineStatus {
+  /** 队列水位：待提炼（raw_files.status=new） */
+  pending: number
+  /** 已完成（status=refined） */
+  completed: number
+  /** 失败（status=error） */
+  failed: number
+  /** raw_files 总数 */
+  total: number
+  watermark: RefineWatermark
+  /** 最近一条失败提炼记录（refine_runs status=error）；无失败为 null */
+  last_failure: RefineFailure | null
+}
+
+export function getRefineStatus() {
+  return api.get<RefineStatus>('/v1/admin/refine/status')
+}
+
+export interface RefineTriggerAsyncResult {
+  /** 固定 'async' */
+  triggered: string
+  /** 单文件 file_id，批量时为 'batch' */
+  file_id: string
+  /** 固定 'queued'（后台线程执行，结果异步落库） */
+  status: string
+  /** 后端引导文案（如「可用 /v1/health refinement 水位观察进度」） */
+  note?: string
+}
+
+/** 异步触发提炼：file_id 省略 = 扫 status=new 批量（limit 为批量上限，默认 100）。
+ * ⚠️ 真实消耗 LLM 额度；后台线程失败由服务端批扫兜底。 */
+export function triggerRefineAsync(fileId?: string, limit = 100) {
+  const body: Record<string, unknown> = { limit }
+  if (fileId) body.file_id = fileId
+  return api.post<RefineTriggerAsyncResult>('/v1/admin/refine/trigger-async', body)
 }

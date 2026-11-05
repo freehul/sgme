@@ -11,6 +11,7 @@ import {
   AUTO_RESOLVE_DEFAULT_DAYS,
   approveMemory,
   autoResolveReview,
+  batchRejectMemory,
   listPendingReview,
   rejectMemory,
   type ReviewItem,
@@ -128,23 +129,26 @@ async function submitAct() {
   }
 }
 
+// 批量拒绝走服务端 batch-reject（D2，2026-11-05）：一次请求处理整页，
+// 不再循环 N 次单条调用（每页 30 条 = 30 次鉴权往返，失败还得逐条拼文案）。
 async function bulkReject() {
   const ids = [...selected.value]
   if (!ids.length) return
   saving.value = true
   error.value = ''
-  let ok = 0
-  const fails: string[] = []
-  for (const id of ids) {
-    try {
-      await rejectMemory(id, '')
-      ok += 1
-    } catch {
-      fails.push(shortMemoryId(id))
-    }
+  try {
+    const r = await batchRejectMemory(ids)
+    const fails = r.results
+      .filter((it) => !it.ok)
+      .map((it) => shortMemoryId(it.memory_id))
+    msg.value =
+      '批量拒绝：成功 ' + r.rejected + ' 条' +
+      (r.failed ? '，失败 ' + r.failed + ' 条（' + fails.join('、') + '）' : '')
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    saving.value = false
   }
-  msg.value = '批量拒绝：成功 ' + ok + ' 条' + (fails.length ? '，失败 ' + fails.join('、') : '')
-  saving.value = false
   await load()
 }
 

@@ -64,3 +64,11 @@ export function updateSlot(
 export function cardHistory(limit = 50) {
   return api.get<{ items: CardHistoryItem[]; total: number }>('/v1/admin/cards/history?limit=' + String(limit))
 }
+
+/** 单卡修改历史（GET /v1/admin/cards/{card_id}/history?limit=；limit 服务端默认 50，
+ * 最新在前）。未知 card_id 返回 ERR_NOT_FOUND，调用方按空态处理。 */
+export function cardHistoryOf(cardId: string, limit = 50) {
+  return api.get<{ items: CardHistoryItem[]; total: number }>(
+    '/v1/admin/cards/' + encodeURIComponent(cardId) + '/history?limit=' + String(limit),
+  )
+}

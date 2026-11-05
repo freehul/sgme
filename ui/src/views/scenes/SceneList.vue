@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { listScenes, setSceneStatus, type Scene } from '../../api/knowledge'
+import { listScenes, type Scene } from '../../api/knowledge'
 import { ApiError } from '../../api/client'
 import { fmtTs } from '../../utils/format'
 
@@ -15,9 +15,9 @@ const loading = ref(false)
 const error = ref('')
 
 // 右侧详情（master-detail，列表已含完整 content，直接取选中项）
+// 2026-11-05：场景状态写入口（POST /v1/admin/scenes/{id}/status）随 9.6 下线，
+// 本页只读展示；状态在列表圆点与详情头部呈现（数据保留，只是不再可改）。
 const selected = ref<Scene | null>(null)
-const busy = ref(false)
-const actionError = ref('')
 
 const STATUS_LABEL: Record<string, string> = {
   active: '有效',
@@ -67,24 +67,6 @@ function apply() {
 
 function select(sc: Scene) {
   selected.value = sc
-  actionError.value = ''
-}
-
-async function changeStatus(status: string) {
-  if (!selected.value) return
-  const sc = selected.value
-  busy.value = true
-  actionError.value = ''
-  try {
-    await setSceneStatus(sc.scene_id, status)
-    await load()
-    // 重新选中（load 后 rows 已更新，按 id 找回最新状态）
-    selected.value = rows.value.find((r) => r.scene_id === sc.scene_id) || null
-  } catch (e) {
-    actionError.value = e instanceof ApiError ? e.message : String(e)
-  } finally {
-    busy.value = false
-  }
 }
 
 // 路由带 :id 时（scene-detail）加载后自动选中对应场景；找不到则静默忽略保持列表态
@@ -174,8 +156,6 @@ onMounted(async () => {
             </span>
           </div>
 
-          <p v-if="actionError" class="error">{{ actionError }}</p>
-
           <section class="detail-block">
             <pre class="content">{{ selected.content }}</pre>
             <div class="meta">
@@ -199,15 +179,6 @@ onMounted(async () => {
             </ul>
           </section>
 
-          <section class="detail-block">
-            <h4>操作</h4>
-            <div class="status-op">
-              <label>切换状态</label>
-              <select :value="selected.status" :disabled="busy" @change="changeStatus(($event.target as HTMLSelectElement).value)">
-                <option v-for="(label, key) in STATUS_LABEL" :key="key" :value="key">{{ label }}</option>
-              </select>
-            </div>
-          </section>
         </template>
       </div>
     </div>
@@ -301,14 +272,5 @@ onMounted(async () => {
 }
 .detail-block .content {
   margin-bottom: 12px;
-}
-.status-op {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.status-op label {
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
 }
 </style>

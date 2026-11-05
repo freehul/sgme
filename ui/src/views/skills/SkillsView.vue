@@ -3,7 +3,9 @@ import { computed, onMounted, ref } from 'vue'
 import {
   deleteSkill, downloadSkillPackage, getCatalogVersion, getSkillContent, getSkillFile,
   getSkillManifest, listSkillPackageFiles, listSkillsIndex, putSkill, putSkillFile, renameSkill,
+  searchSkills,
   type PackageFileEntry, type SkillContent, type SkillIndexItem, type SkillManifest,
+  type SkillSearchHit,
 } from '../../api/skills'
 import { ApiError } from '../../api/client'
 import { fmtTs } from '../../utils/format'
@@ -27,6 +29,15 @@ const error = ref('')
 
 const searchQ = ref('')
 const activeCat = ref('全部')
+
+// 服务端检索（GET /v1/skills/search）：与本地筛选互补——本地只在已加载索引里做子串匹配，
+// 服务端走 BM25 + 向量融合排序，能按「需求描述」召回技能（agent 侧 skill_search 同源）。
+const serverQ = ref('')
+const serverQuery = ref('')
+const serverHits = ref<SkillSearchHit[]>([])
+const serverSearched = ref(false)
+const searching = ref(false)
+const searchErr = ref('')
 
 const detail = ref<SkillMeta | null>(null)
 const detailBody = ref('')
@@ -127,6 +138,57 @@ async function load() {
   } catch {
     catalogVersion.value = ''
   }
+}
+
+// ---------- 服务端检索（BM25 + 向量融合；向量不可达后端自动降级纯 BM25） ----------
+
+async function doServerSearch() {
+  const q = serverQ.value.trim()
+  if (!q) return
+  searching.value = true
+  searchErr.value = ''
+  serverSearched.value = true
+  try {
+    const r = await searchSkills(q, 10)
+    serverHits.value = r.items || []
+    serverQuery.value = r.query || q
+  } catch (e) {
+    serverHits.value = []
+    serverQuery.value = q
+    searchErr.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    searching.value = false
+  }
+}
+
+function clearServerSearch() {
+  serverQ.value = ''
+  serverQuery.value = ''
+  serverHits.value = []
+  serverSearched.value = false
+  searchErr.value = ''
+}
+
+/** 命中项可能不在当前已加载索引里（索引分页/库内新增）→ 用命中元数据兜底构造条目，
+ * 详情抽屉照常拉 L2 全文。 */
+function openHit(h: SkillSearchHit) {
+  const known = metas.value.find((m) => m.name === h.name)
+  const target: SkillMeta = known
+    ? { ...known }
+    : {
+        name: h.name,
+        description: h.description || '',
+        category: h.category || '',
+        tags: [],
+        pattern: 'manual',
+        version: '',
+        source: h.source || '',
+      }
+  void openDetail(target)
+}
+
+function hitScore(h: SkillSearchHit): string {
+  return typeof h.score === 'number' && Number.isFinite(h.score) ? h.score.toFixed(3) : '—'
 }
 
 async function openDetail(m: SkillMeta) {
@@ -359,6 +421,47 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- 服务端检索（GET /v1/skills/search：BM25 + 向量融合） -->
+      <div class="panel retrieve-panel">
+        <div class="retrieve-head">
+          <span class="retrieve-title">🔍 服务端检索</span>
+          <span class="retrieve-sub">BM25 + 向量融合排序 · 与 agent 侧 skill_search 同源（向量不可达自动降级纯 BM25）</span>
+        </div>
+        <div class="search-row">
+          <div class="input-wrap">
+            <span class="gs-ico">🧭</span>
+            <input
+              v-model="serverQ"
+              type="search"
+              placeholder="用一句需求检索技能，例如：docker 部署 / pdf 提取 / 反向工程"
+              @keyup.enter="doServerSearch"
+            />
+          </div>
+          <button class="btn btn-primary" :disabled="searching || !serverQ.trim()" @click="doServerSearch">
+            {{ searching ? '检索中…' : '检索' }}
+          </button>
+          <button v-if="serverSearched" class="btn" @click="clearServerSearch">清空</button>
+        </div>
+        <p v-if="searchErr" class="error">{{ searchErr }}</p>
+        <p v-else-if="serverSearched && !serverHits.length" class="empty">
+          没有命中技能——换个说法或放宽关键词再试（服务端只回真实存在且可读的技能）。
+        </p>
+        <div v-else-if="serverHits.length" class="retrieve-list">
+          <p class="retrieve-cap">「{{ serverQuery }}」命中 {{ serverHits.length }} 个 · 点击查看全文</p>
+          <button v-for="(h, i) in serverHits" :key="h.name" class="retrieve-row" @click="openHit(h)">
+            <span class="retrieve-rank">{{ i + 1 }}</span>
+            <span class="retrieve-main">
+              <span class="retrieve-name">{{ h.name }}</span>
+              <span class="retrieve-desc">{{ h.description || '（无描述）' }}</span>
+            </span>
+            <span class="retrieve-meta">
+              <span v-if="h.category" class="tag">{{ h.category }}</span>
+              <span class="retrieve-score" :title="'融合分（0.6×BM25 + 0.4×向量，name 直达钉满分）'">{{ hitScore(h) }}</span>
+            </span>
+          </button>
+        </div>
+      </div>
+
       <!-- 统计卡 -->
       <div class="stat-grid4">
         <div v-for="c in statCards" :key="c.label" class="stat-card4 panel">
@@ -546,6 +649,36 @@ onMounted(load)
 .cap-hot { background: rgba(245,158,11,.15); color: #b45309; }
 .cap-pill { background: var(--surface-muted); color: var(--text-muted); }
 .tag-row .tag-pill { padding: 2px 10px; border-radius: 999px; background: var(--surface-muted); color: var(--text-muted); font-size: 11px; }
+
+/* 服务端检索块 */
+.retrieve-panel { margin-bottom: 16px; }
+.retrieve-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.retrieve-title { font-weight: 600; font-size: var(--fs-md); color: var(--text); }
+.retrieve-sub { font-size: var(--fs-xs); color: var(--text-muted); }
+.retrieve-list { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.retrieve-cap { margin: 0 0 2px; font-size: var(--fs-xs); color: var(--text-muted); }
+.retrieve-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); cursor: pointer;
+}
+.retrieve-row:hover { border-color: var(--brand); background: var(--brand-soft); }
+.retrieve-rank {
+  flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; font-size: var(--fs-xs); font-weight: 600;
+  background: var(--surface-muted); color: var(--text-muted);
+}
+.retrieve-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.retrieve-name { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); }
+.retrieve-desc {
+  font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.retrieve-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.retrieve-score {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--brand-text);
+  background: var(--brand-soft); padding: 2px 8px; border-radius: 999px;
+}
 
 .stat-grid4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-card4 { display: flex; gap: 12px; align-items: center; padding: 12px 16px; }

@@ -85,6 +85,36 @@ export function getColdstart() {
   return api.get<ColdstartPack>('/v1/skills/coldstart')
 }
 
+// ---------- 检索（GET /v1/skills/search，T-163 对齐补齐） ----------
+// 与 MCP skill_search 同一实现（operations.skills.search_skills）：BM25 + 向量
+// 融合（0.6/0.4 加权和），向量路不可达自动降级纯 BM25。
+// 契约：q 必填（min_length=1）、limit ∈ [1, 20]（默认 10）；
+// 返回 {query, count, items}，item = {name, score, source, description, category, _routes}。
+
+export interface SkillSearchHit {
+  name: string
+  score: number
+  source?: string
+  description?: string
+  category?: string | null
+  /** 融合路径标记：skills_rrf=BM25+向量；skills_bm25=纯 BM25 降级 */
+  _routes?: string[]
+}
+
+export interface SkillSearchResult {
+  query: string
+  count: number
+  items: SkillSearchHit[]
+}
+
+/** 服务端技能检索（agent key）；limit 超出 [1,20] 由调用方收敛，后端会 422 */
+export function searchSkills(q: string, limit = 10) {
+  const n = Math.min(20, Math.max(1, Math.trunc(limit) || 10))
+  return api.get<SkillSearchResult>(
+    `/v1/skills/search?q=${encodeURIComponent(q)}&limit=${n}`
+  )
+}
+
 // ---------- 旧 admin 直写接口（写侧仍走治理版 PUT/DELETE，见 routes_skills_admin） ----------
 
 export function listSkills() {

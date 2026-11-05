@@ -47,10 +47,9 @@ export function listScenes(params: {
   return api.get<ScenesPage>(`/v1/admin/scenes${suffix}`)
 }
 
-// ---------- POST /v1/admin/scenes/{id}/status ----------
-export function setSceneStatus(id: string, status: string, reason?: string) {
-  return api.post<Record<string, unknown>>(`/v1/admin/scenes/${id}/status`, reason ? { status, reason } : { status })
-}
+// ---------- 场景状态写端点已下线（9.6 / D-53，2026-11-05） ----------
+// 原 POST /v1/admin/scenes/{id}/status 随场景层下线一起摘除；本模块只保留
+// GET /v1/admin/scenes 只读列表（场景数据四表冻结，不删行）。
 
 // ---------- GET /v1/admin/sessions ----------
 export interface SessionItem {

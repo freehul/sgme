@@ -84,6 +84,29 @@ export function rejectMemory(memoryId: string, reason?: string) {
   )
 }
 
+// ---------- POST /v1/admin/review/batch-reject（D2，2026-11-05 批量拒绝） ----------
+// 后端逐条复用单条 reject 的语义（幂等软删、理由非必填），单条失败不打断整批：
+// 返回逐条结果 + 汇总计数，页面据此显示「成功 n 条 / 失败 m 条」。
+export interface ReviewBatchRejectItem {
+  memory_id: string
+  ok: boolean
+  error?: string
+  error_code?: string
+}
+
+export interface ReviewBatchRejectResult {
+  results: ReviewBatchRejectItem[]
+  rejected: number
+  failed: number
+}
+
+export function batchRejectMemory(memoryIds: string[], reason?: string) {
+  return api.post<ReviewBatchRejectResult>('/v1/admin/review/batch-reject', {
+    memory_ids: memoryIds,
+    ...(reason ? { reason } : {}),
+  })
+}
+
 // ---------- POST /v1/admin/review/auto-resolve（超期待审批量消化，D-30 七天规则） ----------
 export interface AutoResolveResult {
   resolved: number
