@@ -6,6 +6,7 @@ import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
+from sgme.operations import ops_health
 from sgme.operations.ops_health import health_overview
 
 
@@ -80,6 +81,61 @@ def test_invalid_stable_since_blocks(tmp_path):
     assert any("非法" in b for b in sc["blockers"])
 
 
+
+
+# ---------- F4：memory.db-wal 巡检告警（2026-11-05） ----------
+
+def test_wal_alert_fields_present_and_quiet_by_default(tmp_path):
+    """无 WAL 时：告警为 False，阈值字段随响应返回（WebUI 直接消费）。"""
+    data, raw = _make_data(tmp_path)
+    st = health_overview(_cfg(data, raw, tmp_path / "backups"))["storage"]
+
+    assert st["memory_wal_bytes"] == 0
+    assert st["memory_wal_alert"] is False
+    assert st["memory_wal_threshold_bytes"] == 200 * 1024 * 1024
+    assert st["memory_wal_ratio_threshold"] == 0.5
+    assert st["memory_wal_db_ratio"] == 0.0
+
+
+def test_wal_alert_when_ratio_over_half_of_db(tmp_path):
+    """相对阈值：WAL > memory.db 的 50% 即告警（库小时绝对阈值抓不到）。"""
+    data, raw = _make_data(tmp_path)
+    db_bytes = (data / "memory.db").stat().st_size
+    assert db_bytes > 0
+    # 写到库本体的 75%（>50% 阈值，且远低于 200MB 绝对阈值）
+    (data / "memory.db-wal").write_bytes(b"w" * (db_bytes * 3 // 4))
+
+    st = health_overview(_cfg(data, raw, tmp_path / "backups"))["storage"]
+
+    assert st["memory_wal_alert"] is True
+    assert st["memory_wal_bytes"] < 200 * 1024 * 1024   # 命中比例分支而非绝对阈值
+    assert st["memory_wal_db_ratio"] > 0.5
+
+
+def test_wal_alert_when_absolute_threshold_exceeded(tmp_path, monkeypatch):
+    """绝对阈值分支：WAL 超过阈值字节即告警（此处把 200MB 降到 64B 便于构造）。"""
+    data, raw = _make_data(tmp_path)
+    monkeypatch.setattr(ops_health, "MEMORY_WAL_ALERT_BYTES", 64)
+    (data / "memory.db-wal").write_bytes(b"w" * 128)
+
+    st = health_overview(_cfg(data, raw, tmp_path / "backups"))["storage"]
+
+    assert st["memory_wal_alert"] is True
+    assert st["memory_wal_threshold_bytes"] == 64
+    assert st["memory_wal_db_ratio"] < 0.5   # 比例分支不成立，证明是绝对阈值命中
+
+
+def test_wal_alert_false_below_both_thresholds(tmp_path):
+    """两条阈值都不命中：小 WAL 不告警（避免正常 checkpoint 前误报）。"""
+    data, raw = _make_data(tmp_path)
+    (data / "memory.db-wal").write_bytes(b"w" * 32)
+
+    st = health_overview(_cfg(data, raw, tmp_path / "backups"))["storage"]
+
+    assert st["memory_wal_alert"] is False
+    assert st["memory_wal_bytes"] == 32
+
+
 def test_missing_database_degrades(tmp_path):
     data = tmp_path / "empty"
     data.mkdir()
@@ -89,6 +145,9 @@ def test_missing_database_degrades(tmp_path):
     })
     assert out["storage"]["memory_db_bytes"] == 0
     assert out["storage"]["raw_files"] == 0
+    # F4：库不存在时比例无意义（None），且零字节 WAL 不告警
+    assert out["storage"]["memory_wal_db_ratio"] is None
+    assert out["storage"]["memory_wal_alert"] is False
     assert out["scenes"]["scenes"] == 0
     assert out["scenes"]["ready"] is False
     assert any("memory.db 不可用" in b for b in out["scenes"]["blockers"])

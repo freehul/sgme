@@ -12,7 +12,7 @@
     DELETE /v1/admin/ideas/{idea_id}    软删除（status='rejected'，可恢复）
     POST   /v1/admin/ideas/{idea_id}/restore 恢复软删除
 
-请求体用**裸 dict**（对齐 routes_admin.update_scene_status / update_project 先例）：
+请求体用**裸 dict**（对齐 routes_admin 的 PATCH/PUT 先例，如 update_project）：
 PATCH / PUT 必须区分「未传键（保持原值）」与「显式 null（清除/解绑）」，
 dict 的键存在性天然表达这一语义。
 

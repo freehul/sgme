@@ -17,11 +17,20 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from sgme.data import near_dup_dao
-from sgme.operations.errors import ERR_INVALID_ARGS, ERR_NOT_FOUND, InvalidArgs, OperationResult
+from sgme.operations.errors import (
+    ERR_INTERNAL,
+    ERR_INVALID_ARGS,
+    ERR_NOT_FOUND,
+    InvalidArgs,
+    OperationResult,
+)
 
 # 列表分页硬上限（防查询放大，对齐 demand.py 的 MAX_LIMIT 先例）
 MAX_LIMIT: int = 200
 DEFAULT_LIMIT: int = 50
+
+# 批量拒绝单次条数上限（D2，2026-11-05）：一页 30 条足矣，500 是防滥用的硬闸。
+MAX_BATCH_REJECT: int = 500
 
 # auto_resolve_expired 的保守直存标记（去重锚点：notes 中已有该串不重复追加）
 AUTO_RESOLVE_MARK: str = "未经人工确认"
@@ -198,6 +207,91 @@ def reject(conn: sqlite3.Connection, memory_id: str, reason: str) -> dict:
         )
         conn.commit()
     return OperationResult.succeed({"memory_id": memory_id})
+
+
+# ---------- 操作 3b：批量拒绝（D2，2026-11-05） ----------
+#
+# 背景：收尾交接 D2 登记「WebUI 批量拒绝 = 循环 N 次单条调用」——一页 30 条就是
+# 30 次 HTTP + 30 次鉴权，失败还要逐条在前端拼错误文案。本函数把同一页的拒绝
+# 收敛成一次调用，语义**完全复用 reject()**（幂等、软删、理由非必填），
+# 只多做一件事：单条失败不打断整批，逐条回报结果，让前端能显示「成功 n / 失败 m」。
+
+def batch_reject(
+    conn: sqlite3.Connection,
+    memory_ids: list[str] | tuple[str, ...] | None,
+    reason: str | None = "",
+) -> dict:
+    """批量拒绝待审记忆：逐条复用 reject()，单条失败不打断整批。
+
+    与单条端点同语义（幂等、软删、理由非必填），差别只在回报形态：
+    返回逐条结果而不是一遇到失败就整体 404。
+
+    Args:
+        conn: memory.db 连接。
+        memory_ids: 记忆 id 列表（顺序即结果顺序；重复 id 不折叠，第二次为幂等 no-op）。
+        reason: 拒绝理由（可空；空则每行落 DEFAULT_REJECT_REASON，与单条同口径）。
+
+    Returns:
+        {"results": [{"memory_id", "ok", "error"?, "error_code"?}],
+         "rejected": n, "failed": m}
+        —— failed == len(results) - rejected（含 id 非法与不存在的条目）。
+
+    Raises:
+        InvalidArgs: memory_ids 不是列表 / 空列表 / 超过 MAX_BATCH_REJECT。
+    """
+    if memory_ids is None or isinstance(memory_ids, (str, bytes)):
+        raise InvalidArgs("memory_ids 必须是待审记忆 id 的数组")
+    if not isinstance(memory_ids, (list, tuple)):
+        raise InvalidArgs(f"memory_ids 必须是数组: {type(memory_ids).__name__}")
+    if not memory_ids:
+        raise InvalidArgs("memory_ids 不能为空数组")
+    if len(memory_ids) > MAX_BATCH_REJECT:
+        raise InvalidArgs(f"单次批量拒绝不得超过 {MAX_BATCH_REJECT} 条: {len(memory_ids)}")
+
+    reason_val = "" if reason is None else str(reason)
+    results: list[dict] = []
+    rejected = 0
+    for raw in memory_ids:
+        # 单条 id 非法只记这一条失败（前端点错/脏数据不该炸掉整批）
+        mid = raw.strip() if isinstance(raw, str) else ""
+        if not mid:
+            results.append({
+                "memory_id": "" if raw is None else str(raw),
+                "ok": False,
+                "error": "memory_id 非法（必须是非空字符串）",
+                "error_code": ERR_INVALID_ARGS,
+            })
+            continue
+        try:
+            one = reject(conn, mid, reason_val)
+        except InvalidArgs as e:
+            results.append({
+                "memory_id": mid, "ok": False,
+                "error": e.message, "error_code": e.error_code,
+            })
+            continue
+        except sqlite3.Error as e:
+            # 单行写失败（如短暂锁冲突）不连坐其余条目
+            results.append({
+                "memory_id": mid, "ok": False,
+                "error": f"数据库错误: {e}", "error_code": ERR_INTERNAL,
+            })
+            continue
+        if one.ok:
+            rejected += 1
+            results.append({"memory_id": mid, "ok": True})
+        else:
+            results.append({
+                "memory_id": mid,
+                "ok": False,
+                "error": one.message or "拒绝失败",
+                "error_code": one.error_code,
+            })
+    return OperationResult.succeed({
+        "results": results,
+        "rejected": rejected,
+        "failed": len(results) - rejected,
+    })
 
 
 # ---------- 操作 4：超期保守直存 ----------

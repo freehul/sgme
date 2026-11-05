@@ -134,3 +134,22 @@ def test_requires_admin_key(client):
     """无 key → 401/403（鉴权前置）。"""
     r = client.get("/v1/admin/ops/llm-cost")
     assert r.status_code in (401, 403)
+
+
+# ---------- GET /v1/admin/ops/health-overview（F4 WAL 巡检随该端点返回） ----------
+
+def test_health_overview_exposes_wal_alert(client, app):
+    """storage 段必须带 memory_wal_alert / memory_wal_threshold_bytes（WebUI 直接消费）。"""
+    r = client.get("/v1/admin/ops/health-overview", headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    st = r.json()["storage"]
+    assert isinstance(st["memory_wal_bytes"], int)
+    assert st["memory_wal_alert"] is False
+    assert st["memory_wal_threshold_bytes"] == 200 * 1024 * 1024
+    assert st["memory_wal_ratio_threshold"] == 0.5
+
+
+def test_health_overview_requires_admin_key(client):
+    """运维总览是 admin 档端点：agent key 不够。"""
+    r = client.get("/v1/admin/ops/health-overview", headers={"X-API-Key": "test-agent-key"})
+    assert r.status_code == 403

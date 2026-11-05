@@ -7,6 +7,7 @@
     GET  /v1/admin/review/pending            待审列表（needs_review=1）
     POST /v1/admin/review/{memory_id}/approve 放行（needs_review=0）
     POST /v1/admin/review/{memory_id}/reject  拒绝（status='rejected'）
+    POST /v1/admin/review/batch-reject       批量拒绝（D2，一次请求处理整页）
     POST /v1/admin/review/auto-resolve       手工触发超期自动消化（D-30 七天规则）
 
 鉴权：全部 Depends(require_agent_key)——与 memory_reject 同档（require_agent_key 同时接受
@@ -22,6 +23,7 @@ from fastapi import APIRouter, Depends, Request
 from sgme.operations.review import (
     approve as approve_operation,
     auto_resolve_expired as auto_resolve_operation,
+    batch_reject as batch_reject_operation,
     discard_quarantine as discard_quarantine_operation,
     list_pending as list_pending_operation,
     list_quarantine as list_quarantine_operation,
@@ -94,6 +96,32 @@ def reject(
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     reason = (body or {}).get("reason") or ""
     return run_operation(reject_operation, mem_conn, memory_id, reason=reason)
+
+
+@router.post("/v1/admin/review/batch-reject")
+def batch_reject(
+    request: Request,
+    body: dict | None = None,
+    _: str = Depends(require_agent_key),
+):
+    """批量拒绝待审记忆（D2，2026-11-05）：一次请求拒绝整页，不用循环 N 次单条。
+
+    Body：``memory_ids``（必填，非空数组，≤500 条）、``reason``（可选，空则落默认理由）。
+
+    与单条 reject 同语义（幂等软删、理由非必填）；单条失败不打断整批，
+    返回逐条结果 + 汇总计数，前端据此显示「成功 n / 失败 m」。
+    鉴权与单条端点同档（require_agent_key，admin key 亦可）。
+
+    Returns：{"results": [{"memory_id", "ok", "error"?}], "rejected": n, "failed": m}
+    """
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    b = body or {}
+    return run_operation(
+        batch_reject_operation,
+        mem_conn,
+        b.get("memory_ids"),
+        reason=b.get("reason"),
+    )
 
 
 @router.post("/v1/admin/review/auto-resolve")

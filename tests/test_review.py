@@ -7,7 +7,7 @@ L2 提炼会产出 needs_review=1 的记忆（D-23 待审闸门）：不进主�
 
 测试策略：tmp 目录建真实 memory.db schema（db.connect_memory，含 2.0 迁移
 补列 needs_review/notes 等），插入可控 created_at/needs_review 的记忆行，
-对 operations.review 的四个函数做行为断言。
+对 operations.review 的各操作函数做行为断言（含 D2 批量拒绝）。
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from sgme.data import db
 from sgme.operations import review
+from sgme.operations.errors import InvalidArgs
 
 
 # ---------- 夹具辅助 ----------
@@ -184,6 +185,92 @@ class TestApprove:
         ).fetchone()[0]
         assert notes.count("第一次放行") == 1
         assert "第二次放行" not in notes
+
+
+# ---------- batch_reject：批量拒绝（D2，2026-11-05） ----------
+
+class TestBatchReject:
+    def test_all_success_counts_and_statuses(self, tmp_path):
+        """一次调用全部拒绝：逐条 ok + rejected/failed 计数，理由落到每行。"""
+        conn = _make_conn(tmp_path)
+        for mid in ("m1", "m2", "m3"):
+            _insert_memory(conn, mid)
+
+        out = review.batch_reject(conn, ["m1", "m2", "m3"], "批量清理")
+
+        assert out.ok is True
+        assert out.data["rejected"] == 3 and out.data["failed"] == 0
+        assert [r["memory_id"] for r in out.data["results"]] == ["m1", "m2", "m3"]
+        assert all(r["ok"] for r in out.data["results"])
+        rows = conn.execute(
+            "SELECT memory_id, status, reject_reason FROM memories ORDER BY memory_id"
+        ).fetchall()
+        assert [(r["status"], r["reject_reason"]) for r in rows] == [
+            ("rejected", "批量清理"), ("rejected", "批量清理"), ("rejected", "批量清理"),
+        ]
+
+    def test_partial_failure_does_not_abort_batch(self, tmp_path):
+        """中间一条不存在：其余照常拒绝，失败条目带 error/error_code。"""
+        conn = _make_conn(tmp_path)
+        _insert_memory(conn, "m1")
+        _insert_memory(conn, "m2")
+
+        out = review.batch_reject(conn, ["m1", "ghost", "m2"], "x")
+
+        by_id = {r["memory_id"]: r for r in out.data["results"]}
+        assert out.data["rejected"] == 2 and out.data["failed"] == 1
+        assert by_id["ghost"]["ok"] is False
+        assert by_id["ghost"]["error_code"] == "ERR_NOT_FOUND"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE status='rejected'"
+        ).fetchone()[0] == 2
+
+    def test_empty_or_missing_list_raises_invalid_args(self, tmp_path):
+        """空数组 / None / 字符串 → InvalidArgs（入口层翻 400），不做部分成功。"""
+        conn = _make_conn(tmp_path)
+        for bad in ([], None, "m1"):
+            try:
+                review.batch_reject(conn, bad, "x")
+            except InvalidArgs:
+                continue
+            raise AssertionError(f"应抛 InvalidArgs: {bad!r}")
+
+    def test_over_limit_raises_invalid_args(self, tmp_path, monkeypatch):
+        """超过 MAX_BATCH_REJECT → InvalidArgs（防单请求放大）。"""
+        conn = _make_conn(tmp_path)
+        monkeypatch.setattr(review, "MAX_BATCH_REJECT", 2)
+        try:
+            review.batch_reject(conn, ["a", "b", "c"], "x")
+        except InvalidArgs as e:
+            assert "2" in e.message
+        else:
+            raise AssertionError("超上限应抛 InvalidArgs")
+
+    def test_invalid_items_reported_per_item(self, tmp_path):
+        """数组里夹空串/数字：只记该条失败，合法条目照常拒绝。"""
+        conn = _make_conn(tmp_path)
+        _insert_memory(conn, "m1")
+
+        out = review.batch_reject(conn, ["m1", "", 123], "x")
+
+        assert out.data["rejected"] == 1 and out.data["failed"] == 2
+        assert all(
+            r["error_code"] == "ERR_INVALID_ARGS"
+            for r in out.data["results"] if not r["ok"]
+        )
+
+    def test_idempotent_second_call_keeps_first_reason(self, tmp_path):
+        """幂等：重复拒绝同一 id 仍算成功，但不覆盖首次理由（与单条同口径）。"""
+        conn = _make_conn(tmp_path)
+        _insert_memory(conn, "m1")
+        review.batch_reject(conn, ["m1"], "第一次")
+
+        out = review.batch_reject(conn, ["m1"], "第二次")
+
+        assert out.data["rejected"] == 1 and out.data["failed"] == 0
+        assert conn.execute(
+            "SELECT reject_reason FROM memories WHERE memory_id='m1'"
+        ).fetchone()[0] == "第一次"
 
 
 # ---------- reject：人工拒绝 ----------

@@ -1,7 +1,7 @@
 """operations/scene.py：场景浏览操作（0.8 T-15，契约 §5.4）。
 
 ⚠️ 冻结状态（D-53 / 收尾 A1·C1，2026-11-05）：场景层冻结只读，本模块仅剩只读浏览；
-写端点 `POST /v1/admin/scenes/{id}/status` 已列入 9.6 下线待办（保留至 WebUI 入口摘除同批）。
+写端点 `POST /v1/admin/scenes/{id}/status` 已于同批摘除（WebUI 入口同步移除；enforce_gone 开启时旧路径 410）。
 
 承接的入口
 ----------

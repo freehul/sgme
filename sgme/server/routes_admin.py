@@ -439,46 +439,15 @@ def refine_trigger_async(
 
 
 
-# ---------- POST /v1/admin/scenes/{scene_id}/status ----------
+# ---------- 场景状态写端点：已下线（9.6 / D-53，2026-11-05） ----------
+#
+# POST /v1/admin/scenes/{scene_id}/status 与 POST /v1/admin/scene-gc/trigger
+# 属 9.6 场景层下线批次：本批已摘除 scenes/{id}/status 路由（WebUI 入口同批摘除，
+# 见 ui/src/api/knowledge.ts）；场景状态只保留 GET /v1/admin/scenes 只读列表。
+# 旧客户端打到该路径：未开 compat.enforce_gone → 404（路由不存在），
+# 开启后由 compat 守卫（GONE_RULES）回 410 + upgrade_hint。
+# 场景数据本身不删（四表冻结，数据保留可溯源）。
 
-@router.post("/v1/admin/scenes/{scene_id}/status")
-def update_scene_status(
-    scene_id: str,
-    request: Request,
-    body: dict | None = None,
-    _: str = Depends(require_admin_key),
-):
-    """标记场景状态（L2 补丁，2026-08-07）。
-
-    status 枚举（与 memories 一致）：
-      active    = 有效，正常参与查询/时间线
-      rejected  = 用户判错（错误记忆），不参与查询/时间线
-      expired   = 随时间过时（失效），不参与查询/时间线
-      archived  = 被合并/替代（L2 merge 内部用）
-
-    场景与记忆的状态语义对齐——L2 场景不会因 L1 记忆 TTL 过期而消失，
-    需要显式标记（rejected/expired）或 merge 归档。
-    body: {"status": "rejected|expired|active", "reason": "可选说明"}
-    """
-    mem_conn: sqlite3.Connection = request.app.state.mem_conn
-    from sgme.data import scene_dao
-
-    scene = scene_dao.get_scene(mem_conn, scene_id)
-    if not scene:
-        raise api_error("ERR_NOT_FOUND", f"场景不存在: {scene_id}")
-    b = body or {}
-    status = b.get("status", "active")
-    if status not in ("active", "rejected", "expired", "archived"):
-        raise api_error("ERR_INVALID_ARGS", f"非法状态: {status}")
-    ok = scene_dao.update_scene_status(mem_conn, scene_id, status)
-    if not ok:
-        raise api_error("ERR_INTERNAL", "状态更新失败")
-    return {
-        "scene_id": scene_id,
-        "status": status,
-        "reason": b.get("reason"),
-        "note": "rejected/expired 场景不参与查询与时间线，数据保留可溯源",
-    }
 
 # ==================== /v1/admin/demands —— 需求池（0.8 ST-15） ====================
 #
@@ -488,11 +457,11 @@ def update_scene_status(
 #   - 参数解析：分页/枚举/时间参数走 operations 手工解析（对齐 _parse_active_within 先例），
 #     统一回 400 ERR_INVALID_ARGS，而非 FastAPI 默认的 422 校验体
 #   - 分页信封：{items, count, total, page, limit, generated_at}（对齐 §5.3/§5.4）
-#   - 请求体用裸 dict（对齐本文件 update_scene_status 先例）：错误信封可控，
+#   - 请求体用裸 dict（对齐本文件 update_project / update_demand_status 先例）：错误信封可控，
 #     且 PATCH 能区分「显式传 null（解绑）」与「未传该键（保持原值）」
 #
-# operations / data 依赖采用**函数内导入**（本文件既有先例：update_scene_status 内
-# `from sgme.data import scene_dao`），使本段成为文件尾部纯追加，
+# operations / data 依赖采用**函数内导入**（本文件既有先例：update_project 内
+# `from sgme.operations.project import ...`），使本段成为文件尾部纯追加，
 # 不触碰顶部 import 块——ST-14/ST-16 并行改本文件时冲突面最小。
 
 
@@ -623,7 +592,7 @@ def update_demand_status(
 #
 # 业务实现在 `sgme.operations.project`，本节只做协议翻译（v0.7 §7 分层）。
 # operations 模块采用**函数内导入**：与本文件既有惯例一致（见 revoke_agent /
-# update_scene_status），且让本次改动是纯追加，压缩 0.8 并行任务的合并冲突面。
+# update_project），且让本次改动是纯追加，压缩 0.8 并行任务的合并冲突面。
 
 
 class RegisterProjectRequest(BaseModel):
@@ -742,7 +711,7 @@ def update_project(
     未知字段或空 body → 400 ERR_INVALID_ARGS；项目不存在 → 404 ERR_NOT_FOUND。
 
     body 用 dict 而非 Pydantic 模型：PATCH 必须区分「未提供」与「显式 null」，
-    dict 的键存在性天然表达这个语义（惯例同 update_scene_status）。
+    dict 的键存在性天然表达这个语义（惯例同 update_project）。
 
     Returns:
         {"project": {...}, "updated_fields": [...], "generated_at": iso}

@@ -159,23 +159,27 @@ def main() -> int:
     l15_stored = body.get("l3_adjudicate", {}).get("stored", 0)
     _ok(3, f"refine status={refine_status} memories={memories_count} l15_stored={l15_stored}")
 
-    # ---------- 4. 直接查 wiki.db：验证 L2 场景生成 ----------
-    wiki_db_path = Path(args.data_dir) / "wiki.db"
+    # ---------- 4. 直接查 memory.db：验证 L2 场景生成 ----------
+    # v0.7 三库拆分后 scenes / scene_vectors / scenes_fts 归属 memory.db
+    # （wiki.db 只剩 wiki 页与 raw_files 索引），此处查错库会恒得 0 行。
+    mem_db_path = Path(args.data_dir) / "memory.db"
     scene_count = 0
-    if wiki_db_path.exists():
+    if mem_db_path.exists():
         try:
             # 只读模式 + immutable 避免锁冲突
             conn = sqlite3.connect(
-                f"file:{wiki_db_path}?mode=ro&immutable=1",
+                f"file:{mem_db_path}?mode=ro&immutable=1",
                 uri=True, check_same_thread=False,
             )
-            cur = conn.execute("SELECT COUNT(*) AS c FROM scenes WHERE status='active'")
-            scene_count = cur.fetchone()[0]
-            conn.close()
+            try:
+                cur = conn.execute("SELECT COUNT(*) AS c FROM scenes WHERE status='active'")
+                scene_count = cur.fetchone()[0]
+            finally:
+                conn.close()
         except sqlite3.Error as e:
-            print(f"    [warn] 查 wiki.db scenes 失败: {e}")
+            print(f"    [warn] 查 memory.db scenes 失败: {e}")
     else:
-        print(f"    [warn] wiki.db 不存在: {wiki_db_path}")
+        print(f"    [warn] memory.db 不存在: {mem_db_path}")
 
     if scene_count > 0:
         _ok(4, f"L2 active scenes={scene_count}")

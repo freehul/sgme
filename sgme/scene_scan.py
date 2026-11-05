@@ -103,8 +103,9 @@ def scan_db(data_dir: Path | str) -> dict:
 CHECKLIST = [
     {
         "item": "端点 410",
-        "detail": "POST /v1/admin/scenes/{id}/status、POST /v1/admin/scene-gc/trigger",
-        "action": "D-64 已登记 GONE；9.6 实装后打开 compat.enforce_gone 或直接移除路由",
+        "detail": "POST /v1/admin/scenes/{id}/status（2026-11-05 已摘除；enforce_gone 开启时 410）、"
+                  "POST /v1/admin/scene-gc/trigger（保留为手动治理入口，待 9.6 批次决定）",
+        "action": "scenes 写端点已移除；scene-gc 两键仍在 A5『可下架』清单，下批处理",
         "owner": "server",
     },
     {
