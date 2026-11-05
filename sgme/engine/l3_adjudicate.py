@@ -297,7 +297,7 @@ def _parse_adjudication_with_repair(text: str, expected: int) -> list:
 
     ST-58/T-292（P8）：解析失败的原行为是**整批重发 LLM**（token 翻倍）。
     近 30 天的失败**全部**是 `Invalid \\escape`（模型输出 Windows 路径
-    `D:\\Projects` 未转义），这类破损可就地修好，不必重发。
+    `D:\\work\\proj` 未转义），这类破损可就地修好，不必重发。
 
     安全约束（宁可放弃修复，不可猜错语义）：
     - 修复后必须能解析；
