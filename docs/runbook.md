@@ -1,5 +1,7 @@
 # SGME 运维手册 (Runbook)
 
+> ⚠️ 本手册主体为 v0.4–1.x 历史运维手册；2.0 现行口径见 `docs/design/SGME2.0-设计方案-V1.0.md`，端点/路径以生产 `/openapi.json` 为准。
+
 > 最小闭环 v0.4 · 单用户 Agent 记忆引擎 Server
 
 ## 1. 环境要求
@@ -260,8 +262,8 @@ E2E SMOKE PASSED
 
 链路覆盖：
 ```
-append → refine/trigger → L2 场景生成 → tier0/refresh
-→ inject（Tier0 摘要）→ search（RRF）→ events/pull（memory_updated）
+append → refine/trigger → L2 场景生成（2.0 起默认冻结，count=0 属预期）
+→ inject（core 记忆卡块）→ search（RRF）→ events/pull（memory_updated）
 → health（可观测性字段）→ backup/create → backup/restore
 ```
 
@@ -271,18 +273,17 @@ append → refine/trigger → L2 场景生成 → tier0/refresh
 [ 2] [OK] append file_id=...
 [ 3] [OK] refine status=refined memories=2 l15_stored=2
 [ 4] [OK] L2 active scenes=1
-[ 5] [OK] tier0 refresh ok summary_length=...
-[ 6] [OK] inject blocks=3 tier0.present=True
-[ 7] [OK] search results=1 routes=['bm25', 'vector', 'rrf']
-[ 8] [OK] events=1 memory_updated=1 next_cursor=True
-[ 9] [OK] health llm.available=True queue_depth=0 ...
-[10] [OK] backup created snapshot_id=full_...
-[11] [OK] backup restored snapshot_id=full_...
+[ 5] [OK] inject blocks=3 core_present=True
+[ 6] [OK] search results=1 routes=['bm25', 'vector', 'rrf']
+[ 7] [OK] events=1 memory_updated=1 next_cursor=True
+[ 8] [OK] health llm.available=True queue_depth=0 ...
+[ 9] [OK] backup created snapshot_id=full_...
+[10] [OK] backup restored snapshot_id=full_...
 E2E SMOKE V04 PASSED
 ```
 
-> **注意**：L2 场景生成、Tier0 摘要、向量检索均依赖 LLM（本地或云端 OpenAI 兼容提供商，见 §4.2）。
-> LLM 不可达时自动降级（直存记忆、Tier0 静态直出、纯 BM25 检索），冒烟仍可通过。
+> **注意**：L2 场景生成与向量检索依赖 LLM（本地或云端 OpenAI 兼容提供商，见 §4.2）；2.0 A1 起场景层默认冻结（`scene_aggregate.enabled=false`），scenes=0 属预期。Tier0 摘要已于 D-79 整体砍除。
+> LLM 不可达时自动降级（直存记忆、纯 BM25 检索），冒烟仍可通过。
 
 
 ### 5.8 技能包跨机获取（skill_fetch）
@@ -320,7 +321,6 @@ pytest tests/test_e2e.py -q             # T8 端到端
 pytest tests/test_storage_v04.py -q     # T9 storage 扩展
 pytest tests/test_l2.py -q              # T10 L2 场景聚合
 pytest tests/test_signal.py -q          # T11 信号引擎
-pytest tests/test_tier0.py -q           # T12 Tier0 摘要
 pytest tests/test_search_v04.py -q      # T13 向量检索 + RRF
 pytest tests/test_backup.py -q          # T14 备份恢复
 pytest tests/test_health_v04.py -q      # T15 可观测性增强
@@ -335,7 +335,6 @@ pytest tests/test_e2e_v04.py -q         # T17 端到端验收
 | `data/memory.db` | 记忆池（memories/archive/tags/sources/registry/memory_vectors/signal_events/signal_subscribers） |
 | `data/wiki.db` | 场景库（raw_files 索引 + scenes/scene_memories/scene_versions） |
 | `data/credentials.db` | 凭据模块独立库（`credentials.enabled=true` 时创建；Fernet 密文 + 审计；主密钥不随快照 / 备份携带） |
-| `data/tier0_summary.json` | Tier0 LLM 摘要（含 generated_at，48h 过期） |
 | `data/agent_keys.json` | 注册 Agent Key 持久化（register 签发记录，重启不丢）；**敏感等级：高**——明文访问凭据存底，不纳入 SGME 内部快照链，整目录备份会连带复制（存放面自行评估，见 §9.2） |
 | `data/backups/` | 备份快照目录（full_/incremental_/monthly_/pre_restore_ 前缀） |
 | `raw/sessions/*.md` | L0 原始会话文件 |
@@ -387,9 +386,9 @@ python -m sgme
 
 A: L2 场景聚合依赖 LLM。检查 `config/providers.yaml` 配置的提供商是否可达（本地示例：LM Studio 是否启动、模型是否加载、端口 1014 是否可达）。LLM 不可达时记忆仍会入库（L2 的 `_ensure_persisted` 兜底直存），但不会生成场景叙事文档。可手动触发：`POST /v1/admin/refine/trigger`。
 
-### Q: Tier0 摘要 present=false
+### Q: 注入里看不到「画像摘要」块
 
-A: 摘要文件 `data/tier0_summary.json` 缺失或超 48h 过期。手动触发：`POST /v1/admin/tier0/refresh`。LLM 不可达时 Tier0 自动降级为静态维度模板查询直出（present=false），不影响注入主链路。
+A: Tier0 画像摘要已随 D-79（2026-11-05）整体砍除，画像改由 core 记忆卡承担（`profile/core_cards.py` + memory_cards 表）。`/v1/inject` 不再返回 `tier0` 字段；core 卡片是否生效看 `stats.core_present`。端点 `POST /v1/admin/tier0/refresh` 与 `profile/tier0.py` 均已删除。
 
 ### Q: 向量检索降级为纯 BM25
 
@@ -446,7 +445,7 @@ asyncio.run(t())
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | POST | `/v1/append` | Agent | L0 捕获：写 raw 文件 + 索引 |
-| POST | `/v1/inject` | Agent | 画像注入（Tier0 摘要优先 + 模板查询） |
+| POST | `/v1/inject` | Agent | 画像注入（core 记忆卡 + 模板查询；Tier0 已砍） |
 | POST | `/v1/search` | Agent | 记忆检索（BM25 + 向量 + RRF 融合） |
 | GET | `/v1/memory/{id}` | Agent | 记忆详情（含 sources + archive_chain） |
 | GET | `/v1/health` | Bearer* | 健康检查（含 LLM 可用性 + 提炼心跳 + 停摆标记） |
@@ -457,7 +456,6 @@ asyncio.run(t())
 | DELETE | `/v1/admin/agents/{agent_id}` | Admin | 吊销 Agent Key（`default` 不可吊销，改环境变量） |
 | GET | `/v1/admin/stats` | Admin | 统计（记忆/原始层/维度分布/水位） |
 | POST | `/v1/admin/refine/trigger` | Admin | 手动触发提炼（L1→L1.5→L2 + 信号发布） |
-| POST | `/v1/admin/tier0/refresh` | Admin | 手动触发 Tier0 摘要生成 |
 | POST | `/v1/admin/backup/create` | Admin | 创建快照（level=full/incremental/monthly） |
 | GET | `/v1/admin/backup/list` | Admin | 列出可用快照 |
 | POST | `/v1/admin/backup/restore` | Admin | 恢复快照（恢复前自动再备份） |
@@ -547,35 +545,10 @@ for r in conn.execute("SELECT scene_id, title, heat, status FROM scenes"):
     print(dict(r))
 ```
 
-## 11. Tier0 画像摘要
+## 11. Tier0 画像摘要（已砍除）
 
-Tier0 是注入画像的第一层（~200 tokens persona 摘要），每日由 LLM 生成。
-
-### 11.1 工作原理
-
-- **生成**：`profile/tier0.py` 的 `generate_summary` 拉取静态维度（identity/family/social/values）高优先级记忆 → LLM 生成摘要
-- **存储**：`data/tier0_summary.json`（含 `generated_at` ISO 时间戳 + `summary` 文本）
-- **过期检测**：48h 内 `present:true`（摘要有效），超 48h `present:false`（降级静态直出）
-- **降级**：LLM 不可达 → 返回 None + 日志告警 + 不阻塞提炼管线；注入时读不到摘要自动降级为静态维度模板查询直出（priority≥70，top 10）
-- **定时任务**：`sgme/__main__.py` 启动时注册每日 00:00 cron（asyncio 定时器）
-- **手动触发**：`POST /v1/admin/tier0/refresh`
-
-### 11.2 注入行为
-
-`/v1/inject` 的 Tier0 block：
-- 摘要有效（48h 内）→ `present:true`，content = LLM 摘要
-- 摘要过期/缺失 → `present:false`，content = 静态维度直出
-
-### 11.3 验证命令
-
-```bash
-# 手动触发摘要生成
-curl -X POST $SGME_HTTP_BASE/v1/admin/tier0/refresh \
-    -H "X-API-Key: your-admin-key"
-
-# 查看摘要文件
-cat data/tier0_summary.json
-```
+> D-79（2026-11-05）：Tier0 画像摘要整体退役——模块 `sgme/profile/tier0.py`、端点 `POST /v1/admin/tier0/refresh`、每日定时任务、提示词版本与 `data/tier0_summary.json` 均已删除。
+> 画像改由 core 记忆卡承担（`sgme/profile/core_cards.py` + memory_cards 表）；`/v1/inject` 不再返回 `tier0` 字段，是否生效看 `stats.core_present`。
 
 ## 12. 向量检索 + RRF 融合
 

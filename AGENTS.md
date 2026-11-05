@@ -65,11 +65,15 @@ gh api user/starred/freehul/sgme >/dev/null 2>&1 \
 
 | `docs/design/eval-sequence-diagram.mermaid` | 评测框架时序图 |
 
-| `templates/*.yaml` | 预定义 4 模式模板 |
+| `sgme/resources/templates/*.yaml` | 预定义 4 模式模板（2026-11-05 A5：根目录 `templates/` 已不存在） |
 
-| `prompts/*.txt` | 三套提炼提示词（含 {{占位符}}） |
+| `sgme/resources/prompts/*.txt` | 提炼提示词与版本（含 {{占位符}}；A5：根目录 `prompts/` 已不存在） |
 
-| `registry/*.yaml` | 维度注册表/别名表（运行时数据源） |
+| `sgme/resources/registry/*.yaml` | 维度注册表/别名表（运行时数据源；A5：根目录 `registry/` 已不存在） |
+
+| `docs/design/SGME2.0-设计方案-V1.0.md` | **2.0 设计总纲（现行口径：三层记忆/core 卡/场景冻结/D-决策全表）** |
+
+| `docs/plans/D-决策施工台账.md` | 决策施工台账（每条 D 的实现状态与证据） |
 
 | `config/llm.yaml` | LLM 降级链配置 |
 | `AI-INSTALL/README.md` | 给 AI 的部署/接入/初始化/日常标准流程（对外产品面，中英双语） |
@@ -80,7 +84,7 @@ gh api user/starred/freehul/sgme >/dev/null 2>&1 \
 
 
 
-1. 数据流单向：L0 原始文件 → L1 标签化记忆（memory.db）→ L1.5 冲突提炼 → L2 场景（wiki.db）；画像 = 模板查询结果，无物化
+1. 数据流单向：L0 原始文件 → L2 提取（stage=l1_extraction）→ L3 裁决（stage=l1_conflict，原「L1.5」）→ L4 梦境；画像 = 模板查询结果，无物化。**阶段命名唯一口径 = `sgme/engine/stage_map.py`**（L1 捕获 / L2 提取 / L3 裁决 / L4 梦境；L0/L1.5/L2 场景为历史名，禁止新代码使用）
 
 2. 双库 + 文件：memory.db（记忆池）、wiki.db（场景+raw_files 索引）、raw/（原始 MD 文件）；`*.db`、`raw/`、`tmp/` 不入 git
 
@@ -92,7 +96,7 @@ gh api user/starred/freehul/sgme >/dev/null 2>&1 \
 
 6. 模板查询默认排序：动态维度 updated_at DESC，静态维度 priority DESC
 
-7. L1.5 候选池：标签预过滤 OR、**不截断全量召回**、按上下文预算分批、同一新记忆只进一批；单记忆候选超预算才允许 top-k 截断并记 anomaly_warn
+7. L3 裁决（原 L1.5）候选池：标签预过滤 OR、**不截断全量召回**、按上下文预算分批、同一新记忆只进一批；单记忆候选超预算才允许 top-k 截断并记 anomaly_warn
 
 8. Supersession：旧值归档不删除（memory_archive 表），判等锚点 memory_id
 
@@ -110,7 +114,7 @@ gh api user/starred/freehul/sgme >/dev/null 2>&1 \
 
 
 
-- 模块边界（依赖方向）：`adapters → server/mcp_server → operations → engine → data/profile/llm → config`；data 是唯一数据库操作层（统计查询唯一出口 `data/stats_dao.py`）；operations 是统一操作层（HTTP/MCP 共用，入口层只做协议翻译）；扩展模块（wiki/skills_hub/refinery）按 config.yaml 开关挂载，禁用时核心零影响；管线编排唯一出口 `engine/pipeline.py`（L0 写入 append_l0 + L1→L1.5→L2 串联）；config 是配置唯一读写方（含落盘）；入口层（HTTP/MCP）只做鉴权与响应组装，**入口禁止互相依赖**（B30：MCP 不 import routes_*，backup 裸连接是唯一允许绕过 data 层的场景且须注释说明）
+- 模块边界（依赖方向）：`adapters → server/mcp_server → operations → engine → data/profile/llm → config`；data 是唯一数据库操作层（统计查询唯一出口 `data/stats_dao.py`）；operations 是统一操作层（HTTP/MCP 共用，入口层只做协议翻译）；扩展模块（wiki/skills_hub/refinery）按 config.yaml 开关挂载，禁用时核心零影响；管线编排唯一出口 `engine/pipeline.py`（L0 写入 append_l0 + 按 stage_map 分层串联：提取→裁决→梦境；场景聚合仅历史）；config 是配置唯一读写方（含落盘）；入口层（HTTP/MCP）只做鉴权与响应组装，**入口禁止互相依赖**（B30：MCP 不 import routes_*，backup 裸连接是唯一允许绕过 data 层的场景且须注释说明）
 
 - 中文注释；函数/表名英文；JSON 字段英文
 

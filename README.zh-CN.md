@@ -276,24 +276,24 @@ sgme/
 │   └── search/      # BM25 + 向量 + RRF 融合检索（原 sgme/search 并入）
 ├── llm/             # LLM 降级链（主模型按 providers.yaml 用户设定，rule drop_batch 兜底）
 ├── raw/             # L0 文件读写（frontmatter + 消息块 + 增量段）
-├── engine/          # 核心引擎（l1/l15/l2/refine/prune/health/normalize）
-│   └── pipeline.py  # 管线编排唯一出口（append_l0 写 L0 + L1→L1.5→L2 串联）
+├── engine/          # 核心引擎（l2_extract/l2_extraction/l3_adjudicate/l3_rules/refine/prune/health/normalize；stage_map.py = 阶段命名唯一口径）
+│   └── pipeline.py  # 管线编排唯一出口（append_l0 写 L0，随后 L1 捕获 → L2 提取 → L3 裁决 → L4 梦境；场景聚合仅历史）
 ├── operations/      # 统一操作层（append/inject/search/memory/refine/stats/health/config，HTTP+MCP 共用）
-├── profile/         # 模板引擎（template / inject / tier0 摘要）
+├── profile/         # 画像拼装（template / inject / core_cards）
 ├── log/             # 统一日志（get_logger 唯一入口，控制台+JSON 双格式）
 ├── refinery/        # 知识提炼引擎（ingest/extract/validate/output，服务 wiki）
 ├── skills/          # 技能管理模块（git 真源 source_dirs + skills.db 索引 + 写侧门禁；skills.enabled；与 memory/wiki 平级）
 ├── skills_hub/      # 技能仓库扩展（map/copy 双模式；B114 后仅保留 git 同步职责，skills_hub.enabled）
 ├── wiki/            # wiki 知识库扩展（/v1/wiki/* 端点，wiki.enabled）
 ├── signal/          # 信号引擎（事件发布 / SSE / pull 游标）
+├── care/            # 关怀信号策略（每日问候 / 情绪 / 过劳）
+├── credentials/     # 凭据库扩展（Fernet 加密 credentials.db；credentials.enabled）
 ├── backup/          # 备份恢复（快照分层 / 冷归档 / 异地副本）
+├── resources/       # 运行时资源：4 模式模板 / 提炼提示词与版本 / 维度注册表 + 别名表
 ├── mcp_server.py    # MCP 出口（9913，与 HTTP 共享业务层，入口不互相依赖）
 └── server/          # FastAPI（HTTP 壳：鉴权 + 参数解析 + 响应组装）
 migrations/          # 一次性数据迁移（0001 三库拆分，python -m migrations 执行）
 docs/                # 用户文档（接入指南/免费 Key 指南/运维手册/发版说明；内部设计文档在私有仓）
-templates/           # 预定义 4 模式模板（daily/coding/work/full）
-prompts/             # 提炼提示词（含 MIT 来源标注）
-registry/            # 维度注册表 + 别名表
 config/              # 运行时配置
 ui/                  # Vue 3 + Vite 前端（cd ui && npm ci && npm run build → ui/dist，由 FastAPI 静态托管）
 ```
