@@ -373,9 +373,10 @@ def list_skills(
             from sgme.data import skills_dao
 
             items = skills_dao.list_skills(
-                skills_conn, offset=offset, limit=effective_limit
+                skills_conn, offset=offset, limit=effective_limit,
+                include_deprecated=False,
             )
-            total = skills_dao.count_skills(skills_conn)
+            total = skills_dao.count_skills(skills_conn, include_deprecated=False)
             return OperationResult.succeed(
                 {
                     "skills": items,
@@ -1092,6 +1093,7 @@ def _record_to_dict(rec: SkillRecord | dict) -> dict:
         "pattern": get("pattern") or None,
         "source": get("source") or None,
         "origin_path": get("origin_path") or None,
+        "status": get("status") or "active",
         "content": get("content") or "",
         "uses": list(get("uses", []) or []),
         "uses_strength": dict(use_strengths or {}),
@@ -1487,6 +1489,10 @@ def search_skills_db(
     out: list[dict] = []
     for name, score in ranked:
         row = meta.get(name)
+        # 生命周期过滤：向量路 / 名字直达都可能带回已停用（软删）的技能，
+        # 与 FTS 路同口径排除；skill_get 仍可按名取全文，不影响恢复与追溯。
+        if str((row or {}).get("status") or "active") != "active":
+            continue
         out.append(
             {
                 "name": name,

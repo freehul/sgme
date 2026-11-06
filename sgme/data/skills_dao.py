@@ -137,6 +137,21 @@ def delete_skill(conn: sqlite3.Connection, name: str) -> None:
     conn.execute("DELETE FROM skill_uses WHERE src=? OR dst=?", (name, name))
 
 
+def set_status(conn: sqlite3.Connection, name: str, status: str) -> bool:
+    """改技能生命周期状态（active / deprecated / tombstone）。
+
+    软删/恢复的入口用它，让删除动作**立即**在检索层生效，而不必等下一次
+    sync_index 才把 frontmatter 的 deprecated 标记带进库。
+    返回是否命中一行；老库没有 status 列时直接返回 False（不抛错）。
+    """
+    if status not in ("active", "deprecated", "tombstone"):
+        raise ValueError(f"非法状态: {status}")
+    if not _has_status_column(conn):
+        return False
+    cur = conn.execute("UPDATE skills SET status=? WHERE name=?", (status, name))
+    return cur.rowcount > 0
+
+
 def replace_uses(
     conn: sqlite3.Connection,
     name: str,
@@ -202,12 +217,14 @@ def list_skills(
     limit: int | None = None,
     category: str | None = None,
     include_tombstone: bool = False,
+    include_deprecated: bool = True,
 ) -> list[dict[str, Any]]:
     """L0 索引列表（轻量投影，不含 content；按名排序，支持 category 过滤）。
 
     T-401/T-402 生命周期：默认**排除 tombstone**（已改名/已废弃的墓碑技能不该
     出现在列表里让人误以为可用）；``include_tombstone=True`` 供管理面/排查用。
-    deprecated（停用但未删）仍返回——它只是降权，不是不可用。
+    ``include_deprecated=False`` 时连 deprecated 一起排除——面向 Agent 的列表
+    走这个口径（停用件不该出现在可选项里）；管理面/追溯保持默认 True。
     老库没有 status 列时按 active 处理（COALESCE 兜底）。
     """
     sql = "SELECT name, description, category, tags, version, pattern, source, updated_at FROM skills"
@@ -218,6 +235,8 @@ def list_skills(
         params.append(category)
     if not include_tombstone and _has_status_column(conn):
         conds.append("COALESCE(status,'active') != 'tombstone'")
+    if not include_deprecated and _has_status_column(conn):
+        conds.append("COALESCE(status,'active') != 'deprecated'")
     if conds:
         sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY name ASC"
@@ -228,7 +247,8 @@ def list_skills(
 
 
 def count_skills(
-    conn: sqlite3.Connection, category: str | None = None, include_tombstone: bool = False
+    conn: sqlite3.Connection, category: str | None = None, include_tombstone: bool = False,
+    include_deprecated: bool = True,
 ) -> int:
     """技能总数（可选按 category 过滤；与 list_skills 口径一致，默认排除墓碑）。"""
     sql = "SELECT COUNT(*) AS n FROM skills"
@@ -239,6 +259,8 @@ def count_skills(
         params.append(category)
     if not include_tombstone and _has_status_column(conn):
         conds.append("COALESCE(status,'active') != 'tombstone'")
+    if not include_deprecated and _has_status_column(conn):
+        conds.append("COALESCE(status,'active') != 'deprecated'")
     if conds:
         sql += " WHERE " + " AND ".join(conds)
     return int(conn.execute(sql, params).fetchone()["n"])
@@ -278,12 +300,16 @@ def fts_search(
     query: str,
     limit: int = 10,
     category: str | None = None,
+    include_deprecated: bool = False,
 ) -> list[dict[str, Any]]:
     """FTS5 BM25 检索（列加权 10:5:1，支持 category 结构化过滤）。
 
     返回 [{name, score, description, category, ...}]。⚠️ score 为 bm25() 原始
     **负分**，越小越相关（调用方若做 min-max 归一必须先取反，见 T-217 教训）。
     停用词过滤后无有效词 → 返回空列表（不报错）。
+
+    ``include_deprecated=False``（默认）时排除 ``status='deprecated'`` 的技能：
+    软删只是「停用」，停用件不该继续抢占召回位；``skill_get`` 仍可按名取全文。
     """
     terms = fts_query_terms(query)
     if not terms:
@@ -301,6 +327,8 @@ def fts_search(
     if category:
         sql += " AND s.category=?"
         params.append(category)
+    if not include_deprecated and _has_status_column(conn):
+        sql += " AND COALESCE(s.status,'active')='active'"
     sql += " ORDER BY score ASC LIMIT ?"  # bm25() 返回负值，越小越相关
     params.append(limit)
     return [_row_to_skill(r) for r in conn.execute(sql, params).fetchall()]

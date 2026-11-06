@@ -218,12 +218,16 @@ class TestDeleteSkill:
         assert r.status_code == 200 and r.json()["ok"] is True
         text = (skill_repo / "beta-user" / "SKILL.md").read_text(encoding="utf-8")
         assert "deprecated: true" in text
+        # 2026-11-06：软删立即在检索层生效——响应回执 + 库内 status 同步
+        assert r.json().get("status") == "deprecated"
 
     def test_hard_delete_ok(self, client, skill_repo):
         self._seed_pair(client)
         r = client.delete(f"{BASE}/alpha-del?hard=true&force=true", headers=ADMIN_HEADERS)
         assert r.status_code == 200 and r.json()["ok"] is True
         assert not (skill_repo / "alpha-del").exists()
+        # 2026-11-06：硬删立即清库，不等下一轮 sync_index
+        assert r.json().get("db_purged") is True
 
     def test_delete_missing_404(self, client):
         r = client.delete(f"{BASE}/ghost-x", headers=ADMIN_HEADERS)

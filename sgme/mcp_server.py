@@ -177,6 +177,28 @@ def _reindex_skills_db() -> None:
         pass  # 写侧成功不因索引同步失败而报错
 
 
+def _purge_deleted_skill(name: str, hard: bool) -> dict:
+    """删除动作立即贯通到 skills.db（2026-11-06，与 HTTP 端点同款）。
+
+    hard → 清 skills / skill_vectors / skill_uses；soft → status=deprecated。
+    库侧失败只吞掉（盘上 git commit 是真相源，下轮 sync_index 能自愈）。
+    """
+    conn = _app_state.get("skills_conn")
+    if conn is None:
+        return {}
+    try:
+        from sgme.data import skills_dao
+
+        if hard:
+            skills_dao.delete_skill(conn, name)
+        else:
+            skills_dao.set_status(conn, name, "deprecated")
+        conn.commit()
+        return {"db_purged": True} if hard else {"status": "deprecated"}
+    except Exception:
+        return {}
+
+
 class ApiKeyMiddleware:
     """MCP streamable-http 传输层鉴权中间件（PR#1，2026-08-11；T-155 改纯 ASGI）。
 
@@ -2199,9 +2221,11 @@ def build_mcp_server():
                 },
                 ensure_ascii=False,
             )
+        # 删库：硬删立刻清行、软删立刻置 deprecated（2026-11-06，与 HTTP 端点同款）
+        purge_note = _purge_deleted_skill(name, hard=hard)
         _reindex_skills_db()
         return json.dumps(
-            {"ok": True, **{k: v for k, v in result.items() if k != "ok"}},
+            {"ok": True, **{k: v for k, v in result.items() if k != "ok"}, **purge_note},
             ensure_ascii=False,
         )
 

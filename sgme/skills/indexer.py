@@ -57,6 +57,9 @@ class SkillRecord:
     sha256: str = ""
     source: str = ""
     origin_path: str = ""
+    # 生命周期状态（active / deprecated / tombstone）：frontmatter 的
+    # deprecated: true 或 status 字段映射而来；检索与列表默认只出 active
+    status: str = "active"
 
 
 def validate_name(name: str) -> str:
@@ -143,7 +146,26 @@ def _record_from_meta(name: str, meta: dict, body: str, source: str, origin: str
         sha256=hashlib.sha256(full.encode("utf-8")).hexdigest(),
         source=source,
         origin_path=origin,
+        status=_status_from_meta(meta),
     )
+
+
+_VALID_STATUSES = ("active", "deprecated", "tombstone")
+
+
+def _status_from_meta(meta: dict) -> str:
+    """frontmatter → 生命周期状态。
+
+    ``deprecated: true`` 优先（remove_skill 软删写的就是这个标记），否则读
+    ``status`` 字段；非法值回落 active，保证老库/手写 frontmatter 不炸。
+    """
+    deprecated = meta.get("deprecated")
+    if isinstance(deprecated, str):
+        deprecated = deprecated.strip().lower() in ("true", "1", "yes", "y")
+    if deprecated:
+        return "deprecated"
+    raw = str(meta.get("status", "") or "").strip().lower()
+    return raw if raw in _VALID_STATUSES else "active"
 
 
 def collect_from_dir(root: str | Path) -> list[SkillRecord]:

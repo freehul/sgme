@@ -65,6 +65,32 @@ def _reindex_skills_db(request: Request) -> None:
         logging.getLogger("sgme.server.skills").warning("skills.db 写后同步失败: %s", e)
 
 
+def _purge_deleted_skill(request: Request, name: str, hard: bool) -> dict:
+    """删除动作立即贯通到 skills.db（2026-11-06）。
+
+    - hard：直接清 skills / skill_vectors / skill_uses（FTS 由触发器同步）
+    - soft：把 status 置 deprecated —— 检索与列表立刻不再召回，skill_get 仍可读
+    库写失败只告警（盘上 git commit 才是真相源，下一轮 sync_index 能自愈）。
+    """
+    conn = getattr(request.app.state, "skills_conn", None)
+    if conn is None:
+        return {}
+    try:
+        from sgme.data import skills_dao
+
+        if hard:
+            skills_dao.delete_skill(conn, name)
+        else:
+            skills_dao.set_status(conn, name, "deprecated")
+        conn.commit()
+        return {"db_purged": True} if hard else {"status": "deprecated"}
+    except Exception as e:
+        import logging
+
+        logging.getLogger("sgme.server.skills").warning("删除后库侧清理失败: %s", e)
+        return {"db_error": str(e)}
+
+
 def _asset_quota(request: Request) -> dict:
     """资产配额（cfg.skills.asset_quota）：单文件 / 单技能合计 / 文件数；非法取默认。"""
     cfg = request.app.state.cfg or {}
@@ -327,8 +353,10 @@ def delete_skill(
             raise api_error("ERR_NOT_FOUND", f"技能不存在: {name}")
         raise api_error("ERR_INVALID_ARGS", "删除被拒",
                         {"violations": result.get("violations", [])})
+    # 删库：硬删立刻清行、软删立刻置 deprecated（不等下一轮 sync_index）
+    purged = _purge_deleted_skill(request, name, hard=hard)
     _reindex_skills_db(request)
-    return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}}
+    return {"ok": True, **{k: v for k, v in result.items() if k != "ok"}, **purged}
 
 
 @router.put("/v1/admin/skills/{name}/rename", operation_id="rename_skill")
