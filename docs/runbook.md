@@ -493,6 +493,8 @@ docker compose up -d
 curl -s "$SGME_HTTP_URL/v1/health"
 ```
 
+> **发布前 UI 检查（2026-11-06 起）**：改了 `ui/` 必须过 `cd ui && npm run typecheck`（vue-tsc）+ `npm run build`——Docker 只跑 build（esbuild 剥类型、不检查类型），CI 的 `ui-typecheck` job 才是类型门禁。历史上仓库因此长期挂着 5 个 vue-tsc 红（d3 无类型声明等），2.0.8 已清零。
+
 ### 8.2 自动更新（ST-34）
 
 - WebUI 检测到新版本 → 写意图文件 `<DATA_DIR>/update/request.json`（必须含 `"status":"pending"`）。

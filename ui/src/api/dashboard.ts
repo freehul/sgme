@@ -144,6 +144,8 @@ export interface UpdateRequest {
   target_version: string
   requested_at: string
   status: 'pending' | 'done' | 'failed'
+  /** 失败原因（主机代理 status=failed 时写入；见 scripts/sgme-host-updater.sh） */
+  error?: string | null
 }
 export function requestUpdate(targetVersion: string) {
   return api.post<{ path: string; target_version: string; status: string }>(

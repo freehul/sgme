@@ -26,13 +26,18 @@ const TYPE_META: Record<string, { label: string; color: string; ico: string }> =
   wiki: { label: 'Wiki', color: '#2e9e6b', ico: '📚' },
 }
 
+// D3 force 的 datum 类型：GraphNode/GraphLink 叠加 SimulationNodeDatum/LinkDatum，
+// 显式声明才能让 selectAll/forceLink/drag 的泛型对齐（2026-11-06 类型门禁清零）
+type NodeDatum = GraphNode & d3.SimulationNodeDatum
+type LinkDatum = GraphLink & d3.SimulationLinkDatum<NodeDatum>
+
 const typeColor = (t: string) => TYPE_META[t]?.color || '#888'
 const typeLabel = (t: string) => TYPE_META[t]?.label || t
 const typeIco = (t: string) => TYPE_META[t]?.ico || '•'
 
 const stats = computed(() => data.value?.stats)
 
-let sim: d3.Simulation<d3.SimulationNodeDatum, undefined> | null = null
+let sim: d3.Simulation<NodeDatum, undefined> | null = null
 let resizeObserver: ResizeObserver | null = null
 
 async function load() {
@@ -71,8 +76,8 @@ function renderGraph() {
     const width = Math.max(Math.round(rect?.width || svgEl.clientWidth || 0), 320)
     const height = Math.max(Math.round(rect?.height || svgEl.clientHeight || 0), 480)
 
-  const nodes = g.nodes.map((n) => ({ ...n }))
-  const links = g.links.map((l) => ({ ...l }))
+  const nodes: NodeDatum[] = g.nodes.map((n) => ({ ...n }))
+  const links: LinkDatum[] = g.links.map((l) => ({ ...l }))
 
   // 节点 id → 索引（forceLink 需要）
   const idIndex = new Map(nodes.map((n, i) => [n.id, i]))
@@ -92,7 +97,7 @@ function renderGraph() {
   // 边（先画，节点之上）
   const linkSel = zoomLayer.append('g')
     .attr('class', 'links')
-    .selectAll('line')
+    .selectAll<SVGLineElement, LinkDatum>('line')
     .data(links)
     .join('line')
     .attr('stroke', '#999')
@@ -102,7 +107,7 @@ function renderGraph() {
   // 节点
   const nodeSel = zoomLayer.append('g')
     .attr('class', 'nodes')
-    .selectAll('g')
+    .selectAll<SVGGElement, NodeDatum>('g')
     .data(nodes)
     .join('g')
     .attr('class', 'node')
@@ -143,14 +148,14 @@ function renderGraph() {
   nodeSel.append('title').text((n: GraphNode) => n.label)
 
   // force 布局
-  sim = d3.forceSimulation(nodes as d3.SimulationNodeDatum[])
-    .force('link', d3.forceLink(links as d3.SimulationLinkDatum<d3.SimulationNodeDatum>[])
-      .id((d: any) => d.id)
-      .distance((l: any) => (l.type === 'scene_memory' ? 60 : 90))
+  sim = d3.forceSimulation<NodeDatum>(nodes)
+    .force('link', d3.forceLink<NodeDatum, LinkDatum>(links)
+      .id((d) => d.id)
+      .distance((l) => (l.type === 'scene_memory' ? 60 : 90))
       .strength(0.5))
-    .force('charge', d3.forceManyBody().strength(-180))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collide', d3.forceCollide(18))
+    .force('charge', d3.forceManyBody<NodeDatum>().strength(-180))
+    .force('center', d3.forceCenter<NodeDatum>(width / 2, height / 2))
+    .force('collide', d3.forceCollide<NodeDatum>(18))
     .on('tick', () => {
       linkSel
         .attr('x1', (l: any) => l.source.x)
@@ -168,22 +173,22 @@ function renderGraph() {
   }
 }
 
-function drag(simulation: d3.Simulation<d3.SimulationNodeDatum, undefined> | null) {
-  function dragstarted(event: d3.D3DragEvent<SVGGElement, GraphNode, GraphNode>, d: any) {
+function drag(simulation: d3.Simulation<NodeDatum, undefined> | null) {
+  function dragstarted(event: d3.D3DragEvent<SVGGElement, NodeDatum, NodeDatum>, d: any) {
     if (!event.active && simulation) simulation.alphaTarget(0.3).restart()
     d.fx = d.x
     d.fy = d.y
   }
-  function dragged(event: d3.D3DragEvent<SVGGElement, GraphNode, GraphNode>, d: any) {
+  function dragged(event: d3.D3DragEvent<SVGGElement, NodeDatum, NodeDatum>, d: any) {
     d.fx = event.x
     d.fy = event.y
   }
-  function dragended(event: d3.D3DragEvent<SVGGElement, GraphNode, GraphNode>, d: any) {
+  function dragended(event: d3.D3DragEvent<SVGGElement, NodeDatum, NodeDatum>, d: any) {
     if (!event.active && simulation) simulation.alphaTarget(0)
     d.fx = null
     d.fy = null
   }
-  return d3.drag<SVGGElement, GraphNode>()
+  return d3.drag<SVGGElement, NodeDatum>()
     .on('start', dragstarted)
     .on('drag', dragged)
     .on('end', dragended)

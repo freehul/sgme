@@ -30,7 +30,9 @@ async function load() {
       // skills_hub 在配置里是 skills_hub，其余与 key 同名
       const cfgKey = m.key === 'skills' ? 'skills_hub' : m.key
       const cfg = data.config[cfgKey] as Record<string, unknown> | undefined
-      next[m.key] = cfg?.enabled ?? true
+      // 配置值来自后端 JSON（unknown）：只有明确的 false 才算关闭，
+      // 缺字段/非布尔一律按「默认开启」处理（与扩展模块默认值一致）。
+      next[m.key] = typeof cfg?.enabled === 'boolean' ? cfg.enabled : true
     }
     moduleState.value = next
   } catch (e) {

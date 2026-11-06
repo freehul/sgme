@@ -128,3 +128,36 @@ jobs:
           fi
           [ "$fail" = "1" ] && exit 1
           echo "OK：dsh 桥接 lib/ 与 src 同步（已归一 pnpm 虚拟店路径）"
+
+  # ============================================================
+  # WebUI 类型门禁（2026-11-06 立）：ui/ 此前只有 Dockerfile 里的 vite build，
+  # 而 vite 用 esbuild 剥类型、不做类型检查 —— 仓库里长期挂着 5 个 vue-tsc 红
+  # （d3 无类型声明 / 隐式 any / unknown 赋 boolean / UpdateRequest 缺 error 字段）。
+  # 本次清零并上闸：改 UI 不跑 typecheck 就进不去 main。
+  # ============================================================
+  ui-typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 与 Dockerfile 的 ui-build 阶段对齐（node:20-alpine）
+      - name: Setup Node 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI deps
+        working-directory: ui
+        run: npm ci
+
+      - name: Typecheck (vue-tsc)
+        working-directory: ui
+        run: npm run typecheck
+
+      - name: Build (vite)
+        working-directory: ui
+        run: npm run build
