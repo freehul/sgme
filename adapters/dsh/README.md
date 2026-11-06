@@ -58,29 +58,34 @@ dsh plugin --profile web add "link:<project-root>/adapters/dsh/sgme-bridge"
 dsh --profile web
 ```
 
-## 桌面版 profile 升级（本地构建优先，2026-10-30 实测）
+## 桌面版 profile 升级（官方 dsh plugin，2026-11-06 修正）
 
-dsh 桌面版的适配器以 npm 包 `dsh-sgme` 落在 `<dsh-home>/profiles/<profile>/node_modules`，
-要升到「刚构建的仓库产物」用本地 tgz（与 `dsh-nanomuse` 同形态）：
+dsh 桌面版的适配器以 npm 包 `dsh-sgme` 落在 `<dsh-home>/profiles/<profile>/node_modules`。
+升级必须走**宿主自带的官方 CLI**（内置 pnpm 在 profile 内 `add/install`，会同时对齐
+`package.json` / `pnpm-lock.yaml` / `node_modules` 与插件运行时依赖）：
 
-```bash
-# 1. 打包（产物不入库，打完即删）
+```powershell
+# 1. 打包（产物不入库，打完即删；一键脚本会替你做这步）
 cd <project-root>/adapters/dsh/sgme-bridge && pnpm pack     # → dsh-sgme-<ver>.tgz
+cp dsh-sgme-<ver>.tgz <dsh-home>/plugin-artifacts/
 
-# 2. 放到 artifact 目录，profile 依赖改成 file: 路径
-cp dsh-sgme-0.6.3.tgz <dsh-home>/plugin-artifacts/
-# <dsh-home>/profiles/<profile>/package.json:
-#   "dsh-sgme": "file:<dsh-home>/plugin-artifacts/dsh-sgme-0.6.3.tgz"
+# 2. 用桌面版内置 CLI 官方安装（desktop profile 只能由它管理）
+& "<install-dir>\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "file:<dsh-home>/plugin-artifacts/dsh-sgme-<ver>.tgz"
 
-# 3. 安装（两条参数都必带）
-cd <dsh-home>/profiles/<profile> && pnpm install --no-frozen-lockfile --ignore-scripts
+# 3. 重启 dsh（无 reload 子命令）
 ```
 
-- **`--ignore-scripts` 必带**：profile 依赖树含 `inotify@1.4.6`，Windows 上会触发 node-gyp 并要
-  ClangCL 工具链，缺则整单失败（`error MSB8020`）；该包是 Linux 文件监视，Windows 用不上
-- **不要裸跑 `pnpm install`**：若 profile lockfile 与 pnpm 默认 `auto-install-peers` 不一致，会报
-  `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`；在 profile 目录放 `.npmrc`（`auto-install-peers=false`）对齐
-- 装完**必须重启 dsh**（`dsh` 无 reload 子命令）；验证方式是 `adapter_parity --strict`（工具面无漂移）+ 会话内 `/sgme`
+- **一键升级（推荐）**：`python scripts/upgrade_dsh_host.py --apply --verify`
+  ——内部就是调上面第 2 步，再做版本 / 入口 / 运行时依赖校验与 freshness 门禁；默认 dry-run。
+- **不要手工解包 tgz + junction**：2026-11-06 实锤——手工搬到 `profile/.pnpm/` 只搬插件本体，
+  不装 `schemastery` / `dev`、也不更新 lockfile，DSH 启动 import 失败，整条 sgme 插件被跳过
+  （SGME 工具全部不可用），而 freshness 门禁可能全绿。
+- **不要裸跑 `pnpm install`**：profile lockfile 与 pnpm 默认 `auto-install-peers` 不一致时会报
+  `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`；profile 目录的 `.npmrc` 保持 `auto-install-peers=false`。
+- profile 依赖树含 `inotify@1.4.6`（Linux 文件监视，Windows 用不上）：手工 `pnpm install`
+  需带 `--ignore-scripts`，官方 CLI 的 pnpm 配置已处理。
+- 验收：`python scripts/check_adapter_freshness.py --strict-deploy`（含部署副本运行时依赖
+  可解析检查）+ 重启后会话内 `memory_search` 可用。
 
 ## 验证
 
