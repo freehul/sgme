@@ -443,6 +443,7 @@ lsof -i :9910; kill -9 <pid>
 - **观测**：`refine_runs.provider` 按小时分布（正常应全为 agnes；持续 deepseek = 首链异常）；`signal_events` 中 `source='llm_primary'` = 熔断事件，`source='refine_cost'` = 降级告警（每小时至多 1 条）。
 - **心跳降噪**：`/v1/health` 与心跳的 LLM 探测改为**连续 `health_fail_threshold`（默认 2）次失败**才判不可用，单次网络抖动不再产 `anomaly_warn`。
 - **手动恢复**：不想等冷却 → 重启容器（清空进程内熔断状态）；降级链与守卫配置见 `llm.yaml` / `providers.yaml`。
+- **2026-11-06 起生产链去 deepseek（用户定）**：`refinement` 链 = **agnes-2.5-flash → rule**，`refine.llm_override` 固定 agnes；`providers.yaml` 的 deepseek 段已注释，**agent_model 声明 deepseek 的文件不再劫持提炼链**；siliconflow 实测 402（余额不足）也从链上移出。`refine_runs.provider` 只应有 agnes。
 
 ---
 
