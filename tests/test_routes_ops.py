@@ -164,6 +164,7 @@ def test_refine_efficiency_empty(client):
     body = r.json()
     assert body["days"] == 7
     assert body["runs"] == 0
+    assert body["chunked_runs"] == 0
     assert body["repeat_ratio"] == 0
     assert body["cache_hit_rate"] == 0
     assert body["replay_pending"] == 0
@@ -195,3 +196,26 @@ def test_refine_efficiency_computes_ratios(client, app):
 
 def test_refine_efficiency_requires_admin_key(client):
     assert client.get("/v1/admin/ops/refine-efficiency").status_code in (401, 403)
+
+
+def test_refine_efficiency_ignores_legacy_null_chunk_sha(client, app):
+    """D-80 上线前的历史批次 chunk_sha 为 NULL，不得把重复率算虚（真实踩过 16.3 的假警）。"""
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    conn = app.state.mem_conn
+    # 一条历史批次（无块指纹）+ 两条新批次（同块同指纹）
+    for sha in (None, "shaX"):
+        rid = RefineRunRecorder.start(
+            conn, file_id="f2", stage="l1_extraction", version="v019",
+            variant=None, provider="agnes", bucket_key="f2",
+        )
+        RefineRunRecorder.finish(
+            conn, rid, memories_count=0, action_counts={}, status="ok",
+            chunk_sha=sha, cache_hit=0, reused_tokens=0,
+        )
+    r = client.get("/v1/admin/ops/refine-efficiency?days=7", headers=ADMIN_HEADERS)
+    body = r.json()
+    assert body["runs"] == 2
+    assert body["chunked_runs"] == 1, "只有带块指纹的批次进分母"
+    assert body["repeat_ratio"] == 1.0
+    assert body["replay_pending"] == 0

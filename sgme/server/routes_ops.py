@@ -153,6 +153,7 @@ def refine_efficiency(
     out = {
         "days": span,
         "runs": 0,
+        "chunked_runs": 0,
         "distinct_chunks": 0,
         "repeat_ratio": 0.0,
         "cache_hits": 0,
@@ -168,9 +169,10 @@ def refine_efficiency(
     row = mem_conn.execute(
         """
         SELECT COUNT(*),
-               COUNT(DISTINCT file_id || '|' || COALESCE(chunk_sha, '')),
+               COUNT(DISTINCT file_id || '|' || chunk_sha),
                COALESCE(SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END), 0),
-               COALESCE(SUM(reused_tokens), 0)
+               COALESCE(SUM(reused_tokens), 0),
+               COALESCE(SUM(CASE WHEN chunk_sha IS NOT NULL THEN 1 ELSE 0 END), 0)
         FROM refine_runs
         WHERE julianday(started_at) >= julianday('now', ?)
         """,
@@ -180,11 +182,16 @@ def refine_efficiency(
         runs = int(row[0] or 0)
         distinct = int(row[1] or 0)
         hits = int(row[2] or 0)
+        # 重复率只统计「有块指纹」的批次：D-80 上线前的历史行 chunk_sha 全是 NULL，
+        # 若把它们算进来，所有 NULL 会塌成同一个 distinct 键 → 比例虚高（实测刚上线
+        # 就报 16.3，误导运维）。上线后新批次才是有意义的分母。
+        chunked = int(row[4] or 0)
         out["runs"] = runs
+        out["chunked_runs"] = chunked
         out["distinct_chunks"] = distinct
-        out["repeat_ratio"] = round(runs / distinct, 3) if distinct else 0.0
+        out["repeat_ratio"] = round(chunked / distinct, 3) if distinct else 0.0
         out["cache_hits"] = hits
-        out["cache_hit_rate"] = round(hits / runs, 4) if runs else 0.0
+        out["cache_hit_rate"] = round(hits / chunked, 4) if chunked else 0.0
         out["reused_tokens"] = int(row[3] or 0)
     try:
         from sgme.data import chunk_failure_dao

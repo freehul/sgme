@@ -362,6 +362,9 @@ _BROWSE_RUN_COLUMNS: tuple[str, ...] = (
     "run_id", "file_id", "stage", "version", "provider", "status", "error",
     "started_at", "finished_at", "memories_count", "action_counts",
     "prompt_tokens", "completion_tokens", "total_tokens",
+    # D-80（2026-11-06）：块级成本三列随详情外泄——运维看板要能直接看到
+    # 「这批有没有命中缓存 / 是哪个块」，否则效率指标只能看汇总、无法下钻到批次。
+    "chunk_sha", "cache_hit", "reused_tokens",
 )
 
 

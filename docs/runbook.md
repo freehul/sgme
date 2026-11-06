@@ -453,7 +453,7 @@ lsof -i :9910; kill -9 <pid>
 - **症状**：日均提炼 token 异常升高（2.0 上线后实测从 1.x 常态 3.4M 涨到 36.1M），但 `llm-cost` 里每记忆 token 基本没变。
 - **根因（2026-11-06 定位）**：`refine_on_append=true` 每次追加都触发 → 增量 = 上次成功提交以来的全部消息 → 零容忍提交闸（`max_chunk_failure_ratio=0`）任一块失败就整份不提交、游标不动 → 下一轮把同一批块原样重发。实测同块平均重发 3.7 次，最坏文件 14.4h 内 23 轮 / 835 次调用。
 - **一眼定位**：`GET /v1/admin/ops/refine-efficiency?days=7`
-  - `repeat_ratio` ≈ 1.0（≤1.3）= 每块只算一次；**> 1.5 就是还在重复重发**。
+  - `repeat_ratio` ≈ 1.0（≤1.3）= 每块只算一次；**> 1.5 就是还在重复重发**。只统计 `chunk_sha IS NOT NULL` 的批次（上线前历史行没有指纹，算进来会虚高——2.0.5 上线首日曾误报 16.3，2.0.6 已修）。
   - `cache_hit_rate` 10%~40% 属正常（新内容总要先跑一遍）；长期 0 = 缓存被关或 key 不匹配。
   - `replay_pending` 长期不降 = 补跑队列堵住，看 `refine_chunk_failures` 的 `error`。
 - **D-80 三开关**（`sgme.yaml` → `refine` 段，均可独立关闭回旧行为）：
