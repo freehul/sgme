@@ -67,6 +67,12 @@ export interface RefineRun {
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
+  // D-80（2026-11-06）：块级成本三列（详情端点 2.0.6 起返回；旧后端无字段）
+  chunk_sha?: string | null
+  cache_hit?: number
+  reused_tokens?: number
+  /** 后端展示名（stage_map 权威口径；旧后端无该字段） */
+  stage_label?: string
 }
 export interface RefineRuns {
   items: RefineRun[]

@@ -2,7 +2,7 @@
 // 运维健康总览：存储体检（DB/WAL/raw/备份）+ 9.6 场景层下线就绪
 // 数据源 GET /v1/admin/ops/health-overview（Admin Key；后端未就绪时显示空态，不白屏）
 import { computed, onMounted, ref } from 'vue'
-import { getHealthOverview, getRefineStatus, type OpsHealthOverview, type RefineStatus } from '../../api/ops'
+import { getHealthOverview, getRefineEfficiency, getRefineStatus, type OpsHealthOverview, type RefineEfficiency, type RefineStatus } from '../../api/ops'
 import { getRefineRuns, type RefineRun, type RefineRuns } from '../../api/dashboard'
 import { ApiError } from '../../api/client'
 import { fmtTs } from '../../utils/format'
@@ -15,6 +15,8 @@ const error = ref('')
 // ---------- 提炼状态（GET /v1/admin/refine/status + 最近批次 GET /v1/admin/refine_runs） ----------
 const refine = ref<RefineStatus | null>(null)
 const runs = ref<RefineRuns | null>(null)
+// D-80（2026-11-06）：块级成本效率（同块重复率 / 缓存命中率 / 补跑积压）
+const eff = ref<RefineEfficiency | null>(null)
 const refineLoading = ref(false)
 const refineError = ref('')
 
@@ -109,6 +111,44 @@ function runDuration(r: RefineRun): string {
   return (sec / 3600).toFixed(1) + 'h'
 }
 
+// D-80 块级成本卡片：重复率 >1.5 或补跑积压 >0 标黄（见设计稿 §3.12 判读口径）
+const effCards = computed(() => {
+  const e = eff.value
+  if (!e || !e.available) return []
+  const ratio = Number(e.repeat_ratio || 0)
+  const hitRate = Number(e.cache_hit_rate || 0)
+  return [
+    {
+      key: 'repeat_ratio',
+      label: '同块重复率',
+      value: ratio ? ratio.toFixed(2) + '×' : '—',
+      warn: ratio > 1.5,
+    },
+    {
+      key: 'cache_hit_rate',
+      label: '缓存命中率',
+      value: hitRate ? (hitRate * 100).toFixed(1) + '%' : '—',
+    },
+    { key: 'reused_tokens', label: '缓存省下 token', value: formatCount(e.reused_tokens) },
+    {
+      key: 'replay_pending',
+      label: '失败块待补跑',
+      value: formatCount(e.replay_pending),
+      warn: Number(e.replay_pending) > 0,
+    },
+  ]
+})
+
+// 单批次缓存标记：命中时显示复用 token，未命中显示「实跑」
+function runCacheText(r: RefineRun): string {
+  if (r.cache_hit) return '命中 · 省 ' + formatCount(r.reused_tokens || 0)
+  return '实跑'
+}
+
+function runChunkShort(r: RefineRun): string {
+  const sha = r.chunk_sha
+  return sha ? sha.slice(0, 8) : '—'
+}
 // 两个端点独立容错：队列水位是核心（refine/status），最近批次缺失不影响出图
 async function loadRefine() {
   refineLoading.value = true
@@ -123,6 +163,12 @@ async function loadRefine() {
     runs.value = await getRefineRuns({ limit: 5 })
   } catch {
     runs.value = null
+  }
+  // D-80 效率端点独立容错：旧后端没有该端点时页面照常显示其余信息
+  try {
+    eff.value = await getRefineEfficiency(7)
+  } catch {
+    eff.value = null
   }
   refineLoading.value = false
 }
@@ -214,6 +260,27 @@ onMounted(() => {
           </div>
         </div>
 
+        <!-- D-80（2026-11-06）：块级成本效率 —— 重复率 / 缓存命中 / 补跑积压 -->
+        <template v-if="effCards.length">
+          <h4 class="blockers-title">
+            块级成本 <span class="sub">近 7 天 · 同块重复率 / 缓存命中 / 补跑积压</span>
+          </h4>
+          <div class="stat-grid">
+            <div
+              v-for="c in effCards"
+              :key="c.key"
+              class="stat-card"
+              :class="{ warn: (c as any).warn }"
+            >
+              <span class="v">{{ c.value }}</span>
+              <span class="l">{{ c.label }}</span>
+            </div>
+          </div>
+          <p class="desc">
+            重复率 ≈1 表示每块只算一次，&gt;1.5 说明仍在重复重发；命中率 10–40% 属正常（新内容总要跑一遍）。
+          </p>
+        </template>
+
         <div v-if="refine.last_failure" class="fail-box">
           <div class="fail-head">
             <span class="status error">最近一次失败</span>
@@ -233,7 +300,10 @@ onMounted(() => {
         <div class="tbl-wrap">
           <table class="tbl">
             <thead>
-              <tr><th>开始时间</th><th>文件</th><th>阶段</th><th>状态</th><th>耗时</th><th>错误</th></tr>
+              <tr>
+                <th>开始时间</th><th>文件</th><th>阶段</th><th>状态</th>
+                <th>缓存</th><th>块指纹</th><th>耗时</th><th>错误</th>
+              </tr>
             </thead>
             <tbody>
               <tr v-for="r in runs.items" :key="r.run_id">
@@ -241,6 +311,8 @@ onMounted(() => {
                 <td class="mono">{{ r.file_id }}</td>
                 <td>{{ stageLabel(r) }}</td>
                 <td><span class="st" :class="r.status">{{ RUN_STATUS_LABEL[r.status] || r.status }}</span></td>
+                <td class="num">{{ runCacheText(r) }}</td>
+                <td class="mono">{{ runChunkShort(r) }}</td>
                 <td class="num">{{ runDuration(r) }}</td>
                 <td class="run-err">{{ r.error || '—' }}</td>
               </tr>

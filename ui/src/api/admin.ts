@@ -119,7 +119,10 @@ export function getConfig() {
   return api.get<{ config: Record<string, unknown>; writable_sections: string[] }>('/v1/admin/config')
 }
 export function updateConfig(section: string, config: Record<string, unknown>) {
-  return api.put<Record<string, unknown>>(`/v1/admin/config/${section}`, config)
+  // 2026-11-06 实测 OpenAPI：/v1/admin/config/{section} 只有 GET（methods=['get']），
+  // 而写入口是 POST /v1/admin/config（body {section, values}）。此前 PUT 到该路径 →
+  // 405，设置页的开关/保存按钮在生产上一直是哑的（静默失败）。
+  return api.post<Record<string, unknown>>('/v1/admin/config', { section, values: config })
 }
 
 // ---------- 备份与技能 ----------

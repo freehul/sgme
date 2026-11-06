@@ -221,3 +221,36 @@ export function triggerRefineAsync(fileId?: string, limit = 100) {
   if (fileId) body.file_id = fileId
   return api.post<RefineTriggerAsyncResult>('/v1/admin/refine/trigger-async', body)
 }
+
+// ---------- 块级提炼效率（D-80，2026-11-06；Admin Key） ----------
+// GET /v1/admin/ops/refine-efficiency?days=N
+// 判读口径（设计稿 §3.12）：repeat_ratio ≈1 表示每块只算一次；>1.5 = 仍在重复重发。
+// repeat_ratio 只统计 chunk_sha 非空的批次（上线前历史行没有指纹，算进来会虚高）。
+
+export interface RefineEfficiency {
+  /** 窗口天数（后端回显） */
+  days: number
+  /** 窗口内全部提炼批次 */
+  runs: number
+  /** 带块指纹的批次（重复率/命中率的分母） */
+  chunked_runs: number
+  /** 不同 (file_id, chunk_sha) 组合数 */
+  distinct_chunks: number
+  /** 同块重复率 = chunked_runs / distinct_chunks */
+  repeat_ratio: number
+  /** 块级缓存命中的批次数 */
+  cache_hits: number
+  /** 命中率 = cache_hits / chunked_runs */
+  cache_hit_rate: number
+  /** 命中缓存复用的 token 总量（首跑真实消耗） */
+  reused_tokens: number
+  /** 失败块补跑队列当前积压 */
+  replay_pending: number
+  /** 表未就绪时为 false（看板走空态） */
+  available: boolean
+  note?: string
+}
+
+export function getRefineEfficiency(days = 7) {
+  return api.get<RefineEfficiency>(`/v1/admin/ops/refine-efficiency?days=${days}`)
+}

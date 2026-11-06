@@ -464,6 +464,8 @@ lsof -i :9910; kill -9 <pid>
 | `chunk_replay_enabled` | true | 成功块照常提交+推游标，失败块入 `refine_chunk_failures` 逐块补跑 |
 | `append_debounce_s` / `append_min_new_messages` | 300 / 20 | 窗口内同文件只触发一次；小增量交给 batch_scan |
 
+- **界面入口（2.0.7 起）**：健康总览 → 提炼状态下方「块级成本」卡片（重复率 / 命中率 / 缓存省下 token / 补跑积压）；最近批次表新增「缓存 / 块指纹」两列；设置 → 提炼 → 「块级成本治理（D-80）」可直接改三开关与两阈值（保存即热生效）。
+- **设置页保存曾经是哑的（2026-11-06 修复）**：`ui/src/api/admin.ts` 的 `updateConfig` 此前 PUT 到 `/v1/admin/config/{section}`，而该路径只有 GET（实测 OpenAPI methods=['get']）→ 405，所有「保存」开关静默失败。2.0.7 起改为 `POST /v1/admin/config`（`{section, values}`）。
 - **手动干预**：
   - 队列排障：`SELECT file_id, chunk_sha, attempts, last_error FROM refine_chunk_failures ORDER BY last_at DESC LIMIT 20;`
   - 想立刻补跑：等下一轮 `batch_scan`（每 `interval_min` 分钟）或重启容器触发启动扫描。
