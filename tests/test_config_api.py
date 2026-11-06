@@ -180,3 +180,33 @@ def test_config_persist_does_not_pollute_repo_config(app, client):
     assert resp.status_code == 200, resp.text
     after = hashlib.sha256(repo_cfg.read_bytes()).hexdigest()
     assert before == after, "真实 config/sgme.yaml 被测试落盘污染"
+
+
+def test_update_llm_override_via_api(app, client, tmp_path):
+    """llm_override 必须可经接口改（2026-11-06：此前不在白名单 → 改 max_tokens 被静默丢弃）。"""
+    resp = client.post("/v1/admin/config", json={
+        "section": "refine",
+        "values": {"llm_override": {"provider": "agnes", "model": "agnes-2.5-flash", "max_tokens": 4096}},
+    }, headers=ADMIN_HEADERS)
+    assert resp.status_code == 200, resp.text
+    ov = resp.json()["config"]["llm_override"]
+    assert ov == {"provider": "agnes", "model": "agnes-2.5-flash", "max_tokens": 4096}
+    assert app.state.cfg["refine"]["llm_override"]["max_tokens"] == 4096
+    import yaml
+    data = yaml.safe_load((tmp_path / "sgme_test.yaml").read_text(encoding="utf-8"))
+    assert data["refine"]["llm_override"]["max_tokens"] == 4096
+
+
+def test_update_llm_override_rejects_invalid_shape(app, client):
+    """非法形态（缺 model）→ 丢弃并保留旧值，不把运行链写坏。"""
+    client.post("/v1/admin/config", json={
+        "section": "refine",
+        "values": {"llm_override": {"provider": "agnes", "model": "agnes-2.5-flash", "max_tokens": 4096}},
+    }, headers=ADMIN_HEADERS)
+    resp = client.post("/v1/admin/config", json={
+        "section": "refine",
+        "values": {"llm_override": {"provider": "agnes"}},
+    }, headers=ADMIN_HEADERS)
+    assert resp.status_code == 200, resp.text
+    ov = resp.json()["config"]["llm_override"]
+    assert ov["max_tokens"] == 4096, "非法形态必须被丢弃，不能覆盖成半截配置"

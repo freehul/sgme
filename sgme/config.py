@@ -1444,6 +1444,25 @@ def _merge_guardrail_config(user_cfg: dict | None) -> dict:
     return base
 
 
+def _normalize_llm_override(raw: object) -> dict | None:
+    """把用户填的 llm_override 归一化；非法形态返回 None（调用方丢弃该键）。
+
+    2026-11-06 抽成公共函数：此前只有启动加载路径校验它，而更新接口的
+    白名单根本不收这个键 → 接口写 max_tokens 被静默丢弃（实测 16384 改不动）。
+    """
+    if not isinstance(raw, dict):
+        return None
+    provider = raw.get("provider")
+    model = raw.get("model")
+    if not (isinstance(provider, str) and provider.strip() and isinstance(model, str) and model.strip()):
+        return None
+    merged: dict[str, object] = {"provider": provider.strip(), "model": model.strip()}
+    max_tokens = raw.get("max_tokens")
+    if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) and max_tokens > 0:
+        merged["max_tokens"] = max_tokens
+    return merged
+
+
 def _merge_refine_config(user_cfg: dict | None) -> dict:
     """合并 refine 段默认值与用户配置（提炼调度）。
 
@@ -1461,14 +1480,9 @@ def _merge_refine_config(user_cfg: dict | None) -> dict:
             base["batch_scan"]["enabled"] = bs["enabled"]
         if isinstance(bs.get("interval_min"), int) and bs["interval_min"] > 0:
             base["batch_scan"]["interval_min"] = bs["interval_min"]
-    ov = user_cfg.get("llm_override")
-    if (isinstance(ov, dict)
-            and isinstance(ov.get("provider"), str) and ov["provider"].strip()
-            and isinstance(ov.get("model"), str) and ov["model"].strip()):
-        merged = {"provider": ov["provider"].strip(), "model": ov["model"].strip()}
-        if isinstance(ov.get("max_tokens"), int) and ov["max_tokens"] > 0:
-            merged["max_tokens"] = ov["max_tokens"]
-        base["llm_override"] = merged
+    ov = _normalize_llm_override(user_cfg.get("llm_override"))
+    if ov is not None:
+        base["llm_override"] = ov
     # 2026-11-05（收尾 E3/E4 + 口径补漏）：以下键此前**从未参与合并**——sgme.yaml 里
     # 显式写了也会被静默丢弃（与 B121 llm_override 同类缺陷）。一并透传：
     #   max_chunk_failure_ratio（≥0 浮点）、chunk_retry_times（≥0 整数）、
@@ -1820,6 +1834,9 @@ SECTION_KEYS: dict[str, set[str]] = {
     "scene_aggregate": {"enabled", "max_scenes", "warn_thresholds"},
     "refine": {
         "refine_on_append", "batch_scan",
+        # 2026-11-06：llm_override 此前不在白名单 → 接口改提炼模型被静默丢弃
+        # （agnes 把 max_tokens 上限降到 4096 后，生产改不回来、整条链全 400）。
+        "llm_override",
         # E3/E4（2026-11-05）：失败熔断阈值 + 单文件体积闸
         "max_file_attempts", "max_file_bytes",
         # 2026-11-05：块级失败容忍度与重试（此前不在白名单 → 接口改这两个键被静默丢弃，
@@ -1855,6 +1872,15 @@ def apply_section(cfg: dict, section: str, values: dict) -> None:
     if not isinstance(current, dict):
         current = {}
     updates = _strip_env_managed(section, values)
+    # llm_override 是嵌套对象，直接写非法形态会让提炼链在运行时崩——统一归一化，
+    # 非法即丢弃（与启动加载路径同一校验口径，2026-11-06）。
+    if section == "refine" and "llm_override" in updates:
+        normalized = _normalize_llm_override(updates.get("llm_override"))
+        if normalized is None:
+            updates = {k: v for k, v in updates.items() if k != "llm_override"}
+            logger.warning("配置更新忽略 refine.llm_override：形态非法（需 provider+model，max_tokens>0 可选）")
+        else:
+            updates = {**updates, "llm_override": normalized}
     _deep_merge(current, updates)
     cfg[section] = current
 
