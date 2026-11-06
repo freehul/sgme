@@ -7,9 +7,13 @@
     python adapters/workbuddy/install.py --base-url http://<SGME_HOST>:9910
     python adapters/workbuddy/install.py --agent-id <本机注册id>
     python adapters/workbuddy/install.py --no-selfcheck
+    python adapters/workbuddy/install.py --refresh-contract
 
 行为：
 - 复制 SKILL.md / scripts/* / locales/* / README.md → ~/.workbuddy/skills/sgme/
+  （scripts 含 skill_cache.py；漏复制会让客户端 ImportError、CLI 兜底不可用）
+- 部署 tools/ 的对齐脚本与契约配置模板 → ~/.workbuddy/；仓库内模板只有占位符，
+  渲染后才写入本机地址，避免真实 IP / 盘符路径入 git
 - 幂等覆盖部署副本；不触碰其它技能
 - 写部署配置 scripts/client.env（只含地址与密钥环境变量名，**不含密钥值**）
 - 写本机身份文件 ~/.sgme/workbuddy-agent.json（agent_id/http/mcp，**不含密钥**）
@@ -159,7 +163,9 @@ def install(skills_root: Path) -> Path:
         src = SRC_DIR / name
         if src.is_file():
             shutil.copy2(src, dest / name)
-    for name in ("sgme_client.py", "care_watch.py", "selfcheck.py"):
+    # T-406 起 sgme_client.py 依赖同级 skill_cache.py（两级技能缓存）。
+    # 漏复制会让部署副本直接 ImportError、CLI 兜底整条链路不可用；新增依赖必须同步此清单。
+    for name in ("sgme_client.py", "care_watch.py", "selfcheck.py", "skill_cache.py"):
         shutil.copy2(SCRIPT_DIR / name, dest / "scripts" / name)
     for loc in (SRC_DIR / "locales").glob("*.json"):
         shutil.copy2(loc, dest / "locales" / loc.name)
@@ -177,6 +183,39 @@ def install(skills_root: Path) -> Path:
     except Exception as exc:  # 自救卡失败不应阻断安装
         print(f"  ⚠️ 自救卡未落地: {exc}")
     return dest
+
+
+def deploy_tools(http: str, mcp: str, refresh: bool = False) -> list[str]:
+    """把 ``tools/`` 的对齐脚本与契约配置渲染部署到 WorkBuddy 侧。
+
+    仓库内只存占位符模板（无真实地址 / 盘符路径），渲染后才写本机配置；
+    已存在的契约配置默认保留（不覆盖用户自定义），``--refresh-contract``
+    显式刷新时才用项目模板重建（外部副本始终可由项目重建）。
+    """
+    tools_src = SRC_DIR / "tools"
+    if not tools_src.is_dir():
+        return ["tools/ 缺失，跳过部署对齐工具"]
+    notes: list[str] = []
+    tools_dst = home_dir() / ".workbuddy" / "sgme-tools"
+    tools_dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(tools_src / "align_deploy.py", tools_dst / "align_deploy.py")
+    notes.append(f"对齐脚本 → {tools_dst / 'align_deploy.py'}")
+
+    cfg_path = home_dir() / ".workbuddy" / "sgme-deploy.json"
+    if cfg_path.is_file() and not refresh:
+        notes.append(f"契约配置已存在，保留未覆盖 → {cfg_path}（--refresh-contract 可刷新）")
+    else:
+        tpl = (tools_src / "sgme-deploy.json.template").read_text(encoding="utf-8")
+        repo_root = Path(__file__).resolve().parents[2].as_posix()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        rendered = (tpl.replace("{{REPO_ROOT}}", repo_root)
+                       .replace("{{SGME_HTTP_URL}}", http)
+                       .replace("{{SGME_MCP_URL}}", mcp)
+                       .replace("{{DEPLOY_DATE}}", today))
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(rendered, encoding="utf-8")
+        notes.append(f"契约配置（模板渲染）→ {cfg_path}")
+    return notes
 
 
 def append_access_log(dest: Path, note: str) -> None:
@@ -198,12 +237,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-selfcheck", action="store_true", help="跳过自检")
     ap.add_argument("--no-seed-identity", action="store_true",
                     help="不写本机身份文件 ~/.sgme/workbuddy-agent.json")
+    ap.add_argument("--refresh-contract", action="store_true",
+                    help="用项目模板刷新已有的 ~/.workbuddy/sgme-deploy.json")
     args = ap.parse_args(argv)
 
     root = Path(args.skills_root) if args.skills_root else default_skills_root()
     dest = install(root)
     http, mcp, src = resolve_addresses(dest, args.base_url, args.mcp_url)
     cfg = write_deploy_config(dest, http, mcp)
+    for note_line in deploy_tools(http, mcp, args.refresh_contract):
+        print(f"  [OK] {note_line}")
 
     print(f"部署目录: {dest}")
     print(f"HTTP: {http}  MCP: {mcp}  （来源: {src}）")

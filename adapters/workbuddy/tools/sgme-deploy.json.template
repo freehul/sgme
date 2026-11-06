@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "description": "WorkBuddy 侧 SGME 适配器部署契约（本机运行时配置，不入 git；由 adapters/workbuddy/install.py 从本模板渲染）。只对齐接口与能力：绝不写入项目仓库文件、绝不写生产数据。",
+  "created_at": "{{DEPLOY_DATE}}",
+  "paths": {
+    "repo_root": "{{REPO_ROOT}}",
+    "adapter_src": "adapters/workbuddy",
+    "deploy_dir": "~/.workbuddy/skills/sgme",
+    "mcp_config": "~/.workbuddy/mcp.json",
+    "identity": "~/.sgme/workbuddy-agent.json",
+    "contract_config": "~/.workbuddy/sgme-deploy.json",
+    "backup_root": "~/.workbuddy/backups"
+  },
+  "service": {
+    "http": "{{SGME_HTTP_URL}}",
+    "mcp": "{{SGME_MCP_URL}}",
+    "capabilities_endpoint": "/v1/capabilities",
+    "health_endpoint": "/v1/health"
+  },
+  "mcp_server_expect": {
+    "type": "streamableHttp",
+    "header_required": "X-API-Key",
+    "timeout_min_seconds": 30,
+    "note": "密钥只从本机 mcp.json 继承，本文件与任何脚本都不落盘密钥"
+  },
+  "capability_contract": {
+    "server_tools": 64,
+    "session_tools": 60,
+    "admin_exempt": [
+      "skill_candidate_pending",
+      "skill_candidate_list",
+      "skill_candidate_adopt",
+      "skill_candidate_review"
+    ],
+    "matrix_baseline": "sgme_client.py::BASELINE_TOOLS",
+    "note": "服务端 64 = 会话面 60 + 管理面 4（按 scripts/adapter_parity_map.yaml 豁免，不进 SKILL.md 能力矩阵）"
+  },
+  "required_scripts": [
+    "sgme_client.py",
+    "care_watch.py",
+    "selfcheck.py",
+    "skill_cache.py"
+  ],
+  "local_patched_scripts": [],
+  "local_patch_note": "项目真源已自带动态能力标题与完整 60 项能力矩阵，正常部署无需本地补丁。若仍需临时补丁，把文件名加入本数组并在 tools/align_deploy.py 中登记期望内容。",
+  "align": {
+    "script": "~/.workbuddy/sgme-tools/align_deploy.py",
+    "check_command": "python ~/.workbuddy/sgme-tools/align_deploy.py --check",
+    "apply_command": "python ~/.workbuddy/sgme-tools/align_deploy.py --apply",
+    "hint": "仓库 install.py 重跑后建议再跑一次 --apply，校验部署副本与服务端能力面一致"
+  }
+}

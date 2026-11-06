@@ -8,7 +8,7 @@ description: WorkBuddy 的 SGME（拾光记忆）官方适配器。当对话涉�
 你（WorkBuddy）已接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 > 本技能是 SGME 官方适配器（源码 `adapters/workbuddy/`）。两种分发形态：① WorkBuddy 插件市场安装（本目录即插件包，由市场物化到插件缓存，更新走 `/plugin marketplace update`）；② 手动部署副本（`install.py` 同步，可随时重建）。
-> **能力面 = CLI 命令面**：下方矩阵 54 个基准能力一个不少。
+> **能力面 = CLI 命令面**：下方矩阵 60 个基准能力一个不少（服务端工具面 64 = 会话面 60 + 管理面豁免 4；管理面 `skill_candidate_*` 由 HTTP `/v1/admin` 承担，按 `scripts/adapter_parity_map.yaml` 豁免，不列入本矩阵）。
 > **优先用本会话已挂载的 MCP 工具**（同名能力）；无 MCP 或要脚本化时再走 CLI。
 > 本机 agent_id **默认 `workbuddy`**（服务端已注册）——可被本机覆盖：环境变量 `SGME_WORKBUDDY_AGENT_ID` → 身份文件 `~/.sgme/workbuddy-agent.json` 的 `agent_id` → 默认。**多设备接入时必须覆盖为服务端为本机签发的注册 id**（占位符示例 `<注册id>-<设备名>`）；用 `env-info` 查看生效值与来源。不要借用其它 agent 的 key。
 
@@ -134,6 +134,12 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 52 | skill_file_get | HTTP | `skill-file-get <name> <relpath>`（文本回原文；二进制只回摘要） |
 | 53 | skill_file_put | HTTP | `skill-file-put <name> <relpath> --file <path>`（白名单目录；需管理员 Key） |
 | 54 | skill_lint | HTTP | `skill-lint <name> --file <path>`（只校验不入库；需管理员 Key） |
+| 55 | near_dup_list | MCP | `near-dup-list`（近似重复隔离区列表，灰区待人工复核） |
+| 56 | near_dup_restore | MCP | `near-dup-restore`（放行一条近似重复，补录进记忆池 + 向量回填） |
+| 57 | near_dup_discard | MCP | `near-dup-discard`（丢弃一条近似重复，不写进记忆池） |
+| 58 | card_list | MCP | `card-list`（core 记忆卡列表：六张卡 + 槽位定义 + 字数上限） |
+| 59 | card_update | MCP | `card-update`（写 core 卡一个槽位，旧值进历史；需用户授权） |
+| 60 | card_history | MCP | `card-history`（core 记忆卡修改历史） |
 
 扩展命令：`fetch <name> <dest_dir>`（跨机取技能完整包：两级缓存（目录版本短路 + package_sha256 比对，命中零下载）→ 未命中才下载 → MANIFEST 校验 → 安全解包；失败不留残件） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
 
