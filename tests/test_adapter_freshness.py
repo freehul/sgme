@@ -27,6 +27,7 @@ D. 钩子挂点测试（挂点防丢）——`.githooks/pre-push` 必须真的�
 """
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -271,11 +272,13 @@ BASELINE_TOOLS = ["append", "search", "health", "credential_list"]
 CONTRACT_TOOLS = ["search", "health", "credential_list"]  # 去掉架构豁免 append
 
 
-def _make_deploy(repo: Path, tools: list[str], *, repo_tools=None, dup: bool = False) -> Path:
+def _make_deploy(repo: Path, tools: list[str], *, repo_tools=None, dup: bool = False,
+                  deps: dict | None = None) -> Path:
     """造一个假仓库基线（MCP 工具面）+ 假部署副本。
 
     repo_tools=None 时基线 = BASELINE_TOOLS；dup=True 让部署产物同时存在于 src 侧，
-    便于构造「部署与仓库产物哈希一致」的场景。
+    便于构造「部署与仓库产物哈希一致」的场景；deps 写进部署副本的 package.json，
+    用于防线 4（运行时依赖可解析）用例。
     """
     server = repo / "sgme"
     server.mkdir(parents=True, exist_ok=True)
@@ -287,6 +290,10 @@ def _make_deploy(repo: Path, tools: list[str], *, repo_tools=None, dup: bool = F
     (deploy / "lib").mkdir(parents=True, exist_ok=True)
     text = "\n".join('const d%d = { name: "%s" };' % (i, t) for i, t in enumerate(tools)) + "\n"
     (deploy / "lib" / "index.js").write_text(text, encoding="utf-8")
+    (deploy / "package.json").write_text(
+        json.dumps({"name": "dsh-sgme", "version": "9.9.9", "dependencies": deps or {}}),
+        encoding="utf-8",
+    )
     return deploy
 
 
@@ -348,6 +355,31 @@ def test_deploy_alias_map_read_from_parity_map(tmp_path):
     assert cf.dsh_alias_map(tmp_path) == {"search": "memory_search"}
     deploy = _make_deploy(tmp_path, ["memory_search", "health", "credential_list"])
     assert not any("search" in g for g in cf.check_deploy_contract(tmp_path, deploy))
+
+
+def test_deploy_missing_runtime_dependency_detected(tmp_path):
+    """防线 4：部署副本声明了依赖但解析不到（2026-11-06 schemastery 事故）→ 缺口。"""
+    deploy = _make_deploy(tmp_path, CONTRACT_TOOLS, deps={"schemastery": "^3.18.0"})
+    gaps = cf.check_deploy_contract(tmp_path, deploy)
+    assert any("运行时依赖" in g and "schemastery" in g for g in gaps), gaps
+
+
+def test_deploy_resolved_runtime_dependency_is_clean(tmp_path):
+    """依赖链接在插件目录同级的 node_modules 时（pnpm 隔离布局）→ 不报依赖缺口。"""
+    deploy = _make_deploy(tmp_path, CONTRACT_TOOLS, deps={"schemastery": "^3.18.0"})
+    dep = tmp_path / "deployed" / "schemastery"
+    dep.mkdir()
+    (dep / "package.json").write_text('{"name": "schemastery"}', encoding="utf-8")
+    gaps = cf.check_deploy_contract(tmp_path, deploy)
+    assert not any("运行时依赖" in g for g in gaps), gaps
+
+
+def test_deploy_missing_package_json_detected(tmp_path):
+    """部署副本缺 package.json（手工搬产物）→ 缺口，不静默跳过。"""
+    deploy = _make_deploy(tmp_path, CONTRACT_TOOLS)
+    (deploy / "package.json").unlink()
+    gaps = cf.check_deploy_contract(tmp_path, deploy)
+    assert any("缺 package.json" in g for g in gaps), gaps
 
 
 def test_deploy_strict_flag_escalates(fake_repo, tmp_path, monkeypatch):

@@ -11,7 +11,7 @@
 - P1-10（T-227）：``adapters/hermes/plugin.yaml`` 升到 1.7.0，
   ``skills/adapter-hermes/`` 分发副本停在 1.5.0 —— A2 通道安装拿到半新半旧包。
 
-本脚本把「派生产物是否新鲜」变成机器可见，两条独立防线：
+本脚本把「派生产物是否新鲜」变成机器可见，四条独立防线：
 
 1. 分发副本新鲜度（八个 ``skills/adapter-<host>/``）
    复用 ``scripts/publish_adapter_skills.py`` 的生成逻辑，把真源重新打包到临时目录，
@@ -59,6 +59,15 @@
    ② dsh 产物漂移 → ``pnpm -C adapters/dsh/sgme-bridge run build`` 后提交 lib；
    ③ 部署缺口 → bump 版本 + 发布（npm）/ 刷宿主 profile 后重启宿主。
    注意顺序：先 build 再 publish（publish 从真源打包，产物新了副本才会跟着新）。
+
+4. 部署副本运行时依赖可解析（防线 4，2026-11-06 加）
+   2026-11-06 实锤：宿主升级脚本手工解包 tgz 到 profile/.pnpm 并建 junction，
+   只搬插件本体、不装插件的运行时依赖（schemastery / dev）→ DSH 启动 load 插件时
+   ``ERR_MODULE_NOT_FOUND: schemastery``，整条 sgme 插件被跳过、SGME 工具全部不可用，
+   而防线 3 全绿（产物哈希与工具面都对，只是跑不起来）。防线 4 把「部署副本声明的
+   运行时依赖能否从插件目录解析」变成机器可见；缺口默认只警告，``--strict-deploy``
+   让它失败。修复方式：用官方 ``dsh plugin --profile <name> add file:<tgz>`` 重装，
+   不要手工解包 tgz——pnpm 会同时对齐 lockfile 与依赖链接。
 """
 from __future__ import annotations
 
@@ -89,6 +98,7 @@ REGION_PREFIX = "//#region "
 DEPLOY_DIR_ENV = "SGME_DSH_DEPLOY_DIR"
 DEFAULT_DEPLOY_REL = Path(".dsh") / "profiles" / "desktop" / "node_modules" / "dsh-sgme"
 DEPLOY_ENTRY_REL = Path("lib") / "index.js"
+DEPLOY_PACKAGE_REL = Path("package.json")
 ADAPTER_NAME = "dsh"
 
 # parity map 缺失 / 不可解析时的兜底豁免：保持历史口径，避免极简夹具或未同步仓库
@@ -366,13 +376,49 @@ def resolve_deploy_dir(explicit=None) -> Path | None:
     return None
 
 
+def deploy_dependency_gaps(deploy_dir: Path) -> list[str]:
+    """防线 4：部署副本声明的运行时依赖必须能从插件目录解析。
+
+    插件跑不起来的部署同样是缺口。pnpm 隔离布局下依赖链接在插件目录同级的
+    ``node_modules``（``<store>/node_modules/<dep>``）；npm 嵌套布局在插件目录
+    自己的 ``node_modules``。两处都解析不到即视为缺口。
+    """
+    pkg_path = Path(deploy_dir) / DEPLOY_PACKAGE_REL
+    if not pkg_path.is_file():
+        return [
+            "[deploy] 部署目录缺 package.json（%s）→ 用官方 dsh plugin 重装" % deploy_dir
+        ]
+    try:
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return ["[deploy] 部署 package.json 不可读（%s）：%s" % (pkg_path, exc)]
+    deps = pkg.get("dependencies")
+    if not isinstance(deps, dict) or not deps:
+        return []
+    real = Path(deploy_dir).resolve()
+    roots = [real.parent, real / "node_modules"]
+    missing = [
+        name
+        for name in sorted(deps)
+        if not any((root / name / "package.json").is_file() for root in roots)
+    ]
+    if not missing:
+        return []
+    return [
+        "[deploy] 部署副本缺运行时依赖 %s（package.json 声明、%s / %s 下均无解析结果）"
+        " → 用官方 dsh plugin add/install 重装，不要手工解包 tgz"
+        % ("、".join(missing), roots[0], roots[1])
+    ]
+
+
 def check_deploy_contract(repo_root: Path = ROOT, deploy_dir=None) -> list[str]:
     """防线 3：部署副本是否满足能力面契约。返回缺口清单（空 = 无缺口）。
 
-    两类判据：
+    三类判据：
     - 契约级：MCP 基准工具（去 dsh 永久豁免，豁免读 parity map）必须全部在部署
       产物里——缺 = 部署落后；
-    - 哈希级：部署产物与仓库产物逐文件一致——不一致 = 部署副本内容漂移。
+    - 哈希级：部署产物与仓库产物逐文件一致——不一致 = 部署副本内容漂移；
+    - 依赖级：部署副本声明的运行时依赖必须能从插件目录解析——跑不起来同样是缺口。
     """
     if deploy_dir is None:
         return []
@@ -411,11 +457,12 @@ def check_deploy_contract(repo_root: Path = ROOT, deploy_dir=None) -> list[str]:
                 f"[deploy] 部署产物与仓库产物内容不一致（{deploy_dir.name} 与 "
                 f"{BRIDGE_REL.as_posix()}/lib/index.js 哈希不同）→ 重新安装宿主插件"
             )
+    gaps.extend(deploy_dependency_gaps(deploy_dir))
     return gaps
 
 
 def check(repo_root: Path = ROOT, deploy_dir=None) -> dict:
-    """执行三道防线，返回 {"ok": bool, "findings": [...], "gaps": [...], "deploy": str|None}。
+    """执行四道防线，返回 {"ok": bool, "findings": [...], "gaps": [...], "deploy": str|None}。
 
     - findings：仓库内派生产物漂移（分发副本 / dsh lib）——必须修，ok=False；
     - gaps：部署态缺口（部署落后于仓库）——正常开发时序里允许存在，默认只警告；
