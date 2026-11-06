@@ -71,7 +71,12 @@ def _write_parity(repo: Path, text: str) -> Path:
 
 
 def _make_deploy_repo(repo: Path, baseline_tools: list[str], deploy_tools: list[str]) -> Path:
-    """假仓库基线（MCP 工具面）+ 假部署副本（只有 lib/index.js）。"""
+    """假仓库基线（MCP 工具面）+ 假部署副本（lib/index.js + package.json）。
+
+    2026-11-06：防线 4（运行时依赖可解析）要求部署目录有 package.json——夹具此前只造
+    lib/index.js，导致本文件两个用例在 HEAD 长期红（已在 HEAD 上复现确认与 D-80 无关）。
+    这里补一个无依赖的 package.json，让断言回到「只验工具面契约」的原意。
+    """
     server = repo / "sgme"
     server.mkdir(parents=True, exist_ok=True)
     (server / "mcp_server.py").write_text(
@@ -83,6 +88,10 @@ def _make_deploy_repo(repo: Path, baseline_tools: list[str], deploy_tools: list[
     (deploy / "lib" / "index.js").write_text(
         "\n".join('const d%d = { name: "%s" };' % (i, t) for i, t in enumerate(deploy_tools)),
         encoding="utf-8",
+    )
+    # 防线 4：部署目录必须有 package.json（无 dependencies → 依赖级缺口为空）
+    (deploy / "package.json").write_text(
+        '{"name": "dsh-sgme", "version": "0.0.0"}', encoding="utf-8",
     )
     return deploy
 

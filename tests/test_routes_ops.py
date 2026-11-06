@@ -153,3 +153,45 @@ def test_health_overview_requires_admin_key(client):
     """运维总览是 admin 档端点：agent key 不够。"""
     r = client.get("/v1/admin/ops/health-overview", headers={"X-API-Key": "test-agent-key"})
     assert r.status_code == 403
+
+
+# ---------- GET /v1/admin/ops/refine-efficiency（D-80 块级成本效率） ----------
+
+def test_refine_efficiency_empty(client):
+    """新库/无数据 → 200 + 零值（看板要能显示「暂无数据」）。"""
+    r = client.get("/v1/admin/ops/refine-efficiency?days=7", headers=ADMIN_HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["days"] == 7
+    assert body["runs"] == 0
+    assert body["repeat_ratio"] == 0
+    assert body["cache_hit_rate"] == 0
+    assert body["replay_pending"] == 0
+
+
+def test_refine_efficiency_computes_ratios(client, app):
+    """3 条批次 / 2 个不同块 = 重复率 1.5；1 条命中 → 命中率 1/3。"""
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    conn = app.state.mem_conn
+    for sha, hit in (("sha1", 0), ("sha1", 1), ("sha2", 0)):
+        rid = RefineRunRecorder.start(
+            conn, file_id="f1", stage="l1_extraction", version="v019",
+            variant=None, provider="agnes", bucket_key="f1",
+        )
+        RefineRunRecorder.finish(
+            conn, rid, memories_count=0, action_counts={}, status="ok",
+            chunk_sha=sha, cache_hit=hit, reused_tokens=100 if hit else 0,
+        )
+    r = client.get("/v1/admin/ops/refine-efficiency?days=7", headers=ADMIN_HEADERS)
+    body = r.json()
+    assert body["runs"] == 3
+    assert body["distinct_chunks"] == 2
+    assert body["repeat_ratio"] == 1.5
+    assert body["cache_hits"] == 1
+    assert abs(body["cache_hit_rate"] - 0.3333) < 0.001
+    assert body["reused_tokens"] == 100
+
+
+def test_refine_efficiency_requires_admin_key(client):
+    assert client.get("/v1/admin/ops/refine-efficiency").status_code in (401, 403)

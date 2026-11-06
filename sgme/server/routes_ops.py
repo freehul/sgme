@@ -130,6 +130,70 @@ def llm_cost(
 
     return {"items": items, "totals": totals, "days": span, "budget": budget}
 
+
+@router.get("/v1/admin/ops/refine-efficiency")
+def refine_efficiency(
+    request: Request,
+    days: str | None = None,
+    _: str = Depends(require_admin_key),
+):
+    """块级提炼成本效率（D-80，2026-11-06）：缓存命中 / 同块重复率 / 补跑积压。
+
+    数据源：refine_runs（chunk_sha / cache_hit / reused_tokens）+ refine_chunk_failures。
+
+    判读口径：
+    - repeat_ratio = 总批次 / 不同 (file_id, chunk_sha) 组合数。≈1 表示每块只算一次；
+      >1.5 说明仍在重复重发（缓存没命中或被关掉），是成本异常的第一信号。
+    - cache_hit_rate = 命中批次 / 总批次。稳态 10%~40% 属正常（新内容总要跑一遍）。
+    - replay_pending 长期不降 = 补跑队列堵住，看 last_error。
+    """
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    span = _parse_days(days)
+    since = f"-{span} days"
+    out = {
+        "days": span,
+        "runs": 0,
+        "distinct_chunks": 0,
+        "repeat_ratio": 0.0,
+        "cache_hits": 0,
+        "cache_hit_rate": 0.0,
+        "reused_tokens": 0,
+        "replay_pending": 0,
+        "available": True,
+    }
+    if not _table_exists(mem_conn, "refine_runs"):
+        out["available"] = False
+        out["note"] = "refine_runs 尚未创建"
+        return out
+    row = mem_conn.execute(
+        """
+        SELECT COUNT(*),
+               COUNT(DISTINCT file_id || '|' || COALESCE(chunk_sha, '')),
+               COALESCE(SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(reused_tokens), 0)
+        FROM refine_runs
+        WHERE julianday(started_at) >= julianday('now', ?)
+        """,
+        (since,),
+    ).fetchone()
+    if row:
+        runs = int(row[0] or 0)
+        distinct = int(row[1] or 0)
+        hits = int(row[2] or 0)
+        out["runs"] = runs
+        out["distinct_chunks"] = distinct
+        out["repeat_ratio"] = round(runs / distinct, 3) if distinct else 0.0
+        out["cache_hits"] = hits
+        out["cache_hit_rate"] = round(hits / runs, 4) if runs else 0.0
+        out["reused_tokens"] = int(row[3] or 0)
+    try:
+        from sgme.data import chunk_failure_dao
+
+        out["replay_pending"] = chunk_failure_dao.count(mem_conn)
+    except Exception:  # noqa: BLE001——队列未建表时按 0 处理
+        pass
+    return out
+
 @router.get("/v1/admin/ops/health-overview")
 def health_overview(
     request: Request,

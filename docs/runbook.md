@@ -301,7 +301,7 @@ print('raw_files by status:', s.execute(\"SELECT status, COUNT(*) FROM raw_files
 | POST | `/v1/admin/near-dup/{qid}/discard` / `restore` | 丢弃（可留 `reason`）/ 放行补录（`supersede` 默认 true） |
 | GET | `/v1/admin/cards` / `schema` / `history` / `{card_id}` / `{card_id}/history` | core 记忆卡读取 |
 | POST | `/v1/admin/cards/{card_id}/slots/{slot_key}` | 写槽位（覆盖式，旧值进历史；`value` 可 null 清除） |
-| GET | `/v1/admin/ops/health-overview` / `ttl-disposition` / `llm-cost` | 运维总览 / TTL 五档 / LLM 成本 |
+| GET | `/v1/admin/ops/health-overview` / `ttl-disposition` / `llm-cost` / `refine-efficiency` | 运维总览 / TTL 五档 / LLM 成本 / **块级提炼效率（D-80：重复率·缓存命中率·补跑积压）** |
 | POST | `/v1/admin/backup/create` / `restore`；GET `/backup/list` | 备份（见 §7.3） |
 | GET/POST | `/v1/admin/agents` / `register` / `{id}`(DELETE) | Agent Key 签发/吊销 |
 | GET/POST | `/v1/admin/security/status` / `events` | 安全审计（见 §9） |
@@ -444,6 +444,32 @@ lsof -i :9910; kill -9 <pid>
 - **心跳降噪**：`/v1/health` 与心跳的 LLM 探测改为**连续 `health_fail_threshold`（默认 2）次失败**才判不可用，单次网络抖动不再产 `anomaly_warn`。
 - **手动恢复**：不想等冷却 → 重启容器（清空进程内熔断状态）；降级链与守卫配置见 `llm.yaml` / `providers.yaml`。
 - **2026-11-06 起生产链去 deepseek（用户定）**：`refinement` 链 = **agnes-2.5-flash → rule**，`refine.llm_override` 固定 agnes；`providers.yaml` 的 deepseek 段已注释，**agent_model 声明 deepseek 的文件不再劫持提炼链**；siliconflow 实测 402（余额不足）也从链上移出。`refine_runs.provider` 只应有 agnes。
+
+---
+
+
+### 7.12 块级提炼成本异常（重复重发 / 缓存未命中，D-80）
+
+- **症状**：日均提炼 token 异常升高（2.0 上线后实测从 1.x 常态 3.4M 涨到 36.1M），但 `llm-cost` 里每记忆 token 基本没变。
+- **根因（2026-11-06 定位）**：`refine_on_append=true` 每次追加都触发 → 增量 = 上次成功提交以来的全部消息 → 零容忍提交闸（`max_chunk_failure_ratio=0`）任一块失败就整份不提交、游标不动 → 下一轮把同一批块原样重发。实测同块平均重发 3.7 次，最坏文件 14.4h 内 23 轮 / 835 次调用。
+- **一眼定位**：`GET /v1/admin/ops/refine-efficiency?days=7`
+  - `repeat_ratio` ≈ 1.0（≤1.3）= 每块只算一次；**> 1.5 就是还在重复重发**。
+  - `cache_hit_rate` 10%~40% 属正常（新内容总要先跑一遍）；长期 0 = 缓存被关或 key 不匹配。
+  - `replay_pending` 长期不降 = 补跑队列堵住，看 `refine_chunk_failures` 的 `error`。
+- **D-80 三开关**（`sgme.yaml` → `refine` 段，均可独立关闭回旧行为）：
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `chunk_cache_enabled` | true | 同 (prompt 全文 + 模型链指纹) 的块直接复用，重跑零 token |
+| `chunk_replay_enabled` | true | 成功块照常提交+推游标，失败块入 `refine_chunk_failures` 逐块补跑 |
+| `append_debounce_s` / `append_min_new_messages` | 300 / 20 | 窗口内同文件只触发一次；小增量交给 batch_scan |
+
+- **手动干预**：
+  - 队列排障：`SELECT file_id, chunk_sha, attempts, last_error FROM refine_chunk_failures ORDER BY last_at DESC LIMIT 20;`
+  - 想立刻补跑：等下一轮 `batch_scan`（每 `interval_min` 分钟）或重启容器触发启动扫描。
+  - 想回旧行为：`chunk_replay_enabled=false` + `max_chunk_failure_ratio=0.0`（接口改键已进白名单，不再需要手改文件）。
+- **⚠️ 缓存是加速器不是档案**：Dream 按 `chunk_cache_ttl_days`（30 天）+ `chunk_cache_max_rows`（5 万行）淘汰；换模型/换提示词会自然失效（key 含模型指纹与 prompt 全文）。
+- **2026-11-06 前的历史坑（仍值得记住）**：`max_chunk_failure_ratio` / `chunk_retry_times` / `chunk_retry_backoff_s` 当时不在 `POST /v1/admin/config` 白名单，改接口会被**静默丢弃**，只能手改 `/data/config/sgme.yaml` 再重启。D-80 已把它们连同 8 个新键一起补进 `SECTION_KEYS`。
 
 ---
 

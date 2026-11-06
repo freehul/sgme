@@ -62,8 +62,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 S = ROOT / "sgme"
 
-# 决策全集条数（D-1～D-79，其中 D-38～D-42 五个编号保留未用；D-79 core 记忆卡待施工）
-TOTAL_DECISIONS = 74
+# 决策全集条数（D-1～D-80，其中 D-38～D-42 五个编号保留未用；D-79 core 记忆卡待施工）
+TOTAL_DECISIONS = 75
 
 # 常用文件（断言按需取用；文件不存在 → 该断言判失败，并给出预期路径）
 FILES = {
@@ -100,6 +100,11 @@ FILES = {
     "cache": S / "operations" / "skill_cache.py",
     "refine": S / "engine" / "refine.py",
     "pipeline": S / "engine" / "pipeline.py",
+    # D-80（2026-11-06）：块级成本治理（缓存 / 失败块补跑）
+    "chunk_cache_dao": S / "data" / "chunk_cache_dao.py",
+    "chunk_failure_dao": S / "data" / "chunk_failure_dao.py",
+    "chunk_replay": S / "engine" / "chunk_replay.py",
+    "batch_scan": S / "engine" / "batch_scan.py",
     "prompts_manager": S / "prompts" / "manager.py",
     "raw_store": S / "raw" / "store.py",
     "backup_manager": S / "backup" / "manager.py",
@@ -723,6 +728,28 @@ def _(self):
         ("surprise 列", *has("db", '"surprise"')),
         ("分位映射", *has("surprise", "_percentile_of")),
         ("落库钩子", *has("surprise", "compute_for_store")),
+    ]
+
+
+@check("D-80", "块级提炼成本治理（缓存 + 失败块补跑 + 触发去抖）", "done")
+def _(self):
+    # 2026-11-06 用户定：2.0 上线后日均提炼 token 3.4M → 36.1M，根因是「未提交增量
+    # 被反复重付」（零容忍提交闸 + 每次 append 触发 + 无块级缓存，实测平均重发 3.7 次）。
+    return [
+        ("缓存表", *has("db", "refine_chunk_cache")),
+        ("失败块队列表", *has("db", "refine_chunk_failures")),
+        ("refine_runs 块级观测列", *has("db", "reused_tokens")),
+        ("缓存键绑定 prompt+模型", *has("chunk_cache_dao", "def cache_key")),
+        ("缓存写入点（分块提炼）", *has("l2_extraction", "chunk_cache_dao.put")),
+        ("失败块明细上报", *has("l2_extraction", "chunk_failure_details")),
+        ("提交闸：成功块提交+失败块入队", *has("pipeline", "def commit_with_chunk_queue")),
+        ("append 去抖", *has("pipeline", "append_debounce_s")),
+        ("逐块补跑", *has("chunk_replay", "def replay_pending")),
+        ("批扫先补跑", *has("batch_scan", "chunk_replay.replay_pending")),
+        ("Dream 淘汰缓存", *has("dream", "chunk_cache_dao.purge")),
+        ("运维端点", *has("routes_ops", "refine-efficiency")),
+        ("配置默认值", *has("config", "chunk_cache_enabled")),
+        ("配置白名单（接口可改）", *has("config", '"chunk_replay_enabled", "chunk_replay_max_failures"')),
     ]
 
 

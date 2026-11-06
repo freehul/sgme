@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -814,6 +815,30 @@ def chunk_conversation(
     return chunks
 
 
+def chunk_sha(chunk: str) -> str:
+    """块内容指纹（sha256[:16]）：同一块在重跑/跨文件复现时可辨识（D-80，2026-11-06）。"""
+    return hashlib.sha256((chunk or "").encode("utf-8")).hexdigest()[:16]
+
+
+def llm_fingerprint(llm_cfg: dict) -> str:
+    """模型链指纹：链头 provider/model + max_tokens 归一化哈希（D-80，2026-11-06）。
+
+    D-80 决策：块级缓存必须绑定模型——换模型后若仍读旧结果，故障会被缓存掩盖。
+    """
+    chain = (((llm_cfg or {}).get("chains") or {}).get("refinement") or [])
+    head = (chain[0] if chain else {}) or {}
+    raw = json.dumps(
+        {
+            "provider": head.get("provider"),
+            "model": head.get("model"),
+            "max_tokens": (llm_cfg or {}).get("max_tokens"),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _extract_chunk_with_retry(
     chunk: str,
     dimensions: list[dict],
@@ -826,6 +851,8 @@ def _extract_chunk_with_retry(
     retry_times: int = 2,
     backoff_s: float = 5.0,
     label: str = "L1 块",
+    cache_enabled: bool = False,
+    chunk_index: int = 0,
 ):
     """单块提炼 + 退避重试（2026-11-03）。
 
@@ -843,6 +870,7 @@ def _extract_chunk_with_retry(
                 chunk, dimensions, llm_cfg, client=client,
                 bucket_ctx=bucket_ctx, mem_conn=mem_conn,
                 sunk_refs_text=sunk_refs_text,
+                cache_enabled=cache_enabled, chunk_index=chunk_index,
             )
         except RefineError as e:
             last_err = e
@@ -866,6 +894,7 @@ def extract_memories(
     sunk_refs_text: str = "",
     chunk_retry_times: int = 2,
     chunk_retry_backoff_s: float = 5.0,
+    cache_enabled: bool = False,
 ) -> tuple[list[dict], str, dict]:
     """完整 L1 提取：render → call_with_fallback → parse。
 
@@ -903,6 +932,7 @@ def extract_memories(
             sunk_refs_text=sunk_refs_text,
             retry_times=retry_times, backoff_s=chunk_retry_backoff_s,
             label="L1 单块",
+            cache_enabled=cache_enabled, chunk_index=0,
         )
 
     # 多块：逐块提炼 + 按 content 去重合并
@@ -911,6 +941,9 @@ def extract_memories(
     seen_contents: set[str] = set()
     chunk_metas: list[dict] = []
     failed_chunks = 0
+    # D-80（2026-11-06）：失败块明细（块序 + 指纹 + 原文 + 错误）——供上层入补跑队列，
+    # 不再靠「整份文件不提交、下轮全量重发」兜底。
+    failed_details: list[dict] = []
     for idx, chunk in enumerate(chunks):
         try:
             memories, _, meta = _extract_chunk_with_retry(
@@ -919,9 +952,16 @@ def extract_memories(
                 sunk_refs_text=sunk_refs_text,
                 retry_times=retry_times, backoff_s=chunk_retry_backoff_s,
                 label=f"L1 块 {idx + 1}/{len(chunks)}",
+                cache_enabled=cache_enabled, chunk_index=idx,
             )
             chunk_metas.append(meta)
         except RefineError as e:
+            failed_details.append({
+                "index": idx,
+                "chunk_sha": chunk_sha(chunk),
+                "text": chunk,
+                "error": str(e)[:500],
+            })
             # 2026-11-03 修复（全量提炼实测）：失败块必须计数并上报，否则整份
             # 文件照常 commit 并标 refined → 静默缺内容（实测 35% 块丢失仍标 refined）
             failed_chunks += 1
@@ -950,6 +990,7 @@ def extract_memories(
     # 内容不全，不允许标 refined（否则静默缺内容）。
     meta["chunk_failures"] = failed_chunks
     meta["chunk_total"] = len(chunks)
+    meta["chunk_failure_details"] = failed_details
     # E5 截断计量（2026-11-05）：逐块合计（单块路径由 _extract_memories_chunk 自带
     # 该键，此处只处理多块；仅计量，不影响提交/重试）。
     truncated_total = sum(int(m.get("l1_truncated_chunks") or 0) for m in chunk_metas)
@@ -1024,6 +1065,8 @@ def _extract_memories_chunk(
     bucket_ctx: BucketCtx | None = None,
     mem_conn: sqlite3.Connection | None = None,
     sunk_refs_text: str = "",
+    cache_enabled: bool = False,
+    chunk_index: int = 0,
 ) -> tuple[list[dict], str, dict]:
     """单块 L1 提取（PromptStore 版本 + refine_run 逐块记录）。
 
@@ -1038,6 +1081,40 @@ def _extract_memories_chunk(
 
     pv = PromptStore().get("l1_extraction", bucket_ctx)
     prompt = _render_extraction_text(pv.text, conversation, dimensions, sunk_refs_text)
+    # D-80（2026-11-06）：块级缓存——同 (prompt 全文 + 模型链) 直接复用，零 LLM 调用。
+    # 背景：失败重跑把同一批块反复重发（实测平均 3.7 次、最坏 23 轮），全是白付。
+    chunk_hash = chunk_sha(conversation)
+    model_fp = llm_fingerprint(llm_cfg)
+    ckey: str | None = None
+    if cache_enabled and mem_conn is not None:
+        from sgme.data import chunk_cache_dao
+
+        ckey = chunk_cache_dao.cache_key(prompt, model_fp)
+        hit = chunk_cache_dao.get(mem_conn, ckey)
+        if hit is not None:
+            hit_memories = hit.get("memories") or []
+            reused = int(hit.get("total_tokens") or 0)
+            # 命中也要留痕：refine_runs 一行（token=0 / cache_hit=1），否则「省了多少」不可回算。
+            hit_run = RefineRunRecorder.start(
+                mem_conn, file_id=(bucket_ctx.bucket_key if bucket_ctx and bucket_ctx.bucket_key else "unknown"),
+                stage="l1_extraction", version=pv.version, variant=pv.variant,
+                provider=(hit.get("provider") or "cache"),
+                bucket_key=(bucket_ctx.bucket_key if bucket_ctx and bucket_ctx.bucket_key else "unknown"),
+            )
+            RefineRunRecorder.finish(
+                mem_conn, hit_run, memories_count=len(hit_memories),
+                action_counts={"cache_hit": 1, "reused_tokens": reused,
+                                "extracted": len(hit_memories),
+                                "empty": 1 if not hit_memories else 0},
+                status="ok", provider=(hit.get("provider") or "cache"),
+                chunk_sha=chunk_hash, cache_hit=1, reused_tokens=reused,
+            )
+            chunk_cache_dao.record_hit(mem_conn, ckey, reused)
+            logger.info("L1 块命中缓存（%s 次复用，省 %d token）: memories=%d",
+                        chunk_index, reused, len(hit_memories))
+            meta = {"stage": "l1_extraction", "version": pv.version,
+                    "variant": pv.variant, "cache_hit": True}
+            return hit_memories, (hit.get("provider") or "cache"), meta
     bucket_key = bucket_ctx.bucket_key if (bucket_ctx and bucket_ctx.bucket_key) else "unknown"
     max_attempts = 2  # 解析/空结果：重试 1 次（B164 既有行为）
     lang_retries = 0
@@ -1071,6 +1148,7 @@ def _extract_memories_chunk(
         RefineRunRecorder.finish(
             mem_conn, run_id, memories_count=memories, action_counts=counts,
             status=status, error=error, usage=usage, provider=provider_name,
+            chunk_sha=chunk_hash, cache_hit=0, reused_tokens=0,
         )
         _run_done = True
 
@@ -1151,6 +1229,15 @@ def _extract_memories_chunk(
                 )
             meta = {"stage": "l1_extraction", "version": pv.version,
                     "variant": pv.variant, "l1_truncated_chunks": truncated}
+            # D-80：成功块写缓存（含空数组——空产出同样值得复用，重跑它也是白烧 token）。
+            if ckey:
+                from sgme.data import chunk_cache_dao
+
+                chunk_cache_dao.put(
+                    mem_conn, key=ckey, prompt_version=pv.version, model_fp=model_fp,
+                    chunk_sha=chunk_hash, memories=memories, provider=provider_name,
+                    total_tokens=int((usage or {}).get("total_tokens") or 0) or None,
+                )
             logger.info("L1 块完成: version=%s variant=%s memories=%d",
                         pv.version, pv.variant, len(memories))
             return memories, provider_name, meta

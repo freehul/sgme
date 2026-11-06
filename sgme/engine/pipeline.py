@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -35,6 +36,12 @@ logger = logging.getLogger("sgme.engine.pipeline")
 # 进程内锁即覆盖全部入口；跨进程场景由 raw_files (session_key, started_at)
 # 唯一索引兜底（见 data/db.py::_migrate_raw_files_session_uniq）。
 _APPEND_L0_LOCK = threading.Lock()
+
+#: D-80（2026-11-06）：append 联动提炼去抖登记表 {file_id: 上次触发 monotonic 时刻}。
+#: 生产实测：同一文件 14.4 小时内被触发 23 轮，每轮都把整份未提交增量重提——
+#: 「每次追加提一次」在高频写入场景是纯浪费，改为「窗口内只触发一次 + 阈值以下交给
+#: batch_scan」。进程内登记即可：容器单进程，重启后置空最多多触发一次。
+_APPEND_REFINE_LAST: dict[str, float] = {}
 
 # 零值统计（无记忆可落库时返回，与 L1.5 正常路径同构）
 _ZERO_STATS = {
@@ -319,6 +326,103 @@ def _chunk_failure_ratio(cfg: dict) -> float:
         return 0.0
 
 
+def _chunk_replay_enabled(cfg: dict) -> bool:
+    """D-80（2026-11-06）：块级失败补跑开关（缺省开）。"""
+    return bool(((cfg or {}).get("refine") or {}).get("chunk_replay_enabled", True))
+
+
+def _chunk_replay_max_failures(cfg: dict) -> int:
+    """D-80：单次最多入队多少失败块；超过则回退到「整份阻断」保守路径。
+
+    上限存在的意义：一次坏 20 块以上通常说明该文件系统性失败（体积/格式/提示词），
+    此时让文件保持 status=new 重跑比把几十块塞进补跑队列更可诊断。
+    """
+    try:
+        value = int(((cfg or {}).get("refine") or {}).get("chunk_replay_max_failures", 20))
+    except (TypeError, ValueError):
+        return 20
+    return value if value >= 1 else 20
+
+
+def _enqueue_failed_chunks(
+    result,
+    mem_conn: sqlite3.Connection | None,
+    session_conn: sqlite3.Connection | None,
+    cfg: dict,
+) -> bool:
+    """把失败块写进补跑队列；没有可入队明细 / 写库失败 → False（回退整份阻断）。"""
+    details = list(getattr(result, "failed_chunk_details", None) or [])
+    if mem_conn is None or not details:
+        return False
+    from sgme.data import chunk_failure_dao
+
+    chunk_failure_dao.ensure_table(mem_conn)
+    prompt_version = (((getattr(result, "prompt_versions", None) or {}).get("l1_extraction") or {}).get("version"))
+    ok = True
+    for d in details:
+        ok = chunk_failure_dao.enqueue(
+            mem_conn,
+            file_id=getattr(result, "file_id", "") or "",
+            chunk_index=int(d.get("index") or 0),
+            chunk_sha=d.get("chunk_sha") or "",
+            prompt_version=prompt_version,
+            chunk_text=d.get("text") or "",
+            sunk_refs_text=(getattr(result, "sunk_refs_text", "") or None),
+            error=d.get("error"),
+        ) and ok
+    return ok
+
+
+def commit_with_chunk_queue(
+    result,
+    mem_conn: sqlite3.Connection | None,
+    session_conn: sqlite3.Connection | None,
+    cfg: dict,
+) -> str:
+    """D-80 提交闸：有失败块时先入补跑队列，成功块照常提交并推进游标。
+
+    语义演进（2026-11-06）：2026-11-03 的「块失败不静默丢内容」修复用「整份不提交」
+    实现，代价是**同一批块每轮追加都重发一遍**（实测平均 3.7 次、最坏 23 轮）。
+    现改为：成功块落库 + 游标推进 + 失败块入队补跑——内容缺口仍然对用户可见
+    （队列 + anomaly_warn），但不再用「全量重跑」当兜底。
+
+    Returns:
+        "committed"（干净提交）/ "replay_committed"（带缺口提交 + 已入队）/ "blocked"。
+    """
+    failed = int(getattr(result, "failed_chunks", 0) or 0)
+    if failed <= 0:
+        if should_commit(result, _chunk_failure_ratio(cfg)):
+            refine_mod.commit_refine(result, session_conn)
+            return "committed"
+        result.status = "partial"
+        return "blocked"
+
+    if (
+        _chunk_replay_enabled(cfg)
+        and failed <= _chunk_replay_max_failures(cfg)
+        and _enqueue_failed_chunks(result, mem_conn, session_conn, cfg)
+    ):
+        result.status = "refined"
+        result.anomaly_warn = True
+        refine_mod.commit_refine(result, session_conn)
+        logger.warning(
+            "文件 %s 有 %d/%d 块失败（已入补跑队列，游标照常推进 / D-80）",
+            getattr(result, "file_id", "?"), failed,
+            int(getattr(result, "chunk_total", 0) or 0),
+        )
+        return "replay_committed"
+
+    if should_commit(result, _chunk_failure_ratio(cfg)):
+        refine_mod.commit_refine(result, session_conn)
+        return "committed"
+    result.status = "partial"
+    logger.warning(
+        "文件 %s 有 %d/%d 块失败，保持 status=new 待重跑（补跑队列不可用或超上限）",
+        getattr(result, "file_id", "?"), failed, int(getattr(result, "chunk_total", 0) or 0),
+    )
+    return "blocked"
+
+
 def refine_one(
     file_id: str,
     mem_conn: sqlite3.Connection,
@@ -346,13 +450,9 @@ def refine_one(
     )
     # 落库成功（persist_memories 正常返回）之后才推进游标 + 内容哈希；
     # 无增量结果（memories 空）同样走这里收敛为 refined（T-223 设计选择）。
-    # 块级失败（2026-11-03）：内容有缺口 → 不推游标，文件保持 new 待重跑。
-    if should_commit(result, _chunk_failure_ratio(cfg)):
-        refine_mod.commit_refine(result, session_conn)
-    else:
-        result.status = "partial"
-        logger.warning("refine_one file=%s 有 %d/%d 块失败，保持 status=new 待重跑",
-                       file_id, result.failed_chunks, result.chunk_total)
+    # 块级失败（D-80，2026-11-06）：成功块照常提交 + 失败块入补跑队列；
+    # 入队不可用 / 超上限时才回退到 2026-11-03 的「整份不提交」保守路径。
+    commit_with_chunk_queue(result, mem_conn, session_conn, cfg)
     return result, l3_stats
 
 
@@ -380,13 +480,8 @@ def refine_many(
                              agent_tag=_resolve_file_agent(session_conn, r.file_id))
             if r.memories else dict(_ZERO_STATS)
         )
-        # 块级失败（2026-11-03）：有缺口不推游标，文件保持 new 待重跑
-        if should_commit(r, _chunk_failure_ratio(cfg)):
-            refine_mod.commit_refine(r, session_conn)  # T-223：逐文件落库后推游标
-        else:
-            r.status = "partial"
-            logger.warning("refine_many file=%s 有 %d/%d 块失败，保持 status=new 待重跑",
-                           r.file_id, r.failed_chunks, r.chunk_total)
+        # 块级失败（D-80）：成功块照常提交 + 失败块入补跑队列
+        commit_with_chunk_queue(r, mem_conn, session_conn, cfg)
         pairs.append((r, l3_stats))
     return pairs
 
@@ -429,13 +524,7 @@ def async_refine_worker(
             if result.memories:
                 persist_memories(result, mem_conn, cfg,
                                  agent_tag=_resolve_file_agent(session_conn, file_id))
-            if should_commit(result, _chunk_failure_ratio(cfg)):
-                refine_mod.commit_refine(result, session_conn)  # T-223
-            else:
-                result.status = "partial"
-                logger.warning(
-                    "async refine file=%s 有 %d/%d 块失败，保持 status=new 待重跑",
-                    file_id, result.failed_chunks, result.chunk_total)
+            commit_with_chunk_queue(result, mem_conn, session_conn, cfg)  # T-223 + D-80
             logger.info("async refine file=%s status=%s", file_id, result.status)
         else:
             new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
@@ -453,13 +542,7 @@ def async_refine_worker(
                         # 此前漏传，T-140 多 Agent 隔离打标在异步默认路径静默缺失。
                         persist_memories(r, mem_conn, cfg,
                                          agent_tag=_resolve_file_agent(session_conn, rf["file_id"]))
-                    if should_commit(r, _chunk_failure_ratio(cfg)):
-                        refine_mod.commit_refine(r, session_conn)  # T-223
-                    else:
-                        r.status = "partial"
-                        logger.warning(
-                            "async refine 文件 %s 有 %d/%d 块失败，保持 status=new 待重跑",
-                            rf.get("file_id"), r.failed_chunks, r.chunk_total)
+                    commit_with_chunk_queue(r, mem_conn, session_conn, cfg)  # T-223 + D-80
                     processed += 1
                 except Exception as e:
                     logger.warning("async refine 文件 %s 失败（继续下一文件）: %s", rf.get("file_id"), e)
@@ -546,7 +629,8 @@ def append_l0(
             )
             session_dao.update_content_hash(session_conn, file_id, new_hash)
             _index_raw_fts_best_effort(session_conn, file_id, st)
-            _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id)
+            _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id,
+                                    new_messages=len(msg_dicts))
             return {
                 "file_id": file_id,
                 "path": existing["path"],
@@ -598,7 +682,8 @@ def append_l0(
                 }
             raise
         _index_raw_fts_best_effort(session_conn, file_id, source_type)
-        _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id)
+        _maybe_refine_on_append(cfg, mem_conn, session_conn, file_id,
+                                new_messages=len(msg_dicts))
         return {
             "file_id": file_id,
             "path": rel_path,
@@ -636,6 +721,7 @@ def _maybe_refine_on_append(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
     file_id: str,
+    new_messages: int = 0,
 ) -> None:
     """文件到达联动：配置 refine_on_append 开启时，append 后后台触发该文件提炼。
 
@@ -652,6 +738,32 @@ def _maybe_refine_on_append(
     refine_cfg = cfg.get("refine", {}) or {}
     if not refine_cfg.get("refine_on_append", False):
         return
+
+    # D-80（2026-11-06）去抖：窗口内同文件只触发一次；增量不足阈值交给 batch_scan。
+    # 实测代价：ratio=0 时每次触发都要把整份未提交增量重提（36 块 × 23 轮 = 835 次调用）。
+    try:
+        debounce_s = float(refine_cfg.get("append_debounce_s", 300) or 0)
+    except (TypeError, ValueError):
+        debounce_s = 300.0
+    try:
+        min_messages = int(refine_cfg.get("append_min_new_messages", 20) or 0)
+    except (TypeError, ValueError):
+        min_messages = 20
+    if min_messages > 0 and 0 < int(new_messages or 0) < min_messages:
+        logger.info(
+            "append 联动跳过：file=%s 本次 %d 条消息 < 阈值 %d，留给 batch_scan",
+            file_id, int(new_messages or 0), min_messages,
+        )
+        return
+    now = time.monotonic()
+    last_at = _APPEND_REFINE_LAST.get(file_id)
+    if debounce_s > 0 and last_at is not None and (now - last_at) < debounce_s:
+        logger.info(
+            "append 联动去抖：file=%s 距上次 %.0fs（窗口 %.0fs），跳过（交给 batch_scan）",
+            file_id, now - last_at, debounce_s,
+        )
+        return
+    _APPEND_REFINE_LAST[file_id] = now
 
     from sgme.data import db as db_mod
 

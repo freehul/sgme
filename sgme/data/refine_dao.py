@@ -91,6 +91,9 @@ class RefineRunRecorder:
         candidate_ids_hash: str | None = None,
         short_circuit_reason: str | None = None,
         provider: str | None = None,
+        chunk_sha: str | None = None,
+        cache_hit: int = 0,
+        reused_tokens: int = 0,
     ) -> None:
         """结束批次：写计数 / action 分布 / 状态（ok|error）。
 
@@ -110,6 +113,12 @@ class RefineRunRecorder:
         **之前**后，命中哪家提供商要跑完降级链才知道，故 start 时先写 ``"pending"``，
         由本形参在收尾时回填。用 ``COALESCE(?, provider)`` 语义——不传（None）即
         保持 start 时的值，老调用点零影响。
+
+        D-80（2026-11-06）块级成本三列：
+        - ``chunk_sha``：本批次对应块的内容指纹（sha256[:16]），承载「同块重复率」统计；
+        - ``cache_hit``：1 = 本批未调 LLM（块级缓存命中）；
+        - ``reused_tokens``：命中时复用的 token 量（首跑真实消耗），用于回算省下的额度。
+        三者均可空/缺省，老调用点零影响。
         """
         u = usage or {}
         elapsed_ms = None
@@ -129,7 +138,10 @@ class RefineRunRecorder:
             SET finished_at=?, memories_count=?, action_counts=?, status=?, error=?,
                 prompt_tokens=?, completion_tokens=?, total_tokens=?,
                 candidate_count=?, candidate_ids_hash=?, short_circuit_reason=?,
-                elapsed_ms=?, provider=COALESCE(?, provider)
+                elapsed_ms=?, provider=COALESCE(?, provider),
+                chunk_sha=COALESCE(?, chunk_sha),
+                cache_hit=COALESCE(?, cache_hit),
+                reused_tokens=COALESCE(?, reused_tokens)
             WHERE run_id=?
             """,
             (_now_iso(), int(memories_count), json.dumps(action_counts or {}, ensure_ascii=False),
@@ -137,6 +149,7 @@ class RefineRunRecorder:
              u.get("prompt_tokens"), u.get("completion_tokens"), u.get("total_tokens"),
              candidate_count, candidate_ids_hash, short_circuit_reason,
              elapsed_ms, provider,
+             chunk_sha, (1 if cache_hit else 0), max(0, int(reused_tokens or 0)),
              run_id),
         )
         conn.commit()

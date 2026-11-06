@@ -70,8 +70,13 @@ def test_migration_adds_column_to_old_schema(tmp_path):
     assert "elapsed_ms" not in before
 
     db_mod._migrate_refine_runs_elapsed_ms(con)
+    # D-80（2026-11-06）：生产老库同样缺三列块级观测列，connect_memory 会一并补——
+    # 本用例手工模拟老库，需显式跑第二条迁移，否则 recorder.finish 写新列会失败。
+    db_mod._migrate_refine_runs_chunk_columns(con)
     after = [r[1] for r in con.execute("PRAGMA table_info(refine_runs)").fetchall()]
     assert "elapsed_ms" in after
+    for col in ("chunk_sha", "cache_hit", "reused_tokens"):
+        assert col in after, f"老库补列缺失: {col}"
 
     # 补列后可正常记账，且老行保持可空
     run_id = RefineRunRecorder.start(

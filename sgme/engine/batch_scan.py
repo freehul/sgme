@@ -156,6 +156,15 @@ def _run_batch_scan_locked(
             "errors": [],
         }
     limit = int(max_files or DEFAULT_MAX_FILES)
+    # D-80（2026-11-06）：先补跑上一次留下的失败块（逐块，不重提整份文件），
+    # 再扫 status=new——两者共享提炼锁，补跑失败不阻塞常规扫描。
+    replay_stats: dict[str, Any] = {}
+    try:
+        from sgme.engine import chunk_replay
+
+        replay_stats = chunk_replay.replay_pending(mem_conn, session_conn, cfg)
+    except Exception as e:  # noqa: BLE001——补跑是旁路，失败不影响本轮扫描
+        logger.warning("块级补跑异常（不影响本轮扫描）: %s", e)
     new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
     refined_count = 0
     failed_count = 0
@@ -217,6 +226,10 @@ def _run_batch_scan_locked(
         "failed": failed_count,
         "memory_count": memory_count,
         "errors": errors,
+        # D-80：块级补跑（失败块逐块重试，不重提整份文件）
+        "replayed": int(replay_stats.get("replayed", 0) or 0),
+        "replay_resolved": int(replay_stats.get("resolved", 0) or 0),
+        "replay_pending": int(replay_stats.get("pending", 0) or 0),
     }
 
 

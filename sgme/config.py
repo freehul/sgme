@@ -576,6 +576,18 @@ DEFAULT_REFINE_CONFIG = {
     # chunk_retry_times=同块重试次数；backoff 按第 n 次 ×(n) 线性递增（秒）。
     "chunk_retry_times": 2,
     "chunk_retry_backoff_s": 5.0,
+    # D-80（2026-11-06）块级成本治理：缓存 + 失败块补跑 + append 去抖。
+    # 背景（实测）：2.0 上线后日均提炼 token 从 3.4M 涨到 36.1M，根因是「未提交增量
+    # 反复重付」——块级失败零容忍 + 每次 append 触发 + 无块级缓存 = 同一批块被重发
+    # （近 2,000 条样本平均 3.7 次、最坏文件 14.4h 内 23 轮 / 835 次调用）。
+    "chunk_cache_enabled": True,        # 同 (prompt+模型) 的块结果复用，重跑零 token
+    "chunk_cache_ttl_days": 30,         # 缓存保留天数（Dream 周期清理）
+    "chunk_cache_max_rows": 50000,      # 缓存行数上限（超出按 created_at 淘汰）
+    "chunk_replay_enabled": True,       # 失败块入队补跑；成功块照常提交、游标照常推进
+    "chunk_replay_max_failures": 20,    # 单次入队上限；超过回退「整份阻断」保守路径
+    "chunk_replay_max_attempts": 3,     # 单块补跑上限；达上限保留记录停止重试
+    "append_debounce_s": 300,           # append 联动去抖窗口（秒）：窗口内同文件只触发一次
+    "append_min_new_messages": 20,      # 单次追加少于该条数不触发（交给 batch_scan）
     # E3 失败熔断（2026-11-05，B312 待办 1）：同一文件连续提炼失败达该次数 →
     # raw_files.status='error' 终止 batch_scan 重扫；成功（commit_refine）清零。
     # 背景：块级失败文件此前保持 status=new 无限重试，实测空转 5 天 / 4.9 万次。
@@ -1477,6 +1489,23 @@ def _merge_refine_config(user_cfg: dict | None) -> dict:
     fsize = user_cfg.get("max_file_bytes")
     if isinstance(fsize, int) and not isinstance(fsize, bool) and fsize >= 0:
         base["max_file_bytes"] = fsize
+    # D-80（2026-11-06）：块级成本治理键（此前不在合并表 → sgme.yaml 里写了也会被
+    # 静默丢弃，与 B121 llm_override / 2026-11-05 那批同款缺陷）。布尔与整数分开校。
+    for key in ("chunk_cache_enabled", "chunk_replay_enabled"):
+        val = user_cfg.get(key)
+        if isinstance(val, bool):
+            base[key] = val
+    for key, minimum in (
+        ("chunk_cache_ttl_days", 0),
+        ("chunk_cache_max_rows", 0),
+        ("chunk_replay_max_failures", 1),
+        ("chunk_replay_max_attempts", 1),
+        ("append_debounce_s", 0),
+        ("append_min_new_messages", 0),
+    ):
+        val = user_cfg.get(key)
+        if isinstance(val, int) and not isinstance(val, bool) and val >= minimum:
+            base[key] = val
     return base
 
 
@@ -1793,6 +1822,13 @@ SECTION_KEYS: dict[str, set[str]] = {
         "refine_on_append", "batch_scan",
         # E3/E4（2026-11-05）：失败熔断阈值 + 单文件体积闸
         "max_file_attempts", "max_file_bytes",
+        # 2026-11-05：块级失败容忍度与重试（此前不在白名单 → 接口改这两个键被静默丢弃，
+        # 只能手改 /data/config/sgme.yaml 再重启，见 SGME 运维手册 §踩坑 4）
+        "max_chunk_failure_ratio", "chunk_retry_times", "chunk_retry_backoff_s",
+        # D-80（2026-11-06）：块级成本治理（缓存 / 失败块补跑 / append 去抖）
+        "chunk_cache_enabled", "chunk_cache_ttl_days", "chunk_cache_max_rows",
+        "chunk_replay_enabled", "chunk_replay_max_failures", "chunk_replay_max_attempts",
+        "append_debounce_s", "append_min_new_messages",
     },
     "search": {"vector", "rrf"},
     "backup": {"dir", "schedule", "raw_cold_days", "remote_dir"},

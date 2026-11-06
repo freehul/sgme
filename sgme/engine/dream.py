@@ -618,6 +618,21 @@ def _run_dream_locked(
     except Exception as e:
         logger.exception("Dream 信号 TTL 归档失败（该阶段中止）: %s", e)
         stage_errors.append(f"信号 TTL 归档失败: {e}")
+    # D-80（2026-11-06）：块级提炼缓存按 TTL + 行数上限淘汰（缓存是加速器不是档案，
+    # 过期不清理会随模型/提示词迭代无限增长）。
+    try:
+        from sgme.data import chunk_cache_dao
+
+        refine_cfg = (cfg or {}).get("refine") or {}
+        removed = chunk_cache_dao.purge(
+            mem_conn,
+            ttl_days=int(refine_cfg.get("chunk_cache_ttl_days", 30) or 0),
+            max_rows=int(refine_cfg.get("chunk_cache_max_rows", 50000) or 0),
+        )
+        if removed:
+            logger.info("Dream 块级缓存淘汰 %d 行", removed)
+    except Exception as e:  # noqa: BLE001——缓存清理是旁路
+        logger.warning("Dream 块级缓存清理失败（不阻塞）: %s", e)
 
     # ③-b expired 出池归档（T-205 v0.4②「给数据库减肥」）
     # 开关 dream.purge_expired 默认**关**（灰度）：生产启用须满足前置——

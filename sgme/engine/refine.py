@@ -64,6 +64,11 @@ class RefineResult:
     # 块级失败计数（2026-11-03）：>0 表示该文件内容有缺口，不得标 refined。
     failed_chunks: int = 0
     chunk_total: int = 0
+    # D-80（2026-11-06）：失败块明细（块序 + 指纹 + 最终块文本 + 错误），供 pipeline
+    # 入补跑队列；有明细时文件可以照常提交（成功块不陪葬），缺口由 queue 补。
+    failed_chunk_details: list[dict] = field(default_factory=list)
+    # D-80：本次随块送去的沉淀清单原文（补跑时保持同上下文，避免二次抽取差异）。
+    sunk_refs_text: str = ""
     # E3 失败熔断（2026-11-05）：本次失败是否已计入 raw_files.fail_count——
     # batch_scan 据此避免对同一文件重复计数（只有 refine 入口之外的异常才由它记账）。
     failure_recorded: bool = False
@@ -225,6 +230,69 @@ def _throttle_refine_cost_alert(now: float | None = None) -> bool:
     return True
 
 
+def normalize_memories(
+    raw_memories: list[dict],
+    dimensions: list[dict],
+    mem_conn: sqlite3.Connection,
+    *,
+    file_id: str,
+    seq_ts: dict[int, str],
+    sunk_refs: list,
+) -> tuple[list[dict], normalize.NormalizeStats]:
+    """L1 原始记忆 → 归一化记忆（维度 id / occurred_at / 2.0 字段透传 / 知识页关联）。
+
+    D-80（2026-11-06）从 refine_file 内联块抽出：失败块补跑（chunk_replay）复用同一条
+    归一化路径，避免两套白名单漂移（历史上「归一化白名单吃掉 facts/2.0 字段」已复发两次）。
+    """
+    # 函数内导入：sinking 会反向依赖本模块的常量，模块级导入会成环（2026-11-06 实测）
+    from sgme.engine import sinking as sinking_mod
+
+    alias_map = memory_dao.build_alias_map(mem_conn)
+    registry_names = _build_registry_names(dimensions)
+
+    normalized_memories: list[dict] = []
+    batch_stats = normalize.NormalizeStats()
+    for rm in raw_memories:
+        dim_ids, stats = normalize.normalize_batch(
+            rm["dimensions"], alias_map, registry_names,
+        )
+        batch_stats.total += stats.total
+        batch_stats.alias_hits += stats.alias_hits
+        batch_stats.fuzzy_hits += stats.fuzzy_hits
+        batch_stats.drops += stats.drops
+        batch_stats.fuzzy_audit.extend(stats.fuzzy_audit)
+        batch_stats.dropped_names.extend(stats.dropped_names)
+        if not dim_ids:
+            continue
+        src_ids = rm.get("source_message_ids", [])
+        occ = None
+        if src_ids:
+            ts_list = [seq_ts[s] for s in src_ids if s in seq_ts]
+            if ts_list:
+                occ = max(ts_list)
+        normalized_memories.append({
+            "content": rm["content"],
+            "memory_type": rm["memory_type"],
+            "priority": rm["priority"],
+            "time_velocity": rm["time_velocity"],
+            "dimension_ids": dim_ids,
+            "source_message_ids": src_ids,
+            "file_id": file_id,
+            "occurred_at": occ,
+            "supersedes": rm.get("supersedes", []),
+            "facts": rm.get("facts"),
+            **{k: rm[k] for k in (
+                "type", "subject", "certainty", "derivation", "modality", "route",
+                "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
+            ) if rm.get(k) is not None},
+            "_sunk_refs": [
+                {"kind": r.kind, "ref_id": r.ref_id}
+                for r in sinking_mod.link_targets(rm.get("content") or "", sunk_refs)
+            ],
+        })
+    return normalized_memories, batch_stats
+
+
 def refine_file(
     file_id: str,
     mem_conn: sqlite3.Connection,
@@ -352,6 +420,7 @@ def refine_file(
     )
     sunk_refs = sinking_mod.extract_sunk_refs(_raw_text)
     sunk_refs_text = sinking_mod.render_sunk_refs(sunk_refs)
+    result.sunk_refs_text = sunk_refs_text
     if sunk_refs:
         logger.info("沉淀清单: 本会话命中 %d 条知识页/技能（%s）", len(sunk_refs),
                     ", ".join(f"{r.kind}:{r.ref_id[:24]}" for r in sunk_refs[:5]))
@@ -395,12 +464,15 @@ def refine_file(
             sunk_refs_text=sunk_refs_text,
             chunk_retry_times=int((cfg.get("refine") or {}).get("chunk_retry_times", 2)),
             chunk_retry_backoff_s=float((cfg.get("refine") or {}).get("chunk_retry_backoff_s", 5.0)),
+            # D-80：块级缓存默认开（refine.chunk_cache_enabled=false 可关）
+            cache_enabled=bool((cfg.get("refine") or {}).get("chunk_cache_enabled", True)),
         )
         result.prompt_versions["l1_extraction"] = prompt_meta
         # 块级失败（2026-11-03）：单块失败被 continue 吞掉，整份仍会标 refined →
         # 静默缺内容。这里把失败数报到结果上，由 pipeline 的提交闸拦下（不推进游标）。
         result.failed_chunks = int(prompt_meta.get("chunk_failures") or 0)
         result.chunk_total = int(prompt_meta.get("chunk_total") or 0)
+        result.failed_chunk_details = list(prompt_meta.get("chunk_failure_details") or [])
         # E5 截断计量（2026-11-05）：只计数（逐块明细已写 refine_runs.action_counts），
         # 不改提交/重试/判定——max_tokens 是否偏紧靠这批数据回算。
         result.truncated_chunks = int(prompt_meta.get("l1_truncated_chunks") or 0)
@@ -445,9 +517,6 @@ def refine_file(
         return result
 
     # 归一化（每条记忆的 dimensions 标签）
-    alias_map = memory_dao.build_alias_map(mem_conn)
-    registry_names = _build_registry_names(dimensions)
-
     # 消息 seq → 真实时间戳映射（v0.5：occurred_at = 来源消息的最大发生时刻；
     # 注意剪枝后的 incremental 已保留原 seq，映射对得上）
     seq_ts: dict[int, str] = {}
@@ -455,56 +524,10 @@ def refine_file(
         if getattr(m, "timestamp", None):
             seq_ts[m.seq] = m.timestamp
 
-    normalized_memories: list[dict] = []
-    batch_stats = normalize.NormalizeStats()
-    for rm in raw_memories:
-        dim_ids, stats = normalize.normalize_batch(
-            rm["dimensions"], alias_map, registry_names,
-        )
-        # 累加统计
-        batch_stats.total += stats.total
-        batch_stats.alias_hits += stats.alias_hits
-        batch_stats.fuzzy_hits += stats.fuzzy_hits
-        batch_stats.drops += stats.drops
-        batch_stats.fuzzy_audit.extend(stats.fuzzy_audit)
-        batch_stats.dropped_names.extend(stats.dropped_names)
-        if not dim_ids:
-            # 全部标签丢弃 → 跳过该记忆
-            continue
-        # occurred_at：来源消息里最新的 timestamp（无来源消息时 None → 落库回退 created_at）
-        src_ids = rm.get("source_message_ids", [])
-        occ = None
-        if src_ids:
-            ts_list = [seq_ts[s] for s in src_ids if s in seq_ts]
-            if ts_list:
-                occ = max(ts_list)
-        normalized_memories.append({
-            "content": rm["content"],
-            "memory_type": rm["memory_type"],
-            "priority": rm["priority"],
-            "time_velocity": rm["time_velocity"],
-            "dimension_ids": dim_ids,
-            "source_message_ids": src_ids,
-            "file_id": file_id,
-            "occurred_at": occ,
-            # ST-18 替代联动：L1 supersedes 声明透传（pipeline 落库后触发旧主体记忆标记）
-            "supersedes": rm.get("supersedes", []),
-            # T-136 facts 透传（2026-09-03 修复）：此前归一化白名单漏 facts →
-            # L1 产出的三元组在落库前被丢弃，生产 facts_json 全 NULL（冒烟实证）
-            "facts": rm.get("facts"),
-            # 2.0（2026-10-31）：同一个坑再犯一次——归一化的白名单同样会吃掉
-            # 三轴/路由/七值类型/feeling/trait/needs_review。此处显式透传，
-            # 否则解析层算得再对，落库前也会归零（实测：22 条落库后字段全 NULL）。
-            **{k: rm[k] for k in (
-                "type", "subject", "certainty", "derivation", "modality", "route",
-                "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
-            ) if rm.get(k) is not None},
-            # 记忆 → 知识页/技能 关联（2026-10-31）：按标题重合度挂，落库写 memory_pages
-            "_sunk_refs": [
-                {"kind": r.kind, "ref_id": r.ref_id}
-                for r in sinking_mod.link_targets(rm.get("content") or "", sunk_refs)
-            ],
-        })
+    normalized_memories, batch_stats = normalize_memories(
+        raw_memories, dimensions, mem_conn,
+        file_id=file_id, seq_ts=seq_ts, sunk_refs=sunk_refs,
+    )
 
     result.memories = normalized_memories
     result.stats = batch_stats

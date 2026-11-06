@@ -136,9 +136,45 @@ CREATE TABLE IF NOT EXISTS refine_runs (
   candidate_count INTEGER,       -- L1.5 F2（2026-10-09）：批内候选数（仅批路径承载）
   candidate_ids_hash TEXT,       -- L1.5 F2：候选 id 集 sha256[:16]（同候选集反查，仅批路径）
   short_circuit_reason TEXT,     -- L1.5 F2：短路记录原因（仅非批路径独立记录承载）
-  elapsed_ms INTEGER);           -- ST-58/T-289（2026-10-17）：批次真实耗时（finish 依 started_at 计算）
+  elapsed_ms INTEGER,            -- ST-58/T-289（2026-10-17）：批次真实耗时（finish 依 started_at 计算）
+  chunk_sha TEXT,                -- D-80（2026-11-06）：块内容指纹（同块重复率）
+  cache_hit INTEGER NOT NULL DEFAULT 0,  -- D-80：1=块级缓存命中（未调 LLM）
+  reused_tokens INTEGER NOT NULL DEFAULT 0); -- D-80：命中时复用的 token 量
 CREATE INDEX IF NOT EXISTS idx_refine_runs_stage ON refine_runs(stage, version, started_at);
 CREATE INDEX IF NOT EXISTS idx_refine_runs_file ON refine_runs(file_id, started_at);
+
+-- D-80（2026-11-06）：块级提炼结果缓存。同一 (prompt 全文 + 模型指纹) 的块只算一次钱——
+-- 失败重跑 / 同内容重复出现时直接复用，不再向 LLM 重发。
+CREATE TABLE IF NOT EXISTS refine_chunk_cache (
+  cache_key TEXT PRIMARY KEY,      -- sha256(prompt + NUL + model_fp)
+  prompt_version TEXT,             -- 提示词版本（观测用，不参与 key 语义）
+  model_fp TEXT NOT NULL,          -- 模型链指纹（链头 provider/model/max_tokens 归一化哈希）
+  chunk_sha TEXT NOT NULL,         -- sha256(chunk 文本)[:16]（观测「同块」用）
+  memories_json TEXT NOT NULL,     -- 解析后的记忆数组（含空数组：空产出同样要缓存）
+  provider TEXT,                   -- 实际命中的 provider（缓存写回时记录）
+  total_tokens INTEGER,            -- 该块首跑的真实 token 消耗（命中时计入 reused_tokens）
+  created_at TEXT NOT NULL,
+  last_hit_at TEXT,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  reused_tokens INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_refine_chunk_cache_created ON refine_chunk_cache(created_at);
+
+-- D-80（2026-11-06）：块级失败补跑队列。成功块照常提交并推游标；失败块单独登记，
+-- 由 chunk_replay 逐块补跑（不再靠「整份文件不提交、下一轮全量重发」兜底）。
+CREATE TABLE IF NOT EXISTS refine_chunk_failures (
+  failure_id TEXT PRIMARY KEY,
+  file_id TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL DEFAULT 0,
+  chunk_sha TEXT NOT NULL,         -- sha256(chunk 文本)[:16]
+  prompt_version TEXT,
+  chunk_text TEXT NOT NULL,        -- 失败块原文（剪枝+分块后的最终形态，补跑直接复用）
+  sunk_refs_text TEXT,             -- 随块送去的沉淀清单（补跑保持同上下文）
+  error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  last_at TEXT NOT NULL,
+  UNIQUE(file_id, chunk_sha));
+CREATE INDEX IF NOT EXISTS idx_refine_chunk_failures_file ON refine_chunk_failures(file_id, last_at);
 
 -- ============ v0.7 三库拆分（B2）：L2 场景系列由 wiki.db 迁入 memory.db ============
 -- ⚠️ 此处**只追加普通表**。scenes_fts 虚拟表与 scenes_ai/ad/au 触发器【不在此处】——
@@ -746,6 +782,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_mem_facts_json(conn)
     _migrate_mem_valid_period(conn)
     _migrate_refine_runs_elapsed_ms(conn)
+    _migrate_refine_runs_chunk_columns(conn)
     _migrate_memory_2_0_columns(conn)
     # 2.0 迁移阶段 1（2026-11-04）：生命周期五列 + 维度优先级 + 四张正式表
     _migrate_memory_lifecycle_columns(conn)
@@ -1363,6 +1400,30 @@ def _migrate_refine_runs_elapsed_ms(conn: sqlite3.Connection) -> None:
     cols = [r[1] for r in conn.execute("PRAGMA table_info(refine_runs)").fetchall()]
     if "elapsed_ms" not in cols:
         conn.execute("ALTER TABLE refine_runs ADD COLUMN elapsed_ms INTEGER")
+    conn.commit()
+
+
+def _migrate_refine_runs_chunk_columns(conn: sqlite3.Connection) -> None:
+    """老库迁移：refine_runs 补块级观测三列（D-80，2026-11-06）。幂等。
+
+    - chunk_sha：本批次对应块的内容指纹（sha256[:16]），用于算「同块重复率」——
+      重复率 = 总批次 / 不同 (file_id, chunk_sha) 组合数，是本次成本问题的核心指标。
+    - cache_hit：1 = 本次未调 LLM（命中块级缓存），0 = 真实调用。
+    - reused_tokens：命中缓存时复用的 token 量（首跑真实消耗），用于回算省了多少。
+
+    新库走 MEMORY_DDL 建全列；本函数只为老库补列（照
+    _migrate_refine_runs_elapsed_ms 先例：PRAGMA 检查 + 条件 ALTER + commit）。
+    不更新 SCHEMA_VERSION——_migrate_* 序列本就启动时无条件幂等执行。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(refine_runs)").fetchall()]
+    if not cols:
+        return
+    if "chunk_sha" not in cols:
+        conn.execute("ALTER TABLE refine_runs ADD COLUMN chunk_sha TEXT")
+    if "cache_hit" not in cols:
+        conn.execute("ALTER TABLE refine_runs ADD COLUMN cache_hit INTEGER NOT NULL DEFAULT 0")
+    if "reused_tokens" not in cols:
+        conn.execute("ALTER TABLE refine_runs ADD COLUMN reused_tokens INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
