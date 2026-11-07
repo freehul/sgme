@@ -29,6 +29,25 @@ providers:
     health_endpoint: /models
     health_interval_s: 60
     vector_capable: false
+  # 2026-11-07：智谱免费档回归，作为提炼链第二级备用（用户拍板）。
+  # ⚠️ api_key_env 用 ZHIPU_API_KEY（有效）；ZHIPU_API_KEY_FREE 实测 401 已失效，勿用。
+  # ⚠️ 只有官方标「免费」的模型无偿调用（glm-4-flash-250414 等）；误切到 glm-5.x
+  #    等付费模型会用同一把 key 产生真实费用。
+  # 4.7-Flash 虽免费且 200K 上下文，但实测首发成功率约 60%、1305 频繁、延迟 10-53s，
+  #    故不入链；详见 SGME wiki「GLM-4.7-Flash 可用性与限制实测（2026-11-07）」。
+  zhipu:
+    name: zhipu
+    display_name: 智谱（免费档，LLM 第二级备用）
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: ZHIPU_API_KEY
+    provider_type: openai_compat
+    default_model: glm-4-flash-250414
+    context_window: 128000
+    timeout_s: 60
+    max_retries: 3
+    health_endpoint: /models
+    health_interval_s: 60
+    vector_capable: false
   siliconflow:
     name: siliconflow
     display_name: 硅基流动（免费档，向量+LLM 备用）

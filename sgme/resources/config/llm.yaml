@@ -9,7 +9,8 @@
 # 密钥不落盘：引用环境变量名（铁律）
 # 链结构语义：
 #   第一级：云端 OpenAI 兼容主模型（长上下文，剪枝后任何会话整段放得下）
-#   第二级：rule drop_batch（全链失败兜底，抛 LLMUnavailable）
+#   中间级：一个或多个免费备用模型，按序降级（2026-11-07 起第二级为 zhipu）
+#   末级：rule drop_batch（全链失败兜底，抛 LLMUnavailable）
 # 注：lm-studio 本地模型已从供应商与降级链移除（2026-08-14 用户决策：
 #   本地模型能力与向量维度不足，提炼统一走云端 DeepSeek）
 # ⚠️ 写回注意：WebUI 降级链编辑（write_llm_config）只覆盖 chains 段并自动剥离
@@ -17,14 +18,20 @@
 #   需人工维护时以此版为基线。
 chains:
   refinement:
-    # 2026-08-22 用户定主序：agnes/siliconflow 免费档 1-4s 放前；
-    # zhipu 免费 key 失效，2026-08-29 移出降级链（避免烧付费 ZHIPU_API_KEY）。
+    # 2026-11-07 用户定链序：agnes 主位 → zhipu 免费档第二级备用 → siliconflow → rule。
+    # 历史：2026-08-29 zhipu 因免费 Key 失效移出链（B121）；本次改用有效的
+    #   ZHIPU_API_KEY 接回，模型取实测更稳的 glm-4-flash-250414（0.4-2.4s、无思考）。
     - provider: agnes          # 第一优先（2026-08-22 用户定）：Agnes 免费档，1-4s
       model: agnes-2.5-flash
-      max_tokens: 16384
-    - provider: siliconflow    # 第二优先：硅基流动免费档 THUDM/GLM-4-9B-0414（2026-09-01 B144：原 DeepSeek-V4-Flash 已转付费档移出，严禁写回）
+      max_tokens: 4096        # Agnes 上限 4096（2026-11-06 实测：超限直接 HTTP 400）
+    - provider: zhipu          # 第二优先（2026-11-07 用户定）：智谱免费档，128K 上下文
+      model: glm-4-flash-250414
+      max_tokens: 8192        # 4-flash 最大输出 16K，留余量；与 sgme.yaml llm_override 对齐
+    - provider: siliconflow    # 第三优先：硅基流动免费档（2026-09-01 B144：V4-Flash 转付费已移出，严禁写回）
       model: THUDM/GLM-4-9B-0414
       max_tokens: 16384
+      # ⚠️ 2026-11-07 实测该账户所有免费模型（含 bge-m3）返回 402 余额不足，
+      #    属账户实名/余额问题，非模型下架；修好后本节点才真正可用。
     - provider: rule
       rule: drop_batch
 

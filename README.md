@@ -159,13 +159,14 @@ python -m sgme
 # Without them, built-in default keys are used (first-run local experience only,
 # startup warns; once config/.env is set, default keys return 403)
 #   SGME_BEARER_TOKEN optional: transport-layer token, off by default (localhost bypass)
-# Model keys (optional, free tier supported): refinement uses agnes-2.5-flash (free) as primary,
-#   siliconflow THUDM/GLM-4-9B-0414 (free tier) as second (zhipu removed from the chain 2026-08-29, B121;
-#   DeepSeek-V4-Flash is now paid and removed 2026-09-01, B144);
+# Model keys (optional, free tier supported): refinement chain = agnes-2.5-flash (free, primary;
+#   max_tokens capped at 4096) → zhipu glm-4-flash-250414 (free, second, since 2026-11-07) →
+#   siliconflow THUDM/GLM-4-9B-0414 (free tier, third; observed HTTP 402 balance 2026-11-07) → rule drop_batch
+#   (DeepSeek-V4-Flash is paid and removed 2026-09-01, B144);
 #   vector search uses siliconflow BAAI/bge-m3 (free). When a key is missing,
 #   /v1/health returns model_config.missing_keys — apply free keys per
-#   AI-INSTALL/免费模型Key申请指南.md (Agnes agnes-2.5-flash 免费 / 硅基流动 bge-m3 零费用).
-#   AGNESAI_API_KEY=<agnes>   SILICONFLOW_API_KEY=<siliconflow>
+#   AI-INSTALL/免费模型Key申请指南.md (Agnes agnes-2.5-flash 免费 / 智谱 glm-4-flash 永久免费 / 硅基流动 bge-m3 零费用).
+#   AGNESAI_API_KEY=<agnes>   ZHIPU_API_KEY=<zhipu>   SILICONFLOW_API_KEY=<siliconflow>
 
 # 4. (Optional) Build the WebUI management panel — requires Node.js
 #    Not needed if you only use the HTTP/MCP API, or if you deploy via Docker / Windows service

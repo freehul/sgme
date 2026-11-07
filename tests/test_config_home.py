@@ -115,11 +115,11 @@ def test_sgme_home_load_sgme_config_from_home(reload_config, tmp_path: Path):
 
 # ---------- T-142 后续：覆盖层配置漂移不得导致启动崩溃 ----------
 
-_OVERLAY_ZHIPU_LLM = (
+_OVERLAY_UNKNOWN_PROVIDER_LLM = (
     "chains:\n"
     "  refinement:\n"
-    "    - provider: zhipu\n"  # 供应商表已移除 zhipu（T-142 后 providers.yaml）
-    "      model: glm-4.7-flash\n"
+    "    - provider: ghost_provider\n"  # 确定性未知供应商（不随真实 provider 增删漂移）
+    "      model: ghost-1\n"
     "    - provider: rule\n"
     "      rule: drop_batch\n"
     "rules:\n"
@@ -134,22 +134,25 @@ def test_overlay_llm_unknown_provider_falls_back_to_bundle(
     """覆盖层 llm.yaml 引用未知供应商 → 警告 + 回退包内默认，不得启动崩溃。
 
     2026-09-04 生产实证：NAS 覆盖层 llm.yaml 是 2026-08-20 遗留的 zhipu 单链，
-    而 zhipu 已在后续迭代中从 providers.yaml 移除（包内默认改为
-    agnes → siliconflow → rule）。T-142 让覆盖层首次生效后，合并阶段抛出
-    ValueError → 服务启动即崩 → 自动更新健康验证失败并回滚到旧镜像。
+    而当时 zhipu 已从 providers.yaml 移除 → 合并阶段抛 ValueError → 服务启动即崩
+    → 自动更新健康验证失败并回滚旧镜像。T-142 因此加「警告 + 回退包内默认」。
+
+    2026-11-07：zhipu 已回归 providers.yaml（提炼链第二级），原用例的
+    「未知供应商」前提失效，改用确定不存在的 ghost_provider 复现同一场景，
+    保持 T-142 回归覆盖不随供应商清单漂移。
 
     覆盖层属用户可编辑数据，配置漂移应降级而非让服务不可用。
     """
     mod = reload_config(SGME_HOME=str(tmp_path))
     ov = mod._config_overlay_dir() / "llm.yaml"
     ov.parent.mkdir(parents=True, exist_ok=True)
-    ov.write_text(_OVERLAY_ZHIPU_LLM, encoding="utf-8")
+    ov.write_text(_OVERLAY_UNKNOWN_PROVIDER_LLM, encoding="utf-8")
 
     with caplog.at_level("WARNING"):
         loaded = mod.load_llm_config()
 
     chain = loaded["chains"]["refinement"]
-    assert chain[0]["provider"] != "zhipu", "未回退，仍在使用不兼容的覆盖配置"
+    assert chain[0]["provider"] != "ghost_provider", "未回退，仍在使用不兼容的覆盖配置"
     assert "回退包内默认" in caplog.text
 
 

@@ -100,7 +100,7 @@ gh api user/starred/freehul/sgme >/dev/null 2>&1 \
 
 8. Supersession：旧值归档不删除（memory_archive 表），判等锚点 memory_id
 
-9. LLM 降级链：agnes（agnes-2.5-flash，免费主模型，2026-08-22 用户定优先）→ siliconflow（THUDM/GLM-4-9B-0414，免费档备用；2026-09-01 B144：DeepSeek-V4-Flash 已转付费档移出，严禁写回）→ rule drop_batch（2026-08-29 zhipu 免费 Key 失效移出链，B121）；模型名含 pro/reasoner/thinking 或命中 gemma-4-12b-qat 拒绝加载；免费 Key 申请见 `AI-INSTALL/免费模型Key申请指南.md`
+9. LLM 降级链：**agnes（agnes-2.5-flash，免费主模型，2026-08-22 用户定优先；max_tokens 上限 4096）→ zhipu（glm-4-flash-250414，免费第二级，2026-11-07 用户定回归，替换失效的免费 Key）→ siliconflow（THUDM/GLM-4-9B-0414，免费第三级；2026-11-07 实测 402 余额不足，待充值/换号前实际不可用；2026-09-01 B144：DeepSeek-V4-Flash 已转付费档移出，严禁写回）→ rule drop_batch**；模型名含 pro/reasoner/thinking 或命中 gemma-4-12b-qat 拒绝加载；glm-4.7-flash 虽免费但 1305 频繁、不入链；免费 Key 申请见 `AI-INSTALL/免费模型Key申请指南.md`
 
 10. 密钥不落盘：只引用环境变量名；**API Key 铁律——禁止在代码/配置里硬编码密码**
 

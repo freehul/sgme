@@ -72,7 +72,7 @@ Agent 会话 --append--> raw/sessions/*.md（L0）
 | Python | **3.12 基准解释器**（项目级 venv，禁止依赖 PATH 上的 python；重建走 `scripts/bootstrap_venv.bat`） |
 | 依赖 | `requirements.txt` / `pyproject.toml`（`pip install -e ".[dev]"`） |
 | SQLite | 标准库 sqlite3 + FTS5 + sqlite-vec（向量，`/search` 用） |
-| LLM | OpenAI 兼容提供商（默认免费链 agnes → siliconflow → rule drop_batch，见 `sgme/resources/config/providers.yaml`） |
+| LLM | OpenAI 兼容提供商（默认免费链 agnes → zhipu → siliconflow → rule drop_batch，见 `sgme/resources/config/providers.yaml`） |
 | 端口 | HTTP 9910、MCP 9913 |
 
 ### 2.2 Docker / NAS
@@ -444,7 +444,8 @@ lsof -i :9910; kill -9 <pid>
 - **心跳降噪**：`/v1/health` 与心跳的 LLM 探测改为**连续 `health_fail_threshold`（默认 2）次失败**才判不可用，单次网络抖动不再产 `anomaly_warn`。
 - **手动恢复**：不想等冷却 → 重启容器（清空进程内熔断状态）；降级链与守卫配置见 `llm.yaml` / `providers.yaml`。
 - **agnes 的 max_tokens 上限是 4096（2026-11-06 实测）**：超过直接 HTTP 400 `max_tokens exceeds the limit of 4096`，整条提炼链每次调用必失败 → 首链熔断。生产 `refine.llm_override.max_tokens` 原为 16384，已改 4096；同日修复了 `llm_override` 不在 `SECTION_KEYS['refine']` 白名单、接口改了被静默丢弃的缺陷（2.0.9）。
-- **2026-11-06 起生产链去 deepseek（用户定）**：`refinement` 链 = **agnes-2.5-flash → rule**，`refine.llm_override` 固定 agnes；`providers.yaml` 的 deepseek 段已注释，**agent_model 声明 deepseek 的文件不再劫持提炼链**；siliconflow 实测 402（余额不足）也从链上移出。`refine_runs.provider` 只应有 agnes。
+- **2026-11-06 起生产链去 deepseek（用户定）**：`refinement` 链 = **agnes-2.5-flash → rule**，`refine.llm_override` 固定 agnes；`providers.yaml` 的 deepseek 段已注释，**agent_model 声明 deepseek 的文件不再劫持提炼链**；siliconflow 实测 402（余额不足）也被移出。`refine_runs.provider` 只应有 agnes。
+- **2026-11-07 起智谱回归第二级（用户定）**：`refinement` 链 = **agnes-2.5-flash（max_tokens 4096）→ zhipu glm-4-flash-250414（免费档）→ siliconflow GLM-4-9B-0414（402 待充值）→ rule drop_batch**。`refine.llm_override` 仍固定 agnes（防 agent 声明劫持）；`glm-4.7-flash` 虽免费但首包成功率约 60%、1305 频繁、延迟 10–53s，**不入链**。智谱只有官方标「免费」的模型无偿调用（glm-4-flash-250414 等），误切 `glm-5.x` 会用同一把 Key 产生真实费用。
 
 ---
 
