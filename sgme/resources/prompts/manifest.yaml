@@ -12,7 +12,9 @@ stages:
     ab:
       enabled: false
   l1_extraction:
-    active: v019  # 2.0 基线（2026-11-02 上线）：七值 facts.type / route 四值硬分流 /
+    active: v020  # 2026-11-07 由 v019 切来：v020 = v019 + 补回 v014 丢失的「结构硬约束」
+                  # （v015 误从 v013 分叉所致），正文其余逐字相同，详见 B317。
+                  # 2.0 基线（2026-11-02 上线）：七值 facts.type / route 四值硬分流 /
                   # derivation×modality 双轴 / forget_request 软遗忘 / subject 必填。
                   # 此前为 @working（1.x 工作副本），导致 2.0 抽取实际未运行。
     ab:
