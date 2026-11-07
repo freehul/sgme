@@ -1,11 +1,11 @@
 ---
 name: adapter-mimo
-description: 小米 MiMo Desktop 的 SGME（拾光记忆）官方适配器。当对话涉及「以前/上次/还记得/历史事实」、要求记住某事、需要关怀信号/角色扮演、读写 SGME 记忆/知识/技能、触发提炼或画像注入时使用。接入标记：SGME-ONBOARDING-v2。不适用于与 SGME 无关的通用问答。
+description: 小米 MiMo Desktop 的 SGME（拾光记忆）官方适配器。当对话涉及「以前/上次/还记得/历史事实」、要求记住某事、需要关怀信号/角色扮演、读写 SGME 记忆/知识/技能、触发提炼或画像注入时使用。接入标记：SGME-ONBOARDING-v3。不适用于与 SGME 无关的通用问答。
 category: adapter
 tags: [skill, adapter, sgme]
 
 ---
-# SGME 接入纪律（SGME-ONBOARDING-v2 · MiMo Desktop）
+# SGME 接入纪律（SGME-ONBOARDING-v3 · MiMo Desktop）
 
 你（MiMo Desktop）已接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
@@ -143,3 +143,9 @@ python scripts/care_watch.py pull
 - 远程调用禁止 `dev-agent-key-change-me`（仅本机回环）。
 - 测 API 用 Python（git-bash curl 破坏中文 UTF-8）。
 - 旧薄技能 `~/.config/mimocode/skills/sgme/` 若仍存在，可在 Plugins 页停用，避免双触发。
+
+## 汇报规范（v3 新增）
+按 SGME 汇报规范输出：结论先行（一句话）+ 关键数据（实测并附来源/命令）+ 要点列表（≤7 条）+ 遗留风险/未验证项 + 下一步选项（不替用户决定）。
+本宿主渲染档位：M（Markdown：小标题+列表+粗体，表格 ≤4 列）。
+完整规范见 SGME 仓库 AI-INSTALL/report-style.md，或技能 report-format。
+

@@ -248,7 +248,7 @@ def register_mcp_server(mcp_url: str, key: str) -> str:
 
 
 AGENTS_MD_SECTION = """\
-## SGME 接入纪律（SGME-ONBOARDING-v2 · ZCode）
+## SGME 接入纪律（SGME-ONBOARDING-v3 · ZCode）
 
 你（ZCode）已接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 

@@ -2494,17 +2494,17 @@ def build_mcp_server():
                 "adapters": "官方适配器（hermes/dsh/doubao/mimo/workbuddy/zcode/codex）经技能库自助获取：skill_search('adapter') 或 skill_search('<宿主名> 适配器') → skill_get → 同机 skill_materialize(name='adapter-<host>', dest_dir=...) 落盘完整包后按包内说明安装（落盘在服务端文件系统，dest_dir/path 均为服务端视角）；跨机（agent 在本地、SGME 在远端）用 HTTP 包通道下载完整包：GET /v1/skills/{name}/package（agent key）取 tar.gz，按归档根 MANIFEST.sha256 校验后解包；或 skill_get 取正文自行写盘；codex 为动态 MCP stdio 代理；无宿主适配器时写入 self_config 模板走 MCP 通用接入",
             },
             "self_config": {
-                "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：SGME 是统一能力平面，核心模块为 memory / skills / wiki；接入后只需安装宿主适配器，不需要批量安装很多 skill。①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v2）②安装官方适配器（skill_search('adapter') → 同机 skill_materialize 落盘 / 跨机 GET /v1/skills/{name}/package 下载完整包（tar.gz + MANIFEST.sha256）后按包内说明安装；或 skill_get 取正文自行写盘），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。在线版完整指引（免 Key）：GET /v1/onboarding/docs。",
+                "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：SGME 是统一能力平面，核心模块为 memory / skills / wiki；接入后只需安装宿主适配器，不需要批量安装很多 skill。①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v3）②安装官方适配器（skill_search('adapter') → 同机 skill_materialize 落盘 / 跨机 GET /v1/skills/{name}/package 下载完整包（tar.gz + MANIFEST.sha256）后按包内说明安装；或 skill_get 取正文自行写盘），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。在线版完整指引（免 Key）：GET /v1/onboarding/docs。",
                 "steps": [
                     "1. 自查：读你的身份文件，grep 标记「SGME-ONBOARDING」；",
-                    "2. 已存在且版本 >= v2 → 配置已完成，跳过；",
+                    "2. 已存在且版本 >= v3 → 配置已完成，跳过；",
                     "3. 缺失或版本旧 → 把下方 template 写入你的身份文件（写入位置/方式按你工具的文件组织与加载机制自定）；",
                     "4. 写入后读回验证内容完整，并汇报（写了哪个文件、哪个位置）；",
                     "5. 无法写入（权限/沙箱/审批限制）→ 如实报告主人并给出建议，禁止谎称已完成。",
                 ],
-                "version": "SGME-ONBOARDING-v2",
+                "version": "SGME-ONBOARDING-v3",
                 "template": (
-                    "# SGME 接入纪律（SGME-ONBOARDING-v2）\n"
+                    "# SGME 接入纪律（SGME-ONBOARDING-v3）\n"
                     "你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。"
                     "它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。\n"
                     "**核心能力平面**：SGME 的三大核心模块是 memory / skills / wiki。历史事实、用户偏好和项目上下文走 memory；手册、设计、经验和踩坑走 wiki；框架、工具链和专业流程先 skill_search，再按需 skill_digest/skill_get。接入后只需宿主适配器，不需要批量安装很多 skill；普通技能留在 SGME 中按需读取，只有适配器或确实需要本地资产时才 skill_materialize（落盘在服务端，本机与 SGME 同机时可直接安装）；跨机取完整包用 HTTP GET /v1/skills/{name}/package，或 skill_get 取正文自行写盘。\n"
@@ -2519,6 +2519,7 @@ def build_mcp_server():
                     "   - 短连接（无常驻进程的 agent）：每次对话开始 signal_pull 拉未消费信号；\n"
                     "   - 长连接（有常驻能力的 agent，**主动关怀首选**）：挂 SSE 事件流 GET http://<sgme-host>:9910/v1/events/stream?subscriber_id=<你的agent_id>（请求头带 X-API-Key），事件实时推送，care_*/memory_updated/anomaly_warn 一产生即到达 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件。\n"
                     "5. 对话开始时（或用户指定角色时）role_list 看可用角色，role_assemble(role_id) 拿人设并按其说话——换皮不换芯，角色只是沟通外皮，记忆池不动。\n"
+                    "**汇报规范**（v3 新增，跨宿主同一套内容契约）：给用户的结论/进度/方案/故障说明必须五项齐全——①结论先行一句话 ②关键数据（实测并附来源或命令；没测写未验证）③要点列表（≤7 条）④遗留风险/未验证项 ⑤下一步选项（不替用户决定）。渲染按宿主能力分三档：R 富 UI（DSH 的 dsh-ui 围栏）／M Markdown（小标题+列表+粗体，表格 ≤4 列、单元格 ≤30 字）／P 纯文本（不用表格）。不把 dsh-ui JSON 发给非 DSH 宿主；不擅自扩大范围；改了什么/没改什么分开写。完整规范见仓库 AI-INSTALL/report-style.md 或技能 report-format。\n"
                     "**强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」。\n"
                     "**写入格式**：append 的 content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422。\n"
                     "**批量提炼纪律**：≥20 文件必须分批（每批≤20）+ 批间 30–60 秒；429 不立即重试（交服务端 batch_scan 兜底）；永远 async 模式。\n"

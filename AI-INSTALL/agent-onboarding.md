@@ -29,6 +29,20 @@
 | 框架、工具链、专业流程和领域技能 | `skills` | `skill_search` → `skill_digest` → `skill_get` |
 | 跨机共享的重要 KEY（可选模块） | `credentials` | `credential_list` / `credential_get`；程序用 KEY 走 `sgme-cred run`（详见 §4.3） |
 
+### 汇报规范（v3 新增，跨宿主同一套内容契约）
+
+向用户输出结论、进度、方案、故障说明时，五项必须齐全：①结论先行一句话 ②关键数据（实测并附来源/命令；没测写「未验证」）③要点列表（≤7 条）④遗留风险/未验证项 ⑤下一步选项（不替用户决定）。
+
+渲染按宿主能力分三档，**内容契约一致、呈现形式允许不同**：
+
+| 档位 | 宿主 | 呈现 |
+|---|---|---|
+| R 富 UI | DSH（dsh-genui） | `dsh-ui` 围栏，输出前先校验 |
+| M Markdown | Claude Code / Codex / ZCode / Hermes / 豆包 / MiMo / WorkBuddy | 小标题 + 列表 + 粗体；表格 ≤4 列、单元格 ≤30 字 |
+| P 纯文本 | 终端/短信/语音 | 小标题 + 列表，不用表格 |
+
+不把 `dsh-ui` JSON 发给非 DSH 宿主；完整规范见 [report-style.md](./report-style.md) 或技能 `report-format`。
+
 统一路由：**memory 取上下文 → skills 取方法 → 执行 → wiki 沉淀稳定经验**。普通 skill 不物化；宿主适配器或确需本地资产的工具包按部署形态取件——同机用 `skill_materialize`（落盘在 SGME 服务端）；跨机用**包通道**取完整包：`GET /v1/skills/{name}/package`（或 `skill_fetch.py` 一键下载校验解包，见 §6.1），字节保真、可在本地直接执行。
 
 SGME 技能库已提供统一开发能力入口：`coding-workflow`（TDD/调试/审查/验证/CodeGraph/提交）、`sgme-development`（引擎开发）、`sgme-adapter-development`（适配器）、`sgme-docs-authoring`（文档）、`skill-governance`（技能治理）和 `sgme-operations`（记忆/技能/wiki/凭据运维与手册）。需要时按 `skill_search` 检索，不要再批量安装重复技能。
@@ -98,7 +112,7 @@ asyncio.run(main())
 
 连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 43 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
 
-**自助配置（2026-08-13，接入完成标准之一）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v2`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
+**自助配置（2026-08-13，接入完成标准之一）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v3`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
 
 1. 自查身份文件是否已有 `SGME-ONBOARDING` 标记（版本 ≥ **v2** 即完成，跳过；仍写 v1 的请升级到 v2 模板）；
 2. 缺失或版本旧 → 按模板写入自己的身份文件（写入位置/方式按工具的文件组织与加载机制自定）；
@@ -288,7 +302,7 @@ SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 
 | ④ | 检索 | `search` 命中带溯源 |
 | ⑤ | 提炼 | `refine_trigger` async 可达 |
 | ⑥ | 技能 | 协议已常驻上下文（或已调 `skill_coldstart`）+ `skill_search` 有结果 |
-| ⑦ | 自我配置 | 身份文件含 `SGME-ONBOARDING-v2` |
+| ⑦ | 自我配置 | 身份文件含 `SGME-ONBOARDING-v3` |
 | ⑧ | 适配器 | 已装 `adapter-<host>`，或显式走通用 MCP 且 ⑦ 完成 |
 
 > 两套「完成」定义曾互相打架（selfcheck 六项 vs self_config 模板）——自 2026-09-28 起统一为上表，`selfcheck.md` / `agent_onboarding.self_config.requirement` / 本节三处同源。

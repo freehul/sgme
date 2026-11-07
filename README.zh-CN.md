@@ -231,7 +231,7 @@ dsh plugin --profile web add github:freehul/sgme
 
 **接入自检**：连接成功后第一件事调 `agent_onboarding()`——返回版本、全部工具清单与快速上手，确认无 403/超时即接入成功
 
-> ⚠️ **一致性声明**：本提示词段与 `agent_onboarding()` 返回的 `self_config.template`（版本标记 `SGME-ONBOARDING-v2`）若出现内容漂移，**以模板为准**——接入时优先复制模板，本段仅作快速参考。
+> ⚠️ **一致性声明**：本提示词段与 `agent_onboarding()` 返回的 `self_config.template`（版本标记 `SGME-ONBOARDING-v3`）若出现内容漂移，**以模板为准**——接入时优先复制模板，本段仅作快速参考。
 
 ### 放置位置
 

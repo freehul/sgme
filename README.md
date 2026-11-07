@@ -258,7 +258,7 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 
 **Self-check on connect**: first call after connecting — `agent_onboarding()` returns the version, the full tool list and a quick start; no 403/timeout means you are in
 
-> ⚠️ **Consistency note**: if this prompt section drifts from the `self_config.template` returned by `agent_onboarding()` (version tag `SGME-ONBOARDING-v2`), **the template wins** — copy the template when onboarding; this section is only a quick reference.
+> ⚠️ **Consistency note**: if this prompt section drifts from the `self_config.template` returned by `agent_onboarding()` (version tag `SGME-ONBOARDING-v3`), **the template wins** — copy the template when onboarding; this section is only a quick reference.
 
 ### Where to Put It
 

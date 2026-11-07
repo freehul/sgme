@@ -1,11 +1,11 @@
 ---
 name: adapter-doubao
-description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME 是主人的长期记忆中枢（HTTP API <NAS_IP>:9910，MCP <NAS_IP>:9913），负责跨会话/多 Agent 的记忆提炼、按场景注入、wiki 知识库与技能库。当对话涉及「以前/上次/还记得/历史事实」、主人要求记忆某事、需要主动关怀信号、角色扮演、或需要读写 SGME 记忆/知识/技能时使用。接入标记：SGME-ONBOARDING-v2。
+description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME 是主人的长期记忆中枢（HTTP API <NAS_IP>:9910，MCP <NAS_IP>:9913），负责跨会话/多 Agent 的记忆提炼、按场景注入、wiki 知识库与技能库。当对话涉及「以前/上次/还记得/历史事实」、主人要求记忆某事、需要主动关怀信号、角色扮演、或需要读写 SGME 记忆/知识/技能时使用。接入标记：SGME-ONBOARDING-v3。
 category: adapter
 tags: [skill, adapter, sgme]
 
 ---
-# SGME 接入纪律（SGME-ONBOARDING-v2）
+# SGME 接入纪律（SGME-ONBOARDING-v3）
 
 你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
@@ -151,3 +151,9 @@ SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、
 - 密钥永不落盘：部署配置只登记环境变量名（`SGME_AGENT_KEY` / `SGME_ADMIN_KEY`）。
 
 > 接入记录：2026-09-19 由豆包工作完成接入（官方适配器 adapters/doubao）。自检结果见 scripts/access-log.md。
+
+## 汇报规范（v3 新增）
+按 SGME 汇报规范输出：结论先行（一句话）+ 关键数据（实测并附来源/命令）+ 要点列表（≤7 条）+ 遗留风险/未验证项 + 下一步选项（不替用户决定）。
+本宿主渲染档位：M（Markdown：小标题+列表+粗体，表格 ≤4 列）。
+完整规范见 SGME 仓库 AI-INSTALL/report-style.md，或技能 report-format。
+

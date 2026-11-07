@@ -1,5 +1,5 @@
 name: sgme
-version: "2.0.9"  # 版本口径跟随 SGME 服务版本
+version: "2.0.10"  # 版本口径跟随 SGME 服务版本
 requires_hermes: ">=0.22.0"  # catalog 规则14：与 plugin-catalog/sgme.yaml 同步声明；旧版 Hermes 只认 manifest 这份
 description: "SGME 记忆引擎 Hermes 桥接——长期记忆沉淀+溯源检索+技能/wiki/三池治理+沟通角色（44 工具，瘦桥接，重活全在 SGME daemon）"
 author: "freehul"

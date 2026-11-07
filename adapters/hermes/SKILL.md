@@ -1,9 +1,9 @@
 ---
 name: hermes
-description: Hermes 的 SGME（拾光记忆）官方适配器（memory.provider 插件）。当对话涉及「以前/上次/还记得/历史事实」、要求记住某事、需要关怀信号/角色扮演、读写 SGME 记忆/知识/技能、触发提炼或画像注入时使用。接入标记：SGME-ONBOARDING-v2。不适用于与 SGME 无关的通用问答。
+description: Hermes 的 SGME（拾光记忆）官方适配器（memory.provider 插件）。当对话涉及「以前/上次/还记得/历史事实」、要求记住某事、需要关怀信号/角色扮演、读写 SGME 记忆/知识/技能、触发提炼或画像注入时使用。接入标记：SGME-ONBOARDING-v3。不适用于与 SGME 无关的通用问答。
 ---
 
-# SGME 接入纪律（SGME-ONBOARDING-v2 · Hermes）
+# SGME 接入纪律（SGME-ONBOARDING-v3 · Hermes）
 
 你（Hermes Agent）通过官方 **memory.provider 插件**接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
@@ -82,5 +82,11 @@ description: Hermes 的 SGME（拾光记忆）官方适配器（memory.provider 
 4. 检索：`search` 命中  
 5. 提炼：`refine_trigger` async 可用  
 6. 技能：`skill_search` 有结果  
-7. 自我配置：身份文件含 `SGME-ONBOARDING-v2`  
+7. 自我配置：身份文件含 `SGME-ONBOARDING-v3`  
 8. 适配器：已安装本适配器（或显式声明走 MCP 通用接入并写入纪律模板）
+
+## 汇报规范（v3 新增）
+按 SGME 汇报规范输出：结论先行（一句话）+ 关键数据（实测并附来源/命令）+ 要点列表（≤7 条）+ 遗留风险/未验证项 + 下一步选项（不替用户决定）。
+本宿主渲染档位：M（Markdown：小标题+列表+粗体，表格 ≤4 列）。
+完整规范见 SGME 仓库 AI-INSTALL/report-style.md，或技能 report-format。
+

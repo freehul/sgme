@@ -1,6 +1,6 @@
 ---
 name: adapter-claude-code
-description: Claude Code 的 SGME 官方适配器（MCP stdio 动态透传 + 原生 hooks：SessionStart 注入 / Stop 落盘 / SessionEnd 提炼）。当对话涉及历史事实、用户偏好、记忆读写、技能检索、Wiki 查询或提炼触发时使用。接入标记：SGME-ONBOARDING-v2。
+description: Claude Code 的 SGME 官方适配器（MCP stdio 动态透传 + 原生 hooks：SessionStart 注入 / Stop 落盘 / SessionEnd 提炼）。当对话涉及历史事实、用户偏好、记忆读写、技能检索、Wiki 查询或提炼触发时使用。接入标记：SGME-ONBOARDING-v3。
 category: adapter
 tags: [skill, adapter, sgme]
 
@@ -52,3 +52,9 @@ SGME_CLAUDE_KEY=<issued-by-sgme-admin>
 ## 获取完整包（技能库）
 
 本适配器是终端 agent：跨机取技能完整包直接走**包通道**——`GET /v1/skills/{name}/package`（tar.gz；按包内 `MANIFEST.sha256` 校验后解包，失败不留残件），或 `skill_fetch.py --name <name> --dest <目录>` 一键下载校验解包（脚本经 `GET /v1/onboarding/docs` 在线获取）；同机可用 `skill_materialize`（落盘在 SGME 服务端文件系统）。
+
+## 汇报规范（v3 新增）
+按 SGME 汇报规范输出：结论先行（一句话）+ 关键数据（实测并附来源/命令）+ 要点列表（≤7 条）+ 遗留风险/未验证项 + 下一步选项（不替用户决定）。
+本宿主渲染档位：M（Markdown：小标题+列表+粗体，表格 ≤4 列）。
+完整规范见 SGME 仓库 AI-INSTALL/report-style.md，或技能 report-format。
+
