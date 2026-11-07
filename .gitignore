@@ -64,6 +64,9 @@ venv/
 config/llm.yaml
 config/providers.yaml
 config/sgme.yaml
+# 配置备份/临时打包件（2026-11-07：本地调链时的 .bak-* 曾被误列为未跟踪）
+config/*.bak-*
+config/*.bundle.yaml.bak-*
 credentials/
 secrets/
 # EP-11（2026-10-15）：上方 credentials/ 是「防误提交凭据目录」通用规则，会误伤 SGME
