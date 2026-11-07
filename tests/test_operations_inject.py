@@ -329,6 +329,8 @@ def test_inject_nonempty_no_note(conns, cfg, monkeypatch):
     # config/.env（未跟踪文件），在干净 checkout/CI 上必然翻车（T-113 密封性）
     monkeypatch.setenv("AGNESAI_API_KEY", "test-key")
     monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
+    # 2.0.12 起 zhipu 回归提炼链第二级：缺 ZHIPU_API_KEY 同样会触发配置缺失 note
+    monkeypatch.setenv("ZHIPU_API_KEY", "test-key")
     mem_conn, _session_conn, _ = conns
     _insert(mem_conn, "我是测试用户", dims=["identity", "family"])
 

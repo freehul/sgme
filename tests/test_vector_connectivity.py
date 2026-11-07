@@ -153,13 +153,15 @@ def test_vector_block_ok_no_signal(cfg, monkeypatch):
 # ---------- 3. 提炼链顺序（主 agnes 备 siliconflow） ----------
 
 def test_chain_agnes_primary_siliconflow_backup(cfg):
-    """提炼链顺序（2026-09-01 B144）：agnes 主 → siliconflow 备 → rule drop_batch 兜底。
+    """提炼链顺序（2026-11-07 2.0.12）：agnes 主 → zhipu 免费档 → siliconflow 备 → rule 兜底。
 
-    zhipu 已移出（9af882b/B121）、DeepSeek-V4-Flash 转付费移出（B144）；锚定 config/llm.yaml 现链。
+    zhipu 曾于 2026-08-29（B121）因免费 Key 失效移出，2.0.12 回归第二级（glm-4-flash-250414）；
+    DeepSeek-V4-Flash 转付费移出（B144）；glm-4.7-flash 因 1305 频繁不入链。
     """
     chain = cfg["llm"]["chains"]["refinement"]
     providers = [n.get("provider") for n in chain]
-    assert providers == ["agnes", "siliconflow", "rule"]
+    assert providers == ["agnes", "zhipu", "siliconflow", "rule"]
     assert chain[0]["model"] == "agnes-2.5-flash"
-    assert chain[1]["model"] == "THUDM/GLM-4-9B-0414"
+    assert chain[1]["model"] == "glm-4-flash-250414"
+    assert chain[2]["model"] == "THUDM/GLM-4-9B-0414"
     assert chain[-1].get("rule") == "drop_batch"

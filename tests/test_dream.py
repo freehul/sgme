@@ -437,14 +437,19 @@ def test_run_dream_care_scan_failure_continues(conns, cfg, monkeypatch):
 def test_run_dream_cold_archive(conns, cfg):
     """验收 4b：>90 天 refined 文件 → archived；未超期 / new 不动。"""
     mem_conn, session_conn, _ = conns
-    _seed_raw_file(session_conn, file_id="f-old", status="refined",
-                   started_at="2020-01-01T00:00:00Z")
-    _seed_raw_file(session_conn, file_id="f-recent", status="refined",
-                   started_at="2026-08-09T00:00:00Z")
-    # new 文件（近期）：① 被抽取提炼为 refined，started_at 未超期 → ③ 不归档
+    # ⚠️ 必须用相对时间（同 `_next_started_at` 的教训）：写死日期会随日历推移越过
+    # 90 天归档窗口。2026-11-07 实锤——此处原写 "2026-08-09" 的「未超期」样本当天已
+    # 90 天 19 小时，三个文件全被归档（assert 3 == 1），CI 连续红。
+    old_at = (datetime.now() - timedelta(days=200)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    recent_at = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
     # 起时刻与 f-recent 错开一秒：F-4 之后 (session_key, started_at) 唯一
-    _seed_raw_file(session_conn, file_id="f-fresh-new", status="new",
-                   started_at="2026-08-09T00:00:01Z")
+    fresh_at = (datetime.now() - timedelta(days=10) + timedelta(seconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    _seed_raw_file(session_conn, file_id="f-old", status="refined", started_at=old_at)
+    _seed_raw_file(session_conn, file_id="f-recent", status="refined", started_at=recent_at)
+    # new 文件（近期）：① 被抽取提炼为 refined，started_at 未超期 → ③ 不归档
+    _seed_raw_file(session_conn, file_id="f-fresh-new", status="new", started_at=fresh_at)
 
     summary = dream_mod.run_dream(mem_conn, session_conn, cfg)
 

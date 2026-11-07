@@ -518,7 +518,9 @@ def _(self):
     return [
         ("阶段 0 基线采集脚本", *has("migrate_baseline", "collect_memory")),
         ("十项校验脚本", *has("verify_migration", "def run")),
-        ("校验报告目录", *exists("docs/migration")),
+        # 报告目录 docs/migration 是私有文档仓产物（工作区为 junction），公开仓干净检出里
+        # 不存在——不能作为仓内断言，否则 CI 必红（2026-11-07 实锤）。改为锚定脚本内的落点定义。
+        ("校验报告落点定义", *has("verify_migration", "docs/migration")),
         ("注入回归对照器（#9）", *has("regression_inject", "def compare_results")),
         ("#6 阶段感知门禁（--stage）", *has("verify_migration", "stage=args.stage")),
     ]
