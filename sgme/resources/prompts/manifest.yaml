@@ -94,7 +94,12 @@ versions:
     file: versions/l1_extraction/v019.txt
     sha256: a174a5463c4545a995abccea4a3b915affeae825a077232a082dcc00047ac81b
     created_at: '2026-11-01T20:00:00Z'
-    note: 'SGME2.0 定版候选（未激活，active 仍为 @working，现役工作副本 = v007）：v013 起的结构性重构——输出改为 main_event + facts + causes + trait + dimensions + route 单元制；判据为「半年后还对用户有用」，明确不记过程叙述 / 执行痕迹 / 同一事实只出一条；含 v015 的「什么不是记忆」三条反例与 v017 资源库归属修正。2026-11-01 已用于全量重建（1,432 会话 → 19,069 条记忆），质量实测：工具回灌 0.08% / 过程叙述 0.01% / 空泛句 0%。'
+    note: 'SGME2.0 定版（2026-11-02 已激活上线；v020 修正其头注释与丢失的 v014 硬约束）：v013 起的结构性重构——输出改为 main_event + facts + causes + trait + dimensions + route 单元制；判据为「半年后还对用户有用」，明确不记过程叙述 / 执行痕迹 / 同一事实只出一条；含 v015 的「什么不是记忆」三条反例与 v017 资源库归属修正。2026-11-01 已用于全量重建（1,432 会话 → 19,069 条记忆），质量实测：工具回灌 0.08% / 过程叙述 0.01% / 空泛句 0%。'
+  - version: v020
+    file: versions/l1_extraction/v020.txt
+    sha256: e7ca8d6625a01315a788b4c313fe2fb49cf524159ea19c42c605f0630c94a5af
+    created_at: '2026-11-07T10:10:00Z'
+    note: 'v019 的修正版（2026-11-07）：补回 v014 丢失的「结构硬约束」——v015 误从 v013 分叉，v014 的防回退约束（实测 8% 的块回退 1.x 平铺数组 → 2.0 字段全空）在 v015~v019 一路缺失；本版把该段原样合并回主干，并清掉 v019 头部的过期状态行，正文其余部分与 v019 逐字相同。登记时 active 仍为 v019，待小样本评测通过后 activate。'
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt
