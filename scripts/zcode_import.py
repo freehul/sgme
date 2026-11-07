@@ -112,7 +112,10 @@ def main(argv: list[str] | None = None) -> int:
             for t in ordered:
                 text = (staging / t["out_path"]).read_text(encoding="utf-8").strip()
                 try:
-                    mems = l2_extraction.parse_extraction_output(text, dims)
+                    # 2026-11-07 修复：v019 输出为 2.0 结构（main_event+facts），必须走
+                    # 与线上提取链同一分派入口（SGME_L2_SCHEMA 默认 2.0）；
+                    # 旧 1.x 公开解析器读不懂 2.0 结构，会静默丢成 0 条。
+                    mems = l2_extraction._parse_extraction_output(text, dims)
                 except Exception as e:
                     parse_error = str(e)
                     break
