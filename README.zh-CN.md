@@ -225,13 +225,20 @@ dsh plugin --profile web add github:freehul/sgme
 
 **技能获取（B114 后 skills 为独立模块，MUST）**：需要 SGME 未内置的专业能力时，先 `skill_search(query)` 检索、命中后 `skill_get(name)` 拉全文注入再执行——**禁止未检索就声称具备技能或硬凑步骤**；经验回写按归属口诀选通道（跟技能走的坑 `skill_put` 进技能本体，世界知识走 `wiki_evolve_trigger` 进 wiki）。
 
+**重要信息存放处（凭据库）**：SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集中存放处（NAS 唯一真源，本机 .env 只是缓存）。
+
+- 看有哪些：`credential_list()` / `sgme-cred list`（只回键名与元数据，永不回值）；
+- 程序取用：`sgme-cred run -- <命令>`（注入环境变量，值不落盘、不进对话）；
+- 必须显式查看：`credential_get(name)`——值不得写入对话正文或记忆；
+- 写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 `POST /v1/credentials`）。
+
 **向量引擎接入**（`health()` 返回 `vector.available=false` 或 `vector.connectivity=false` 时执行）：本地优先、云端免费降级——推荐本地 Ollama 或 LM Studio 跑 `bge-m3`（1024 维；云端硅基流动 `BAAI/bge-m3` 免费自动兜底，同维度切换不重灌索引）。探测 `curl http://127.0.0.1:11434/api/tags`（Ollama）/ `curl http://127.0.0.1:1234/v1/models`（LM Studio）→ 缺模型则 `ollama pull bge-m3`（或 LM Studio 搜索下载）→ 在 `config/sgme.yaml` 写 `search.vector` 段（`base_url` / `model: bge-m3` / `fallbacks`）并重启 SGME → 再 `health()` 直到 `vector.connectivity=true`。不推荐 llama.cpp（模型状态无人维护，清理显存后即失联）。
 
 **完整工具清单与用法**：见 [AI-INSTALL/agent-onboarding.md](AI-INSTALL/agent-onboarding.md)，或连上 MCP 后调 `agent_onboarding` 工具
 
 **接入自检**：连接成功后第一件事调 `agent_onboarding()`——返回版本、全部工具清单与快速上手，确认无 403/超时即接入成功
 
-> ⚠️ **一致性声明**：本提示词段与 `agent_onboarding()` 返回的 `self_config.template`（版本标记 `SGME-ONBOARDING-v3`）若出现内容漂移，**以模板为准**——接入时优先复制模板，本段仅作快速参考。
+> ⚠️ **一致性声明**：本提示词段与 `agent_onboarding()` 返回的 `self_config.template`（版本标记 `SGME-ONBOARDING-v4`）若出现内容漂移，**以模板为准**——接入时优先复制模板，本段仅作快速参考。
 
 ### 放置位置
 

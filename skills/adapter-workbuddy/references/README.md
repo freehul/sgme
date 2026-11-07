@@ -58,7 +58,7 @@ python scripts/sgme_client.py env-info       # 生效端点与密钥来源（不
 
 ```
 adapters/workbuddy/
-├── SKILL.md            # 技能真源（name=sgme，含 SGME-ONBOARDING-v3 模板 + 45 能力矩阵）
+├── SKILL.md            # 技能真源（name=sgme，含 SGME-ONBOARDING-v4 模板 + 45 能力矩阵）
 ├── locales/            # 显示名（zh-CN / en-US）
 ├── install.py          # 部署到 ~/.workbuddy/skills/sgme/ + client.env + 身份文件 + 自检
 ├── .gitignore          # 部署配置与身份文件不入库

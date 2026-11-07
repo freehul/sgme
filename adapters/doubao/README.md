@@ -51,7 +51,7 @@
 
 ```
 adapters/doubao/
-├── SKILL.md            # 豆包工作身份/纪律文件（真源，含 SGME-ONBOARDING-v3 模板 + 54 能力矩阵）
+├── SKILL.md            # 豆包工作身份/纪律文件（真源，含 SGME-ONBOARDING-v4 模板 + 54 能力矩阵）
 ├── install.py          # 部署器：同步到豆包工作技能目录 + 写部署配置 client.env + 自检 + 写接入日志
 ├── .gitignore          # 部署配置 client.env 不入库（含环境实况地址）
 ├── scripts/

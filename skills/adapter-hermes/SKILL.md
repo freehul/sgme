@@ -1,11 +1,11 @@
 ---
 name: adapter-hermes
-description: Hermes 的 SGME（拾光记忆）官方适配器（memory.provider 插件）。当对话涉及「以前/上次/还记得/历史事实」、要求记住某事、需要关怀信号/角色扮演、读写 SGME 记忆/知识/技能、触发提炼或画像注入时使用。接入标记：SGME-ONBOARDING-v3。不适用于与 SGME 无关的通用问答。
+description: Hermes 的 SGME（拾光记忆）官方适配器（memory.provider 插件）。当对话涉及「以前/上次/还记得/历史事实」、要求记住某事、需要关怀信号/角色扮演、读写 SGME 记忆/知识/技能、触发提炼或画像注入时使用。接入标记：SGME-ONBOARDING-v4。不适用于与 SGME 无关的通用问答。
 category: adapter
 tags: [skill, adapter, sgme]
 
 ---
-# SGME 接入纪律（SGME-ONBOARDING-v3 · Hermes）
+# SGME 接入纪律（SGME-ONBOARDING-v4 · Hermes）
 
 你（Hermes Agent）通过官方 **memory.provider 插件**接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
@@ -52,6 +52,15 @@ tags: [skill, adapter, sgme]
 4. **主动关怀靠消费信号**：`signal_pull` → `signal_claim` → 关怀 → `signal_ack`。
 5. **对话开始（或用户指定角色）`role_list` → `role_assemble`**——换皮不换芯。
 
+## 重要信息存放处（凭据库）
+
+SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集中存放处（NAS 唯一真源，本机 .env 只是缓存）。
+
+- 看有哪些：`credential_list()` / `sgme-cred list`（只回键名与元数据，永不回值）；
+- 程序取用：`sgme-cred run -- <命令>`（注入环境变量，值不落盘、不进对话）；
+- 必须显式查看：`credential_get(name)`——值不得写入对话正文或记忆；
+- 写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 `POST /v1/credentials`）。
+
 ## 强制查询
 
 涉及用户/项目历史事实（之前/以前/上次/还记得…），必须先 `search` 再回答；查不到如实说「记忆库中未找到」。
@@ -84,7 +93,7 @@ tags: [skill, adapter, sgme]
 4. 检索：`search` 命中  
 5. 提炼：`refine_trigger` async 可用  
 6. 技能：`skill_search` 有结果  
-7. 自我配置：身份文件含 `SGME-ONBOARDING-v3`  
+7. 自我配置：身份文件含 `SGME-ONBOARDING-v4`  
 8. 适配器：已安装本适配器（或显式声明走 MCP 通用接入并写入纪律模板）
 
 ## 汇报规范（v3 新增）

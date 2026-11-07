@@ -120,9 +120,14 @@ def _rows_to_dicts(cur: sqlite3.Cursor) -> list[dict]:
 
 
 def list_credentials(conn: sqlite3.Connection, *, include_deleted: bool = False) -> list[dict]:
-    """列表（键名 + 元数据，**不含值**；key_name 升序）。默认过滤已删（方案 §三）。"""
+    """列表（键名 + 元数据，**不含值**；key_name 升序）。默认过滤已删（方案 §三）。
+
+    D-37 v1.1（2026-11-08）：返回列补 scope / cred_type / expires_at / last_used_at
+    ——过滤判定在 operations 层（本层只做 SQL）。
+    """
     sql = (
-        "SELECT key_name, description, status, created_at, updated_at, updated_by, deleted_at "
+        "SELECT key_name, description, status, created_at, updated_at, updated_by, deleted_at, "
+        "scope, cred_type, expires_at, last_used_at "
         "FROM credentials"
     )
     if not include_deleted:
@@ -137,7 +142,8 @@ def get_credential(
     """单条完整行（含 value_cipher）；软删行默认不可见。"""
     sql = (
         "SELECT key_name, value_cipher, description, status, created_at, updated_at, "
-        "updated_by, deleted_at FROM credentials WHERE key_name = ?"
+        "updated_by, deleted_at, scope, cred_type, expires_at, last_used_at "
+        "FROM credentials WHERE key_name = ?"
     )
     if not include_deleted:
         sql += " AND status = 'active'"
@@ -164,12 +170,16 @@ def insert_credential(
     description: str | None,
     actor: str,
     at: str,
+    scope: str | None = None,
+    cred_type: str | None = None,
+    expires_at: str | None = None,
 ) -> None:
-    """插入新凭据（created_at = updated_at = at）。"""
+    """插入新凭据（created_at = updated_at = at；D-37 v1.1 三列可选）。"""
     conn.execute(
         "INSERT INTO credentials (key_name, value_cipher, description, status, deleted_at, "
-        "created_at, updated_at, updated_by) VALUES (?,?,?,'active',NULL,?,?,?)",
-        (key_name, value_cipher, description, at, at, actor),
+        "created_at, updated_at, updated_by, scope, cred_type, expires_at) "
+        "VALUES (?,?,?,'active',NULL,?,?,?,?,?,?)",
+        (key_name, value_cipher, description, at, at, actor, scope, cred_type, expires_at),
     )
 
 
@@ -181,12 +191,28 @@ def update_credential(
     description: str | None,
     actor: str,
     at: str,
+    scope: str | None = None,
+    cred_type: str | None = None,
+    expires_at: str | None = None,
 ) -> bool:
-    """更新值（仅 active 行；description '更新即覆盖'，None 即清空）。返回是否命中行。"""
+    """更新整行可写列（仅 active 行；D-37 v1.1：scope/cred_type/expires_at 一并写入）。
+
+    合并语义（缺省=不变、空串=清空）在 operations 层完成，本层只收最终值。
+    返回是否命中行。
+    """
     cur = conn.execute(
-        "UPDATE credentials SET value_cipher=?, description=?, updated_at=?, updated_by=? "
-        "WHERE key_name=? AND status='active'",
-        (value_cipher, description, at, actor, key_name),
+        "UPDATE credentials SET value_cipher=?, description=?, updated_at=?, updated_by=?, "
+        "scope=?, cred_type=?, expires_at=? WHERE key_name=? AND status='active'",
+        (value_cipher, description, at, actor, scope, cred_type, expires_at, key_name),
+    )
+    return cur.rowcount > 0
+
+
+def touch_last_used(conn: sqlite3.Connection, key_name: str, *, at: str) -> bool:
+    """更新最近使用时间（D-37 v1.1；读成功解密后 best-effort 调用）。返回是否命中行。"""
+    cur = conn.execute(
+        "UPDATE credentials SET last_used_at=? WHERE key_name=? AND status='active'",
+        (at, key_name),
     )
     return cur.rowcount > 0
 

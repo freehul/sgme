@@ -7,6 +7,7 @@ import {
   restoreCredential,
   writeCredential,
   type CredentialMeta,
+  type CredentialWriteInput,
 } from '../../api/credentials'
 import { ApiError } from '../../api/client'
 import { fmtTs } from '../../utils/format'
@@ -37,17 +38,100 @@ const editingKey = ref<string | null>(null)
 const formKey = ref('')
 const formValue = ref('')
 const formNote = ref('')
+// D-37 v1.1 元数据（编辑时提交空串 "" = 清空该字段）
+const formType = ref('')
+const formScope = ref('')
+const formAgents = ref('')
+const formExpires = ref('') // datetime-local 本地值，提交前转 ISO
+const scopeExtra = ref('') // 后端返回的非标准 scope 取值（原样保留，避免编辑备注时被清空）
 const formError = ref('')
 
 const KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/
 // 后端保留名（引导/主密钥空间不进库），前端同规则预检
 const RESERVED = new Set(['SGME_CRED_KEY', 'SGME_ADMIN_KEY', 'SGME_AGENT_KEY'])
 
+// ---------- D-37 v1.1 元数据：类型 / 范围 / 过期时间 ----------
+
+// 类型下拉（留空 = 未设置；编辑时留空提交空串 = 清空）
+const CRED_TYPES = [
+  { value: '', label: '（未设置）' },
+  { value: 'api_key', label: 'API Key' },
+  { value: 'token', label: 'Token' },
+  { value: 'password', label: '密码' },
+  { value: 'other', label: '其他' },
+]
+
+function credTypeLabel(v: string | null): string {
+  if (!v) return '—'
+  return CRED_TYPES.find((t) => t.value === v)?.label || v
+}
+
+// 范围编码：all=全部 agent / admin=仅管理员 / agents:<英文逗号分隔名单>
+const AGENTS_PREFIX = 'agents:'
+
+// agents:xxx,yyy → "xxx, yyy"（列表展示用）
+function scopeAgentsText(scope: string | null): string {
+  if (!scope || !scope.startsWith(AGENTS_PREFIX)) return ''
+  return scope
+    .slice(AGENTS_PREFIX.length)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(', ')
+}
+
+// 范围下拉：非标准取值（后端将来扩展）原样保留为一项
+const scopeChoices = computed(() => {
+  const list = [
+    { value: '', label: '（未设置）' },
+    { value: 'all', label: '全部 agent' },
+    { value: 'admin', label: '仅管理员' },
+    { value: AGENTS_PREFIX, label: '指定 agent…' },
+  ]
+  if (scopeExtra.value) list.push({ value: scopeExtra.value, label: scopeExtra.value })
+  return list
+})
+
+// 表单 → 提交用范围串（agents: 时拼接规范化后的名单）
+function scopeToSubmit(): string {
+  if (formScope.value !== AGENTS_PREFIX) return formScope.value
+  const list = formAgents.value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  return AGENTS_PREFIX + list.join(',')
+}
+
+// datetime-local（无时区，按浏览器本地时区）↔ ISO 8601 互转
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+function isoToLocalInput(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const ymd = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+  const hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+  return ymd + 'T' + hm
+}
+
+function localInputToIso(v: string): string {
+  if (!v) return ''
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString()
+}
+
 function openCreate() {
   editingKey.value = null
   formKey.value = ''
   formValue.value = ''
   formNote.value = ''
+  formType.value = ''
+  formScope.value = ''
+  formAgents.value = ''
+  formExpires.value = ''
+  scopeExtra.value = ''
   formError.value = ''
   showForm.value = true
 }
@@ -57,6 +141,21 @@ function openEdit(c: CredentialMeta) {
   formKey.value = c.key_name
   formValue.value = ''
   formNote.value = c.description || ''
+  formType.value = c.cred_type || ''
+  // 范围回填：all / admin 直填，agents: 拆出名单，其它取值原样保住
+  const rawScope = c.scope || ''
+  scopeExtra.value = ''
+  formAgents.value = ''
+  if (!rawScope || rawScope === 'all' || rawScope === 'admin') {
+    formScope.value = rawScope
+  } else if (rawScope.startsWith(AGENTS_PREFIX)) {
+    formScope.value = AGENTS_PREFIX
+    formAgents.value = scopeAgentsText(rawScope)
+  } else {
+    formScope.value = rawScope
+    scopeExtra.value = rawScope
+  }
+  formExpires.value = isoToLocalInput(c.expires_at)
   formError.value = ''
   showForm.value = true
 }
@@ -76,17 +175,54 @@ async function saveForm() {
     formError.value = invalid
     return
   }
-  if (!formValue.value) {
+  const editing = !!editingKey.value
+  // 新建必填值；编辑留空 = 只更新元数据（不强制重填值）
+  if (!editing && !formValue.value) {
     formError.value = '值必填（不回显，请重新输入完整值）'
     return
   }
+  const scope = scopeToSubmit()
+  if (formScope.value === AGENTS_PREFIX && scope === AGENTS_PREFIX) {
+    formError.value = '范围选「指定 agent」时，请填写至少一个 agent 标识（英文逗号分隔）'
+    return
+  }
+  if (formExpires.value && !localInputToIso(formExpires.value)) {
+    formError.value = '过期时间格式无效'
+    return
+  }
+  const note = formNote.value.trim()
+  // 过期时间：datetime-local 本地值 → ISO；留空 = 清空（编辑）/ 不设置（新建）
+  const expiresIso = localInputToIso(formExpires.value)
   busy.value = true
   try {
-    await writeCredential(key, formValue.value, formNote.value.trim() || undefined)
+    if (editing) {
+      // 编辑：元数据一律显式上送（空串 "" = 清空）；value 仅在填写时才上送（= 不改值）
+      const input: CredentialWriteInput = {
+        key_name: key,
+        description: note,
+        scope,
+        cred_type: formType.value,
+        expires_at: expiresIso,
+      }
+      if (formValue.value) input.value = formValue.value
+      await writeCredential(input)
+    } else {
+      // 新建：value 必填；未填的元数据按 null 上送（= 不设置）
+      await writeCredential({
+        key_name: key,
+        value: formValue.value,
+        description: note || null,
+        scope: scope || null,
+        cred_type: formType.value || null,
+        expires_at: expiresIso || null,
+      })
+    }
     showForm.value = false
     // 立即抹去内存中的明文（表单关闭即清空，不留引用）
     formValue.value = ''
-    info.value = `已保存凭据 ${key}`
+    formAgents.value = ''
+    formExpires.value = ''
+    info.value = editing ? '已更新凭据 ' + key : '已保存凭据 ' + key
     filter.value = ''
     await load()
   } catch (e) {
@@ -222,7 +358,8 @@ onMounted(load)
     </div>
 
     <p class="hint">
-      值一律加密存储、永不回显；写入 / 删除 / 恢复需要管理员 Key，读取需要 Agent（或管理员）Key。
+      值一律加密存储、永不回显；写入 / 删除 / 恢复需要管理员 Key。读取优先用管理员 Key
+      ——已过期与「仅管理员」凭据只有管理员能看到（Agent Key 读不到；403 = 无权限或已过期）。
       删除为软删，可通过「恢复凭据」找回。
     </p>
 
@@ -230,31 +367,52 @@ onMounted(load)
     <p v-if="info" class="info">{{ info }}</p>
     <p v-if="loading" class="empty">加载中…</p>
 
-    <table v-else-if="filtered.length" class="tbl">
-      <thead>
-        <tr>
-          <th>键名</th>
-          <th>备注</th>
-          <th>更新时间</th>
-          <th>更新人</th>
-          <th>状态</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="c in filtered" :key="c.key_name">
-          <td><code class="inline">{{ c.key_name }}</code></td>
-          <td class="note-cell">{{ c.description || '—' }}</td>
-          <td class="ts-cell">{{ fmtTs(c.updated_at) }}</td>
-          <td class="by-cell">{{ c.updated_by }}</td>
-          <td><span class="st st-ok">正常</span></td>
-          <td class="act-cell">
-            <button class="btn btn-sm" :disabled="busy" @click="openEdit(c)">更新</button>
-            <button class="btn btn-sm btn-danger" :disabled="busy" @click="remove(c)">删除</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else-if="filtered.length" class="tbl-wrap">
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>键名</th>
+            <th>备注</th>
+            <th>类型</th>
+            <th>范围</th>
+            <th>过期时间</th>
+            <th>最近使用</th>
+            <th>更新时间</th>
+            <th>更新人</th>
+            <th>状态</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="c in filtered" :key="c.key_name">
+            <td><code class="inline">{{ c.key_name }}</code></td>
+            <td class="note-cell">{{ c.description || '—' }}</td>
+            <td class="type-cell">
+              <span v-if="c.cred_type" class="tag" :title="c.cred_type">{{ credTypeLabel(c.cred_type) }}</span>
+              <span v-else class="dash">—</span>
+            </td>
+            <td class="scope-cell">
+              <span v-if="!c.scope" class="dash">—</span>
+              <span v-else-if="c.scope === 'all'" class="scope">全部 agent</span>
+              <span v-else-if="c.scope === 'admin'" class="scope scope-admin">仅管理员</span>
+              <span v-else class="scope-agents" :title="c.scope">{{ scopeAgentsText(c.scope) || c.scope }}</span>
+            </td>
+            <td class="ts-cell" :class="{ 'ts-expired': c.expired }">{{ fmtTs(c.expires_at) }}</td>
+            <td class="ts-cell">{{ fmtTs(c.last_used_at) }}</td>
+            <td class="ts-cell">{{ fmtTs(c.updated_at) }}</td>
+            <td class="by-cell">{{ c.updated_by }}</td>
+            <td>
+              <span v-if="c.expired" class="st st-danger">已过期</span>
+              <span v-else class="st st-ok">正常</span>
+            </td>
+            <td class="act-cell">
+              <button class="btn btn-sm" :disabled="busy" @click="openEdit(c)">更新</button>
+              <button class="btn btn-sm btn-danger" :disabled="busy" @click="remove(c)">删除</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     <p v-else class="empty">
       {{ filter ? '无匹配凭据。' : '暂无凭据。点击「＋ 新建凭据」添加（例：DEEPSEEK_API_KEY）。' }}
       已删除的键请用「恢复凭据」找回。
@@ -274,17 +432,39 @@ onMounted(load)
           />
         </label>
         <label>
-          {{ editingKey ? '新值 *（不回显旧值）' : '值 *' }}
+          {{ editingKey ? '新值（留空 = 只更新元数据；不回显旧值）' : '值 *' }}
           <input
             v-model="formValue"
             type="password"
             autocomplete="new-password"
-            placeholder="输入凭据值（保存后不可再查看）"
+            :placeholder="editingKey ? '留空表示不改值' : '输入凭据值（保存后不可再查看）'"
           />
         </label>
         <label>
           备注（可选）
           <input v-model="formNote" placeholder="用途说明，仅自己可见" />
+        </label>
+        <div class="form-row">
+          <label>
+            类型
+            <select v-model="formType">
+              <option v-for="t in CRED_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
+            </select>
+          </label>
+          <label>
+            范围
+            <select v-model="formScope">
+              <option v-for="s in scopeChoices" :key="s.value" :value="s.value">{{ s.label }}</option>
+            </select>
+          </label>
+        </div>
+        <label v-if="formScope === AGENTS_PREFIX">
+          指定 agent（英文逗号分隔）
+          <input v-model="formAgents" placeholder="如 dsh,hermes,zcode" spellcheck="false" />
+        </label>
+        <label>
+          过期时间（可选，留空 = 不过期）
+          <input v-model="formExpires" type="datetime-local" />
         </label>
         <p v-if="formError" class="error">{{ formError }}</p>
         <div class="modal-actions">
@@ -366,5 +546,76 @@ onMounted(load)
 .st-ok {
   background: var(--st-ok-soft);
   color: var(--st-ok);
+}
+
+.st-danger {
+  background: var(--st-danger-soft);
+  color: var(--st-danger);
+}
+
+/* ---------- D-37 v1.1 新增列（类型 / 范围 / 过期时间 / 最近使用） ---------- */
+/* 列数增至 10：窄屏时横向滚动，避免挤压换行 */
+.tbl-wrap {
+  overflow-x: auto;
+}
+
+.tbl-wrap .tbl {
+  min-width: 1060px;
+}
+
+.type-cell {
+  white-space: nowrap;
+}
+
+.scope-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash {
+  color: var(--text-faint);
+}
+
+.scope-admin {
+  background: var(--st-warn-soft);
+  color: var(--st-warn);
+}
+
+.scope-agents {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.ts-expired {
+  color: var(--st-danger);
+}
+
+/* 弹窗：类型 / 范围并排，避免弹窗过高 */
+.form-row {
+  display: flex;
+  gap: var(--space-3);
+}
+
+.form-row > label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* datetime-local 未被全局表单样式覆盖，补齐与其他输入框一致的外观 */
+.modal-box input[type='datetime-local'] {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.modal-box input[type='datetime-local']:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
 }
 </style>

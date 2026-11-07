@@ -135,6 +135,9 @@ FILES = {
     "regression_inject": S / "regression_inject.py",
     "purge_backups": ROOT / "scripts" / "purge_backups.py",
     "dsh_client": ROOT / "adapters" / "dsh" / "sgme-bridge" / "src" / "sgme-client.ts",
+    # D-37 v1.1（2026-11-08）：凭据扩展列接线断言
+    "credentials_dao": S / "data" / "credentials_dao.py",
+    "operations_credentials": S / "operations" / "credentials.py",
     "doubao_client": ROOT / "adapters" / "doubao" / "scripts" / "sgme_client.py",
     "mimo_client": ROOT / "adapters" / "mimo" / "scripts" / "sgme_client.py",
     "workbuddy_client": ROOT / "adapters" / "workbuddy" / "scripts" / "sgme_client.py",
@@ -778,13 +781,21 @@ def _(self):
 
 
 # ---------- 平台 / 迁移 ----------
-@check("D-37", "凭据子模块（六端点）", "done")
+@check("D-37", "凭据子模块（六端点 + v1.1 扩展列接线）", "done")
 def _(self):
     return [
         ("读端点 3 个", *has("routes_credentials", "@router.get")),
         ("写端点", *has("routes_credentials", "@router.post")),
         ("删除端点", *has("routes_credentials", "@router.delete")),
         ("导出端点", *has("routes_credentials", "export")),
+        # v1.1（2026-11-08）：scope / cred_type / expires_at / last_used_at 读写接线
+        ("四列读写", *has("credentials_dao", "scope", "cred_type", "expires_at", "last_used_at")),
+        ("scope 过滤", *has("operations_credentials", "def scope_allows", "agents:")),
+        ("过期判定", *has("operations_credentials", "def is_expired")),
+        ("最近使用更新", *has("operations_credentials", "touch_last_used")),
+        ("越权 403", *has("operations_credentials", "ERR_FORBIDDEN")),
+        ("HTTP 身份透传", *has("routes_credentials", "is_admin")),
+        ("MCP 身份透传", *has("mcp_server", "_cred_caller")),
     ]
 
 

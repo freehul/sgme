@@ -50,8 +50,11 @@ router = APIRouter()
 
 class CredentialWriteRequest(BaseModel):
     key_name: str
-    value: str
+    value: str | None = None          # 省略 = 只更新元数据（仅限已存在键）
     description: str | None = None
+    scope: str | None = None          # all / admin / agents:<id,...>；"" = 清空
+    cred_type: str | None = None      # api_key / token / password / other；"" = 清空
+    expires_at: str | None = None     # UTC ISO 8601；"" = 不过期
 
 
 # ---------- 私有工具 ----------
@@ -64,14 +67,22 @@ def _creds_conn(request: Request) -> sqlite3.Connection:
     return conn
 
 
-def _actor(request: Request) -> str:
-    """审计身份：按调用方角色组装 ``default(admin,http)`` / ``<agent_id>(agent,http)``。"""
+def _caller(request: Request) -> tuple[str, str, bool]:
+    """调用方身份三元组 (actor, agent_id, is_admin)——D-37 v1.1 scope/过期判定用。
+
+    agent_id 一律由 API key 反查（绝不读请求体自称，D-65 同纪律）；admin key 恒可读。
+    """
     key = request.headers.get("X-API-Key")
     store: AgentKeyStore = request.app.state.key_store
     if store.is_admin(key):
-        return "default(admin,http)"
-    agent_id = store.resolve_agent_id(key) or "default"
-    return f"{agent_id}(agent,http)"
+        return "default(admin,http)", "default", True
+    agent_id = store.resolve_agent_id(key) or "unknown"
+    return f"{agent_id}(agent,http)", agent_id, False
+
+
+def _actor(request: Request) -> str:
+    """审计身份字符串（写 / 删 / 恢复端点用）。"""
+    return _caller(request)[0]
 
 
 # ---------- 读侧（Agent Key 平级） ----------
@@ -81,8 +92,18 @@ def list_credentials(
     request: Request,
     _: str = Depends(require_agent_key),
 ):
-    """列表（键名+元数据，不含值；默认过滤已删；list 不记账）。"""
-    return http_payload(run_operation(list_credentials_operation, _creds_conn(request)))
+    """列表（键名+元数据，不含值；默认过滤已删；list 不记账）。
+
+    admin 看到全部 active（含 admin-only 与已过期，带 expired 标记）；
+    agent 只看到 scope 可见且未过期的行。
+    """
+    _actor_s, agent_id, is_admin = _caller(request)
+    return http_payload(
+        run_operation(
+            list_credentials_operation, _creds_conn(request),
+            agent_id=agent_id, is_admin=is_admin,
+        )
+    )
 
 
 # ⚠️ export 必须先于 /{key} 声明（见模块 docstring）
@@ -99,11 +120,12 @@ def export_credentials(
     记领域审计 + SecurityLog admin_op 独立事件（批量敏感导出，安全面可见）。
     """
     conn = _creds_conn(request)
-    actor = _actor(request)
+    actor, agent_id, is_admin = _caller(request)
     target = f"only:{only}" if only else (f"prefix:{prefix}" if prefix else "all")
     try:
         data = run_operation(
-            export_credentials_operation, conn, only=only, prefix=prefix, actor=actor
+            export_credentials_operation, conn, only=only, prefix=prefix, actor=actor,
+            agent_id=agent_id, is_admin=is_admin,
         )
     except Exception:
         audit_admin_op(request, "credential_export", target=target, result="fail")
@@ -118,9 +140,13 @@ def get_credential(
     request: Request,
     _: str = Depends(require_agent_key),
 ):
-    """取单值（记 read 审计）；不存在/已删 → 404。"""
+    """取单值（记 read 审计）；不存在/已删 → 404；scope 拒绝/已过期 → 403。"""
+    actor, agent_id, is_admin = _caller(request)
     return http_payload(
-        run_operation(get_credential_operation, _creds_conn(request), key, actor=_actor(request))
+        run_operation(
+            get_credential_operation, _creds_conn(request), key,
+            actor=actor, agent_id=agent_id, is_admin=is_admin,
+        )
     )
 
 
@@ -132,7 +158,11 @@ def write_credential(
     request: Request,
     _: str = Depends(require_admin_key),
 ):
-    """写入/更新（admin）。已删键名 → 409 引导 restore（不自动复活）。"""
+    """写入/更新（admin）。已删键名 → 409 引导 restore（不自动复活）。
+
+    D-37 v1.1：value 可省略（仅更新元数据）；scope/cred_type/expires_at
+    缺省=不变、空串=清空。
+    """
     conn = _creds_conn(request)
     actor = _actor(request)
     try:
@@ -142,6 +172,9 @@ def write_credential(
             key_name=payload.key_name,
             value=payload.value,
             description=payload.description,
+            scope=payload.scope,
+            cred_type=payload.cred_type,
+            expires_at=payload.expires_at,
             actor=actor,
         )
     except Exception:

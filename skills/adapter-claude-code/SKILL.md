@@ -1,6 +1,6 @@
 ---
 name: adapter-claude-code
-description: Claude Code 的 SGME 官方适配器（MCP stdio 动态透传 + 原生 hooks：SessionStart 注入 / Stop 落盘 / SessionEnd 提炼）。当对话涉及历史事实、用户偏好、记忆读写、技能检索、Wiki 查询或提炼触发时使用。接入标记：SGME-ONBOARDING-v3。
+description: Claude Code 的 SGME 官方适配器（MCP stdio 动态透传 + 原生 hooks：SessionStart 注入 / Stop 落盘 / SessionEnd 提炼）。当对话涉及历史事实、用户偏好、记忆读写、技能检索、Wiki 查询或提炼触发时使用。接入标记：SGME-ONBOARDING-v4。
 category: adapter
 tags: [skill, adapter, sgme]
 
@@ -48,6 +48,15 @@ SGME_CLAUDE_KEY=<issued-by-sgme-admin>
 - HTTP/MCP 客户端均使用 `trust_env=False`，避免本机代理劫持内网请求。
 - 只读 Claude Code transcript，只写 SGME L0；不删除任何原件。
 - 远端 MCP 工具权限仍由 SGME 的 agent key / admin key 规则约束。
+
+## 重要信息存放处（凭据库）
+
+SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集中存放处（NAS 唯一真源，本机 .env 只是缓存）。
+
+- 看有哪些：`credential_list()` / `sgme-cred list`（只回键名与元数据，永不回值）；
+- 程序取用：`sgme-cred run -- <命令>`（注入环境变量，值不落盘、不进对话）；
+- 必须显式查看：`credential_get(name)`——值不得写入对话正文或记忆；
+- 写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 `POST /v1/credentials`）。
 
 ## 获取完整包（技能库）
 

@@ -443,6 +443,8 @@ def health(
             "report_style": "AI-INSTALL/report-style.md",
             "repo": "https://gitee.com/freehul/sgme/tree/main/AI-INSTALL",
             "adapters": "skill_search('adapter') → 跨机 GET /v1/skills/{name}/package（agent key）下载完整包（tar.gz + MANIFEST.sha256 校验）→ 同机 skill_materialize（仅同机，落盘在服务端）→ skill_get 取正文",
+            # —— D-37 v1.1：凭据库可发现（只增字段）——
+            "credentials": "凭据库（credentials，宿主启用时）：跨机共享的 API Key / token / 密码集中存放处；键名用 credential_list（不含值，按 scope 过滤）；程序取用走 sgme-cred run -- <命令> 注入；写/删/恢复仅 admin（POST /v1/credentials 或 WebUI「凭证管理」）",
             "note": "连接后先调 agent_onboarding；完成标准八项见 selfcheck.md；在线全文见 endpoint（免 Key）",
         },
         # —— HTTP 历史形态：字段顺序即 v0.6 响应体顺序，勿调整 ——

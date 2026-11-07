@@ -12,7 +12,7 @@
 | 运行平台与进程 | Windows 桌面客户端（豆包工作 agent 会话），无常驻进程（短连接型 + 可选 care_watch 轮询） |
 | 调用面 | HTTP API `http://<NAS_IP>:9910`（scripts/sgme_client.py，零依赖）+ MCP `http://<NAS_IP>:9913/mcp`（同客户端 MCP 层，需 mcp 库） |
 | 配置来源 | 环境变量 `SGME_AGENT_KEY`（agt_*，管理员签发）+ `SGME_ADMIN_KEY`（写侧/管理能力）；地址见部署副本 `scripts/client.env` 或环境变量 `SGME_HTTP_URL`/`SGME_BASE_URL` |
-| 身份文件 | `adapters/doubao/SKILL.md`（真源）→ 部署 `<DOUBAO_SKILLS_DIR>/sgme-bridge/SKILL.md`（含 SGME-ONBOARDING-v3 官方模板 + 41 能力矩阵） |
+| 身份文件 | `adapters/doubao/SKILL.md`（真源）→ 部署 `<DOUBAO_SKILLS_DIR>/sgme-bridge/SKILL.md`（含 SGME-ONBOARDING-v4 官方模板 + 41 能力矩阵） |
 
 ## 权限边界
 

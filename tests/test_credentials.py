@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography.fernet import Fernet
@@ -366,6 +367,21 @@ class TestMcp:
         for c in conns:
             c.close()
 
+    def test_mcp_scope_filtering(self, cfg_on, creds_conn, cred_key, tmp_path):
+        """D-37 v1.1：MCP 直调无身份 → 只能读 scope=all，admin-only 不可见/不可读。"""
+        conns = self._bind(cfg_on, creds_conn, tmp_path)
+        ops.write_credential(creds_conn, key_name="MCP_ADMIN", value=FAKE_VALUE, scope="admin", actor="t")
+        ops.write_credential(creds_conn, key_name="MCP_ALL", value=FAKE_VALUE_2, actor="t")
+        server = build_mcp_server()
+        data = self._call(server, "credential_list", {})
+        assert {c["key_name"] for c in data["credentials"]} == {"MCP_ALL"}
+        data = self._call(server, "credential_get", {"name": "MCP_ADMIN"})
+        assert "error" in data
+        data = self._call(server, "credential_get", {"name": "MCP_ALL"})
+        assert data["value"] == FAKE_VALUE_2
+        for c in conns:
+            c.close()
+
     def test_mcp_disabled_friendly_error(self, creds_conn, tmp_path):
         cfg = sgme_config.load_config()  # 出厂默认：disabled
         conns = self._bind(cfg, creds_conn, tmp_path)
@@ -374,3 +390,226 @@ class TestMcp:
         assert "未启用" in json.dumps(data, ensure_ascii=False)
         for c in conns:
             c.close()
+
+# ---------- 6) D-37 v1.1：scope / 过期 / last_used / merge ----------
+
+
+def _iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _future(days: int = 1) -> str:
+    return _iso(datetime.now(UTC) + timedelta(days=days))
+
+
+class TestV11Extension:
+    def test_normalize_helpers(self):
+        assert ops.normalize_scope(" agents:dsh, hermes,dsh ") == "agents:dsh,hermes"
+        assert ops.normalize_scope("all") == "all"
+        assert ops.normalize_scope("admin") == "admin"
+        assert ops.normalize_scope("") is None
+        assert ops.normalize_scope(None) is None
+        for bad in ("weird", "agents:", "agents:a b"):
+            with pytest.raises(ValueError):
+                ops.normalize_scope(bad)
+        assert ops.normalize_cred_type("token") == "token"
+        assert ops.normalize_cred_type("") is None
+        with pytest.raises(ValueError):
+            ops.normalize_cred_type("file")
+        future = _future(2)
+        assert ops.normalize_expires_at(future) == future
+        assert ops.normalize_expires_at("") is None
+        with pytest.raises(ValueError):
+            ops.normalize_expires_at("2000-01-01T00:00:00Z")
+        with pytest.raises(ValueError):
+            ops.normalize_expires_at("not-a-time")
+        assert ops.is_expired(None) is False
+        assert ops.is_expired("2000-01-01T00:00:00Z") is True
+        assert ops.is_expired("garbage") is True  # fail-closed
+
+    def test_scope_allows_matrix(self):
+        assert ops.scope_allows(None, "dsh", False) is True
+        assert ops.scope_allows("all", "dsh", False) is True
+        assert ops.scope_allows("admin", "dsh", False) is False
+        assert ops.scope_allows("admin", "dsh", True) is True
+        assert ops.scope_allows("agents:dsh,hermes", "hermes", False) is True
+        assert ops.scope_allows("agents:dsh,hermes", "other", False) is False
+        assert ops.scope_allows("weird", "dsh", False) is False  # fail-closed
+        assert ops.scope_allows("agents:dsh", None, False) is False
+
+    def test_columns_roundtrip_and_last_used(self, creds_conn, cred_key):
+        exp = _future(2)
+        r = ops.write_credential(
+            creds_conn, key_name="EXT_KEY", value=FAKE_VALUE,
+            scope="agents:dsh,hermes", cred_type="token", expires_at=exp, actor="t",
+        )
+        assert r.ok and r.data["scope"] == "agents:dsh,hermes"
+        row = dao.get_credential(creds_conn, "EXT_KEY")
+        assert row["scope"] == "agents:dsh,hermes"
+        assert row["cred_type"] == "token"
+        assert row["expires_at"] == exp
+        assert row["last_used_at"] is None
+        listed = {c["key_name"]: c for c in dao.list_credentials(creds_conn)}
+        assert listed["EXT_KEY"]["scope"] == "agents:dsh,hermes"
+        assert listed["EXT_KEY"]["last_used_at"] is None
+        assert ops.get_credential(
+            creds_conn, "EXT_KEY", actor="t", agent_id="dsh", is_admin=False
+        ).ok
+        assert dao.get_credential(creds_conn, "EXT_KEY")["last_used_at"] is not None
+        # 列表不更新 last_used
+        before = dao.get_credential(creds_conn, "EXT_KEY")["last_used_at"]
+        ops.list_credentials(creds_conn, agent_id="dsh", is_admin=False)
+        assert dao.get_credential(creds_conn, "EXT_KEY")["last_used_at"] == before
+
+    def test_scope_filtering_and_denied_audit(self, creds_conn, cred_key):
+        ops.write_credential(creds_conn, key_name="ADMIN_ONLY", value=FAKE_VALUE, scope="admin", actor="t")
+        ops.write_credential(creds_conn, key_name="DSH_ONLY", value=FAKE_VALUE_2, scope="agents:dsh", actor="t")
+        ops.write_credential(creds_conn, key_name="PUBLIC_KEY", value=FAKE_VALUE_3, actor="t")
+        dsh = ops.list_credentials(creds_conn, agent_id="dsh", is_admin=False)
+        assert {c["key_name"] for c in dsh.data["credentials"]} == {"DSH_ONLY", "PUBLIC_KEY"}
+        hermes = ops.list_credentials(creds_conn, agent_id="hermes", is_admin=False)
+        assert {c["key_name"] for c in hermes.data["credentials"]} == {"PUBLIC_KEY"}
+        assert ops.list_credentials(creds_conn, is_admin=True).data["count"] == 3
+        r = ops.get_credential(creds_conn, "ADMIN_ONLY", actor="dsh(agent,mcp)", agent_id="dsh", is_admin=False)
+        assert (not r.ok) and r.error_code == "ERR_FORBIDDEN"
+        assert ops.get_credential(creds_conn, "DSH_ONLY", actor="x", agent_id="dsh", is_admin=False).ok
+        r = ops.get_credential(creds_conn, "DSH_ONLY", actor="x", agent_id="hermes", is_admin=False)
+        assert r.error_code == "ERR_FORBIDDEN"
+        assert ops.get_credential(creds_conn, "ADMIN_ONLY", actor="t", is_admin=True).ok
+        denied = creds_conn.execute(
+            "SELECT COUNT(*) FROM credential_audit WHERE action='denied'"
+        ).fetchone()[0]
+        assert denied == 2
+
+    def test_expiry_semantics(self, creds_conn, cred_key, monkeypatch):
+        base = datetime(2030, 1, 1, tzinfo=UTC)
+        monkeypatch.setattr(ops, "_now", lambda: base)
+        exp = "2030-01-02T00:00:00Z"
+        assert ops.write_credential(creds_conn, key_name="EXP_KEY", value=FAKE_VALUE, expires_at=exp, actor="t").ok
+        assert ops.get_credential(creds_conn, "EXP_KEY", actor="t", agent_id="x", is_admin=False).ok
+        monkeypatch.setattr(ops, "_now", lambda: base + timedelta(days=2))
+        agent = ops.list_credentials(creds_conn, agent_id="x", is_admin=False)
+        assert all(c["key_name"] != "EXP_KEY" for c in agent.data["credentials"])
+        item = [
+            c for c in ops.list_credentials(creds_conn, is_admin=True).data["credentials"]
+            if c["key_name"] == "EXP_KEY"
+        ][0]
+        assert item["expired"] is True
+        r = ops.get_credential(creds_conn, "EXP_KEY", actor="t", is_admin=True)
+        assert r.error_code == "ERR_FORBIDDEN" and "过期" in (r.message or "")
+        e = ops.export_credentials(creds_conn, actor="t", is_admin=True)
+        assert {s["key_name"]: s["reason"] for s in e.data["skipped"]}["EXP_KEY"] == "expired"
+        assert ops.export_credentials(creds_conn, only="EXP_KEY", actor="t", is_admin=True).error_code == "ERR_FORBIDDEN"
+
+    def test_merge_semantics_and_metadata_only(self, creds_conn, cred_key, monkeypatch):
+        exp = _future(2)
+        ops.write_credential(
+            creds_conn, key_name="MERGE_KEY", value=FAKE_VALUE, description="d",
+            scope="admin", cred_type="token", expires_at=exp, actor="t",
+        )
+        assert ops.write_credential(creds_conn, key_name="MERGE_KEY", value=FAKE_VALUE_2, actor="t").ok
+        row = dao.get_credential(creds_conn, "MERGE_KEY")
+        assert row["description"] == "d" and row["scope"] == "admin"
+        assert row["cred_type"] == "token" and row["expires_at"] == exp
+        assert cred.decrypt_value(row["value_cipher"]) == FAKE_VALUE_2
+        # 元数据-only：不触碰密文 → 主密钥缺失也可用
+        monkeypatch.delenv("SGME_CRED_KEY", raising=False)
+        assert ops.write_credential(creds_conn, key_name="MERGE_KEY", description="新备注", actor="t").ok
+        assert dao.get_credential(creds_conn, "MERGE_KEY")["description"] == "新备注"
+        # 空串清空
+        assert ops.write_credential(
+            creds_conn, key_name="MERGE_KEY", description="", scope="",
+            cred_type="", expires_at="", actor="t",
+        ).ok
+        row = dao.get_credential(creds_conn, "MERGE_KEY")
+        assert row["description"] is None and row["scope"] is None
+        assert row["cred_type"] is None and row["expires_at"] is None
+        # 新键必须给 value
+        assert ops.write_credential(creds_conn, key_name="NOVAL_KEY", actor="t").error_code == "ERR_INVALID_ARGS"
+
+    def test_export_skipped_structure(self, creds_conn, cred_key):
+        ops.write_credential(creds_conn, key_name="PUB_EXP", value=FAKE_VALUE, actor="t")
+        ops.write_credential(creds_conn, key_name="ADMIN_EXP", value=FAKE_VALUE_2, scope="admin", actor="t")
+        r = ops.export_credentials(creds_conn, actor="x", agent_id="dsh", is_admin=False)
+        assert r.ok and set(r.data["credentials"]) == {"PUB_EXP"}
+        assert r.data["skipped"] == [{"key_name": "ADMIN_EXP", "reason": "scope"}]
+        assert r.data["count"] == 1
+
+
+class TestHttpV11:
+    @pytest.fixture
+    def client_on(self, cfg_on, conns, creds_conn, cred_key, tmp_path):
+        return make_client(cfg_on, conns, tmp_path, credentials_conn=creds_conn)
+
+    def test_fields_scope_and_update(self, client_on):
+        h_admin = {"X-API-Key": ADMIN_KEY}
+        h_agent = {"X-API-Key": AGENT_KEY}
+        exp = _future(3)
+        r = client_on.post(
+            "/v1/credentials",
+            json={
+                "key_name": "HTTP_ADMIN", "value": FAKE_VALUE, "description": "d",
+                "scope": "admin", "cred_type": "api_key", "expires_at": exp,
+            },
+            headers=h_admin,
+        )
+        assert r.status_code == 200 and r.json()["scope"] == "admin"
+        lst = client_on.get("/v1/credentials", headers=h_agent).json()
+        assert all(c["key_name"] != "HTTP_ADMIN" for c in lst["credentials"])
+        item = [
+            c for c in client_on.get("/v1/credentials", headers=h_admin).json()["credentials"]
+            if c["key_name"] == "HTTP_ADMIN"
+        ][0]
+        assert item["scope"] == "admin" and item["cred_type"] == "api_key"
+        assert item["expires_at"] == exp and item["expired"] is False
+        assert client_on.get("/v1/credentials/HTTP_ADMIN", headers=h_agent).status_code == 403
+        assert client_on.get("/v1/credentials/HTTP_ADMIN", headers=h_admin).status_code == 200
+        # 元数据更新可省略 value（value=None）
+        r = client_on.post(
+            "/v1/credentials", json={"key_name": "HTTP_ADMIN", "scope": "all"}, headers=h_admin
+        )
+        assert r.status_code == 200 and r.json()["scope"] == "all"
+        assert client_on.get("/v1/credentials/HTTP_ADMIN", headers=h_agent).status_code == 200
+        # 非法值 / 过去时间 / 新键无值
+        assert client_on.post(
+            "/v1/credentials", json={"key_name": "HTTP_ADMIN", "scope": "weird"}, headers=h_admin
+        ).status_code == 400
+        assert client_on.post(
+            "/v1/credentials",
+            json={"key_name": "HTTP_ADMIN", "expires_at": "2000-01-01T00:00:00Z"},
+            headers=h_admin,
+        ).status_code == 400
+        assert client_on.post(
+            "/v1/credentials", json={"key_name": "HTTP_NOVAL"}, headers=h_admin
+        ).status_code == 400
+        # agents 白名单：AGENT_KEY 反查为 default
+        r = client_on.post(
+            "/v1/credentials",
+            json={"key_name": "HTTP_AGENTS", "value": "v", "scope": "agents:default"},
+            headers=h_admin,
+        )
+        assert r.status_code == 200
+        assert client_on.get("/v1/credentials/HTTP_AGENTS", headers=h_agent).status_code == 200
+
+    def test_expired_http(self, client_on, monkeypatch):
+        h_admin = {"X-API-Key": ADMIN_KEY}
+        h_agent = {"X-API-Key": AGENT_KEY}
+        exp = _iso(datetime.now(UTC) + timedelta(hours=1))
+        assert client_on.post(
+            "/v1/credentials",
+            json={"key_name": "HTTP_EXP", "value": FAKE_VALUE, "expires_at": exp},
+            headers=h_admin,
+        ).status_code == 200
+        monkeypatch.setattr(ops, "_now", lambda: datetime.now(UTC) + timedelta(hours=2))
+        assert all(
+            c["key_name"] != "HTTP_EXP"
+            for c in client_on.get("/v1/credentials", headers=h_agent).json()["credentials"]
+        )
+        item = [
+            c for c in client_on.get("/v1/credentials", headers=h_admin).json()["credentials"]
+            if c["key_name"] == "HTTP_EXP"
+        ][0]
+        assert item["expired"] is True
+        assert client_on.get("/v1/credentials/HTTP_EXP", headers=h_admin).status_code == 403
+        assert client_on.get("/v1/credentials/HTTP_EXP", headers=h_agent).status_code == 403
+        assert client_on.get("/v1/credentials/export?only=HTTP_EXP", headers=h_admin).status_code == 403

@@ -110,11 +110,11 @@ asyncio.run(main())
 
 ## 3. 连接即发现：agent_onboarding 工具
 
-连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部 43 个工具的清单与用途**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
+连上后第一件事：调 `agent_onboarding()`。它返回 SGME 版本、**全部工具的清单与用途（当前 64 个，以返回为准）**、快速上手三条主线（注册/提炼/回忆）、**自助配置段（self_config）**。信息以它为准，本文件只是它的展开版。
 
-**自助配置（2026-08-13，接入完成标准之一）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v3`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
+**自助配置（2026-08-13，接入完成标准之一）**：`agent_onboarding` 返回 `self_config` 段——要求接入的 agent **自己修改自己的身份文件**（SOUL.md / AGENTS.md / CLAUDE.md 等，按工具机制自选），把返回的模板（版本标记 `SGME-ONBOARDING-v4`）写入。SGME 不替 agent 改文件，只要求结果、不限制过程：
 
-1. 自查身份文件是否已有 `SGME-ONBOARDING` 标记（版本 ≥ **v2** 即完成，跳过；仍写 v1 的请升级到 v2 模板）；
+1. 自查身份文件是否已有 `SGME-ONBOARDING` 标记（版本 ≥ **v4** 即完成，跳过；旧版本请升级到 v4 模板）；
 2. 缺失或版本旧 → 按模板写入自己的身份文件（写入位置/方式按工具的文件组织与加载机制自定）；
 3. 写入后**读回验证**内容完整，并向主人汇报（写了哪个文件、哪个位置）；
 4. 无法写入（权限/沙箱/审批限制）→ **如实报告主人并给出建议，禁止谎称已完成**（Trae 的 user_rules 目录有沙箱写保护实锤）。
@@ -123,7 +123,7 @@ asyncio.run(main())
 >
 > **完整「接入完成」定义见 §6.1（八项，与 `selfcheck.md` 同口径）**——自我配置只是其中第 ⑦ 项，不是全部。
 
-**MCP 43 工具清单与用途**（与 `ONBOARDING_TOOLS` 清单程序化对账一致；PR#7 起逐步扩充，含三池/信号/角色/技能九工具）：
+**MCP 工具清单与用途（当前 64 个；与 `ONBOARDING_TOOLS` 程序化对账一致，数量以实际返回为准）**：
 
 | 工具 | 用途 | 一句话用法 |
 |---|---|---|
@@ -214,6 +214,8 @@ content 格式（首行必须）：
 
 ### 4.3 凭据取用与管理（EP-11，可选，2.0 管理面补齐）
 
+> 接入模板（SGME-ONBOARDING-v4）已含本段。
+
 SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 降级为缓存），任何已注册 agent 可平级读取；写 / 删 / 恢复仅 admin。模块未启用（`credentials.enabled=false`）时相关端点/工具返回友好提示或 404，属正常。
 
 > **红线：列表与管理视图永不返回明文值。** 明文只有两个出口——单值读取 `GET /v1/credentials/{key}` 与批量导出 `GET /v1/credentials/export`；后者是**危险操作**（一次拿到多把 KEY 的明文），只在用户明确要求且目的清楚时执行，导出内容不得进对话正文、记忆或日志。
@@ -302,7 +304,7 @@ SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 
 | ④ | 检索 | `search` 命中带溯源 |
 | ⑤ | 提炼 | `refine_trigger` async 可达 |
 | ⑥ | 技能 | 协议已常驻上下文（或已调 `skill_coldstart`）+ `skill_search` 有结果 |
-| ⑦ | 自我配置 | 身份文件含 `SGME-ONBOARDING-v3` |
+| ⑦ | 自我配置 | 身份文件含 `SGME-ONBOARDING-v4` |
 | ⑧ | 适配器 | 已装 `adapter-<host>`，或显式走通用 MCP 且 ⑦ 完成 |
 
 > 两套「完成」定义曾互相打架（selfcheck 六项 vs self_config 模板）——自 2026-09-28 起统一为上表，`selfcheck.md` / `agent_onboarding.self_config.requirement` / 本节三处同源。

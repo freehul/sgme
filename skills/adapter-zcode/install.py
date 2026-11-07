@@ -248,7 +248,7 @@ def register_mcp_server(mcp_url: str, key: str) -> str:
 
 
 AGENTS_MD_SECTION = """\
-## SGME 接入纪律（SGME-ONBOARDING-v3 · ZCode）
+## SGME 接入纪律（SGME-ONBOARDING-v4 · ZCode）
 
 你（ZCode）已接入长期记忆引擎 SGME（ShiGuang Memory Engine）。职责：把会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
@@ -258,6 +258,11 @@ AGENTS_MD_SECTION = """\
 - **服务发现**：环境变量 `SGME_HTTP_URL` → 部署副本 `scripts/client.env` → `~/.sgme/zcode-agent.json` → `~/.zcode/cli/config.json` 的 `sgme` server → 回环 `http://127.0.0.1:9910`
 - **能力面**：`python {client} capabilities`（49 基准能力矩阵，离线）；`env-info` 看生效端点
 - **五条铁律**：①每轮对话结束 append 当前轮次（session_key=zcode-<日期>-<项目>）②会话结束 refine-trigger（永远 async）③对话开始 inject/search ④关怀信号 pull→claim→ack ⑤role-list/role-assemble 换皮不换芯
+- **重要信息存放处（凭据库）**：SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集中存放处（NAS 唯一真源，本机 .env 只是缓存）
+  - 看有哪些：`credential_list()` / `sgme-cred list`（只回键名与元数据，永不回值）
+  - 程序取用：`sgme-cred run -- <命令>`（注入环境变量，值不落盘、不进对话）
+  - 必须显式查看：`credential_get(name)`——值不得写入对话正文或记忆
+  - 写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 `POST /v1/credentials`）
 - **强制查询**：涉及历史事实（之前/上次/还记得…）必须先 search 再回答，查不到如实说「记忆库中未找到」
 - **三池**：待办 demand-create（project_id 一律大写）｜创意 idea-add｜立项 project-register
 - **历史会话补导入**：`python <repo>/adapters/zcode/import_history.py --dry-run` 预览后去掉 --dry-run 执行

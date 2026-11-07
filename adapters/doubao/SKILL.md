@@ -1,9 +1,9 @@
 ---
 name: sgme-bridge
-description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME 是主人的长期记忆中枢（HTTP API <NAS_IP>:9910，MCP <NAS_IP>:9913），负责跨会话/多 Agent 的记忆提炼、按场景注入、wiki 知识库与技能库。当对话涉及「以前/上次/还记得/历史事实」、主人要求记忆某事、需要主动关怀信号、角色扮演、或需要读写 SGME 记忆/知识/技能时使用。接入标记：SGME-ONBOARDING-v3。
+description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME 是主人的长期记忆中枢（HTTP API <NAS_IP>:9910，MCP <NAS_IP>:9913），负责跨会话/多 Agent 的记忆提炼、按场景注入、wiki 知识库与技能库。当对话涉及「以前/上次/还记得/历史事实」、主人要求记忆某事、需要主动关怀信号、角色扮演、或需要读写 SGME 记忆/知识/技能时使用。接入标记：SGME-ONBOARDING-v4。
 ---
 
-# SGME 接入纪律（SGME-ONBOARDING-v3）
+# SGME 接入纪律（SGME-ONBOARDING-v4）
 
 你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
@@ -38,6 +38,15 @@ description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME
 3. **对话开始时 `inject` 按场景取画像 / `search` 检索相关记忆**。
 4. **主动关怀靠消费信号**——信号消费 = 主动关怀，谁消费谁标记：拿到 `care_*` 信号后 `signal-claim` 原子认领 → 关怀用户 → `signal-ack` 回执（认领失败 = 已被其他 agent 消费，跳过）。豆包工作是短连接 agent：每次对话开始 `signal-pull`（MCP）或 `events-pull`（HTTP）；可配定时任务 `care_watch.py pull` 做准常驻轮询。
 5. **对话开始时（或用户指定角色时）`role-list` 看可用角色 → `role-assemble <role_id>` 拿人设并按其说话**——换皮不换芯，角色只是沟通外皮，记忆池不动。当前角色：`role-active-get` 读、`role-active-set <role_id>` 设。
+
+## 重要信息存放处（凭据库）
+
+SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集中存放处（NAS 唯一真源，本机 .env 只是缓存）。
+
+- 看有哪些：`credential_list()` / `sgme-cred list`（只回键名与元数据，永不回值）；
+- 程序取用：`sgme-cred run -- <命令>`（注入环境变量，值不落盘、不进对话）；
+- 必须显式查看：`credential_get(name)`——值不得写入对话正文或记忆；
+- 写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 `POST /v1/credentials`）。
 
 ## 强制查询
 

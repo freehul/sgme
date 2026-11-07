@@ -108,6 +108,25 @@ def _usage_caller(ctx: "Context | None") -> str:
         return "unknown"
 
 
+def _cred_caller(ctx: "Context | None") -> tuple[str, bool]:
+    """凭据模块调用方 (agent_id, is_admin)：按 API key 反查（D-37 v1.1）。
+
+    直调（无 HTTP 上下文）或反查失败 → ("unknown", False)：只能读 scope=all 的项，
+    不会误放行 admin-only 凭据（fail-closed）。
+    """
+    try:
+        req = ctx.request_context.request if ctx is not None else None
+        key = getattr(req.state, "api_key", None) if req is not None else None
+        store = _app_state.get("key_store")
+        if store is None:
+            return "unknown", False
+        is_admin = bool(store.is_admin(key))
+        agent_id = store.resolve_agent_id(key) or ("default" if is_admin else "unknown")
+        return agent_id, is_admin
+    except Exception:
+        return "unknown", False
+
+
 def _record_search_usage(query: str, hits, ctx: "Context | None") -> None:
     """T-174：检索层消费记录（含命中数/首条命中；中间件不记 search——拿不到结果）。"""
     try:
@@ -659,8 +678,8 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "skill_candidate_list", "description": "技能候选池列表（D-67）：按 status（pending/accepted/ignored/promoted）与 min_confidence 分页"},
     {"name": "skill_candidate_adopt", "description": "把一条 skill_candidate 记忆转成技能候选（D-67，幂等；不写正式技能库，高置信 accepted、其余 pending）；需管理员 Key"},
     {"name": "skill_candidate_review", "description": "审核技能候选（D-67）：accepted/ignored/pending/promoted，幂等；忽略后不再出现在待消费队列；需管理员 Key"},
-    {"name": "credential_list", "description": "凭据列表（EP-11）：键名+元数据，不含值；需凭据模块已启用"},
-    {"name": "credential_get", "description": "取凭据单值（EP-11）：⚠️ 值不得进入对话正文——标准姿势 sgme-cred run 注入；仅限必须显式查看场景"},
+    {"name": "credential_list", "description": "凭据列表（EP-11/D-37）：凭据库=跨机共享的 API Key/token/密码集中存放处；只回键名+元数据（scope/类型/过期/最近使用），不含值；按调用方 scope 过滤"},
+    {"name": "credential_get", "description": "取凭据单值（EP-11/D-37）：⚠️ 值不得进入对话正文——标准姿势 sgme-cred run 注入；scope 拒绝或已过期返回错误（403）"},
 )
 
 
@@ -2430,8 +2449,12 @@ def build_mcp_server():
 
     @mcp.tool()
     @tool
-    def credential_list() -> str:
-        """凭据列表（EP-11）：键名+元数据，不含值；需凭据模块已启用（credentials.enabled）。"""
+    def credential_list(ctx: Context | None = None) -> str:
+        """凭据列表（EP-11 / D-37 v1.1）：键名+元数据（scope/类型/过期/最近使用），**不含值**。
+
+        凭据库 = 跨机共享的 API Key / token / 密码集中存放处。按调用方身份过滤：
+        agent 只看到 scope 可见且未过期的行；admin 看到全部（行内带 expired 标记）。
+        """
         import json
 
         from sgme.operations.credentials import list_credentials as list_credentials_operation
@@ -2442,7 +2465,10 @@ def build_mcp_server():
         conn = _app_state.get("credentials_conn")
         if conn is None:
             return json.dumps({"error": "凭据库连接不可用"}, ensure_ascii=False)
-        data = _op_json(list_credentials_operation, conn)
+        agent_id, is_admin = _cred_caller(ctx)
+        data = _op_json(
+            list_credentials_operation, conn, agent_id=agent_id, is_admin=is_admin
+        )
         return json.dumps(data, ensure_ascii=False)
 
     @mcp.tool()
@@ -2459,8 +2485,14 @@ def build_mcp_server():
         conn = _app_state.get("credentials_conn")
         if conn is None:
             return json.dumps({"error": "凭据库连接不可用"}, ensure_ascii=False)
-        caller = _usage_caller(ctx)
-        data = _op_json(get_credential_operation, conn, name, actor=f"{caller}(agent,mcp)")
+        agent_id, is_admin = _cred_caller(ctx)
+        actor = (
+            "default(admin,mcp)" if is_admin else f"{agent_id}(agent,mcp)"
+        )
+        data = _op_json(
+            get_credential_operation, conn, name,
+            actor=actor, agent_id=agent_id, is_admin=is_admin,
+        )
         return json.dumps(data, ensure_ascii=False)
 
     # ---------- 连接即发现（ST-23①） ----------
@@ -2490,21 +2522,22 @@ def build_mcp_server():
                 "append": "append(session_key, started_at, content, source_type='session')；content 首行须为 # {ISO时间戳} {role}",
                 "refine": "refine_trigger(async_mode=true) 或 refine_batch() 触发提炼；refine_status() 查进度与水位",
                 "recall": "search(query) 混合检索带溯源；inject(mode='daily') 注入当日画像",
+                "credentials": "凭据库（第四模块，宿主启用时）：credential_list() 看键名（不含值，按 scope 过滤）；程序取用走 sgme-cred run -- <命令> 注入（值不落盘不进对话）；写/删/恢复仅 admin（WebUI「凭证管理」或 POST /v1/credentials）",
                 "manage": "memory_reject 纠错；stats/health 看引擎状态；config_get/config_update 读写配置",
                 "adapters": "官方适配器（hermes/dsh/doubao/mimo/workbuddy/zcode/codex）经技能库自助获取：skill_search('adapter') 或 skill_search('<宿主名> 适配器') → skill_get → 同机 skill_materialize(name='adapter-<host>', dest_dir=...) 落盘完整包后按包内说明安装（落盘在服务端文件系统，dest_dir/path 均为服务端视角）；跨机（agent 在本地、SGME 在远端）用 HTTP 包通道下载完整包：GET /v1/skills/{name}/package（agent key）取 tar.gz，按归档根 MANIFEST.sha256 校验后解包；或 skill_get 取正文自行写盘；codex 为动态 MCP stdio 代理；无宿主适配器时写入 self_config 模板走 MCP 通用接入",
             },
             "self_config": {
-                "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：SGME 是统一能力平面，核心模块为 memory / skills / wiki；接入后只需安装宿主适配器，不需要批量安装很多 skill。①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v3）②安装官方适配器（skill_search('adapter') → 同机 skill_materialize 落盘 / 跨机 GET /v1/skills/{name}/package 下载完整包（tar.gz + MANIFEST.sha256）后按包内说明安装；或 skill_get 取正文自行写盘），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。在线版完整指引（免 Key）：GET /v1/onboarding/docs。",
+                "requirement": "接入完成标准（与 AI-INSTALL/selfcheck.md 八项一致）：SGME 是统一能力平面，核心模块为 memory / skills / wiki（另有可选凭据模块 credentials——跨机共享重要 KEY 的集中存放处）；接入后只需安装宿主适配器，不需要批量安装很多 skill。①身份文件（SOUL.md / AGENTS.md / CLAUDE.md 等）包含本模板（版本标记 SGME-ONBOARDING-v4）②安装官方适配器（skill_search('adapter') → 同机 skill_materialize 落盘 / 跨机 GET /v1/skills/{name}/package 下载完整包（tar.gz + MANIFEST.sha256）后按包内说明安装；或 skill_get 取正文自行写盘），或显式声明走 MCP 通用接入并已写入纪律模板。SGME 不替你改文件——由你自助完成，只要求结果、不限制过程。若 health 返回的 model_config 提示模型 Key 缺失（如 AGNESAI_API_KEY / SILICONFLOW_API_KEY），请提醒主人按 AI-INSTALL/免费模型Key申请指南.md 申请免费 Key（Agnes agnes-2.5-flash 免费主位 / 硅基流动 GLM-4-9B-0414 + bge-m3；zhipu 已移出降级链 B121，DeepSeek-V4-Flash 转付费移出 B144，均无需智谱/DeepSeek Key）。在线版完整指引（免 Key）：GET /v1/onboarding/docs。",
                 "steps": [
                     "1. 自查：读你的身份文件，grep 标记「SGME-ONBOARDING」；",
-                    "2. 已存在且版本 >= v3 → 配置已完成，跳过；",
+                    "2. 已存在且版本 >= v4 → 配置已完成，跳过；",
                     "3. 缺失或版本旧 → 把下方 template 写入你的身份文件（写入位置/方式按你工具的文件组织与加载机制自定）；",
                     "4. 写入后读回验证内容完整，并汇报（写了哪个文件、哪个位置）；",
                     "5. 无法写入（权限/沙箱/审批限制）→ 如实报告主人并给出建议，禁止谎称已完成。",
                 ],
-                "version": "SGME-ONBOARDING-v3",
+                "version": "SGME-ONBOARDING-v4",
                 "template": (
-                    "# SGME 接入纪律（SGME-ONBOARDING-v3）\n"
+                    "# SGME 接入纪律（SGME-ONBOARDING-v4）\n"
                     "你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。"
                     "它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。\n"
                     "**核心能力平面**：SGME 的三大核心模块是 memory / skills / wiki。历史事实、用户偏好和项目上下文走 memory；手册、设计、经验和踩坑走 wiki；框架、工具链和专业流程先 skill_search，再按需 skill_digest/skill_get。接入后只需宿主适配器，不需要批量安装很多 skill；普通技能留在 SGME 中按需读取，只有适配器或确实需要本地资产时才 skill_materialize（落盘在服务端，本机与 SGME 同机时可直接安装）；跨机取完整包用 HTTP GET /v1/skills/{name}/package，或 skill_get 取正文自行写盘。\n"
@@ -2519,6 +2552,7 @@ def build_mcp_server():
                     "   - 短连接（无常驻进程的 agent）：每次对话开始 signal_pull 拉未消费信号；\n"
                     "   - 长连接（有常驻能力的 agent，**主动关怀首选**）：挂 SSE 事件流 GET http://<sgme-host>:9910/v1/events/stream?subscriber_id=<你的agent_id>（请求头带 X-API-Key），事件实时推送，care_*/memory_updated/anomaly_warn 一产生即到达 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件。\n"
                     "5. 对话开始时（或用户指定角色时）role_list 看可用角色，role_assemble(role_id) 拿人设并按其说话——换皮不换芯，角色只是沟通外皮，记忆池不动。\n"
+                    "**重要信息存放处（凭据库）**：SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集中存放处（NAS 唯一真源，本机 .env 只是缓存）。想看有哪些 → credential_list() / sgme-cred list（只回键名与元数据，永不回值）；程序取用 → sgme-cred run -- <命令>（注入环境变量，值不落盘不进对话）；必须显式查看 → credential_get(name)（值不得写入对话正文或记忆）；写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 POST /v1/credentials）。\n"
                     "**汇报规范**（v3 新增，跨宿主同一套内容契约）：给用户的结论/进度/方案/故障说明必须五项齐全——①结论先行一句话 ②关键数据（实测并附来源或命令；没测写未验证）③要点列表（≤7 条）④遗留风险/未验证项 ⑤下一步选项（不替用户决定）。渲染按宿主能力分三档：R 富 UI（DSH 的 dsh-ui 围栏）／M Markdown（小标题+列表+粗体，表格 ≤4 列、单元格 ≤30 字）／P 纯文本（不用表格）。不把 dsh-ui JSON 发给非 DSH 宿主；不擅自扩大范围；改了什么/没改什么分开写。完整规范见仓库 AI-INSTALL/report-style.md 或技能 report-format。\n"
                     "**强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」。\n"
                     "**写入格式**：append 的 content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422。\n"

@@ -953,7 +953,7 @@ server:
 SGME Server 同进程提供 MCP 出口（streamable HTTP transport，端口 9913），与 HTTP API（9910）功能等价。
 
 - 端点：`http://<host>:9913/mcp`
-- 工具集（43；权威清单以 `agent_onboarding` 返回的 ONBOARDING_TOOLS 为准，本行不再硬编码数量防漂移）：append / inject / search / memory_get / memory_reject / refine_trigger / refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding / wiki_page / wiki_search / wiki_pages / idea_add / demand_create / project_register / role_list / role_assemble / role_active_get / role_active_set / signal_pull / signal_claim / signal_ack / refine_status 等（以 agent_onboarding 返回的 ONBOARDING_TOOLS 为准）
+- 工具集（数量以 `agent_onboarding` 返回的 ONBOARDING_TOOLS 为准（当前 64）；本行不硬编码防漂移）：append / inject / search / memory_get / memory_reject / refine_trigger / refine_batch / refine_status / stats / health / config_get / config_update / agent_onboarding / wiki_page / wiki_search / wiki_pages / idea_add / demand_create / project_register / role_list / role_assemble / role_active_get / role_active_set / signal_pull / signal_claim / signal_ack / refine_status 等（以 agent_onboarding 返回的 ONBOARDING_TOOLS 为准）
 - 连接即发现：接入后先调 `agent_onboarding` 工具获取版本 / 能力清单 / 快速上手指引（self-serve，无需人工配置）
 - 用途：SCSM 或其他 Agent 经标准 MCP 协议调用 SGME（跨机部署无需改配置文件，配置经 config_update 远程设置）
 - 端口可配：环境变量 `SGME_MCP_PORT`（默认 9913）；`SGME_MCP_DISABLED=1` 可关闭
@@ -993,12 +993,14 @@ asyncio.run(t())
 | POST | `/v1/admin/backup/create` | Admin | 创建快照（level=full/incremental/monthly） |
 | GET | `/v1/admin/backup/list` | Admin | 列出可用快照 |
 | POST | `/v1/admin/backup/restore` | Admin | 恢复快照（恢复前自动再备份） |
-| GET | `/v1/credentials` | Agent | 凭据列表（键名+元数据，不含值；EP-11，模块启用时） |
-| GET | `/v1/credentials/export` | Agent | 导出 dotenv 子集（原始值） |
-| GET | `/v1/credentials/{key}` | Agent | 取凭据单值 |
-| POST | `/v1/credentials` | Admin | 写入 / 更新凭据（已删键名 → 409） |
+| GET | `/v1/credentials` | Agent | 凭据列表（键名 + 元数据：scope / cred_type / expires_at / last_used_at，不含值；agent 只见可见且未过期项，admin 见全部并带 `expired`） |
+| GET | `/v1/credentials/export` | Agent | 导出原始值子集（`only`/`prefix`；返回 `{credentials, count, skipped}`；`only` 命中不可读/已过期 → 403） |
+| GET | `/v1/credentials/{key}` | Agent | 取凭据单值（不存在 404；scope 拒绝 / 已过期 → 403） |
+| POST | `/v1/credentials` | Admin | 写入 / 更新 `{key_name, value?, description?, scope?, cred_type?, expires_at?}`；value 省略=只改元数据；已删键名 → 409 |
 | DELETE | `/v1/credentials/{key}` | Admin | 软删（幂等） |
 | POST | `/v1/credentials/{key}/restore` | Admin | 恢复（幂等） |
+
+> **凭据 v1.1（2026-11-08）**：scope ∈ `all` / `admin` / `agents:<id,...>`（NULL=all），过期=不可读；`last_used_at` 读成功更新；写接口缺省=不变、空串=清空；onboarding 模板版本升 `SGME-ONBOARDING-v4`（模板含「重要信息存放处（凭据库）」段）。
 
 *`/v1/health` 仅需 Bearer（若开启），不强制 X-API-Key。
 

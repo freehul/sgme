@@ -574,7 +574,7 @@ def test_mcp_agent_onboarding_self_config(mcp):
     data = json.loads(r[0])
     sc = data.get("self_config")
     assert sc, "agent_onboarding 必须包含 self_config 段"
-    assert sc["version"] == "SGME-ONBOARDING-v3"
+    assert sc["version"] == "SGME-ONBOARDING-v4"
     # A2/C（2026-09-28）：完成标准含适配器 + 八项对齐
     assert "适配器" in sc["requirement"]
     assert "skill_search" in sc["requirement"] or "skill_materialize" in sc["requirement"]
@@ -586,12 +586,16 @@ def test_mcp_agent_onboarding_self_config(mcp):
     assert "八项" in sc["requirement"] or "selfcheck" in sc["requirement"]
     # 步骤含幂等自查 / 读回验证 / 失败路径
     steps = "\n".join(sc["steps"])
-    for keyword in ("自查", "跳过", "读回验证", "报告主人", ">= v3"):
+    for keyword in ("自查", "跳过", "读回验证", "报告主人", ">= v4"):
         assert keyword in steps, f"steps 缺关键动作: {keyword}"
     # 模板含版本标记与核心纪律（含事件对接双模式，ST-30）
     tmpl = sc["template"]
+    assert "credentials" in data["quickstart"], "quickstart 缺凭据库指引"
     for keyword in (
-        "SGME-ONBOARDING-v3",
+        "SGME-ONBOARDING-v4",
+        "重要信息存放处",
+        "credential_list",
+        "sgme-cred run",
         "服务发现",
         "每轮对话结束 append",
         "refine_trigger",
