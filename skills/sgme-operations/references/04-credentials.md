@@ -12,6 +12,7 @@
 | POST | `/v1/credentials/{key}/restore` | admin | 恢复（幂等，清 `deleted_at`） |
 
 - **铁律：值永不明文展示。** 列表、日志、聊天、工单、截图、排障回执都只出现键名/描述/指纹，不回显值。核对是否已配置看「键名是否存在 + 描述 + 审计记录」，不要把值打印出来对照。
+- **导出会显式列出跳过项（D-37 v1.1）**：全量/prefix 导出返回 `{credentials, count, skipped:[{key_name, reason}]}`（reason=scope 无权 / expired 已过期）；`only` 命中不可读或已过期的键 → 403，不做静默跳过。客户端 `sgme-cred export/run` 会把跳过项告警到 stderr。
 - **导出是唯一批量明文出口，必须二次确认**：先向用户确认目标范围（`only` 还是 `prefix`，含哪些键），明确点头后才执行；导出内容落到受控文件或直接管道给消费方，不回贴对话。事后可按 SecurityLog 的 `credential_export` 事件核对 `target`（`all` / `only:...` / `prefix:...`）。
 
 ```bash

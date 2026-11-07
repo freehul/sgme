@@ -373,8 +373,12 @@ def _fetch_export_pairs(
     api_key: str,
     only: list[str] | None,
     prefix: str | None,
-) -> list[tuple[str, str]]:
-    """单次 export 请求取原始值（export/run 共用；不逐键 N+1 请求）。"""
+) -> tuple[list[tuple[str, str]], list[dict]]:
+    """单次 export 请求取原始值（export/run 共用；不逐键 N+1 请求）。
+
+    D-37 v1.1：响应可带 skipped 列表（[{key_name, reason}]，reason=scope/expired）——
+    本函数原样带回，由调用方显式告警（不静默少发）。
+    """
     params: dict[str, str] = {}
     if only:
         params["only"] = ",".join(only)
@@ -382,19 +386,37 @@ def _fetch_export_pairs(
         params["prefix"] = prefix
     body = _http_get(base_url, api_key, "/v1/credentials/export", params)
     try:
-        creds = json.loads(body)["credentials"]
+        data = json.loads(body)
+        creds = data["credentials"]
     except (ValueError, TypeError, KeyError, IndexError):
         raise CredError(
             '导出响应格式非法（期望 JSON：{"credentials": {"KEY": 值}}）'
         ) from None
     if not isinstance(creds, dict):
         raise CredError("导出响应 credentials 字段应为对象（KEY→值）")
+    skipped = data.get("skipped") or []
+    if not isinstance(skipped, list):
+        skipped = []
     pairs: list[tuple[str, str]] = []
     for key, value in creds.items():
         if not isinstance(value, str):
             raise CredError(f"导出响应包含非字符串值（键 {key}）")
         pairs.append((str(key), value))
-    return pairs
+    return pairs, skipped
+
+
+def _warn_skipped(skipped: list) -> None:
+    """导出跳过项告警（scope/expired）——写 stderr，不静默少发。"""
+    parts: list[str] = []
+    for item in skipped:
+        if isinstance(item, dict):
+            name = str(item.get("key_name") or "?")
+            reason = str(item.get("reason") or "unknown")
+            parts.append(f"{name}({reason})")
+    if parts:
+        sys.stderr.write(
+            "警告：以下凭据被跳过（无权或已过期）：" + ", ".join(parts) + "\n"
+        )
 
 
 def cmd_export(args: argparse.Namespace) -> int:
@@ -403,9 +425,10 @@ def cmd_export(args: argparse.Namespace) -> int:
     默认写 stdout；``--out FILE`` 写文件（utf-8、``\n`` 行尾）。
     """
     base_url, api_key = _resolve_client()
-    pairs = _fetch_export_pairs(
+    pairs, skipped = _fetch_export_pairs(
         base_url, api_key, _split_only(args.only), _clean_prefix(args.prefix)
     )
+    _warn_skipped(skipped)
     text = format_dotenv(pairs)
     if args.out:
         try:
@@ -425,9 +448,10 @@ def cmd_run(args: argparse.Namespace, child: list[str]) -> int:
     服务端值覆盖同名项。
     """
     base_url, api_key = _resolve_client()
-    pairs = _fetch_export_pairs(
+    pairs, skipped = _fetch_export_pairs(
         base_url, api_key, _split_only(args.only), _clean_prefix(args.prefix)
     )
+    _warn_skipped(skipped)
     env = os.environ.copy()
     for key, value in pairs:
         env[key] = value
