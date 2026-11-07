@@ -2450,10 +2450,13 @@ def build_mcp_server():
     @mcp.tool()
     @tool
     def credential_list(ctx: Context | None = None) -> str:
-        """凭据列表（EP-11 / D-37 v1.1）：键名+元数据（scope/类型/过期/最近使用），**不含值**。
+        """凭据列表（EP-11 / D-37 v1.2）：键名+元数据（scope/类型/过期/最近使用），**不含值**。
 
         凭据库 = 跨机共享的 API Key / token / 密码集中存放处。按调用方身份过滤：
         agent 只看到 scope 可见且未过期的行；admin 看到全部（行内带 expired 标记）。
+        ``cred_type=file``（文件/二进制「重要数据」）的行自动附带
+        filename / file_size / file_sha256 —— MCP 是文本面，**只给元数据不下发二进制**；
+        取文件请走 HTTP ``GET /v1/credentials/{key}/file``（sgme-cred file-get）。
         """
         import json
 
@@ -2474,7 +2477,11 @@ def build_mcp_server():
     @mcp.tool()
     @tool
     def credential_get(name: str, ctx: Context | None = None) -> str:
-        """取凭据单值（EP-11）。⚠️ 值不得进入对话正文：标准姿势是客户端注入（sgme-cred run，值不落盘不进对话）；本工具仅限「必须显式查看」场景，取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。"""
+        """取凭据单值（EP-11）。⚠️ 值不得进入对话正文：标准姿势是客户端注入（sgme-cred run，值不落盘不进对话）；本工具仅限「必须显式查看」场景，取用后勿复述值（值经会话上下文将沿 L0 与云端模型链路扩散，不可回收）。
+
+        D-37 v1.2：``cred_type=file`` 的行**没有文本值**——本工具返回 ops 的 400 错误
+        JSON（error 文案指路 GET /v1/credentials/{key}/file）；二进制不进 MCP 文本面。
+        """
         import json
 
         from sgme.operations.credentials import get_credential as get_credential_operation
@@ -2553,6 +2560,7 @@ def build_mcp_server():
                     "   - 长连接（有常驻能力的 agent，**主动关怀首选**）：挂 SSE 事件流 GET http://<sgme-host>:9910/v1/events/stream?subscriber_id=<你的agent_id>（请求头带 X-API-Key），事件实时推送，care_*/memory_updated/anomaly_warn 一产生即到达 → 立即 claim→关怀→ack；断线重连带 Last-Event-ID 头补偿，不丢事件。\n"
                     "5. 对话开始时（或用户指定角色时）role_list 看可用角色，role_assemble(role_id) 拿人设并按其说话——换皮不换芯，角色只是沟通外皮，记忆池不动。\n"
                     "**重要信息存放处（凭据库）**：SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集中存放处（NAS 唯一真源，本机 .env 只是缓存）。想看有哪些 → credential_list() / sgme-cred list（只回键名与元数据，永不回值）；程序取用 → sgme-cred run -- <命令>（注入环境变量，值不落盘不进对话）；必须显式查看 → credential_get(name)（值不得写入对话正文或记忆）；写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 POST /v1/credentials）。\n"
+                    "**重要数据（文件）**：文件 / 二进制类重要数据同样放凭据库（cred_type=file）——HTTP POST /v1/credentials/{key}/file 上传（admin）、GET 同路径下载（agent，受 scope / 过期约束）；MCP 文本面只给元数据（credential_list 可见 filename / size），不下发二进制。\n"
                     "**汇报规范**（v3 新增，跨宿主同一套内容契约）：给用户的结论/进度/方案/故障说明必须五项齐全——①结论先行一句话 ②关键数据（实测并附来源或命令；没测写未验证）③要点列表（≤7 条）④遗留风险/未验证项 ⑤下一步选项（不替用户决定）。渲染按宿主能力分三档：R 富 UI（DSH 的 dsh-ui 围栏）／M Markdown（小标题+列表+粗体，表格 ≤4 列、单元格 ≤30 字）／P 纯文本（不用表格）。不把 dsh-ui JSON 发给非 DSH 宿主；不擅自扩大范围；改了什么/没改什么分开写。完整规范见仓库 AI-INSTALL/report-style.md 或技能 report-format。\n"
                     "**强制查询**：涉及用户/项目历史事实的问题（之前/以前/上次/还记得…），必须先 search 再回答，不得直接说「不知道」。\n"
                     "**写入格式**：append 的 content 首行必须是 `# {ISO时间戳} {role}`（user/assistant），否则返回 422。\n"

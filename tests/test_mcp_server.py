@@ -77,6 +77,11 @@ def test_mcp_tools_available(mcp):
                 "skill_search", "skill_digest", "skill_get", "skill_materialize",
                 "credential_get", "credential_list"}
     assert expected <= set(names), f"缺工具: {expected - set(names)}"
+    # D-37 v1.2：文件 / 二进制凭据不进 MCP 文本面 → 不得新增 credential_file_*
+    # （工具集只加不减；这里断言的是「二进制没有文本工具」这条口径）
+    assert not {n for n in names if n.startswith("credential_file")}, (
+        f"MCP 不应新增文件类凭据工具: {sorted(n for n in names if n.startswith('credential_file'))}"
+    )
 
 
 # ---------- ST-36 M2：技能四级披露四工具 ----------

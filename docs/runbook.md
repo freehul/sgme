@@ -999,8 +999,12 @@ asyncio.run(t())
 | POST | `/v1/credentials` | Admin | 写入 / 更新 `{key_name, value?, description?, scope?, cred_type?, expires_at?}`；value 省略=只改元数据；已删键名 → 409 |
 | DELETE | `/v1/credentials/{key}` | Admin | 软删（幂等） |
 | POST | `/v1/credentials/{key}/restore` | Admin | 恢复（幂等） |
+| POST | `/v1/credentials/{key}/file?filename=...` | Admin | 文件/二进制上传（body 原始字节；上限 `credentials.max_file_bytes`，默认 2 MiB；超限 413） |
+| GET | `/v1/credentials/{key}/file` | Agent | 文件下载（受 scope/过期约束；octet-stream + Content-Disposition） |
 
 > **凭据 v1.1（2026-11-08）**：scope ∈ `all` / `admin` / `agents:<id,...>`（NULL=all），过期=不可读；`last_used_at` 读成功更新；写接口缺省=不变、空串=清空；onboarding 模板版本升 `SGME-ONBOARDING-v4`（模板含「重要信息存放处（凭据库）」段）。
+>
+> **凭据 v1.2（2026-11-08）**：文件/二进制「重要数据」走 `cred_type=file` + `credential_files` 表（Fernet 密文 BLOB，随 credentials.db 备份）；上传/下载走 HTTP `/v1/credentials/{key}/file`；MCP 只给元数据；单条上限 `credentials.max_file_bytes`（默认 2 MiB）。
 
 *`/v1/health` 仅需 Bearer（若开启），不强制 X-API-Key。
 
@@ -1338,7 +1342,7 @@ curl $SGME_HTTP_BASE/v1/health
 - **首次启动**（空数据卷）自动把默认 `config/sgme.yaml` 物化到数据卷 `config/` 下（entrypoint 复制镜像内模板）
 - 默认含生产调优：`l15.prescreen.enabled: true` + `fallback: skip_conflict`（embed 不可达时跳过冲突检测直接 store，防全量召回烧钱）与 `search.vector`（siliconflow BAAI/bge-m3 1024 维免费托底）
 - 改配置：编辑数据卷 `config/sgme.yaml` 后重启容器；程序资源 `llm.yaml` / `providers.yaml` 始终读镜像内版本
-- **凭据模块（可选，EP-11）**：默认 `credentials.enabled: false`；启用 = 数据卷 `config/sgme.yaml` 打开该开关，并给容器注入 `SGME_CRED_KEY`（44 字符 Fernet key；生成：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`）后重启
+- **凭据模块（可选，EP-11）**：默认 `credentials.enabled: false`；启用 = 数据卷 `config/sgme.yaml` 打开该开关，并给容器注入 `SGME_CRED_KEY`（44 字符 Fernet key；生成：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`）后重启；文件/二进制单条上限 `credentials.max_file_bytes`（默认 2 MiB）
 - 找数据卷：`docker volume ls` / `docker volume inspect <volume>`（compose 卷名形如 `sgme_sgme-data`）
 
 ### A.16.4 升级

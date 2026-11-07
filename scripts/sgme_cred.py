@@ -10,6 +10,13 @@ r"""sgme-cred — SGME 凭据模块客户端工具（T-274；凭据模块设计 
     sgme-cred get KEY                                     # stdout 仅输出值本身
     sgme-cred export [--only A,B | --prefix P] [--out F]  # 导出 dotenv（默认 stdout）
     sgme-cred run [--only A,B | --prefix P] -- <cmd...>   # 拉取 → 注入环境变量 → 执行子进程
+    sgme-cred file-get KEY --out FILE                     # 下载文件类凭据（二进制只落 --out）
+    sgme-cred file-put KEY --file LOCAL [--filename NAME] # 上传/替换文件类凭据（需 admin key）
+
+    D-37 v1.2：文件/二进制「重要数据」（cred_type=file）走独立通道——``file-get`` 把
+    原始字节直接写进 ``--out`` 指定的文件（**stdout 只打一行 JSON 摘要，二进制绝不进
+    stdout**）；``file-put`` 原样 POST 本地文件字节（``--filename`` 缺省取本地文件名），
+    admin key 从 install.json 的 ``keys.admin``（环境变量名引用）解析。
 
     ``--only`` 与 ``--prefix`` 互斥（同给报错）；``run`` 必须带 ``--`` 分隔符，
     其后的参数原样（不经 shell）交给子进程；``run`` 透传子进程退出码。
@@ -47,6 +54,10 @@ shell/解析器误读）
     共用**同一次** export 请求取原始值（不逐键 N+1 请求）。错误信封统一
     ``{"error": {"code", "message"}}``。
 
+    ``POST /v1/credentials/{key}/file?filename=...`` → JSON 元数据（admin；body 原始字节）；
+    ``GET /v1/credentials/{key}/file`` → 原始字节（agent；``X-Cred-Sha256`` / ``X-Cred-Size``
+    响应头带完整性信息，scope / 过期约束与取单值一致）。
+
 退出码：``0`` 成功；``1`` 运行时/接口/配置错误；``2`` 用法错误；
 ``run`` 透传子进程退出码。所有输出与错误信息均不打印凭据值。
 """
@@ -54,6 +65,7 @@ shell/解析器误读）
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -190,10 +202,39 @@ def resolve_api_key(install: dict) -> str:
     return value
 
 
+def resolve_admin_key(install: dict) -> str:
+    """Admin Key 解析：install.json ``keys.admin``（环境变量名引用）→ 读该环境变量值。
+
+    D-37 v1.2 文件上传是 admin 端点；本工具不硬编码 key、无默认 key，
+    值只驻留内存（错误信息只回变量名，不回值）。
+    """
+    keys = install.get("keys")
+    keys = keys if isinstance(keys, dict) else {}
+    env_name = str(keys.get("admin") or "").strip()
+    if not env_name:
+        raise CredError(
+            f"install.json 缺少 keys.admin（admin key 的环境变量名引用）："
+            f"{install_json_path()}"
+        )
+    value = (os.environ.get(env_name) or "").strip()
+    if not value:
+        raise CredError(
+            f"install.json 指向的环境变量 {env_name} 未设置或为空——"
+            f"文件上传需要 admin key，请先在本机导出该变量（值不进对话、不落盘）"
+        )
+    return value
+
+
 def _resolve_client() -> tuple[str, str]:
     """解析 (base_url, api_key)；任一缺失抛 CredError（排障提示见消息）。"""
     install = load_install_json()
     return resolve_base_url(install), resolve_api_key(install)
+
+
+def _resolve_admin_client() -> tuple[str, str]:
+    """解析 (base_url, admin_key)（文件上传用）；任一缺失抛 CredError。"""
+    install = load_install_json()
+    return resolve_base_url(install), resolve_admin_key(install)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +274,56 @@ def _http_get(
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         raise CredError(f"SGME 响应不是合法 UTF-8：{url}") from None
+
+
+def _open_no_proxy(req: urllib.request.Request) -> tuple[bytes, dict[str, str]]:
+    """发请求并读全量响应字节（显式绕过环境代理）。返回 (body, 小写键 response headers)。"""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=TIMEOUT_S) as resp:
+            raw = resp.read()
+            headers = {str(k).lower(): str(v) for k, v in resp.headers.items()}
+    except urllib.error.HTTPError as e:  # 注意：HTTPError ⊂ URLError，先捕
+        raise CredError(_http_error_message(e.code, _read_body(e))) from None
+    except (urllib.error.URLError, OSError) as e:
+        reason = getattr(e, "reason", "") or e
+        raise CredError(
+            f"无法连接 SGME：{req.full_url}\n"
+            f"原因：{reason}\n"
+            f"排障提示：① 检查 {BASE_URL_ENV} / install.json 的地址与端口；"
+            f"② 确认服务在运行；③ 本工具已显式绕过环境代理"
+            f"（HTTP_PROXY/HTTPS_PROXY/ALL_PROXY），如需代理请确认其可达该地址。"
+        ) from None
+    return raw, headers
+
+
+def _http_get_raw(base_url: str, api_key: str, path: str) -> tuple[bytes, dict[str, str]]:
+    """GET 原始字节（文件下载；不做 UTF-8 解码——二进制通道）。"""
+    req = urllib.request.Request(
+        base_url + path,
+        headers={"X-API-Key": api_key, "User-Agent": USER_AGENT},
+        method="GET",
+    )
+    return _open_no_proxy(req)
+
+
+def _http_post_bytes(base_url: str, api_key: str, path: str, data: bytes) -> str:
+    """POST 原始字节（文件上传），返回 UTF-8 响应正文（JSON 元数据）。"""
+    req = urllib.request.Request(
+        base_url + path,
+        data=data,
+        headers={
+            "X-API-Key": api_key,
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/octet-stream",
+        },
+        method="POST",
+    )
+    raw, _headers = _open_no_proxy(req)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise CredError(f"SGME 响应不是合法 UTF-8：{base_url + path}") from None
 
 
 def _read_body(err: urllib.error.HTTPError) -> str:
@@ -368,6 +459,63 @@ def cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_file_get(args: argparse.Namespace) -> int:
+    """下载文件类凭据 → 写 ---out 指定的文件；stdout 只打一行 JSON 摘要。
+
+    二进制**绝不进 stdout**（stdout 可能被管道/终端重定向；二进制只落显式指定的文件）。
+    服务端 X-Cred-Sha256 与本地重算不一致时在摘要里给 warning（不静默）。
+    """
+    base_url, api_key = _resolve_client()
+    path = "/v1/credentials/" + urllib.parse.quote(args.key, safe="") + "/file"
+    raw, headers = _http_get_raw(base_url, api_key, path)
+    out = Path(args.out)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(raw)
+    except OSError as e:
+        raise CredError(f"无法写入文件：{args.out}（{e}）") from None
+    sha256 = hashlib.sha256(raw).hexdigest()
+    summary: dict[str, object] = {
+        "ok": True,
+        "key_name": args.key,
+        "out": str(out),
+        "size": len(raw),
+        "sha256": sha256,
+    }
+    server_sha = headers.get("x-cred-sha256")
+    if server_sha and server_sha != sha256:
+        summary["server_sha256"] = server_sha
+        summary["warning"] = "服务端 sha256 与本地计算结果不一致（请复核文件完整性）"
+    _write_out(json.dumps(summary, ensure_ascii=False) + "\n")
+    return 0
+
+
+def cmd_file_put(args: argparse.Namespace) -> int:
+    """上传 / 替换文件类凭据（admin key）→ 打印服务端返回 JSON（元数据，不含内容）。"""
+    base_url, api_key = _resolve_admin_client()
+    local = Path(args.file)
+    try:
+        data = local.read_bytes()
+    except FileNotFoundError:
+        raise CredError(f"本地文件不存在：{args.file}") from None
+    except OSError as e:
+        raise CredError(f"无法读取本地文件：{args.file}（{e}）") from None
+    filename = (args.filename or local.name or "").strip() or local.name
+    path = (
+        "/v1/credentials/"
+        + urllib.parse.quote(args.key, safe="")
+        + "/file?"
+        + urllib.parse.urlencode({"filename": filename})
+    )
+    body = _http_post_bytes(base_url, api_key, path, data)
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise CredError("上传响应格式非法（期望 JSON 元数据）") from None
+    _write_out(json.dumps(payload, ensure_ascii=False) + "\n")
+    return 0
+
+
 def _fetch_export_pairs(
     base_url: str,
     api_key: str,
@@ -471,14 +619,40 @@ def _build_parser() -> argparse.ArgumentParser:
     """构建 argparse 解析器（--only/--prefix 互斥；run/export 同一套过滤参数）。"""
     parser = argparse.ArgumentParser(
         prog=PROG,
-        description="SGME 凭据客户端：list / get / export / run（单文件零依赖）",
-        epilog="示例：sgme-cred run -- python app.py ｜ sgme-cred export --out .env",
+        description=(
+            "SGME 凭据客户端：list / get / export / run / file-get / file-put"
+            "（单文件零依赖）"
+        ),
+        epilog=(
+            "示例：sgme-cred run -- python app.py ｜ sgme-cred export --out .env ｜ "
+            "sgme-cred file-get BACKUP_KEY --out ./backup.bin"
+        ),
     )
     sub = parser.add_subparsers(dest="cmd", metavar="<命令>", required=True)
     sub.add_parser("list", help="列键名（不含值）")
 
     p_get = sub.add_parser("get", help="取单值（stdout 仅输出值本身）")
     p_get.add_argument("key", metavar="KEY", help="凭据键名")
+
+    # D-37 v1.2：文件/二进制「重要数据」（二进制走文件，不走 stdout/JSON 值面）
+    p_fget = sub.add_parser(
+        "file-get", help="下载文件类凭据到本地文件（stdout 只打一行 JSON 摘要）"
+    )
+    p_fget.add_argument("key", metavar="KEY", help="凭据键名")
+    p_fget.add_argument(
+        "--out", metavar="FILE", required=True, help="写入的本地文件路径（必填）"
+    )
+
+    p_fput = sub.add_parser(
+        "file-put", help="上传/替换文件类凭据（需 admin key；打印返回 JSON）"
+    )
+    p_fput.add_argument("key", metavar="KEY", help="凭据键名")
+    p_fput.add_argument(
+        "--file", metavar="LOCAL", required=True, help="本地文件路径（必填）"
+    )
+    p_fput.add_argument(
+        "--filename", metavar="NAME", help="服务端保存的文件名（缺省取本地文件名）"
+    )
 
     for name, help_text in (
         ("export", "导出 dotenv（默认 stdout；--out 写文件）"),
@@ -524,6 +698,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_list()
         if args.cmd == "get":
             return cmd_get(args)
+        if args.cmd == "file-get":
+            return cmd_file_get(args)
+        if args.cmd == "file-put":
+            return cmd_file_put(args)
         if args.cmd == "export":
             return cmd_export(args)
         return cmd_run(args, child or [])

@@ -28,3 +28,17 @@ curl -s -H "X-API-Key: $SGME_AGENT_KEY" \
 - **处置**：从部署配置注入正确的 `SGME_CRED_KEY` 后重启。不要随手重新生成 key——既有密文会永久不可读；确需轮换，先解出全部值再统一重写。
 - **坑**：`export` 必须先于 `/{key}` 注册。若前置代理/重写规则把 `export` 当键名转发，会命中详情端点导致 404 或取错值——先直连服务验证。
 - **坑**：写/删/恢复/导出四处都写 admin_op 审计；排障时以审计为准，不以客户端缓存为准。
+
+## 文件 / 二进制「重要数据」（D-37 v1.2）
+
+凭据库也存文件（证书、配置包、导出件等）：
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | `/v1/credentials/{key}/file?filename=...` | admin | 上传/替换文件（body 原始字节；键不存在时创建；非 file 键 409；上限 `credentials.max_file_bytes`，默认 2 MiB，超限 413） |
+| GET | `/v1/credentials/{key}/file` | agent | 下载文件（受 scope/过期约束；octet-stream + Content-Disposition） |
+
+- 存储：`credential_files` 表，Fernet 密文 BLOB，随 credentials.db 备份；
+- MCP 不下发二进制：`credential_list` 可见 filename/size/sha256，`credential_get` 对 file 键返回 400 并指引 HTTP；
+- export 全量时 file 键进 `skipped`（reason=file）；`only` 含 file 键 → 400；
+- 客户端：`sgme-cred file-put KEY --file PATH [--filename NAME]` / `sgme-cred file-get KEY --out PATH`。

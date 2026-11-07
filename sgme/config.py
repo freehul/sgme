@@ -109,6 +109,8 @@ DEFAULT_WIKI_CONFIG = {
 # 存量部署；启用后创建 data/credentials.db 并挂载 /v1/credentials（config/sgme.yaml 开关）
 DEFAULT_CREDENTIALS_CONFIG = {
     "enabled": False,
+    # D-37 v1.2（2026-11-08）：文件/二进制「重要数据」单条上限（解码后字节数）
+    "max_file_bytes": 2 * 1024 * 1024,
 }
 
 DEFAULT_SKILLS_HUB_CONFIG = {
@@ -1295,8 +1297,12 @@ def _merge_role_life_config(user_cfg: dict | None) -> dict:
 def _merge_credentials_config(user_cfg: dict | None) -> dict:
     """合并 credentials 段默认值与用户配置（EP-11；enabled 仅接受 bool，非法回退默认）。"""
     base = dict(DEFAULT_CREDENTIALS_CONFIG)
-    if isinstance(user_cfg, dict) and isinstance(user_cfg.get("enabled"), bool):
-        base["enabled"] = user_cfg["enabled"]
+    if isinstance(user_cfg, dict):
+        if isinstance(user_cfg.get("enabled"), bool):
+            base["enabled"] = user_cfg["enabled"]
+        mf = user_cfg.get("max_file_bytes")
+        if isinstance(mf, int) and not isinstance(mf, bool) and mf > 0:
+            base["max_file_bytes"] = mf
     return base
 
 

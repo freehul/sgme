@@ -54,6 +54,7 @@ ERROR_CODES = {
     "ERR_NOT_FOUND": 404,
     "ERR_CONFLICT": 409,
     "ERR_RATE_LIMITED": 429,
+    "ERR_TOO_LARGE": 413,
     "ERR_INTERNAL": 500,
     "ERR_LLM_UNAVAILABLE": 503,
     "ERR_DISABLED": 409,  # T-149：模块被配置关闭（answer.enabled=false）

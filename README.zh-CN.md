@@ -231,6 +231,7 @@ dsh plugin --profile web add github:freehul/sgme
 - 程序取用：`sgme-cred run -- <命令>`（注入环境变量，值不落盘、不进对话）；
 - 必须显式查看：`credential_get(name)`——值不得写入对话正文或记忆；
 - 写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 `POST /v1/credentials`）。
+- 文件 / 二进制重要数据同样放凭据库（`cred_type=file`）：`POST /v1/credentials/{key}/file` 上传（admin）、`GET` 同路径下载（agent，受 scope / 过期约束）；MCP 文本面只给元数据，不下发二进制。
 
 **向量引擎接入**（`health()` 返回 `vector.available=false` 或 `vector.connectivity=false` 时执行）：本地优先、云端免费降级——推荐本地 Ollama 或 LM Studio 跑 `bge-m3`（1024 维；云端硅基流动 `BAAI/bge-m3` 免费自动兜底，同维度切换不重灌索引）。探测 `curl http://127.0.0.1:11434/api/tags`（Ollama）/ `curl http://127.0.0.1:1234/v1/models`（LM Studio）→ 缺模型则 `ollama pull bge-m3`（或 LM Studio 搜索下载）→ 在 `config/sgme.yaml` 写 `search.vector` 段（`base_url` / `model: bge-m3` / `fallbacks`）并重启 SGME → 再 `health()` 直到 `vector.connectivity=true`。不推荐 llama.cpp（模型状态无人维护，清理显存后即失联）。
 

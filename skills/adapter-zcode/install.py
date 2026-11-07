@@ -263,6 +263,7 @@ AGENTS_MD_SECTION = """\
   - 程序取用：`sgme-cred run -- <命令>`（注入环境变量，值不落盘、不进对话）
   - 必须显式查看：`credential_get(name)`——值不得写入对话正文或记忆
   - 写 / 删 / 恢复只走 admin（WebUI「凭证管理」或 `POST /v1/credentials`）
+  - 文件 / 二进制重要数据同样放凭据库（`cred_type=file`）：`POST /v1/credentials/{key}/file` 上传（admin）、`GET` 同路径下载（agent，受 scope / 过期约束）；MCP 文本面只给元数据，不下发二进制。
 - **强制查询**：涉及历史事实（之前/上次/还记得…）必须先 search 再回答，查不到如实说「记忆库中未找到」
 - **三池**：待办 demand-create（project_id 一律大写）｜创意 idea-add｜立项 project-register
 - **历史会话补导入**：`python <repo>/adapters/zcode/import_history.py --dry-run` 预览后去掉 --dry-run 执行

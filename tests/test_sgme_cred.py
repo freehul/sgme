@@ -9,6 +9,9 @@
    子进程真调 list / get / export / run；run 用 `python -c` 子进程断言注入
    成功，并断言**单次** export 请求（无逐键 N+1）；断言值未打印、未落盘；
    环境注入死代理验证显式绕过（Clash 系先例）。
+③ 文件通道（D-37 v1.2）——file-get / file-put 子进程真调：二进制落 --out 且字节
+   完整、stdout 只一行 JSON 摘要（二进制不进 stdout）；上传字节原样、--filename
+   缺省/覆盖两条路径、返回 JSON 可解析、admin key 解析与缺失时的本地拒绝。
 
 纪律：不碰真实 ~/.sgme（USERPROFILE/HOME 指向 tmp）；不出外网（仅 127.0.0.1）；
 假数据一律低熵（B179 教训）。
@@ -16,6 +19,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import importlib.util
 import json
@@ -49,7 +53,16 @@ sgme_cred = _load_module()
 
 FAKE_AGENT_KEY = "agt_test_fake_0001"
 AGENT_ENV_NAME = "SGME_TEST_AGENT_KEY"
+# 文件上/下载是 admin 端点（install.json keys.admin → 该环境变量名；_write_install 同值）
+FAKE_ADMIN_KEY = "adm_test_fake_0001"
+ADMIN_ENV_NAME = "SGME_ADMIN_KEY"
 DEAD_PROXY = "http://127.0.0.1:9"
+
+# D-37 v1.2 文件通道 canned 数据：全字节谱 + 尾巴（非 UTF-8/NUL 全含 → 证明不是文本伪装）
+FILE_KEY = "BLOB_KEY"
+FILE_BYTES = bytes(range(256)) + b"binary-tail-\x00"
+FILE_SHA256 = hashlib.sha256(FILE_BYTES).hexdigest()
+FILE_NAME = "备份 数据.bin"
 
 CANON_VALUES = {
     "K": "test-value-k",
@@ -115,10 +128,14 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         return
 
-    def _send(self, status: int, body: bytes, ctype: str) -> None:
+    def _send(
+        self, status: int, body: bytes, ctype: str, headers: dict | None = None
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -171,6 +188,21 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
             )
             return
 
+        # D-37 v1.2：文件下载（二进制 + 完整性响应头；必须在通用 {key} 分支之前）
+        if path == f"/v1/credentials/{FILE_KEY}/file":
+            self._send(
+                200,
+                FILE_BYTES,
+                "application/octet-stream",
+                headers={
+                    "Content-Disposition": "attachment; filename*=UTF-8''"
+                    + urllib.parse.quote(FILE_NAME),
+                    "X-Cred-Sha256": FILE_SHA256,
+                    "X-Cred-Size": str(len(FILE_BYTES)),
+                },
+            )
+            return
+
         if path.startswith("/v1/credentials/"):
             key = urllib.parse.unquote(path[len("/v1/credentials/") :])
             if key in CANON_VALUES:
@@ -193,13 +225,57 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
 
         self._json(404, {"error": {"code": "not_found", "message": "未知路径"}})
 
+    def do_POST(self):
+        """文件上传端点（D-37 v1.2）：记录原始请求体，返回元数据 JSON。"""
+        srv = self.server
+        parsed = urllib.parse.urlparse(self.path)
+        path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
+        srv.requests.append((path, query))
+
+        if path != f"/v1/credentials/{FILE_KEY}/file":
+            self._json(404, {"error": {"code": "not_found", "message": "未知路径"}})
+            return
+        # 上传是 admin 端点：假服务端只认 admin key（也让测试能断言 CLI 用的是哪把钥匙）
+        if self.headers.get("X-API-Key") != srv.expected_admin_key:
+            self._json(
+                403,
+                {"error": {"code": "forbidden", "message": "缺失或无权限的 X-API-Key"}},
+            )
+            return
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        filename = (query.get("filename") or [""])[0]
+        srv.uploads.append(
+            {
+                "body": body,
+                "filename": filename,
+                "api_key": self.headers.get("X-API-Key"),
+                "content_type": self.headers.get("Content-Type"),
+            }
+        )
+        self._json(
+            200,
+            {
+                "ok": True,
+                "key_name": FILE_KEY,
+                "filename": filename,
+                "size": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "updated_at": "2026-10-15T00:00:00Z",
+                "scope": None,
+                "cred_type": "file",
+                "expires_at": None,
+            },
+        )
+
 
 @pytest.fixture()
 def fake_server():
     """起假服务端（端口 0 随机）并记录请求；测试结束关闭。"""
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeHandler)
     server.expected_key = FAKE_AGENT_KEY
+    server.expected_admin_key = FAKE_ADMIN_KEY
     server.requests = []
+    server.uploads = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -252,7 +328,9 @@ def _write_install(paths, port: int) -> None:
     )
 
 
-def _cli_env(paths, *, base_url=None, agent_key=FAKE_AGENT_KEY, install=True):
+def _cli_env(
+    paths, *, base_url=None, agent_key=FAKE_AGENT_KEY, admin_key=None, install=True
+):
     """构造子进程环境：隔离 home、清理真实 SGME_* 变量、注入死代理。
 
     死代理（HTTP_PROXY 等 → 127.0.0.1:9）在所有端到端用例中都在场——
@@ -285,6 +363,9 @@ def _cli_env(paths, *, base_url=None, agent_key=FAKE_AGENT_KEY, install=True):
         env["SGME_INSTALL_JSON"] = str(paths.install)
     if agent_key is not None:
         env[AGENT_ENV_NAME] = agent_key
+    if admin_key is not None:
+        # D-37 v1.2：install.json keys.admin 指向该变量名（文件上传走 admin key）
+        env[ADMIN_ENV_NAME] = admin_key
     return env
 
 
@@ -733,3 +814,86 @@ def test_e2e_missing_install_json(cli_paths):
     assert proc.returncode == 1
     assert proc.stdout == b""
     assert "SGME_INSTALL_JSON" in proc.stderr.decode("utf-8")
+
+# ---------------------------------------------------------------------------
+# ③ 端到端：文件 / 二进制「重要数据」通道（D-37 v1.2）
+# ---------------------------------------------------------------------------
+
+
+def test_e2e_file_get(fake_server, cli_paths):
+    """file-get：二进制只落 --out；stdout 只有一行 JSON 摘要（sha256/size 对得上）。"""
+    out = cli_paths.work / "restored.bin"
+    proc = _run_cli(
+        cli_paths,
+        ["file-get", FILE_KEY, "--out", str(out)],
+        _cli_env(cli_paths, base_url=_base_url(fake_server)),
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    # 字节完整（含 NUL 与非 UTF-8 字节，证明不是文本通道）
+    assert out.read_bytes() == FILE_BYTES
+    # stdout 只有一行 JSON 摘要
+    lines = proc.stdout.decode("utf-8").splitlines()
+    assert len(lines) == 1, f"stdout 必须只有一行摘要，实际 {lines!r}"
+    summary = json.loads(lines[0])
+    assert summary["ok"] is True and summary["key_name"] == FILE_KEY
+    assert summary["size"] == len(FILE_BYTES) and summary["sha256"] == FILE_SHA256
+    assert Path(summary["out"]) == out
+    assert "warning" not in summary  # 服务端 X-Cred-Sha256 与本地重算一致
+    assert proc.stderr == b""
+    # 二进制绝不进 stdout / stderr
+    assert FILE_BYTES[:64] not in proc.stdout
+    assert FILE_BYTES[:64] not in proc.stderr
+    # 只发一次 GET，路径正确
+    assert fake_server.requests == [(f"/v1/credentials/{FILE_KEY}/file", {})]
+    # 值未泄漏到其它文件（--out 之外不留副本）
+    for path in cli_paths.home.rglob("*"):
+        if path.is_file():
+            assert FILE_BYTES[:64] not in path.read_bytes(), f"文件泄漏：{path}"
+
+
+def test_e2e_file_put(fake_server, cli_paths):
+    """file-put：本地字节原样上传（admin key）+ --filename 缺省/覆盖 + 返回 JSON 可解析。"""
+    local = cli_paths.work / "to-upload.bin"
+    local.write_bytes(FILE_BYTES)
+    env = _cli_env(cli_paths, base_url=_base_url(fake_server), admin_key=FAKE_ADMIN_KEY)
+
+    proc = _run_cli(cli_paths, ["file-put", FILE_KEY, "--file", str(local)], env)
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    payload = json.loads(proc.stdout.decode("utf-8"))
+    assert payload["ok"] is True and payload["cred_type"] == "file"
+    assert payload["size"] == len(FILE_BYTES) and payload["sha256"] == FILE_SHA256
+    assert proc.stderr == b""
+    assert len(fake_server.uploads) == 1
+    upload = fake_server.uploads[0]
+    assert upload["body"] == FILE_BYTES  # 原样上传（无 base64 / 换行改写）
+    assert upload["filename"] == "to-upload.bin"  # 缺省 = 本地文件名
+    assert upload["api_key"] == FAKE_ADMIN_KEY  # 上传端点是 admin
+    assert upload["content_type"] == "application/octet-stream"
+
+    # --filename 覆盖（含中文与空格 → query 百分号编码后服务端解码回原名）
+    proc = _run_cli(
+        cli_paths,
+        ["file-put", FILE_KEY, "--file", str(local), "--filename", FILE_NAME],
+        env,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    assert fake_server.uploads[-1]["filename"] == FILE_NAME
+    assert fake_server.uploads[-1]["body"] == FILE_BYTES
+    assert json.loads(proc.stdout.decode("utf-8"))["filename"] == FILE_NAME
+    assert proc.stderr == b""
+    assert fake_server.requests[-1] == (
+        f"/v1/credentials/{FILE_KEY}/file", {"filename": [FILE_NAME]}
+    )
+
+    # admin key 缺失：本地即拒绝（不发请求、提示变量名、不打印任何 key 值）
+    before = len(fake_server.uploads)
+    proc = _run_cli(
+        cli_paths,
+        ["file-put", FILE_KEY, "--file", str(local)],
+        _cli_env(cli_paths, base_url=_base_url(fake_server)),
+    )
+    assert proc.returncode == 1
+    assert len(fake_server.uploads) == before  # 无请求发出
+    err = proc.stderr.decode("utf-8")
+    assert ADMIN_ENV_NAME in err and FAKE_ADMIN_KEY not in err
+

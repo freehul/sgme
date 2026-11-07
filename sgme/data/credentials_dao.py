@@ -10,6 +10,8 @@
   服务启动与 restore 重开两处）
 - CRUD / 软删 / 恢复（**对已删键名写入的 409 语义由 operations 层裁决**，
   本层不自动复活）
+- 文件面（D-37 v1.2）：credential_files 表（Fernet 密文 BLOB + filename/size/sha256）；
+  状态仍以 credentials 行（status）为唯一真源，本表不存状态（避免双写状态源）
 - 审计记账。⚠️ 写函数**不自行 commit**：写/删审计与业务写同事务、
   读类 best-effort，提交/回滚一律由 operations 层编排。
 
@@ -28,10 +30,14 @@ from pathlib import Path
 
 from sgme import config
 
-# 独立库版本线（label credentials_v1）：新库无历史包袱，不共用三库的全局版本号
+# 独立库版本线：新库无历史包袱，不共用三库的全局版本号
 # v2（2026-11-04 · SGME 2.0 迁移阶段 1）：补 scope / cred_type / expires_at /
 # last_used_at 四列（D-37 扩展位；写读接线随 v1.1 落地，本阶段只保证结构存在）
-SCHEMA_VERSION = 2
+# v3（2026-11-08 · D-37 v1.2）：新增 credential_files 表（文件/二进制「重要数据」，
+# Fernet 密文 BLOB）。登记名跟随**结构代际**：credentials_v2 = 带文件表的第二代
+# （v1 时代登记名是 credentials_v1 → 老库连库即补建表并追加 v2 行，幂等）。
+SCHEMA_VERSION = 3
+SCHEMA_NAME = "credentials_v2"
 
 # ---------- DDL（方案 §三：credentials + credential_audit + (key_name, at) 索引） ----------
 
@@ -58,6 +64,15 @@ CREATE TABLE IF NOT EXISTS credential_audit (
   value_fp TEXT,
   at       TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_cred_audit_key_at ON credential_audit(key_name, at);
+CREATE TABLE IF NOT EXISTS credential_files (
+  key_name    TEXT PRIMARY KEY,
+  filename    TEXT NOT NULL,      -- 展示/下载用的文件名（已 basename 化，无路径无控制字符）
+  size        INTEGER NOT NULL,   -- 明文字节数
+  sha256      TEXT NOT NULL,      -- 明文 sha256（完整性校验 / 审计指纹来源）
+  data_cipher BLOB NOT NULL,      -- Fernet token 字节（密文，绝不明文落库）
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  updated_by  TEXT NOT NULL);
 """
 
 _SCHEMA_VERSIONS_DDL = """
@@ -98,13 +113,16 @@ def connect_credentials(data_dir: str | Path | None = None) -> sqlite3.Connectio
         if cols and col not in cols:
             conn.execute(f"ALTER TABLE credentials ADD COLUMN {col} TEXT")
     conn.executescript(_SCHEMA_VERSIONS_DDL)
+    # 幂等：同版本号或同名（credentials_v2）已有登记行就不再插（老库/新建库同路径；
+    # credential_files 由上方 CREDENTIALS_DDL 的 IF NOT EXISTS 在老库上就地补建）
     cur = conn.execute(
-        "SELECT version FROM schema_versions WHERE version=?", (SCHEMA_VERSION,)
+        "SELECT version FROM schema_versions WHERE version=? OR name=?",
+        (SCHEMA_VERSION, SCHEMA_NAME),
     )
     if cur.fetchone() is None:
         conn.execute(
             "INSERT INTO schema_versions (version, name, applied_at) VALUES (?,?,?)",
-            (SCHEMA_VERSION, "credentials_v1", now_iso()),
+            (SCHEMA_VERSION, SCHEMA_NAME, now_iso()),
         )
     conn.commit()
     return conn
@@ -157,6 +175,64 @@ def get_first_cipher(conn: sqlite3.Connection) -> str | None:
         "SELECT value_cipher FROM credentials ORDER BY id ASC LIMIT 1"
     ).fetchone()
     return row[0] if row is not None else None
+
+
+# ---------- 文件表（D-37 v1.2；密文 BLOB，跟随 credentials 行状态） ----------
+
+_FILE_META_COLS = "key_name, filename, size, sha256, created_at, updated_at, updated_by"
+
+
+def get_file(conn: sqlite3.Connection, key_name: str) -> dict | None:
+    """单条文件行（**含 data_cipher**）；不存在 → None。软删判定由 operations 层按
+    credentials 行 status 裁决（本表不存状态，避免双写状态源）。"""
+    rows = _rows_to_dicts(
+        conn.execute(
+            f"SELECT {_FILE_META_COLS}, data_cipher FROM credential_files WHERE key_name = ?",
+            (key_name,),
+        )
+    )
+    return rows[0] if rows else None
+
+
+def upsert_file(
+    conn: sqlite3.Connection,
+    *,
+    key_name: str,
+    filename: str,
+    size: int,
+    sha256: str,
+    data_cipher: bytes,
+    actor: str,
+    at: str,
+) -> bool:
+    """写入/替换文件行（created_at 保持首次写入值）。返回本次是否新建。
+
+    不自动 commit（与审计同事务由 operations 层编排）。
+    """
+    existing = get_file(conn, key_name)
+    if existing is None:
+        conn.execute(
+            "INSERT INTO credential_files "
+            "(key_name, filename, size, sha256, data_cipher, created_at, updated_at, updated_by) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (key_name, filename, int(size), sha256, sqlite3.Binary(data_cipher), at, at, actor),
+        )
+        return True
+    conn.execute(
+        "UPDATE credential_files SET filename=?, size=?, sha256=?, data_cipher=?, "
+        "updated_at=?, updated_by=? WHERE key_name=?",
+        (filename, int(size), sha256, sqlite3.Binary(data_cipher), at, actor, key_name),
+    )
+    return False
+
+
+def list_file_meta(conn: sqlite3.Connection) -> dict[str, dict]:
+    """全部文件行的**元数据**（不含密文）→ {key_name: {filename, size, sha256, ...}}。
+
+    供 operations 层给列表视图补 filename / file_size / file_sha256（一次查询，免 N+1）。
+    """
+    rows = _rows_to_dicts(conn.execute(f"SELECT {_FILE_META_COLS} FROM credential_files"))
+    return {row["key_name"]: row for row in rows}
 
 
 # ---------- 写（不自动 commit：审计同事务由 operations 层编排） ----------

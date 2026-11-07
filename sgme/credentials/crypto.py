@@ -88,3 +88,36 @@ def decrypt_value(ciphertext: str) -> str:
         return Fernet(key.encode("utf-8")).decrypt(ciphertext.encode("utf-8")).decode("utf-8")
     except (InvalidToken, ValueError, TypeError) as e:
         raise CredKeyError("凭据解密失败（主密钥不匹配或密文损坏）") from e
+
+
+# ---------- D-37 v1.2：任意字节（文件 / 二进制「重要数据」） ----------
+# 与文本值同一把主密钥、同一套门禁纪律：缺 key / 格式非法 / 解密失败一律
+# CredKeyError，消息**绝不携带**明文字节或密文内容（错误 Hygiene 见模块 docstring）。
+
+
+def encrypt_bytes(data: bytes) -> bytes:
+    """加密任意字节 → Fernet token **字节**（可直接存 BLOB）。
+
+    主密钥缺失/格式非法 → CredKeyError（不含任何值）。
+    """
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise CredKeyError("加密输入必须为 bytes（不接受文本/其它类型）")
+    key = get_master_key()
+    if not key or not is_valid_key_format(key):
+        raise CredKeyError(
+            "主密钥不可用（缺失或格式非法）——已拒绝加密写入；请检查 SGME_CRED_KEY"
+        )
+    return Fernet(key.encode("utf-8")).encrypt(bytes(data))
+
+
+def decrypt_bytes(token: bytes) -> bytes:
+    """解密 Fernet token 字节 → 原始字节。失败抛 CredKeyError（消息不含任何值）。"""
+    if not isinstance(token, (bytes, bytearray, memoryview)):
+        raise CredKeyError("解密输入必须为 bytes（Fernet token 字节）")
+    key = get_master_key()
+    if not key or not is_valid_key_format(key):
+        raise CredKeyError("主密钥不可用（缺失或格式非法）——无法解密凭据文件")
+    try:
+        return Fernet(key.encode("utf-8")).decrypt(bytes(token))
+    except (InvalidToken, ValueError, TypeError) as e:
+        raise CredKeyError("凭据文件解密失败（主密钥不匹配或密文损坏）") from e

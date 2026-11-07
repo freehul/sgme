@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   deleteCredential,
+  downloadCredentialFile,
   exportCredentials,
   listCredentials,
   restoreCredential,
+  uploadCredentialFile,
   writeCredential,
   type CredentialMeta,
   type CredentialWriteInput,
@@ -45,6 +47,11 @@ const formAgents = ref('')
 const formExpires = ref('') // datetime-local 本地值，提交前转 ISO
 const scopeExtra = ref('') // 后端返回的非标准 scope 取值（原样保留，避免编辑备注时被清空）
 const formError = ref('')
+// D-37 v1.2 文件类型：新建必选；编辑留空 = 不替换现有文件
+const formFile = ref<File | null>(null)
+const fileInputEl = ref<HTMLInputElement | null>(null)
+// 编辑目标的原始行（用于展示「当前文件」并提供「该键是否已有文件内容」判定）
+const editingMeta = ref<CredentialMeta | null>(null)
 
 const KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/
 // 后端保留名（引导/主密钥空间不进库），前端同规则预检
@@ -59,10 +66,14 @@ const CRED_TYPES = [
   { value: 'token', label: 'Token' },
   { value: 'password', label: '密码' },
   { value: 'other', label: '其他' },
+  // D-37 v1.2：文件 / 二进制「重要数据」（走 /v1/credentials/{key}/file 通道）
+  { value: 'file', label: '文件（重要数据）' },
 ]
 
 function credTypeLabel(v: string | null): string {
   if (!v) return '—'
+  // 列表类型列对文件类型用短名；弹窗下拉仍显示「文件（重要数据）」全称
+  if (v === 'file') return '文件'
   return CRED_TYPES.find((t) => t.value === v)?.label || v
 }
 
@@ -122,6 +133,60 @@ function localInputToIso(v: string): string {
   return Number.isNaN(d.getTime()) ? '' : d.toISOString()
 }
 
+// ---------- D-37 v1.2 文件（重要数据）：大小 / 校验 / 选择 ----------
+
+// 与后端默认值 credentials.max_file_bytes 一致（服务端可调小，故 413 仍要兜住）
+const MAX_FILE_BYTES = 2 * 1024 * 1024
+
+function fmtFileSize(n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  return (n / (1024 * 1024)).toFixed(2) + ' MB'
+}
+
+const isFileType = computed(() => formType.value === 'file')
+// 是否必须选文件：新建必选；编辑时仅当该键当前没有文件内容（非文件键）才必选
+const fileRequired = computed(
+  () => isFileType.value && (!editingKey.value || editingMeta.value?.cred_type !== 'file'),
+)
+
+function resetFormFile() {
+  formFile.value = null
+  // 原生 input 的已选文件不会被 v-model 清掉，必须直接置空
+  if (fileInputEl.value) fileInputEl.value.value = ''
+}
+
+// 关闭弹窗或切走「文件」类型时立即丢弃已选文件引用：
+// 文件 input 卸载后选择态不再可见，留着旧引用会被误当作本次要上传的文件
+watch([showForm, isFileType], () => {
+  if (!showForm.value || !isFileType.value) formFile.value = null
+})
+
+function onFilePick(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const picked = input.files && input.files.length ? input.files[0] : null
+  formError.value = ''
+  if (picked && picked.size > MAX_FILE_BYTES) {
+    formFile.value = null
+    input.value = ''
+    formError.value = '文件 ' + fmtFileSize(picked.size) + ' 超过 2 MiB 上限，请压缩或拆分后再上传'
+    return
+  }
+  formFile.value = picked
+}
+
+// 统一错误文案：ApiError 沿用服务端 message；413 = 文件超过后端上限
+function toErrText(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 413 || e.code === 'ERR_TOO_LARGE') {
+      return '文件超过服务端 2 MiB 上限，已被拒绝（' + e.message + '）。请压缩或拆分后再上传。'
+    }
+    return e.message
+  }
+  return String(e)
+}
+
 function openCreate() {
   editingKey.value = null
   formKey.value = ''
@@ -133,6 +198,8 @@ function openCreate() {
   formExpires.value = ''
   scopeExtra.value = ''
   formError.value = ''
+  editingMeta.value = null
+  resetFormFile()
   showForm.value = true
 }
 
@@ -157,6 +224,8 @@ function openEdit(c: CredentialMeta) {
   }
   formExpires.value = isoToLocalInput(c.expires_at)
   formError.value = ''
+  editingMeta.value = c
+  resetFormFile()
   showForm.value = true
 }
 
@@ -176,8 +245,17 @@ async function saveForm() {
     return
   }
   const editing = !!editingKey.value
-  // 新建必填值；编辑留空 = 只更新元数据（不强制重填值）
-  if (!editing && !formValue.value) {
+  const fileMode = formType.value === 'file'
+  if (fileMode) {
+    // 文件类型不填 value：新建必选文件；编辑留空 = 不替换（仅当该键已有文件内容时可留空）
+    if (!formFile.value && fileRequired.value) {
+      formError.value = editing
+        ? '该键当前没有文件内容，请选择要上传的文件'
+        : '请选择要上传的文件'
+      return
+    }
+  } else if (!editing && !formValue.value) {
+    // 新建必填值；编辑留空 = 只更新元数据（不强制重填值）
     formError.value = '值必填（不回显，请重新输入完整值）'
     return
   }
@@ -195,7 +273,30 @@ async function saveForm() {
   const expiresIso = localInputToIso(formExpires.value)
   busy.value = true
   try {
-    if (editing) {
+    let doneText = ''
+    if (fileMode) {
+      // 1) 先落文件：新建 = 创建「文件」键；编辑 = 替换文件内容（留空则跳过）
+      const picked = formFile.value
+      let uploadedSize = 0
+      if (picked) {
+        const uploaded = await uploadCredentialFile(key, picked)
+        uploadedSize = uploaded.size
+      }
+      // 2) 元数据：文件键可只改元数据（不带 value）。新建仅在填了备注 / 范围 / 过期时间时补写；
+      //    编辑一律显式上送（空串 "" = 清空），与值类型的编辑语义一致
+      if (editing || note || scope || expiresIso) {
+        await writeCredential({
+          key_name: key,
+          description: note,
+          scope,
+          cred_type: 'file',
+          expires_at: expiresIso,
+        })
+      }
+      doneText = picked
+        ? '已保存文件 ' + key + '（' + picked.name + '，' + fmtFileSize(uploadedSize) + '）'
+        : '已更新凭据 ' + key + '（文件未替换）'
+    } else if (editing) {
       // 编辑：元数据一律显式上送（空串 "" = 清空）；value 仅在填写时才上送（= 不改值）
       const input: CredentialWriteInput = {
         key_name: key,
@@ -206,6 +307,7 @@ async function saveForm() {
       }
       if (formValue.value) input.value = formValue.value
       await writeCredential(input)
+      doneText = '已更新凭据 ' + key
     } else {
       // 新建：value 必填；未填的元数据按 null 上送（= 不设置）
       await writeCredential({
@@ -216,17 +318,19 @@ async function saveForm() {
         cred_type: formType.value || null,
         expires_at: expiresIso || null,
       })
+      doneText = '已保存凭据 ' + key
     }
     showForm.value = false
-    // 立即抹去内存中的明文（表单关闭即清空，不留引用）
+    // 立即抹去内存中的明文 / 文件引用（表单关闭即清空，不留引用）
     formValue.value = ''
     formAgents.value = ''
     formExpires.value = ''
-    info.value = editing ? '已更新凭据 ' + key : '已保存凭据 ' + key
+    resetFormFile()
+    info.value = doneText
     filter.value = ''
     await load()
   } catch (e) {
-    formError.value = e instanceof ApiError ? e.message : String(e)
+    formError.value = toErrText(e)
   } finally {
     busy.value = false
   }
@@ -289,6 +393,18 @@ function triggerDownload(content: string, filename: string) {
   URL.revokeObjectURL(url)
 }
 
+// 二进制下载（D-37 v1.2）：fetch 回来的 Blob 直接交给浏览器，页面不留引用（10s 后释放）
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
 // 简单转义防止注入生成的 JSON 文件内容之外——值按 JSON 字符串序列化本身安全
 async function doExport() {
   const n = items.value.length
@@ -317,6 +433,27 @@ async function doExport() {
     info.value = `已导出 ${count} 条凭据明文（已下载 sgme-credentials-export.json，请妥善保管并及时删除）`
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+// ---------- 文件下载（D-37 v1.2） ----------
+
+// 文件键的 GET /v1/credentials/{key} 返回 400，内容一律走 /file 通道
+async function downloadFile(c: CredentialMeta) {
+  busy.value = true
+  error.value = ''
+  info.value = ''
+  try {
+    // 字节只在 Blob 中瞬时存在：取回即交给浏览器下载，随后释放，不进 console / 存储
+    const { blob, filename } = await downloadCredentialFile(c.key_name)
+    // 文件名优先用 Content-Disposition 返回值，回退列表里的 filename
+    const name = filename || c.filename || c.key_name
+    triggerBlobDownload(blob, name)
+    info.value = '已下载 ' + c.key_name + '（' + name + '，' + fmtFileSize(blob.size) + '）'
+  } catch (e) {
+    error.value = toErrText(e)
   } finally {
     busy.value = false
   }
@@ -360,7 +497,8 @@ onMounted(load)
     <p class="hint">
       值一律加密存储、永不回显；写入 / 删除 / 恢复需要管理员 Key。读取优先用管理员 Key
       ——已过期与「仅管理员」凭据只有管理员能看到（Agent Key 读不到；403 = 无权限或已过期）。
-      删除为软删，可通过「恢复凭据」找回。
+      删除为软删，可通过「恢复凭据」找回。文件（重要数据）类型支持上传 / 下载原始二进制
+      （单条上限 2 MiB；文件键的「取单值」端点返回 400，内容只走下载通道）。
     </p>
 
     <p v-if="error" class="error">{{ error }}</p>
@@ -386,7 +524,13 @@ onMounted(load)
         <tbody>
           <tr v-for="c in filtered" :key="c.key_name">
             <td><code class="inline">{{ c.key_name }}</code></td>
-            <td class="note-cell">{{ c.description || '—' }}</td>
+            <td class="note-cell">
+              <div class="note-text">{{ c.description || '—' }}</div>
+              <div v-if="c.cred_type === 'file'" class="file-meta" :title="c.file_sha256 || ''">
+                <span class="file-name">{{ c.filename || '（未命名文件）' }}</span>
+                <span v-if="c.file_size != null" class="file-size">· {{ fmtFileSize(c.file_size) }}</span>
+              </div>
+            </td>
             <td class="type-cell">
               <span v-if="c.cred_type" class="tag" :title="c.cred_type">{{ credTypeLabel(c.cred_type) }}</span>
               <span v-else class="dash">—</span>
@@ -406,6 +550,14 @@ onMounted(load)
               <span v-else class="st st-ok">正常</span>
             </td>
             <td class="act-cell">
+              <button
+                v-if="c.cred_type === 'file'"
+                class="btn btn-sm"
+                :disabled="busy"
+                @click="downloadFile(c)"
+              >
+                下载
+              </button>
               <button class="btn btn-sm" :disabled="busy" @click="openEdit(c)">更新</button>
               <button class="btn btn-sm btn-danger" :disabled="busy" @click="remove(c)">删除</button>
             </td>
@@ -431,7 +583,19 @@ onMounted(load)
             spellcheck="false"
           />
         </label>
-        <label>
+        <!-- D-37 v1.2：文件类型隐藏 value 输入，改为文件选择（新建必选；编辑留空 = 不替换） -->
+        <label v-if="isFileType">
+          {{ editingKey ? '新文件（留空 = 不替换现有文件）' : '文件 *' }}
+          <input ref="fileInputEl" type="file" @change="onFilePick" />
+          <span class="file-hint">单条上限 2 MiB；保存后字节不可在线查看，只能下载。</span>
+          <span v-if="editingMeta && editingMeta.cred_type === 'file'" class="file-hint">
+            当前文件：{{ editingMeta.filename || '（未命名）' }}
+            <template v-if="editingMeta.file_size != null">
+              （{{ fmtFileSize(editingMeta.file_size) }}）
+            </template>
+          </span>
+        </label>
+        <label v-else>
           {{ editingKey ? '新值（留空 = 只更新元数据；不回显旧值）' : '值 *' }}
           <input
             v-model="formValue"
@@ -512,8 +676,35 @@ onMounted(load)
 .note-cell {
   color: var(--text-muted);
   max-width: 320px;
+}
+
+/* D-37 v1.2：文件行在备注下方补一行「文件名 · 大小」，不挤压行高 */
+.note-text {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 2px;
+  max-width: 320px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.file-size {
   white-space: nowrap;
 }
 
@@ -617,5 +808,27 @@ onMounted(load)
   outline: none;
   border-color: var(--brand);
   box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+/* D-37 v1.2：文件选择框（原生 input 与全局表单外观对齐） */
+.modal-box input[type='file'] {
+  padding: 6px 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.modal-box input[type='file']:focus {
+  outline: none;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+.file-hint {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
 }
 </style>

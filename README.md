@@ -259,6 +259,7 @@ You have a long-term memory engine, SGME (ShiGuang Memory Engine), running on th
 - Use inside a program: `sgme-cred run -- <command>` (injects environment variables; the value never lands on disk or in the conversation);
 - Explicit read when unavoidable: `credential_get(name)` — never write the value into the conversation body or memory;
 - Create / delete / restore are admin-only (WebUI "Credential Management" or `POST /v1/credentials`).
+- Files / binary "important data" also live here (`cred_type=file`): upload via `POST /v1/credentials/{key}/file` (admin) and download via `GET` on the same path (agent; scope and expiry enforced); MCP exposes metadata only, never the binary.
 
 **Vector Engine Setup** (when `health()` reports `vector.available=false` / `vector.connectivity=false`): local-first, cloud fallback — prefer a local Ollama or LM Studio running `bge-m3` (1024-dim; cloud fallback `BAAI/bge-m3` on siliconflow is free and automatic, same dims → no index rebuild on switch). Probe `curl http://127.0.0.1:11434/api/tags` (Ollama) or `curl http://127.0.0.1:1234/v1/models` (LM Studio) → if no `bge-m3`, run `ollama pull bge-m3` (or download it in LM Studio) → write the `search.vector` block (`base_url`, `model: bge-m3`, `fallbacks`) into `config/sgme.yaml` and restart SGME → re-run `health()` until `vector.connectivity=true`. llama.cpp is NOT recommended (model state unmanaged, lost after VRAM cleanup).
 

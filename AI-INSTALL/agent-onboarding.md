@@ -230,6 +230,7 @@ SGME 凭据模块把「重要 KEY」集中到 NAS 统一真源（PC 本地 .env 
 | 下线某 KEY | `DELETE /v1/credentials/{key}`（admin，软删幂等；不存在 404） |
 | 恢复误删 | `POST /v1/credentials/{key}/restore`（admin，幂等）；已删键名直接重写会 409，必须先 restore（不自动复活，防误覆盖） |
 | 批量导出 | `GET /v1/credentials/export?only=K1,K2` 或 `?prefix=...`（互斥）→ `{"credentials": {KEY: value}, "count": n, "skipped": [...]}`（不可读/已过期项在 skipped 显式列出；`only` 命中 → 403）；**危险**，逐键记审计 + SecurityLog |
+| 文件 / 二进制重要数据 | `POST /v1/credentials/{key}/file?filename=...`（admin，body 原始字节，上限 `credentials.max_file_bytes`，默认 2 MiB）上传；`GET` 同路径下载（agent，受 scope / 过期约束）；MCP 只给元数据不下发二进制；`cred_type=file` |
 
 > ⚠️ 值一旦进入对话正文，会经 append 进 L0 原始层并随对话出境云端模型（不可回收）。客户端 `scripts/sgme_cred.py` 单文件零依赖、可裸拷任意机器；认证读 `~/.sgme/install.json`（零明文）。**运维细节**（备份/恢复/轮换/部署/迁移）见技能 `sgme-operations`（`skill_search("SGME 运维")` → `skill_get` 取手册）。
 

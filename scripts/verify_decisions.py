@@ -796,6 +796,11 @@ def _(self):
         ("越权 403", *has("operations_credentials", "ERR_FORBIDDEN")),
         ("HTTP 身份透传", *has("routes_credentials", "is_admin")),
         ("MCP 身份透传", *has("mcp_server", "_cred_caller")),
+        # v1.2（2026-11-08）：文件 / 二进制「重要数据」
+        ("文件表与密文列", *has("credentials_dao", "credential_files", "data_cipher")),
+        ("文件上传/下载端点", *has("routes_credentials", "{key}/file", "Content-Disposition")),
+        ("文件操作层", *has("operations_credentials", "def put_file", "def read_file", "ERR_TOO_LARGE")),
+        ("文件上限配置", *has("config", "max_file_bytes")),
     ]
 
 
