@@ -47,7 +47,14 @@
 同一组 3 个问题（一次进度汇报、一次方案对比、一次故障说明）在 R / M / P 三档各跑一次，检查五项是否齐全。
 五项缺失任意一项即不合格；渲染形式不同不算不合格。
 
-## 六、与宿主差异的关系
+## 六、下发通道（2026-11-07 定）
+
+- **onboarding 模板 v3**：`agent_onboarding().self_config.template` 含本规范摘要；已接入 agent 下次自检按版本标记回写身份文件。
+- **在线文档**：`GET /v1/onboarding/docs/report-style.md`（免 Key）；`/v1/health` 的 `onboarding.report_style` 给出指针。
+- **技能**：`report-format`（唯一权威；`output-conventions` / `structured-reply` 已并入并软删）。
+- **不做** `/v1/inject` 固定段（2026-11-07 用户定）：所有接入 SGME 的 agent 本来就要取自己的 ID 并阅读 AI-INSTALL 文件，不额外占用注入预算。
+
+## 七、与宿主差异的关系
 
 - 内容契约（第一节）与硬规则（第三节）**所有宿主一致**；
 - 渲染形式（第二节）按宿主能力降级，**允许不同**；
