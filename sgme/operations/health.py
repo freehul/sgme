@@ -440,6 +440,7 @@ def health(
             "endpoint": "/v1/onboarding/docs",
             "docs": "AI-INSTALL/agent-onboarding.md",
             "selfcheck": "AI-INSTALL/selfcheck.md",
+            "report_style": "AI-INSTALL/report-style.md",
             "repo": "https://gitee.com/freehul/sgme/tree/main/AI-INSTALL",
             "adapters": "skill_search('adapter') → 跨机 GET /v1/skills/{name}/package（agent key）下载完整包（tar.gz + MANIFEST.sha256 校验）→ 同机 skill_materialize（仅同机，落盘在服务端）→ skill_get 取正文",
             "note": "连接后先调 agent_onboarding；完成标准八项见 selfcheck.md；在线全文见 endpoint（免 Key）",

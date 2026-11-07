@@ -30,6 +30,7 @@ _DOCS: dict[str, str] = {
     "agent-onboarding.md": "Agent Onboarding 指引（协议唯一真相）",
     "selfcheck.md": "接入后自检清单（八项）",
     "resilience.md": "Agent 故障自救卡（离线可用；SGME 挂掉时的分级处理清单）",
+    "report-style.md": "跨宿主汇报规范 v1（五项内容契约 + R/M/P 三档渲染）",
     "skill_fetch.py": "技能包跨机获取脚本（下载 → 校验 → 解包 → 落盘；单文件零依赖）",
     "免费模型Key申请指南.md": "免费模型 Key 申请指南",
     "prompts/01-install.md": "任务卡 ① 部署 / 发现 SGME",
