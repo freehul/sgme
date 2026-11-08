@@ -12,7 +12,7 @@ stages:
     ab:
       enabled: false
   l1_extraction:
-    active: v022
+    active: v023
     ab:
       enabled: false
   l1_conflict:
@@ -119,6 +119,11 @@ versions:
     sha256: 42fb6605de30b0545c8bba1a462941829a72af5f8baf690f9e19a92abfb45f8c
     created_at: '2026-11-08T15:40:00Z'
     note: 'W09b（2026-11-08）：v021 + causes 端点逐字硬约束——causes[].from/to 必须逐字复制同一单元 main_event.content 或某条 facts[].content 的完整原文（不摘要/不改写/不拼接/不补标点）；无法用现有原文表达就不输出该 cause。背景：dry-run 实测存量 causes 端点与记忆原文精确匹配 0%，摘要句导致 W04 确定性映射器建不出 causes 边。补正反例（摘要句 vs 原文整段复制）、逐步自检、映射最稳写法（原因进 main_event、结论进约束/偏好/习惯 fact）与输出要求第 10 条。真实 LLM 冒烟（2026-11-08，agnes-2.5-flash，v021 vs v022，3 类样本×2 批 12 次 v022 调用）：causes 端点 exact-match 0/12(0%) → 31/32(96.9%)（按钮 7/8、设计决策 24/24、普通偏好无 causes）；详见 docs/plans/提示词v022-causes端点冒烟-20261108.md；不写生产库。'
+  - version: v023
+    file: versions/l1_extraction/v023.txt
+    sha256: 9c208e4e25da272a121d7d6c45e34f0e2c5f84a2239da80e77e6c389133ef428
+    created_at: '2026-11-09T01:00:00Z'
+    note: 'W09d（2026-11-09）：v022 + 按钮样本两类残余失败的硬口径——① causes 端点禁止写助手动作/结果句（已把…改成…/已处理/已完成/已部署/助手…），只能是 main_event/facts 原文；② 禁止截短/前缀/概括/省略后半句，端点必须与 content 完整相等；太长先拆短 fact 再复制。补「按钮+助手动作」完整正反例、输出前五问、端点并排比对自检。背景：zhipu 按钮样本 exact 75%（to 写助手动作句 / from 截短前缀）。真实 LLM 冒烟（2026-11-09，v023）：zhipu 按钮 32/32=100%、总体 44/44=100%；agnes 按钮 24/26=92.3%、总体 42/44=95.5%；详见 docs/plans/提示词v023-按钮causes冒烟-20261109.md；不写生产库。'
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt

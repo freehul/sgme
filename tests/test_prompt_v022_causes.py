@@ -41,6 +41,11 @@ CAUSES_ANCHORS = (
     "10. causes 的 from/to 必须逐字复制 main_event.content 或某条 facts[].content",
 )
 
+# 后续版本（v023+）继承用的稳定锚点：不含 v022 专属措辞（如「三问」在 v023 演进为「五问」）
+STABLE_CAUSES_ANCHORS = tuple(
+    a for a in CAUSES_ANCHORS if a != "输出前逐条过三问"
+)
+
 
 def _manifest() -> dict:
     return yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
@@ -56,10 +61,15 @@ def _versions_at_least(minimum: int) -> list[dict]:
     return out
 
 
-def test_manifest_active_is_v022():
-    """manifest active 必须钉在 v022（本次交付的显式发布决策）。"""
+def test_manifest_active_is_latest_registered():
+    """active 指向最新登记版本（发布态约定；v022 交付时此断言为 v022）。
+
+    v023 起改为「active == 最新版本」，避免每次新增版本都改旧交付测试；
+    发布决策由 manifest diff 体现。
+    """
     active = _manifest()["stages"]["l1_extraction"]["active"]
-    assert active == "v022", f"active={active}，期望 v022"
+    latest = max(_versions_at_least(22), key=lambda v: int(v["version"][1:]))["version"]
+    assert active == latest, f"active={active}，期望最新登记版本 {latest}"
 
 
 def test_v022_registered_and_sha_matches():
@@ -74,11 +84,13 @@ def test_v022_registered_and_sha_matches():
     )
 
 
-def test_working_copy_equals_v022():
-    """工作副本必须与 v022 逐字一致（否则 @working 会回退成旧口径）。"""
-    v022 = (VERSIONS_DIR / "v022.txt").read_text(encoding="utf-8")
+def test_working_copy_matches_active_version():
+    """工作副本必须与 manifest active 指向的版本逐字一致（防 @working 回退旧口径）。"""
+    active = _manifest()["stages"]["l1_extraction"]["active"]
+    assert active.startswith("v"), f"active 不是钉版: {active}"
+    active_text = (VERSIONS_DIR / f"{active}.txt").read_text(encoding="utf-8")
     working = (PROMPTS_ROOT / "l1_extraction.txt").read_text(encoding="utf-8")
-    assert working == v022, "工作副本与 v022 不一致"
+    assert working == active_text, f"工作副本与 active [{active}] 不一致"
 
 
 @pytest.mark.parametrize("anchor", CAUSES_ANCHORS)
@@ -130,5 +142,5 @@ def test_later_versions_inherit_causes_hard_constraint():
     assert versions, "未找到 v022 及以后的 l1_extraction 版本"
     for item in versions:
         text = (PROMPTS_ROOT / item["file"]).read_text(encoding="utf-8")
-        for anchor in CAUSES_ANCHORS:
-            assert anchor in text, f"{item['version']} 丢失 causes 硬约束锚点：{anchor}"
+        for anchor in STABLE_CAUSES_ANCHORS:
+            assert anchor in text, f"{item['version']} 丢失 causes 硬约束稳定锚点：{anchor}"

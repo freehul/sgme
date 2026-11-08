@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import sys
@@ -222,11 +223,13 @@ def _render(template: str, conversation: str, dims: list[dict]) -> str:
 def _summarize(runs: list[dict]) -> dict:
     out: dict[str, dict] = {}
     for r in runs:
+        raw_key = r["version"]
+        scope = r.get("provider_scope")
+        key = f"{scope}::{raw_key}" if scope and scope != "auto" else raw_key
         if r.get("error"):
-            st = out.setdefault(r["version"], {"runs": 0, "error_runs": 0})
+            st = out.setdefault(key, {"runs": 0, "error_runs": 0})
             st["error_runs"] += 1
             continue
-        key = r["version"]
         s = out.setdefault(
             key,
             {
@@ -330,6 +333,10 @@ def main(argv: list[str] | None = None) -> int:
         "--evaluate-json", default="",
         help="复用已有结果 JSON 的 raw_text 重新分类统计（不调 LLM，零成本复算）",
     )
+    parser.add_argument(
+        "--providers", default="",
+        help="强制 provider（逗号分隔，如 zhipu,siliconflow）；空=按 refinement 链自动降级",
+    )
     args = parser.parse_args(argv)
 
     versions = [v.strip() for v in args.versions.split(",") if v.strip()]
@@ -370,13 +377,15 @@ def main(argv: list[str] | None = None) -> int:
         src["evaluated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         out_path = Path(args.out) if args.out else Path(args.evaluate_json).with_suffix(".recalc.json")
         out_path.write_text(json.dumps(src, ensure_ascii=False, indent=2), encoding="utf-8")
-        for v in {r["version"] for r in runs}:
+        for v in summary:
             s = summary.get(v) or {}
             print(
                 f"  {v}: units={s.get('units')} UI={s.get('ui_units')} "
                 f"裸事实={s.get('naked_ui_facts')} 裸事实率={s.get('naked_ui_fact_rate')} "
                 f"UI规则带因果={s.get('ui_rule_with_cause')} "
-                f"规则带因果率={s.get('ui_rule_with_cause_rate')} 因果覆盖={s.get('cause_coverage')}"
+                f"规则带因果率={s.get('ui_rule_with_cause_rate')} 因果覆盖={s.get('cause_coverage')} "
+                f"causes端点 exact={s.get('cause_endpoints_exact')}/{s.get('cause_endpoints')} "
+                f"exact率={s.get('cause_endpoint_exact_rate')}"
             )
         print(f"  result_json: {out_path}")
         return 0
@@ -384,66 +393,95 @@ def main(argv: list[str] | None = None) -> int:
     sgme_config.load_env_file()
     llm_cfg = llm_chain.load_config()
     chain = (llm_cfg.get("chains") or {}).get("refinement") or []
+
+    # W09c：--providers 强制指定 provider（单节点，不降级），用于跨模型对照；
+    # 缺省 = 按 refinement 链自动降级（既有行为）。
+    forced = [p.strip() for p in args.providers.split(",") if p.strip()]
+    provider_cfgs: dict[str, dict] = {}
+    if forced:
+        chain_map = {str(n.get("provider")): n for n in chain}
+        for p in forced:
+            if p not in chain_map:
+                print(f"provider {p} 不在 refinement 链内: {list(chain_map)}", file=sys.stderr)
+                return 1
+            cfg_p = copy.deepcopy(llm_cfg)
+            cfg_p["chains"]["refinement"] = [copy.deepcopy(chain_map[p])]
+            provider_cfgs[p] = cfg_p
+    else:
+        provider_cfgs["auto"] = llm_cfg
+
     print("=" * 72)
     print("L1 提示词真实 LLM 冒烟（v022 causes 端点复测；不写生产记忆池）")
     print(f"  chain: {' → '.join(str(n.get('provider')) + '/' + str(n.get('model')) for n in chain)}")
+    print(f"  providers: {list(provider_cfgs)}（forced={'是' if forced else '否'}）")
     print(f"  versions: {versions}  samples: {[s['id'] for s in samples]}  repeat: {args.repeat}")
     print("=" * 72)
 
     runs: list[dict] = []
     started = datetime.now(timezone.utc)
-    for version in versions:
-        for sample in samples:
-            for rep in range(1, args.repeat + 1):
-                prompt = _render(templates[version], sample["conversation"], dims)
-                t0 = time.monotonic()
-                try:
-                    text, provider_name, usage = llm_chain.call_with_fallback(
-                        llm_cfg, prompt, chain_name="refinement"
+    for scope, scope_cfg in provider_cfgs.items():
+        for version in versions:
+            for sample in samples:
+                for rep in range(1, args.repeat + 1):
+                    prompt = _render(templates[version], sample["conversation"], dims)
+                    t0 = time.monotonic()
+                    try:
+                        text, provider_name, usage = llm_chain.call_with_fallback(
+                            scope_cfg, prompt, chain_name="refinement"
+                        )
+                    except llm_provider.LLMError as e:
+                        # 402/401/400 等非 fallback 错误会原样抛出（LLMError 子类）；
+                        # 这里统一记录类型+原文，跨模型对照时如实保留 provider 不可用原因。
+                        print(
+                            f"[FAIL] [{scope}] {version}/{sample['id']}#{rep} "
+                            f"{type(e).__name__}: {e}",
+                            file=sys.stderr,
+                        )
+                        runs.append({
+                            "version": version, "sample_id": sample["id"], "repeat": rep,
+                            "provider": None, "provider_scope": scope,
+                            "error": f"{type(e).__name__}: {e}",
+                        })
+                        continue
+                    elapsed = round(time.monotonic() - t0, 2)
+                    units, parse_err = _units_from_text(text)
+                    classified = [classify(u) for u in units]
+                    cstats = [cause_stats(u) for u in units]
+                    rec = {
+                        "version": version,
+                        "sample_id": sample["id"],
+                        "sample_label": sample["label"],
+                        "repeat": rep,
+                        "provider": provider_name,
+                        "provider_scope": scope,
+                        "usage": usage,
+                        "elapsed_s": elapsed,
+                        "raw_text": text,
+                        "units": units,
+                        "classified": classified,
+                        "cause_stats": cstats,
+                        "parse_error": parse_err,
+                    }
+                    runs.append(rec)
+                    naked = sum(1 for c in classified if c["naked_ui_fact"])
+                    rules = sum(1 for c in classified if c["rule_with_cause"])
+                    causes = sum(1 for c in classified if c["has_causes"])
+                    ep = sum(c["endpoints"] for c in cstats)
+                    exact = sum(c["exact"] for c in cstats)
+                    print(
+                        f"[OK] [{scope}] {version}/{sample['id']}#{rep} provider={provider_name} "
+                        f"units={len(units)} 裸事实={naked} 规则(带因果)={rules} 有因果={causes} "
+                        f"causes端点 exact={exact}/{ep} {elapsed}s"
+                        + (f" parse_error={parse_err}" if parse_err else "")
                     )
-                except (llm_provider.LLMUnavailable, llm_provider.PrimaryUnavailable) as e:
-                    print(f"[FAIL] {version}/{sample['id']}#{rep} LLM 不可用: {e}", file=sys.stderr)
-                    runs.append({
-                        "version": version, "sample_id": sample["id"], "repeat": rep,
-                        "error": f"LLMUnavailable: {e}", "provider": None,
-                    })
-                    continue
-                elapsed = round(time.monotonic() - t0, 2)
-                units, parse_err = _units_from_text(text)
-                classified = [classify(u) for u in units]
-                cstats = [cause_stats(u) for u in units]
-                rec = {
-                    "version": version,
-                    "sample_id": sample["id"],
-                    "sample_label": sample["label"],
-                    "repeat": rep,
-                    "provider": provider_name,
-                    "usage": usage,
-                    "elapsed_s": elapsed,
-                    "raw_text": text,
-                    "units": units,
-                    "classified": classified,
-                    "cause_stats": cstats,
-                    "parse_error": parse_err,
-                }
-                runs.append(rec)
-                naked = sum(1 for c in classified if c["naked_ui_fact"])
-                rules = sum(1 for c in classified if c["rule_with_cause"])
-                causes = sum(1 for c in classified if c["has_causes"])
-                ep = sum(c["endpoints"] for c in cstats)
-                exact = sum(c["exact"] for c in cstats)
-                print(
-                    f"[OK] {version}/{sample['id']}#{rep} provider={provider_name} "
-                    f"units={len(units)} 裸事实={naked} 规则(带因果)={rules} 有因果={causes} "
-                    f"causes端点 exact={exact}/{ep} {elapsed}s"
-                    + (f" parse_error={parse_err}" if parse_err else "")
-                )
 
     summary = _summarize(runs)
     result = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "chain": chain,
+        "providers": list(provider_cfgs),
+        "forced_providers": forced,
         "versions": versions,
         "repeat": args.repeat,
         "samples": [{"id": s["id"], "label": s["label"], "conversation": s["conversation"]} for s in samples],
@@ -456,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print("-" * 72)
-    for v in versions:
+    for v in summary:
         s = summary.get(v) or {}
         print(
             f"  {v}: runs={s.get('runs')} error={s.get('error_runs')} units={s.get('units')} "
