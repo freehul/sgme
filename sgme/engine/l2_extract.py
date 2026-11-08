@@ -28,10 +28,15 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sgme.engine import l2_extraction
+# W01 §2：单元内上下文元数据（ephemeral）的键名真源在 l2_edges.UNIT_META_KEY：
+# {unit_key, role, main_content, causes}。只在 L2 解析 → L3 落库之间传递，**绝不落库**
+# （l3_adjudicate._EXTRA_KEYS / pipeline._fallback_direct_store 的 extra 清单刻意都不含它）。
+from sgme.engine.l2_edges import UNIT_META_KEY
 from sgme.engine.l2_split import decide_split
 
 # D-43：愿望类断言的有效窗口（天）
@@ -126,8 +131,19 @@ def _base_record(
     }
 
 
-def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str, Any]]:
-    """把一个 2.0 单元摊成若干条记忆记录（主干 + 需拆的侧面）。"""
+def _flatten_unit(
+    unit: dict[str, Any],
+    dimensions: list[dict],
+    *,
+    unit_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """把一个 2.0 单元摊成若干条记忆记录（主干 + 需拆的侧面）。
+
+    unit_key（W01 §2）：本单元的唯一键（source_ref:unit_index；无 source_ref 时
+    用 file_id/块序兜底）。每条记录（主干与侧事实）都挂同一份 ephemeral
+    _l2_unit，供 L3 落库后按单元建 belongs_to / causes 边——侧事实与主干靠
+    共享同一个 unit_key 认亲，不需要新列，也不需要额外 LLM 调用。
+    """
     route = str(unit.get("route") or "").strip()
     if route == "discard":
         return []  # D-67：按来源判定的降噪结果，直接分流
@@ -160,21 +176,30 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
     trait = _clip(unit.get("trait"), TRAIT_MAX_CHARS, "特质")
     kept_facts: list[dict[str, Any]] = []
     side_records: list[dict[str, Any]] = []
+    # W05b（v022）：单元内所有事实的文本索引源——causes 端点逐字复制 facts 原文时，
+    # 映射器要靠它把端点落到「主干（非 split fact）」或「侧事实自己的记忆（split）」上。
+    # split=False → 该文本没有独立记忆，只能落到主干；split=True → 已有 side record 承载。
+    fact_meta: list[dict[str, Any]] = []
 
     for fact in facts:
         decision = decide_split(fact, main)
         fcontent = _clip(fact.get("content"), FACT_MAX_CHARS, "事实")
         if not fcontent:
             continue
+        ftype = str(fact.get("type") or "").strip()
+        fact_meta.append({
+            "content": fcontent,
+            "type": ftype or None,
+            "split": bool(decision.split),
+        })
         if not decision.split:
             kept_facts.append({
-                "type": str(fact.get("type") or "").strip(),
+                "type": ftype,
                 "content": fcontent,
                 "subject": str(fact.get("subject") or "").strip() or None,
                 "reason": decision.reason,
             })
             continue
-        ftype = str(fact.get("type") or "").strip()
         side_records.append(_base_record(
             content=fcontent,
             dims=dims,
@@ -237,6 +262,20 @@ def _flatten_unit(unit: dict[str, Any], dimensions: list[dict]) -> list[dict[str
             ) if (kept_facts or causes) else None,
         },
     )
+    # W01 §2：单元上下文（ephemeral，仅在进程内传递，绝不落库）。
+    # main_content 用**主干记录的实际 content**（已按 MAIN_MAX_CHARS 截断）——它是
+    # 「主干这条记忆的文本」，causes 的 from/to 只有落到它上面才算映射成功；不把
+    # 未截断原句混进来，否则库里 content 与边端点文本会不一致。
+    unit_meta = {
+        "unit_key": str(unit_key or ""),
+        "main_content": content,
+        "causes": [dict(c) for c in causes],
+        # W05b：单元内事实文本（split 标记决定它归主干还是归自己的 side record）
+        "facts": [dict(f) for f in fact_meta],
+    }
+    main_record[UNIT_META_KEY] = {**unit_meta, "role": "main"}
+    for rec in side_records:
+        rec[UNIT_META_KEY] = {**unit_meta, "role": "side"}
     return [main_record, *side_records]
 
 
@@ -253,12 +292,25 @@ def _majority(values: list, valid: set[str], default: str) -> str:
         return default
     return Counter(norm).most_common(1)[0][0]
 
-def parse_scene_output(text: str, dimensions: list[dict]) -> list[dict[str, Any]]:
+def _anon_unit_prefix() -> str:
+    """无 source_ref / file_id 时的单元键前缀（进程内唯一；只在日志里露脸）。"""
+    return f"anon-{uuid.uuid4().hex[:8]}"
+
+
+def parse_scene_output(
+    text: str,
+    dimensions: list[dict],
+    *,
+    unit_key_prefix: str | None = None,
+) -> list[dict[str, Any]]:
     """解析 2.0 L2 输出为记忆记录列表。
 
     Args:
         text: 模型原始输出（JSON 数组）
         dimensions: 维度注册表（用于归一与合法性校验）
+        unit_key_prefix: 单元键前缀（W01 §2）。生产由提炼链传 file_id/块序兜底
+            （见 l2_extraction._unit_key_prefix）；缺省生成进程内唯一的 anon 前缀，
+            保证同一批解析内「主干 + 侧事实」共享同一 unit_key。
 
     Returns:
         记录列表，每条形如
@@ -280,10 +332,12 @@ def parse_scene_output(text: str, dimensions: list[dict]) -> list[dict[str, Any]
         return l2_extraction.parse_extraction_output(text, dimensions)
 
     records: list[dict[str, Any]] = []
-    for unit in data:
+    prefix = str(unit_key_prefix).strip() if unit_key_prefix else _anon_unit_prefix()
+    for index, unit in enumerate(data):
         if not isinstance(unit, dict):
             continue
-        records.extend(_flatten_unit(unit, dimensions))
+        # unit_key = 前缀 + 模型输出里的单元序号（跨块唯一：前缀含块序）
+        records.extend(_flatten_unit(unit, dimensions, unit_key=f"{prefix}:{index}"))
     return records
 
 # ---------- 记录 → 1.x 校验项（供 pipeline 复用既有落库路径） ----------
@@ -348,5 +402,10 @@ def records_to_items(
         validated["trait"] = extra.get("trait")
         validated["needs_review"] = int(extra.get("needs_review") or 0)
         validated["l2_facts_json"] = extra.get("l2_facts_json")
+        # W01 §2：单元上下文必须活到 L3（建边用）——它是 ephemeral 键，
+        # 不在落库白名单里，_validate_item 不认识它，故在此单独透传。
+        meta = rec.get(UNIT_META_KEY)
+        if isinstance(meta, dict) and meta:
+            validated[UNIT_META_KEY] = meta
         out.append(validated)
     return out

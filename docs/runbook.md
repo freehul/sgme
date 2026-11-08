@@ -410,6 +410,17 @@ curl -s -X POST -H "X-API-Key: $K" -H "Content-Type: application/json" -d '{"sna
 - 处置：逐条 `discard`（**建议填 reason**，是调阈值的唯一标签来源）或 `restore`（`supersede` 默认 true = 替代旧记忆）。
 - 调阈值前提：有 ≥ 一周带 reason 的标注；下调 0.92→0.90 隔离量约 ×1.7，→0.87 约 ×3（按生产灰区分桶外推）。无标注不要凭感觉调。
 
+### 7.7b 事件上下文与因果边（A2 / W03-W16）
+
+- 落库：L2 单元 → 主事件 + 侧事实；侧事实 → 主事件写 `memory_edges(relation='belongs_to', source='l2_extract')`；
+  `causes` 端点严格归一文本映射到单元内 memory_id，写 `relation='causes'`；映射不上保留 `l2_facts_json` + WARNING（不猜）。
+- 优先级：同文本 **side > fact > main**；非 split fact 文本映射到主事件 id；主干 200 字截断/merge 会产生 unmapped（预期）。
+- 读侧：`GET /v1/memory/{id}` / MCP `memory_get` 的 `context` 返回 main_event/facts/causes/parent_memory_id/edges；
+  侧事实无 l2 时回落父记忆的 facts/causes；edges 只含 belongs_to(source=l2_extract)+causes。
+- 图召回：belongs_to/causes 均纳入（只排 contradicts）；superseded 靠 `lifecycle!='archived'` 排除。
+- 存量：dry-run 实测 13,225 条旧 causes 端点精确匹配 0%（摘要句），**不要批量回填**；存量裸事实靠重复治理/人工确认。
+- 提示词：v022 起 causes 必须逐字复制 main/facts 原文；换模型需复测 exact-match（目标 >90%）。
+
 ### 7.8 向量降级（纯 BM25）
 
 - 判定：`health.vector.available=false` 或 `connectivity.available=false`；`reason`/`error` 给出原因（端点不可达 / 模型缺失 / HTTP 错误）。

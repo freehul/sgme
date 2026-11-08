@@ -98,6 +98,9 @@ class AdjudicationResult:
     near_dup_shadow: int = 0                                # E2（2026-11-05）：本批影子命中数——score ∈ [0.90, threshold)，即「若阈值=0.90 会被拦」；只计数不改判定
     near_dup_auto_discarded: int = 0                        # 2026-11-08：本批 ≥threshold 自动丢弃数（auto_discard=true 时）
     semantic_edges_written: int = 0                         # T-135：本次落库写入的语义边数（source='l1_conflict'）
+    #: W05（W01 §4，2026-11-08）：本次落库按 L2 单元写入的归属/因果边统计
+    #: （source='l2_extract'）。键见 l2_edges.write_unit_edges 的返回值。
+    unit_edges: dict = field(default_factory=dict)
     #: ST-58/T-296（G3-c）：**逐条**裁决留痕，与 `new_memories` 下标对齐。
     #: 每项 ``{new_memory_index, action, candidate_ids, reason, idempotent_skip}``。
     #: 用途：A/B 两臂「L1.5 决策一致率」对照（批次 2/3 的放行门禁）——
@@ -1310,6 +1313,31 @@ def _write_semantic_edges(
     return written
 
 
+def _write_unit_edges_safe(
+    mem_conn: sqlite3.Connection,
+    new_memories: list[dict],
+) -> dict:
+    """W05：四动作落库完成后按 L2 单元建 belongs_to / causes 边（source=l2_extract）。
+
+    调用时机（契约 §4）：**最终 memory_id 确定之后**、且两条落库路径统一——
+    - 空候选池短路（全部 store）：落库循环后调用一次；
+    - 批裁决四动作（store / update / merge / 各自退化为 store）：全部动作跑完后调用一次。
+
+    skip 与 quarantine 的记录没有 memory_id，l2_edges 会自动跳过（契约 §4「skip/
+    quarantine 不建边」）；update/merge 的记录拿到的是**新 id**，旧候选的边由
+    memory_dao.archive_memory 在归档同一事务里清掉（无悬挂边）。
+
+    fail-open：边是增强项，任何异常只 WARNING，绝不改变落库结果（契约 §1.4）。
+    """
+    from sgme.engine import l2_edges
+
+    try:
+        return l2_edges.write_unit_edges(mem_conn, new_memories)
+    except Exception as e:  # noqa: BLE001 —— 边写入失败不阻塞落库主链
+        logger.warning("L2 单元边写入异常（不影响落库）: %s", e)
+        return {"errors": 1}
+
+
 def resolve_batch_budget(llm_cfg: dict, default: int = DEFAULT_BATCH_BUDGET) -> int:
     """计算上下文预算（tokens）：链首节点 context_window 折算；失败回退默认值。
 
@@ -1578,6 +1606,8 @@ def resolve_conflicts(
             result.stored.append(new_id)
             stored_n += 1
             _rec(i, "store", "候选池为空（无冲突可能，短路不调 LLM）")
+        # W05（W01 §4）：本路径同样要在 memory_id 确定后按单元建边（不得绕过）
+        result.unit_edges = _write_unit_edges_safe(mem_conn, new_memories)
         # T1.7：全空短路独立记录（无条件写——本分支执行即写，n≥0，承载零候选事实）
         _record_empty_pool_run(mem_conn, bucket_key, stored_n, bucket_ctx)
         # T1.6：F1 独立计数记录（拦截/灰区有信号才写；与上条可共存，写入顺序无关）
@@ -1811,13 +1841,19 @@ def resolve_conflicts(
         # T-135：语义边（新记忆落库拿到 memory_id 后写入；skip/无裁决时 new_id 为空 → 0）
         result.semantic_edges_written += _write_semantic_edges(mem_conn, new_mem, decision, cfg)
 
+    # W05（W01 §4）：四动作（store / update / merge / 退化 store）全部落库完成、
+    # 每条记忆的最终 memory_id 已确定后，按 L2 单元统一建归属/因果边。
+    result.unit_edges = _write_unit_edges_safe(mem_conn, new_memories)
+
     # T1.6：F1 独立计数记录（拦截/灰区有信号才写；出口与全空短路分支互斥，
     # 覆盖 batches 为空的落库段路径）
     _record_near_dup_run(mem_conn, bucket_key, result, bucket_ctx)
 
     logger.info(
-        "L1.5 完成: store=%d skip=%d update=%d merge=%d archived=%d warn=%s",
+        "L1.5 完成: store=%d skip=%d update=%d merge=%d archived=%d warn=%s "
+        "unit_edges=%s",
         len(result.stored), len(result.skipped), len(result.updated),
         len(result.merged), len(result.archived), result.anomaly_warn,
+        {k: v for k, v in (result.unit_edges or {}).items() if v},
     )
     return result

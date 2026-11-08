@@ -45,7 +45,7 @@ from sgme.data import memory_dao
 
 # GET /v1/memory/{id} 成功体：四键包裹，sources 与 memory.sources 同值冗余
 # pages 为 2026-11-01 增补（memory_pages 关联页索引）——**纯增量**，老调用方不受影响
-HTTP_GET_TOP_KEYS = ["memory", "sources", "archive_chain", "pages"]
+HTTP_GET_TOP_KEYS = ["memory", "sources", "archive_chain", "pages", "context"]
 # MCP memory_get 成功体：裸记忆对象（memories 表列 + tags + sources）
 MCP_GET_REQUIRED_KEYS = {"memory_id", "content", "memory_type", "priority",
                          "time_velocity", "ttl_days", "created_at", "updated_at",
@@ -177,7 +177,7 @@ def test_get_memory_data_is_superset(mem_conn):
     data = get_memory(mem_conn, "mem-1").data
 
     # Assert
-    assert set(data.keys()) == {"memory", "archive_chain", "pages"}
+    assert set(data.keys()) == {"memory", "archive_chain", "pages", "context"}
     assert data["memory"]["memory_id"] == "mem-1"
     assert data["memory"]["content"] == "用户偏好深色主题"
     assert data["memory"]["sources"] == [
@@ -473,5 +473,7 @@ def test_http_and_mcp_agree_on_shared_fields(client, mcp, mem_conn):
     http_body = client.get("/v1/memory/mem-1", headers=AGENT_HEADERS).json()
     mcp_body = json.loads(_call_mcp(mcp, "memory_get", {"memory_id": "mem-1"}))
 
-    # Assert：MCP 的裸对象 == HTTP 的 memory 子对象
-    assert mcp_body == http_body["memory"]
+    # Assert：MCP 的裸对象 == HTTP 的 memory 子对象 + W06 的 context 键
+    # （MCP 无包裹层，context 只能挂裸对象；HTTP 的 context 在响应顶层）
+    assert {k: v for k, v in mcp_body.items() if k != "context"} == http_body["memory"]
+    assert mcp_body["context"] == http_body["context"]

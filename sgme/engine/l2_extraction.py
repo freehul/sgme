@@ -1024,7 +1024,26 @@ def _lang_mismatch(conversation: str, memories: list[dict]) -> bool:
     return _cjk(mem_text) > _latin(mem_text)
 
 
-def _parse_extraction_output(text: str, dimensions: list[dict]) -> list[dict]:
+def _unit_key_prefix(bucket_ctx, chunk_index: int = 0) -> str | None:
+    """L2 单元键前缀（W01 §2）：file_id（bucket_key）+ 块序兜底。
+
+    设计契约写的是 source_ref + unit_index；解析层拿不到 source_ref（pipeline 才
+    按 memory 拼 {file_id}:{seq}），能拿到的是提炼链的 bucket_key（= file_id）。
+    块序必须带上：同一文件的多块各自独立解析，unit_index 都从 0 开始，不带块序
+    会让不同块的同号单元在日志/统计里撞成同一个 unit_key（分组本身按批隔离，
+    但可观测性会失真）。无 bucket_key（异常路径）→ None（解析层用 anon 兜底）。
+    """
+    key = getattr(bucket_ctx, "bucket_key", None)
+    if not key:
+        return None
+    return f"{key}#c{int(chunk_index or 0)}"
+
+
+def _parse_extraction_output(
+    text: str,
+    dimensions: list[dict],
+    unit_key_prefix: str | None = None,
+) -> list[dict]:
     """按 schema 开关选择解析器（2.0 结构开关，默认 1.x 行为不变）。
 
     开关：**默认走 2.0 解析**（`parse_scene_output` + `records_to_items`）。
@@ -1044,7 +1063,10 @@ def _parse_extraction_output(text: str, dimensions: list[dict]) -> list[dict]:
     if schema not in ("1", "1.0"):
         from sgme.engine.l2_extract import parse_scene_output, records_to_items
 
-        return records_to_items(parse_scene_output(text, dimensions), dimensions)
+        return records_to_items(
+            parse_scene_output(text, dimensions, unit_key_prefix=unit_key_prefix),
+            dimensions,
+        )
     return parse_extraction_output(text, dimensions)
 
 
@@ -1168,7 +1190,10 @@ def _extract_memories_chunk(
                 raise RefineError(f"LLM 全链失败: {e}") from e
 
             try:
-                memories = _parse_extraction_output(text, dimensions)
+                memories = _parse_extraction_output(
+                    text, dimensions,
+                    unit_key_prefix=_unit_key_prefix(bucket_ctx, chunk_index),
+                )
             except RefineError as e:
                 last_error = e
                 logger.warning("L1 输出解析失败 (attempt=%s): %s", attempt, e)

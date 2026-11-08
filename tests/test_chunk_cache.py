@@ -103,7 +103,7 @@ def _patch_llm(monkeypatch, calls: dict):
 
     monkeypatch.setattr(l2_extraction.llm_chain, "call_with_fallback", fake_call)
     monkeypatch.setattr(
-        l2_extraction, "_parse_extraction_output", lambda text, dims: [dict(GOOD_MEM)]
+        l2_extraction, "_parse_extraction_output", lambda text, dims, **kwargs: [dict(GOOD_MEM)]
     )
     monkeypatch.setattr(l2_extraction, "_lang_mismatch", lambda conv, mems: False)
 

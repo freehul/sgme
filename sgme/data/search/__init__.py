@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -41,6 +42,55 @@ def _rows_to_dicts(cur: sqlite3.Cursor) -> list[dict]:
         return [dict(r) for r in rows]
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in rows]
+
+
+# ---------- W06：l2_facts_json 解析（2.0 单元事实 / 因果对的唯一读侧入口） ----------
+
+def parse_l2_facts_json(raw: Any) -> dict[str, list[dict]]:
+    """``l2_facts_json`` 列值 → ``{"facts": [...], "causes": [...]}``（容错，坏结构 → 空）。
+
+    2.0 L2 的 ``l2_facts_json`` 结构为
+    ``{"facts": [{type, content, subject, reason}], "causes": [{"from","to"}]}``
+    （见 engine/l2_extract._flatten_unit）。本函数是**协议投影**：
+    - facts 归一为契约 §5 声明的三键 ``{type, content, subject}``，无 content 的丢弃；
+    - causes 归一为 ``{from, to}``（两端都非空才保留）；
+    - 兼容入参已是 dict/list（调用方未落库即读的场景）与非 JSON 脏值（→ 空，不抛）。
+    """
+    empty: dict[str, list[dict]] = {"facts": [], "causes": []}
+    if not raw:
+        return empty
+    data: Any = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return empty
+    if isinstance(data, list):  # 只给了 facts 数组的宽松形态
+        data = {"facts": data}
+    if not isinstance(data, dict):
+        return empty
+
+    facts: list[dict] = []
+    for f in data.get("facts") or []:
+        if not isinstance(f, dict):
+            continue
+        content = str(f.get("content") or "").strip()
+        if not content:
+            continue
+        facts.append({
+            "type": str(f.get("type") or "").strip(),
+            "content": content,
+            "subject": str(f.get("subject") or "").strip() or None,
+        })
+    causes: list[dict] = []
+    for c in data.get("causes") or []:
+        if not isinstance(c, dict):
+            continue
+        frm = str(c.get("from") or "").strip()
+        to = str(c.get("to") or "").strip()
+        if frm and to:
+            causes.append({"from": frm, "to": to})
+    return {"facts": facts, "causes": causes}
 
 
 # FTS5 虚拟表 + 同步触发器（外部内容表，content='memories'；索引 content_seg 分词列）
@@ -404,7 +454,8 @@ def _graph_candidates(
       graph 路只贡献「邻居中不在原候选里的」增量记忆；
     - 邻居得分 = Σ 连到各 seed 的边权重（同邻居多 seed 累加，weight=共现场景数/
       归档链语义）；按得分降序取 ``search.graph.top_n``；
-    - 只取 active 记忆（归档/软删不作为候选）。
+    - 只取 active 记忆（status='active' 且 lifecycle 非 'archived'——supersession
+      不删行，其边仍在，候选侧必须按 lifecycle 排除）。
 
     Returns:
         按得分降序的 [{memory_id, content, priority, updated_at, score}]；
@@ -442,9 +493,15 @@ def _graph_candidates(
         nbrs = nbrs[:_graph_top_n(cfg)]
         ids = [mid for mid, _ in nbrs]
         ph = ",".join("?" * len(ids))
+        # W07：候选侧额外排除 supersession 归档（D-56 lifecycle='archived'）。
+        # supersession 只改 lifecycle、**不删行**，其 memory_edges 仍在（backend 实证）——
+        # 若不按 lifecycle 过滤，已被替代的旧记忆会经邻居边重新浮回检索结果。
+        # 注意：只过滤**图候选**；直接命中（bm25/向量）的可见性语义保持既有行为
+        # （memory_dao 口径：lifecycle 只挡注入，检索与回溯仍看得到）。
         rows = mem_conn.execute(
             f"SELECT memory_id, content, priority, updated_at, occurred_at, facts_json FROM memories "
-            f"WHERE memory_id IN ({ph}) AND status='active'",
+            f"WHERE memory_id IN ({ph}) AND status='active' "
+            "AND COALESCE(lifecycle, 'active') != 'archived'",
             ids,
         ).fetchall()
         by_id = {r["memory_id"]: r for r in rows}
@@ -466,6 +523,46 @@ def _graph_candidates(
     except Exception as e:
         logger.warning("图召回候选不可用（该路空结果）: %s", e)
         return []
+
+
+def _enrich_l2_context(
+    mem_conn: sqlite3.Connection, results: list[dict]
+) -> list[dict]:
+    """给最终检索结果补顶层 ``facts`` / ``causes`` / ``occurred_at``（W06）。
+
+    修复两类「恒空」：
+    1. 2.0 解析链把单元事实只写 ``l2_facts_json``，``facts_json`` 三元组列在 2.0
+       路径上恒为空——此前顶层 facts 只看 facts_json，故 2.0 记忆 facts 恒空；
+    2. RRF 融合（向量/图路）只透传 content/priority/updated_at，直接命中的行经融合后
+       也会丢 occurred_at / facts 列。
+
+    实现：在**最终结果集**上做一次主键 IN 回填（≤ limit 条），与融合路径解耦：
+    - facts：优先 ``l2_facts_json.facts``（契约 §5 形态），为空回落 facts_json 三元组
+      （1.x 语义不变）；
+    - causes：``l2_facts_json.causes``，无数据 → []（契约「无数据返回 []，不报错」）；
+    - 原始列 facts_json / l2_facts_json 一律移除，避免协议泄漏（沿用 T-149 口径）。
+    """
+    ids = [r["memory_id"] for r in results if r.get("memory_id")]
+    if not ids:
+        return results
+    placeholders = ",".join("?" * len(ids))
+    rows = mem_conn.execute(
+        "SELECT memory_id, occurred_at, facts_json, l2_facts_json FROM memories "
+        f"WHERE memory_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    by_id = {row["memory_id"]: row for row in rows}
+    for r in results:
+        row = by_id.get(r.get("memory_id"))
+        l2 = parse_l2_facts_json(row["l2_facts_json"] if row else None)
+        r["facts"] = l2["facts"] or facts_dao.parse_facts_json(
+            row["facts_json"] if row else None
+        )
+        r["causes"] = l2["causes"]
+        r.setdefault("occurred_at", row["occurred_at"] if row else None)
+        r.pop("facts_json", None)
+        r.pop("l2_facts_json", None)
+    return results
 
 
 def search_memories(
@@ -557,16 +654,17 @@ def search_memories(
         deduped.append(r)
     results = deduped[:limit]
 
+    # W06：顶层 facts/causes 回填 + occurred_at 兜底（l2_facts_json 优先，1.x 三元组回落）
+    results = _enrich_l2_context(mem_conn, results)
+
     # 附加 trace + dimensions + T-149① 时间锚点与 facts 透传
     for i, r in enumerate(results):
         r["rank"] = i + 1
         r["source"] = "memory"
         r["routes"] = routes
         r["dimensions"] = _get_memory_tags(mem_conn, r["memory_id"])
-        # T-149①：occurred_at（时序推理锚点）+ facts（T-148 三元组，解析后透传）
-        # facts_json 由各 SELECT 路带出；归一化为 facts 列表，原始键移除避免协议泄漏
+        # occurred_at（时序推理锚点）由 _enrich_l2_context 兜底；facts/causes 同处回填
         r.setdefault("occurred_at", None)
-        r["facts"] = facts_dao.parse_facts_json(r.pop("facts_json", None))
         if include_sources:
             r["trace"] = _build_trace(mem_conn, session_conn, r["memory_id"])
     return results

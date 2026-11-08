@@ -958,6 +958,10 @@ def build_mcp_server():
         dimensions: 维度标签过滤（可选，如 ["goals", "status"]）。
         match: "any"=命中任一维度 / "all"=全部命中（缺省 any）。
         include_sources: 是否展开溯源 trace（缺省 True）。
+
+        W06（2026-11-08）：memory 层每条结果带顶层 ``facts``（2.0 取
+        ``l2_facts_json.facts`，1.x 回落三元组）与 ``causes``（`{from,to}`）——
+        纯增量字段，无数据为 []，其余字段与旧契约一致。
         """
         from sgme.operations.search import mcp_payload as search_mcp_payload
         from sgme.operations.search import search as search_operation
@@ -1020,11 +1024,17 @@ def build_mcp_server():
     @mcp.tool()
     @tool
     def memory_get(memory_id: str) -> str:
-        """单条记忆详情（内容/维度/TTL + 溯源 + 归档链）。
+        """单条记忆详情（内容/维度/TTL + 溯源 + 归档链 + 事件上下文）。
 
         v0.7：业务逻辑已下沉 sgme.operations.memory，本工具只做协议翻译。
-        输出与 v0.6 逐字段等价——成功态是**裸记忆对象**（非 HTTP 的三键包裹体），
+        输出与 v0.6 逐字段等价——成功态是**裸记忆对象**（非 HTTP 的包裹体），
         失败态是固定文案 ``记忆不存在``（不带 id），两者均由投影函数还原。
+
+        W06（2026-11-08，契约 §5）：裸对象顶层新增
+        facts（2.0 取 l2_facts_json.facts）/ causes / context
+        （main_event / facts / causes / parent_memory_id / edges，仅 belongs_to
+        与 causes 边；parent 由 source='l2_extract' 的 belongs_to 反向解析）。
+        旧字段一个不删。
         """
         import json
         import sqlite3

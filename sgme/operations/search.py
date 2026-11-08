@@ -40,6 +40,12 @@
   - ``meta.routes``：各结果 ``routes`` 的去重并集（保序），无命中时回退 ``["bm25"]``
 - MCP：``{"results": [...]}`` —— **没有 meta**，且只查 memory 层
 
+W06（2026-11-08，契约《SGME2.0-上下文归属与因果边》§5）记忆层结果纯增量字段：
+- ``facts``：优先 ``l2_facts_json.facts``（2.0 单元事实 `{type,content,subject}`），
+  为空回落 ``facts_json`` 三元组（1.x 存量语义不变）——修复 2.0 记忆 facts 恒空；
+- ``causes``：``l2_facts_json.causes``（`{from,to}`），无数据返回 ``[]`` 不报错。
+两者由 data 层 ``_enrich_l2_context`` 在融合后的最终结果集回填（含向量/图路）。
+
 ⚠️ ``meta.rrf_k`` 是 v0.6 路由里的**历史硬编码 60**（不读 cfg ``search.rrf.k``），
 本模块以常量 ``META_RRF_K`` 保留该行为，保证响应逐字节等价；
 统一为 cfg 取值属 v0.8 议题，届时删除本常量即可。

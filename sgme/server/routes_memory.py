@@ -243,11 +243,14 @@ def get_memory(
     request: Request,
     _: str = Depends(require_agent_key),
 ):
-    """单条记忆 + 溯源 + 归档链。
+    """单条记忆 + 溯源 + 归档链 + 事件上下文。
 
     v0.7：业务逻辑已下沉 ``sgme.operations.memory``，本函数只做协议翻译。
-    响应体与 v0.6 逐字段等价（HTTP 是三键包裹体，与 MCP 的裸记忆对象存在
+    响应体与 v0.6 逐字段等价（HTTP 是包裹体，与 MCP 的裸记忆对象存在
     历史差异，故需 ``get_http_payload`` 投影）。
+
+    W06（2026-11-08）：顶层新增 ``context``（main_event/facts/causes/
+    parent_memory_id/edges），记忆对象顶层新增 facts/causes——纯增量键。
     """
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     data = run_operation(get_memory_operation, mem_conn, memory_id)

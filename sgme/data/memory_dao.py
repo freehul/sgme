@@ -694,6 +694,15 @@ def archive_memory(
             conn.execute("DELETE FROM memory_stats WHERE memory_id=?", (memory_id,))
             # 向量是派生数据，随记忆归档删除（memory_vectors 有 FK 到 memories，必须先删）
             conn.execute("DELETE FROM memory_vectors WHERE memory_id=?", (memory_id,))
+            # W03/W08（W01 §4，2026-11-08）：归档**统一清边**——旧 memory_id 的
+            # from_id/to_id 边必须随归档消失，否则 update/merge/supersession 之后
+            # 图召回会指向已不在 memories 表的 id（悬挂边）。与 purge（delete_memory）
+            # 路径同口径，只是这里与归档同事务，避免「归档成功、清边失败」的半程态。
+            if _has_table(conn, "memory_edges"):
+                conn.execute(
+                    "DELETE FROM memory_edges WHERE from_id=? OR to_id=?",
+                    (memory_id, memory_id),
+                )
             conn.execute("DELETE FROM memories WHERE memory_id=?", (memory_id,))
             conn.commit()
             return True

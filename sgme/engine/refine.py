@@ -284,6 +284,10 @@ def normalize_memories(
             **{k: rm[k] for k in (
                 "type", "subject", "certainty", "derivation", "modality", "route",
                 "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
+                # W01 §2（2026-11-08）：L2 单元上下文（ephemeral）必须透传到 L3 建
+                # belongs_to / causes 边——漏在这里就是「白名单吃掉字段」第 N 次复发。
+                # 它刻意**不在**落库白名单（memory_dao._EXTRA_COLUMNS）里。
+                "_l2_unit",
             ) if rm.get(k) is not None},
             "_sunk_refs": [
                 {"kind": r.kind, "ref_id": r.ref_id}

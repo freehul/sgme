@@ -208,6 +208,22 @@ def persist_memories(
         return stats
 
 
+def _write_unit_edges_safe(
+    mem_conn: sqlite3.Connection,
+    memories: list[dict],
+) -> dict:
+    """按 L2 单元建归属/因果边（W05）安全包装：失败只记日志，不影响落库。
+
+    与 L1.5 四动作路径共用同一实现（l3_adjudicate._write_unit_edges_safe →
+    l2_edges.write_unit_edges），避免「主路径建边、降级路径不建」的口径分叉。
+    """
+    try:
+        return l15_mod._write_unit_edges_safe(mem_conn, memories)
+    except Exception as e:  # noqa: BLE001 —— 边是增强项，绝不阻塞落库
+        logger.warning("L2 单元边写入异常（不影响落库）: %s", e)
+        return {"errors": 1}
+
+
 def _publish_fallback_warn(
     mem_conn: sqlite3.Connection,
     file_id: str,
@@ -293,8 +309,13 @@ def _fallback_direct_store(
         # fail-open 实现（embed 不可达只 WARNING，不阻塞直存）。
         l15_mod._backfill_memory_vector(mem_conn, mid, m.get("content"), cfg)
         stored += 1
+    # W05（W01 §4，2026-11-08）：降级直存同样要在 memory_id 确定后按 L2 单元建
+    # belongs_to / causes 边——否则 L1.5 不可用期间落库的记忆全是裸事实（正是
+    # 本次修复要消灭的形态）。边写入 fail-open，异常只 WARNING 不阻塞落库。
+    unit_edges = _write_unit_edges_safe(mem_conn, refine_result.memories)
     return {"stored": stored, "skipped": skipped, "updated": 0, "merged": 0, "archived": 0,
-            "l15_error": "fallback_direct_store", "fallback": True}
+            "l15_error": "fallback_direct_store", "fallback": True,
+            "unit_edges": unit_edges}
 
 
 def should_commit(result, max_ratio: float = 0.0) -> bool:

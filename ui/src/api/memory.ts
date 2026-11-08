@@ -62,11 +62,48 @@ export interface MemoryPageRef {
   ref_id: string
   relation: string // details（详情在该页）| derived_from（该页由本条记忆生成）
 }
+
+// ---------- 事件上下文（W06 / W01《上下文归属与因果边》§5） ----------
+// 与 operations/memory.py 的 empty_context()/build_context() 逐字段对齐：
+// - 主干/侧事实：main_event（父记忆 id + 正文）与 parent_memory_id；
+// - 单元事实：facts（侧事实自身无 l2_facts_json 时后端回流主干的单元事实）；
+// - 因果：causes（原因 → 结论，纯文本对）；
+// - 关联边：edges 只含 belongs_to（source=l2_extract）与 causes，双向，五键。
+export interface MemoryContextMainEvent {
+  memory_id: string
+  content: string
+}
+export interface MemoryContextFact {
+  type: string | null
+  content: string
+  subject: string | null
+}
+export interface MemoryContextCause {
+  from: string
+  to: string
+}
+export interface MemoryContextEdge {
+  from_id: string
+  to_id: string
+  relation: 'belongs_to' | 'causes' | string
+  weight: number
+  source: string
+}
+export interface MemoryContext {
+  main_event: MemoryContextMainEvent | null
+  facts: MemoryContextFact[]
+  causes: MemoryContextCause[]
+  parent_memory_id: string | null
+  edges: MemoryContextEdge[]
+}
+
 export interface MemoryDetail {
   memory: MemoryItem & { sources: MemorySource[] } & Partial<Record<string, unknown>>
   sources: MemorySource[]
   archive_chain: Array<Record<string, unknown>>
   pages?: MemoryPageRef[]
+  // W06 新增（纯增量键）：老后端不返回该字段时按空形态处理，详情页不报错
+  context?: MemoryContext
 }
 export function getMemory(id: string) {
   return api.get<MemoryDetail>(`/v1/memory/${id}`)

@@ -350,7 +350,15 @@ DEFAULT_SEARCH_CONFIG = {
                            # A/B 实测唯一同时满足「全量 recall@5 不劣化 + scene 类提升」的形态；
                            # False=与直接命中同台竞争（scene 增益更大但单跳 recall 劣化，弃用）
         # T-137 图召回 v2（纳入语义边）：关系级过滤/加权（edge_dao.neighbors 透传）
+        # W07（2026-11-08）：belongs_to / causes 均参与联想召回；此处只排 contradicts
+        # ——否定边（矛盾）是负信号，纳入会污染结果；其余五类关系（含 2.0 新增的
+        # source='l2_extract' 归属边与因果边）全部纳入。
         "exclude_relations": ["contradicts"],  # 否定边不参与联想召回（矛盾是负信号，召回污染结果）
+        # 关系级权重按**关系**统一缩放（neighbors() 不看 source）：
+        # - 共现 belongs_to：weight=场景数 1-N，压到 0.3 防淹没有界置信的语义边；
+        # - l2_extract belongs_to：weight=1.0（W01 §3 契约），此处同样 ×0.3 → 0.3，
+        #   属 fill-only 路（graph.fill_only=True）的弱填充候选，不会挤占直接命中；
+        # - causes 因果边：保持 1.0（语义因果强关联，本批重点要召回的边）。
         "relation_weights": {"belongs_to": 0.3},  # 共现边尺度压缩：LLM 置信 0-1 vs 场景数 1-N
                             # （语义边 similar/causes 保持 1.0；supersedes/evolves_from 1.0）
     },

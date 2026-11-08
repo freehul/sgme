@@ -75,6 +75,7 @@ FILES = {
     "l2_extraction": S / "engine" / "l2_extraction.py",
     "scene_aggregate": S / "engine" / "scene_aggregate.py",
     "l2_extract": S / "engine" / "l2_extract.py",
+    "l3_adjudicate": S / "engine" / "l3_adjudicate.py",
     "l2_split": S / "engine" / "l2_split.py",
     "l3_rules": S / "engine" / "l3_rules.py",
     "dream": S / "engine" / "dream.py",
@@ -312,6 +313,9 @@ def _(self):
         ("needs_review 待审闸门", *has("l2_extract", "needs_review")),
         ("降级默认 derivation=inferred", *has("l2_extract", '"inferred"')),
         ("复用 l2_extraction 校验链（主干仍入库）", *has("l2_extract", "_validate_item")),
+        ("侧事实单元上下文（_l2_unit）", *has("l2_extract", "UNIT_META_KEY")),
+        ("单元 belongs_to/causes 边写入", *has("l3_adjudicate", "write_unit_edges")),
+        ("归档统一清边", *has("memory_dao", "DELETE FROM memory_edges")),
     ]
 
 
@@ -321,6 +325,8 @@ def _(self):
         ("occurred_at 列", *has("db", "occurred_at")),
         ("落库路径传 occurred_at", *has("memory_dao", "occurred_at")),
         ("老库迁移函数", *has("db", "_migrate_mem_occurred_at")),
+        ("因果边落库（causes）", *has("l3_adjudicate", "write_unit_edges")),
+        ("归属边落库（belongs_to）", *has("l3_adjudicate", "write_unit_edges")),
     ]
 
 

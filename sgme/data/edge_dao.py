@@ -68,6 +68,79 @@ def delete_edges_by_source(conn: sqlite3.Connection, source: str) -> int:
     return cur.rowcount
 
 
+def delete_edges_for_memory(conn: sqlite3.Connection, memory_id: str) -> int:
+    """删除与一条记忆相关的**全部**边（from_id 或 to_id 命中，双向）。返回删除行数。
+
+    W03/W08（W01 §4 生命周期）：记忆归档/删除时清边，防止 update/merge/supersession
+    之后图召回指向已不在 memories 表的 id。与 purge（memory_dao.delete_memory）同口径；
+    memory_dao.archive_memory 在归档同一事务内做等价的 DELETE（data 层不跨模块回环）。
+
+    幂等：无匹配返回 0；不自行提交（调用方决定事务边界）。
+    """
+    if not memory_id:
+        return 0
+    cur = conn.execute(
+        "DELETE FROM memory_edges WHERE from_id=? OR to_id=?", (memory_id, memory_id))
+    return cur.rowcount
+
+
+#: `list_edges_for_memory` 的返回列（与 memory_edges 列同名，weight 原值不缩放）
+_EDGE_FIELDS = ("edge_id", "from_id", "to_id", "relation", "weight", "source",
+                "valid_from", "valid_to")
+
+
+def _source_filter(raw: str | Iterable[str] | None) -> list[str]:
+    """把 source 过滤参数（None / 单值 / 可迭代）规整为字符串列表。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    return [str(s) for s in raw if s]
+
+
+def list_edges_for_memory(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    *,
+    relations: Iterable[str] | None = None,
+    source: str | Iterable[str] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """一条记忆的关联边（**双向**：from_id 或 to_id 命中），按 (relation, weight DESC) 排序。
+
+    W06（W01 契约 §5）：`GET /v1/memory/{id}` / MCP `memory_get` 的 context.edges
+    与 UI 「事件上下文」面板的读侧入口。
+
+    Args:
+        memory_id: 记忆 id；空串 → []。
+        relations: 关系白名单（如 ("belongs_to", "causes")）；None/空 = 全部关系。
+        source: source 白名单（单值或可迭代，如 "l2_extract"）；None = 全部来源。
+        limit: 返回条数上限（None = 不限）。
+
+    Returns:
+        [{"edge_id","from_id","to_id","relation","weight","source","valid_from","valid_to"}]
+        ——与 memory_edges 列同名；weight 为**原值**（不做关系级缩放，缩放是召回策略的事）。
+    """
+    if not memory_id:
+        return []
+    sql = (f"SELECT {', '.join(_EDGE_FIELDS)} FROM memory_edges "
+           "WHERE (from_id=? OR to_id=?)")
+    params: list[Any] = [memory_id, memory_id]
+    rels = [str(r) for r in (relations or []) if r]
+    if rels:
+        sql += " AND relation IN (%s)" % ",".join("?" * len(rels))
+        params.extend(rels)
+    srcs = _source_filter(source)
+    if srcs:
+        sql += " AND source IN (%s)" % ",".join("?" * len(srcs))
+        params.extend(srcs)
+    sql += " ORDER BY relation, weight DESC, from_id, to_id"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return [dict(r) for r in conn.execute(sql, params)]
+
+
 def count_edges(conn: sqlite3.Connection, source: str | None = None) -> int:
     """边总数；source 非空时只统计该 source。"""
     if source is None:

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getMemory, rejectMemory, unrejectMemory, type MemoryDetail, type MemorySource } from '../../api/memory'
+import { getMemory, rejectMemory, unrejectMemory, type MemoryDetail, type MemorySource, type MemoryContext, type MemoryContextEdge } from '../../api/memory'
 import { ApiError } from '../../api/client'
 import { fmtTs } from '../../utils/format'
 
@@ -62,6 +62,55 @@ const needsReview = computed(() => rawField('needs_review') === '1')
 // 感受/特质：人类可读场景才有意义，1.x 存量为空
 const feelingText = computed(() => rawField('feeling'))
 const traitText = computed(() => rawField('trait'))
+
+// ---------- 事件上下文（W06 / W01 §5） ----------
+// 后端 build_context() 保证五键齐备（无数据也是空形态）；老后端没有 context 键 →
+// 回落空形态，详情页不报错、不制造空面板（整块无数据只显示一行「—」）。
+const EMPTY_CONTEXT: MemoryContext = {
+  main_event: null,
+  facts: [],
+  causes: [],
+  parent_memory_id: null,
+  edges: [],
+}
+const context = computed<MemoryContext>(() => detail.value?.context ?? EMPTY_CONTEXT)
+const hasContext = computed(() =>
+  Boolean(
+    context.value.main_event ||
+      context.value.parent_memory_id ||
+      context.value.facts.length ||
+      context.value.causes.length ||
+      context.value.edges.length,
+  ),
+)
+
+// 事实主体与记忆主体同规则：self / unknown / others:<名>；缺失显示 —
+function factSubjectText(v: string | null): string {
+  if (!v) return '—'
+  if (v === 'self') return '自己（self）'
+  if (v === 'unknown') return '未知（unknown）'
+  if (v.startsWith('others:')) return `他人：${v.slice('others:'.length)}`
+  return v
+}
+
+// 关联边：后端只暴露 belongs_to（source=l2_extract）与 causes，双向；
+// relation 用中文标签 + 原值，对端 id 可点进对应记忆详情。
+const RELATION_LABEL: Record<string, string> = {
+  belongs_to: '归属（belongs_to）',
+  causes: '因果（causes）',
+}
+function relationLabel(v: string): string {
+  return RELATION_LABEL[v] || v
+}
+function edgePeer(e: MemoryContextEdge): string {
+  return e.from_id === id.value ? e.to_id : e.from_id
+}
+function edgeDirection(e: MemoryContextEdge): string {
+  return e.from_id === id.value ? '出边 →' : '← 入边'
+}
+function openMemory(memoryId: string) {
+  if (memoryId && memoryId !== id.value) router.push(`/memories/${memoryId}`)
+}
 
 // 关联页（memory_pages）：后端详情接口暂未返回该表（截至 2026-11 无 HTTP 端点），
 // 契约按 api/memory.ts MemoryPageRef 预留，后端补上后此区块自动生效。
@@ -161,6 +210,71 @@ watch(id, () => load(), { immediate: true })
         </div>
       </div>
 
+      <!-- 事件上下文（W06 / W01 §5）：主事件 / 父记忆 / 事实 / 因果 / 关联边 -->
+      <div class="panel">
+        <h3>事件上下文 <span class="sub">主事件 / 事实 / 因果 / 关联边</span></h3>
+        <template v-if="hasContext">
+          <div class="ctx-section">
+            <b class="q-label">主事件</b>
+            <template v-if="context.main_event">
+              <p class="ctx-main-text">{{ context.main_event.content }}</p>
+              <p class="meta">
+                主事件 ID:
+                <a class="ctx-link" href="#" @click.prevent="openMemory(context.main_event.memory_id)">{{ context.main_event.memory_id }}</a>
+              </p>
+            </template>
+            <p v-else class="ctx-dash">—</p>
+            <p class="meta">
+              父记忆（parent_memory_id）:
+              <template v-if="context.parent_memory_id">
+                <a class="ctx-link" href="#" @click.prevent="openMemory(context.parent_memory_id)">{{ context.parent_memory_id }}</a>
+              </template>
+              <template v-else>—</template>
+            </p>
+          </div>
+
+          <div class="ctx-section">
+            <b class="q-label">事实（facts）</b>
+            <ul v-if="context.facts.length" class="ctx-list">
+              <li v-for="(f, i) in context.facts" :key="i" class="ctx-item">
+                <span class="ctx-tag">{{ f.type || '—' }}</span>
+                <span class="ctx-text">{{ f.content }}</span>
+                <span class="ctx-sub">主体 {{ factSubjectText(f.subject) }}</span>
+              </li>
+            </ul>
+            <p v-else class="ctx-dash">—</p>
+          </div>
+
+          <div class="ctx-section">
+            <b class="q-label">因果（causes · 原因 → 结论）</b>
+            <ul v-if="context.causes.length" class="ctx-list">
+              <li v-for="(c, i) in context.causes" :key="i" class="ctx-item">
+                <span class="ctx-text">{{ c.from }}</span>
+                <span class="ctx-arrow">→</span>
+                <span class="ctx-text">{{ c.to }}</span>
+              </li>
+            </ul>
+            <p v-else class="ctx-dash">—</p>
+          </div>
+
+          <div class="ctx-section">
+            <b class="q-label">关联边（edges · belongs_to / causes）</b>
+            <ul v-if="context.edges.length" class="ctx-list">
+              <li v-for="(e, i) in context.edges" :key="i" class="ctx-item">
+                <span class="ctx-tag">{{ relationLabel(e.relation) }}</span>
+                <span class="ctx-text">
+                  {{ edgeDirection(e) }}
+                  <a class="ctx-link" href="#" @click.prevent="openMemory(edgePeer(e))">{{ edgePeer(e) }}</a>
+                </span>
+                <span class="ctx-sub">weight {{ e.weight }} · source {{ e.source || '—' }}</span>
+              </li>
+            </ul>
+            <p v-else class="ctx-dash">—</p>
+          </div>
+        </template>
+        <p v-else class="ctx-dash">—（无主事件 / 事实 / 因果 / 关联边数据）</p>
+      </div>
+
       <div class="panel">
         <h3>记忆质量 <span class="sub">SGME 2.0 元数据</span></h3>
         <div class="meta q-grid">
@@ -249,5 +363,76 @@ watch(id, () => load(), { immediate: true })
 .q-label {
   font-weight: 600;
   color: var(--text-muted);
+}
+
+/* 事件上下文（W06）：纯文本列表，复用现有令牌；分节用间距而不是新色 */
+.ctx-section {
+  margin-top: var(--space-3);
+}
+
+.ctx-section:first-of-type {
+  margin-top: 0;
+}
+
+.ctx-main-text {
+  margin: var(--space-1) 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.ctx-list {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.ctx-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.ctx-tag {
+  flex: none;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.ctx-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ctx-sub {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.ctx-arrow {
+  color: var(--text-muted);
+}
+
+.ctx-dash {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+}
+
+.ctx-link {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.ctx-link:hover {
+  text-decoration: underline;
 }
 </style>
