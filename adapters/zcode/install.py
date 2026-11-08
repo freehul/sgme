@@ -256,7 +256,7 @@ AGENTS_MD_SECTION = """\
 > 若本会话已挂载 `sgme` MCP server（mcp__sgme__* 工具）优先用 MCP；否则走 CLI。
 
 - **服务发现**：环境变量 `SGME_HTTP_URL` → 部署副本 `scripts/client.env` → `~/.sgme/zcode-agent.json` → `~/.zcode/cli/config.json` 的 `sgme` server → 回环 `http://127.0.0.1:9910`
-- **能力面**：`python {client} capabilities`（49 基准能力矩阵，离线）；`env-info` 看生效端点
+- **能力面**：`python {client} capabilities`（60 基准能力矩阵，离线）；`env-info` 看生效端点
 - **五条铁律**：①每轮对话结束 append 当前轮次（session_key=zcode-<日期>-<项目>）②会话结束 refine-trigger（永远 async）③对话开始 inject/search ④关怀信号 pull→claim→ack ⑤role-list/role-assemble 换皮不换芯
 - **重要信息存放处（凭据库）**：SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集中存放处（NAS 唯一真源，本机 .env 只是缓存）
   - 看有哪些：`credential_list()` / `sgme-cred list`（只回键名与元数据，永不回值）

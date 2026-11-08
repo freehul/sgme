@@ -781,7 +781,7 @@ def _(self):
 
 
 # ---------- 平台 / 迁移 ----------
-@check("D-37", "凭据子模块（六端点 + v1.1 扩展列接线）", "done")
+@check("D-37", "凭据子模块（六端点 + v1.1 扩展列 + v1.2 文件存储）", "done")
 def _(self):
     return [
         ("读端点 3 个", *has("routes_credentials", "@router.get")),

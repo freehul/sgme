@@ -8,7 +8,7 @@ description: 豆包工作 ↔ SGME（拾光记忆引擎）官方适配器。SGME
 你有一个长期记忆引擎 SGME（ShiGuang Memory Engine），运行在本机或 NAS。它的职责：把我们的会话提炼成标签化记忆，按场景注入回来，让你不再失忆。
 
 > 本技能是 SGME 官方适配器（`adapters/doubao/`，源码唯一副本随 SGME 仓库版本控制；本目录是部署副本，由 `install.py` 同步，可随时重建）。
-> **能力面 = CLI 命令面**：本文件「能力矩阵」里列出的命令就是你能调用的全部工具（54 个基准能力一个不少）。
+> **能力面 = CLI 命令面**：下方矩阵 60 个基准能力一个不少（服务端工具面 64 = 会话面 60 + 管理面豁免 4；管理面 `skill_candidate_*` 由 HTTP `/v1/admin` 承担，按 `scripts/adapter_parity_map.yaml` 豁免，不列入本矩阵）。
 
 ## 服务发现（找不到 SGME 时按序）
 
@@ -73,7 +73,7 @@ SGME 第四模块 credentials 是跨机共享的 API Key / token / 密码的集�
 
 SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、`anomaly_warn`（异常）。四种接法：① SSE 长连 `GET /v1/events/stream?subscriber_id=<agent_id>`；② 游标拉取 `GET /v1/events/pull?subscriber_id=<agent_id>`（= `events-pull`）；③ 增量拉取 `events-after <ISO时间戳>`；④ MCP `signal-pull`。SSE/pull 走 HTTP `:9910` 带 X-API-Key。积压清理用 `signal-clear`（幂等）。
 
-## 能力矩阵（scripts/sgme_client.py，与 MCP 基准 54 个工具一一对应）
+## 能力矩阵（scripts/sgme_client.py，与 MCP 基准会话面 60 工具一一对应）
 
 > HTTP 层命令零依赖（任意 python3 可跑）；MCP 层命令需 mcp 库，用
 > `<project-root>/.venv/Scripts/python.exe scripts/sgme_client.py …` 执行。

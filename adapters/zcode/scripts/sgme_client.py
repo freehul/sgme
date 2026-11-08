@@ -1022,7 +1022,7 @@ def _fetch_skill_package(client, name: str, dest_dir: str) -> dict:
 # ================= 能力矩阵 =================
 
 def capability_report() -> list[dict]:
-    """逐条核对 49 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
+    """逐条核对 60 个基准能力的方法层与 CLI 层覆盖度（离线，不发网络请求）。"""
     rows = []
     for tool in BASELINE_TOOLS:
         method, cli, layer, scope = BASELINE_SPEC[tool]

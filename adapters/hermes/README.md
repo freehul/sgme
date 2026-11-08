@@ -92,7 +92,7 @@ Restart Hermes. Verify with `hermes plugins list` (the sgme row should read
 > **⚠️ 升级插件后必须重启的是 gateway 进程，不是 dashboard / 桌面壳**（2026-10-30 实测踩坑）：
 > 会话实际由 `python -m hermes_cli.main gateway run` 常驻进程处理（`gateway.run: inbound message`
 > 日志即出自它）。只重启 dashboard 或桌面窗口时，gateway 仍持有旧插件字节码，日志会一直写
-> `Memory provider 'sgme' registered (44 tools)`——即使磁盘上的 `__init__.py` 已是新版（46 定义）
+> `Memory provider 'sgme' registered (60 tools)`——即使磁盘上的 `__init__.py` 已是新版（61 定义，含默认隐藏的 credential_get）
 > 且 md5 与仓库一致。判定方法：`Get-CimInstance Win32_Process -Filter "Name='python.exe'"` 找
 > `gateway run` 的 PID 与启动时间；重启该进程后再看日志里的工具数是否变化。
 
@@ -134,9 +134,9 @@ Three ways to manage roles:
 2. **Ask your agent** — `sgme_role_save` / `sgme_role_delete` / `sgme_role_active_set` let the agent write or switch roles for you.
 3. **SGME WebUI → Roles** — full visual card editor (best for long prompts; desktop text fields are brief by nature).
 
-## Tools (46)
+## Tools (60)
 
-46 = 45 MCP-baseline tools − 2 intentional exemptions + 3 adapter-specific.
+60 = 64 MCP-baseline tools − 6 exemptions（append / agent_onboarding / 4 个 skill_candidate_* 管理面）− 1 hidden credential_get + 3 adapter-specific；开启 credential_get 后 61。
 Key column: **agent** = `SGME_AGENT_KEY`; **admin** = `SGME_ADMIN_KEY`.
 Admin tools state their requirement in their description.
 
@@ -290,7 +290,7 @@ Your memories stay on the SGME server, untouched.
 ## Version & compatibility
 
 - The plugin version tracks the SGME engine version (currently `1.10.6`) — keep bridge and engine on the same minor line.
-- Capability baseline = SGME's MCP tool surface (44 tools); this adapter implements 42 of them, declares 2 exemptions, and adds 3 of its own → **45 tools**. Drift is checked by `python scripts/adapter_parity.py`.
+- Capability baseline = SGME's MCP tool surface (64 tools); this adapter implements the non-exempt subset, declares 6 exemptions, hides `credential_get` by default, and adds 3 of its own → **60 tools**（开启后 61）。 Drift is checked by `python scripts/adapter_parity.py`.
 
 ## Links
 

@@ -12,7 +12,7 @@
   - prefetch(query): 每轮 LLM 前召回相关记忆（/v1/search，<100ms 预算）
   - sync_turn(): 每轮对话后写原始层（/v1/append，后台线程异步）
   - on_session_end(): 会话结束触发提炼（/v1/admin/refine/trigger）
-  - get_tool_schemas()/handle_tool_call(): 46 个 sgme_* 工具（对齐 MCP 45 工具基准；
+  - get_tool_schemas()/handle_tool_call(): 60 个 sgme_* 工具（默认面；对齐 MCP 64 工具基准；
     agent_onboarding / append 两项永久豁免 + role_save/role_delete 适配器自有工具，
     详见 adapters/hermes/README.md）
 
@@ -134,7 +134,7 @@ _DEFAULT_TIMEOUT = "30.0"
 _PROBE_FAIL_TTL = 3.0
 _PROBE_OK_TTL = 30.0
 
-# ---------- 工具面常量与参数辅助（能力面对齐 MCP 45 工具基准） ----------
+# ---------- 工具面常量与参数辅助（能力面对齐 MCP 64 工具基准） ----------
 
 # 检索层白名单（取值见 sgme/operations/search.py）
 _SEARCH_SCOPES = ("memory", "wiki", "wiki_pages", "sessions", "skills")
@@ -1114,7 +1114,7 @@ class SGMEProvider(MemoryProvider):
         except Exception as e:
             logger.warning("sgme refine trigger 异常: %s", e)
 
-    # ---------- 工具（Agent 主动检索 / 治理：对齐 MCP 45 工具基准） ----------
+    # ---------- 工具（Agent 主动检索 / 治理：对齐 MCP 64 工具基准） ----------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """暴露 SGME 能力面工具。
