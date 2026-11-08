@@ -138,6 +138,12 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 52 | skill_file_get | HTTP | `skill-file-get <name> <relpath>`（文本回原文；二进制只回摘要） |
 | 53 | skill_file_put | HTTP | `skill-file-put <name> <relpath> --file <path>`（白名单目录；需管理员 Key） |
 | 54 | skill_lint | HTTP | `skill-lint <name> --file <path>`（只校验不入库；需管理员 Key） |
+| 55 | near_dup_list | MCP | `near-dup-list`（近似重复隔离区列表，灰区待人工复核） |
+| 56 | near_dup_restore | MCP | `near-dup-restore`（放行一条近似重复，补录进记忆池 + 向量回填） |
+| 57 | near_dup_discard | MCP | `near-dup-discard`（丢弃一条近似重复，不写进记忆池） |
+| 58 | card_list | MCP | `card-list`（core 记忆卡列表：六张卡 + 槽位定义 + 字数上限） |
+| 59 | card_update | MCP | `card-update`（写 core 卡一个槽位，旧值进历史；需用户授权） |
+| 60 | card_history | MCP | `card-history`（core 记忆卡修改历史） |
 
 扩展命令：`fetch <name> <dest_dir>`（跨机取技能完整包：两级缓存（目录版本短路 + package_sha256 比对，命中零下载）→ 未命中才下载 → MANIFEST 校验 → 安全解包；失败不留残件） / `events-pull` / `events-after` / `wiki-raw` / `capabilities` / `env-info` / `mcp <tool> k=v …`。
 

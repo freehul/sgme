@@ -137,6 +137,12 @@ SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、
 | 52 | skill_file_get | HTTP | `skill-file-get <name> <relpath>`（文本回原文；二进制只回摘要） |
 | 53 | skill_file_put | HTTP | `skill-file-put <name> <relpath> --file <path>`（白名单目录；需管理员 Key） |
 | 54 | skill_lint | HTTP | `skill-lint <name> --file <path>`（只校验不入库；需管理员 Key） |
+| 55 | near_dup_list | MCP | `sgme_client.py near-dup-list`（近似重复隔离区列表，灰区待人工复核） |
+| 56 | near_dup_restore | MCP | `sgme_client.py near-dup-restore`（放行一条近似重复，补录进记忆池 + 向量回填） |
+| 57 | near_dup_discard | MCP | `sgme_client.py near-dup-discard`（丢弃一条近似重复，不写进记忆池） |
+| 58 | card_list | MCP | `sgme_client.py card-list`（core 记忆卡列表：六张卡 + 槽位定义 + 字数上限） |
+| 59 | card_update | MCP | `sgme_client.py card-update`（写 core 卡一个槽位，旧值进历史；需用户授权） |
+| 60 | card_history | MCP | `sgme_client.py card-history`（core 记忆卡修改历史） |
 
 适配器自有扩展（超出基准）：`fetch <name> <dest_dir>`（跨机取技能完整包：两级缓存（目录版本短路 + package_sha256 比对，命中零下载）→ 未命中才下载 → MANIFEST 校验 → 安全解包；失败不留残件）、`events-pull`（HTTP 事件游标）、`events-after`（增量拉取）、`wiki-raw`（取原始文件）、`capabilities`（能力矩阵核对）、`env-info`（端点自检）、`mcp <tool> k=v …`（逃生口：直接调任意 MCP 工具，加 `--admin` 走管理员 Key）。
 
