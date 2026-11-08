@@ -78,6 +78,8 @@ def upsert_hit(
     score: float,
     source_ref: str | None = None,
     dimension_ids: list[str] | None = None,
+    status: str = "pending",
+    discard_reason: str | None = None,
 ) -> None:
     """命中写入（幂等去重）：同 (matched_memory_id, content_hash) 只更分不增行。
 
@@ -90,8 +92,9 @@ def upsert_hit(
     conn.execute(
         """
         INSERT INTO near_dup_quarantine
-          (content, content_hash, matched_memory_id, score, source_ref, dimension_ids)
-        VALUES (?,?,?,?,?,?)
+          (content, content_hash, matched_memory_id, score, source_ref, dimension_ids,
+           status, discard_reason)
+        VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(matched_memory_id, content_hash) DO UPDATE SET
           score=MAX(score, excluded.score)
         """,
@@ -102,6 +105,8 @@ def upsert_hit(
             float(score),
             source_ref,
             json.dumps(dimension_ids, ensure_ascii=False) if dimension_ids is not None else None,
+            status,
+            discard_reason,
         ),
     )
     conn.commit()
@@ -282,3 +287,33 @@ def count_items(conn: sqlite3.Connection, status: str | None = None) -> int:
     else:
         row = _fetch_one(conn, "SELECT COUNT(*) AS c FROM near_dup_quarantine")
     return int(row["c"]) if row else 0
+
+
+def count_pending_ge(conn: sqlite3.Connection, min_score: float) -> int:
+    """统计 score ≥ min_score 且 status='pending' 的行数（dry-run 用）。"""
+    row = _fetch_one(
+        conn,
+        "SELECT COUNT(*) AS c FROM near_dup_quarantine "
+        "WHERE status='pending' AND score >= ?",
+        (float(min_score),),
+    )
+    return int(row["c"]) if row else 0
+
+
+def bulk_discard(
+    conn: sqlite3.Connection,
+    *,
+    min_score: float,
+    reason: str | None = None,
+) -> int:
+    """批量丢弃 score ≥ min_score 的 pending 行；返回实际更新行数。
+
+    行保留（status='discarded' + discard_reason），可人工 restore 翻案。
+    """
+    cur = conn.execute(
+        "UPDATE near_dup_quarantine SET status='discarded', discard_reason=? "
+        "WHERE status='pending' AND score >= ?",
+        (reason, float(min_score)),
+    )
+    conn.commit()
+    return int(cur.rowcount or 0)

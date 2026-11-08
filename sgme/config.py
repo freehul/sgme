@@ -534,6 +534,8 @@ DEFAULT_L3_ADJUDICATE_CONFIG = {
         "enabled": True,
         "threshold": 0.92,
         "gray_zone": 0.85,
+        # 2026-11-08 用户定：≥threshold 直接 discarded（保留行可审计/可 restore）。
+        "auto_discard": True,
     },
     # ST-58/T-300（B1'）：候选元数据行裁剪 —— 只压缩**呈现体积**，不动候选集、
     # 不动正文（与「截断候选正文」路线相反，后者实测收益仅 4.4% 且会丢长记忆尾部差异）。
@@ -1413,7 +1415,7 @@ def _merge_l3_adjudicate_config(user_cfg: dict | None) -> dict:
                 base["semantic_edges"][k] = se[k]
     nd = user_cfg.get("near_dup")
     if isinstance(nd, dict):
-        for k in ("enabled", "threshold", "gray_zone"):
+        for k in ("enabled", "threshold", "gray_zone", "auto_discard"):
             if k in nd:
                 base["near_dup"][k] = nd[k]
 

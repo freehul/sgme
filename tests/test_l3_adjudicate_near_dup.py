@@ -57,17 +57,18 @@ def test_load_config_exposes_l15_near_dup():
     assert nd["enabled"] is True
     assert nd["threshold"] == 0.92
     assert nd["gray_zone"] == 0.85
+    assert nd["auto_discard"] is True
 
 
 def test_near_dup_cfg_fallback_defaults():
     """空/缺段配置 → 出厂保守值；单键类型非法 → 该键回退（不静默降档）。"""
-    factory = {"enabled": True, "threshold": 0.92, "gray_zone": 0.85}
+    factory = {"enabled": True, "threshold": 0.92, "gray_zone": 0.85, "auto_discard": True}
     assert l3_adjudicate._near_dup_cfg(None) == factory
     assert l3_adjudicate._near_dup_cfg({}) == factory
     assert l3_adjudicate._near_dup_cfg({"l3_adjudicate": {}}) == factory
     # 部分键：enabled=false 生效，其余键回退出厂值
     assert l3_adjudicate._near_dup_cfg({"l3_adjudicate": {"near_dup": {"enabled": False}}}) == {
-        "enabled": False, "threshold": 0.92, "gray_zone": 0.85,
+        "enabled": False, "threshold": 0.92, "gray_zone": 0.85, "auto_discard": True,
     }
     # 类型非法：字符串/布尔 → 对应键回退出厂值
     assert l3_adjudicate._near_dup_cfg(
@@ -81,7 +82,7 @@ def test_near_dup_cfg_invalid_fallback(caplog):
     nd = l3_adjudicate._near_dup_cfg(
         {"l3_adjudicate": {"near_dup": {"enabled": False, "threshold": 0.8, "gray_zone": 0.9}}}
     )
-    assert nd == {"enabled": True, "threshold": 0.92, "gray_zone": 0.85}
+    assert nd == {"enabled": True, "threshold": 0.92, "gray_zone": 0.85, "auto_discard": True}
     warns = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("near_dup" in m and "回退" in m for m in warns), warns
 
@@ -89,9 +90,9 @@ def test_near_dup_cfg_invalid_fallback(caplog):
 def test_config_merge_l15_near_dup():
     """_merge_l3_adjudicate_config：near_dup 默认段随白名单合并 + 逐键透传 + 防可变默认共享。"""
     base = config._merge_l3_adjudicate_config(None)
-    assert base["near_dup"] == {"enabled": True, "threshold": 0.92, "gray_zone": 0.85}
+    assert base["near_dup"] == {"enabled": True, "threshold": 0.92, "gray_zone": 0.85, "auto_discard": True}
     merged = config._merge_l3_adjudicate_config({"near_dup": {"threshold": 0.9}})
-    assert merged["near_dup"] == {"enabled": True, "threshold": 0.9, "gray_zone": 0.85}
+    assert merged["near_dup"] == {"enabled": True, "threshold": 0.9, "gray_zone": 0.85, "auto_discard": True}
     # 防可变默认共享：合并产物不是默认段的同一对象
     assert base["near_dup"] is not config.DEFAULT_L3_ADJUDICATE_CONFIG["near_dup"]
 
@@ -315,7 +316,7 @@ def test_near_dup_gray_sample_log(mem_conn, monkeypatch, caplog):
 #: 集成用例配置：关 prescreen（候选走维度召回，零 embed 依赖）+ 出厂 near_dup 三键
 _INTEG_L15_CFG = {
     "prescreen": None,
-    "near_dup": {"enabled": True, "threshold": 0.92, "gray_zone": 0.85},
+    "near_dup": {"enabled": True, "threshold": 0.92, "gray_zone": 0.85, "auto_discard": True},
 }
 
 
@@ -398,12 +399,14 @@ def test_integration_empty_pool_hit_quarantines(mem_conn, cfg, monkeypatch):
     assert it["score"] == 0.95
     assert it["source_ref"] == "F:1"
     assert it["dimension_ids"] == ["goals"]
-    assert it["status"] == "pending"
+    assert it["status"] == "discarded"
+    assert it["discard_reason"].startswith("auto:score>=")
     # refine_runs：near_dup 独立记录（action_counts 对账）
     nd_rows = _near_dup_rows(mem_conn)
     assert len(nd_rows) == 1
     assert json.loads(nd_rows[0]["action_counts"]) == {
         "near_dup_quarantined": 1, "near_dup_gray": 0, "near_dup_shadow_090": 0,
+        "near_dup_auto_discarded": 1,
     }
     assert nd_rows[0]["memories_count"] == 1
     assert nd_rows[0]["status"] == "ok"
@@ -434,6 +437,7 @@ def test_integration_batch_store_path_quarantines(mem_conn, cfg, monkeypatch):
     assert len(nd_rows) == 1
     assert json.loads(nd_rows[0]["action_counts"]) == {
         "near_dup_quarantined": 1, "near_dup_gray": 0, "near_dup_shadow_090": 0,
+        "near_dup_auto_discarded": 1,
     }
     # T1.7：批行候选留痕三列——candidate_count / ids_hash 与批候选集一致（reason 不传 → None）
     batch_rows = [r for r in _runs(mem_conn) if r["candidate_count"] is not None]
@@ -501,6 +505,7 @@ def test_integration_gray_zone_passes_with_count(mem_conn, cfg, monkeypatch):
     assert len(nd_rows) == 1
     assert json.loads(nd_rows[0]["action_counts"]) == {
         "near_dup_quarantined": 0, "near_dup_gray": 1, "near_dup_shadow_090": 0,
+        "near_dup_auto_discarded": 0,
     }
     assert nd_rows[0]["memories_count"] == 1
 
@@ -526,6 +531,7 @@ def test_integration_shadow_zone_counted(mem_conn, cfg, monkeypatch):
     assert len(nd_rows) == 1
     assert json.loads(nd_rows[0]["action_counts"]) == {
         "near_dup_quarantined": 0, "near_dup_gray": 1, "near_dup_shadow_090": 1,
+        "near_dup_auto_discarded": 0,
     }
     assert nd_rows[0]["memories_count"] == 1
 

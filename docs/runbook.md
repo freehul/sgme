@@ -143,7 +143,7 @@ curl -s "$SGME_HTTP_URL/v1/health" | head -c 400
 |---|---|---|---|
 | `l2_extraction` | `chunk_size` / `overlap` | 6000 / 1000 | L2 提取分块（改小更稳、改大更省调用） |
 | `l3_adjudicate.prescreen` | `enabled` / `fallback` | true / `skip_conflict` | 候选池向量预筛；embed 不可达时跳过冲突检测（防烧钱） |
-| `l3_adjudicate.near_dup` | `enabled` / `threshold` / `gray_zone` | true / 0.92 / 0.85 | 落库前近似查重（命中进隔离表，不静默丢；见 §7.7） |
+| `l3_adjudicate.near_dup` | `enabled` / `threshold` / `gray_zone` / `auto_discard` | true / 0.92 / 0.85 / true | 落库前近似查重（≥threshold 自动丢弃，行留痕；见 §7.7） |
 | `refine` | `refine_on_append` / `batch_scan.enabled` / `interval_min` | 生产 true / false / 60 | 写入即提炼、批扫兜底（二者至少开一路） |
 | `refine` | `llm_override` | `{provider, model, max_tokens}` | 强制提炼主模型（防 agent 声明模型劫持） |
 | `refine` | `max_chunk_failure_ratio` / `chunk_retry_times` / `chunk_retry_backoff_s` | 0.0 / 2 / 5.0 | 块级容忍与重试 |
@@ -299,6 +299,7 @@ print('raw_files by status:', s.execute(\"SELECT status, COUNT(*) FROM raw_files
 | POST | `/v1/admin/review/batch-reject` | **批量拒绝**：`{memory_ids:[...], reason?}` → `{results:[{memory_id,ok,error?}], rejected, failed}` |
 | GET | `/v1/admin/near-dup/quarantine` | 近似重复隔离区（`status` = pending / discarded / restored） |
 | POST | `/v1/admin/near-dup/{qid}/discard` / `restore` | 丢弃（可留 `reason`）/ 放行补录（`supersede` 默认 true） |
+| POST | `/v1/admin/near-dup/bulk-discard` | 批量丢弃（admin；默认 dry-run，`apply=true` 才写；body `{min_score, reason?, apply?}`） |
 | GET | `/v1/admin/cards` / `schema` / `history` / `{card_id}` / `{card_id}/history` | core 记忆卡读取 |
 | POST | `/v1/admin/cards/{card_id}/slots/{slot_key}` | 写槽位（覆盖式，旧值进历史；`value` 可 null 清除） |
 | GET | `/v1/admin/ops/health-overview` / `ttl-disposition` / `llm-cost` / `refine-efficiency` | 运维总览 / TTL 五档 / LLM 成本 / **块级提炼效率（D-80：重复率·缓存命中率·补跑积压）** |
@@ -404,7 +405,7 @@ curl -s -X POST -H "X-API-Key: $K" -H "Content-Type: application/json" -d '{"sna
 
 ### 7.7 近似重复隔离区与阈值
 
-- 链路：L3 落库前向量近似判定；`score ≥ threshold` → 写 `near_dup_quarantine`（不落 memories）；`gray_zone ≤ score < threshold` → 放行落库并计数/抽样日志；低于 `gray_zone` 放行。
+- 链路：L3 落库前向量近似判定；`score ≥ threshold` → 写 `near_dup_quarantine`（不落 memories；`auto_discard=true` 时直接 `status='discarded'` + `discard_reason=auto:*`，不进 pending）；`gray_zone ≤ score < threshold` → 放行落库并计数/抽样日志；低于 `gray_zone` 放行。
 - 巡检：`GET /v1/admin/near-dup/quarantine?status=pending`；统计看 `refine_runs.action_counts`（`near_dup_quarantined` / `near_dup_gray`）。
 - 处置：逐条 `discard`（**建议填 reason**，是调阈值的唯一标签来源）或 `restore`（`supersede` 默认 true = 替代旧记忆）。
 - 调阈值前提：有 ≥ 一周带 reason 的标注；下调 0.92→0.90 隔离量约 ×1.7，→0.87 约 ×3（按生产灰区分桶外推）。无标注不要凭感觉调。

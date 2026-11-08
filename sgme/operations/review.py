@@ -422,6 +422,35 @@ def discard_quarantine(
     })
 
 
+def bulk_discard_quarantine(
+    conn: sqlite3.Connection,
+    min_score: float = 0.92,
+    reason: str | None = None,
+    apply: bool = False,
+) -> dict:
+    """批量丢弃 pending 近似重复（2026-11-08 用户拍板：≥0.92 可直接丢）。
+
+    apply=False 只统计（dry-run）；apply=True 执行 UPDATE，行保留可审计/可 restore。
+    """
+    try:
+        score = float(min_score)
+    except (TypeError, ValueError):
+        raise InvalidArgs(f"min_score 必须是数字: {min_score!r}")
+    if not 0.0 <= score <= 1.0:
+        raise InvalidArgs(f"min_score 必须在 [0,1]: {score}")
+    reason_val = str(reason).strip() if reason is not None and str(reason).strip() else None
+    matched = near_dup_dao.count_pending_ge(conn, score)
+    if not apply:
+        return OperationResult.succeed({
+            "dry_run": True, "min_score": score, "matched": matched, "discarded": 0,
+        })
+    discarded = near_dup_dao.bulk_discard(conn, min_score=score, reason=reason_val)
+    return OperationResult.succeed({
+        "dry_run": False, "min_score": score, "matched": matched,
+        "discarded": discarded, "reason": reason_val,
+    })
+
+
 def restore_quarantine(
     conn: sqlite3.Connection,
     id: object,

@@ -20,7 +20,9 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Request
 
+from sgme.server.routes_admin import audit_admin_op
 from sgme.operations.review import (
+    bulk_discard_quarantine as bulk_discard_quarantine_operation,
     approve as approve_operation,
     auto_resolve_expired as auto_resolve_operation,
     batch_reject as batch_reject_operation,
@@ -30,7 +32,7 @@ from sgme.operations.review import (
     reject as reject_operation,
     restore_quarantine as restore_quarantine_operation,
 )
-from sgme.server.app import require_agent_key, run_operation
+from sgme.server.app import require_admin_key, require_agent_key, run_operation
 
 router = APIRouter()
 
@@ -173,6 +175,33 @@ def list_quarantine(
         limit=_int_or(limit, 50),
         offset=_int_or(offset, 0),
     )
+
+
+@router.post("/v1/admin/near-dup/bulk-discard")
+def bulk_discard_quarantine(
+    request: Request,
+    body: dict | None = None,
+    _: str = Depends(require_admin_key),
+):
+    """批量丢弃 pending 近似重复（admin；默认 dry-run，apply=true 才写）。
+
+    Body：{min_score?: number=0.92, reason?: str, apply?: bool=false}
+    """
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    b = body or {}
+    try:
+        data = run_operation(
+            bulk_discard_quarantine_operation,
+            mem_conn,
+            min_score=b.get("min_score", 0.92),
+            reason=b.get("reason"),
+            apply=bool(b.get("apply", False)),
+        )
+    except Exception:
+        audit_admin_op(request, "near_dup_bulk_discard", target="near_dup", result="fail")
+        raise
+    audit_admin_op(request, "near_dup_bulk_discard", target="near_dup", result="success")
+    return data
 
 
 @router.post("/v1/admin/near-dup/{qid}/discard")

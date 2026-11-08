@@ -96,6 +96,7 @@ class AdjudicationResult:
     near_dup_quarantined: int = 0                           # L1.5 F1（T1.6）：本批因近似重复被拦截（写隔离表）的新记忆数
     near_dup_gray: int = 0                                  # L1.5 F1（T1.6）：本批灰区命中数（放行落库 + 聚合计数）
     near_dup_shadow: int = 0                                # E2（2026-11-05）：本批影子命中数——score ∈ [0.90, threshold)，即「若阈值=0.90 会被拦」；只计数不改判定
+    near_dup_auto_discarded: int = 0                        # 2026-11-08：本批 ≥threshold 自动丢弃数（auto_discard=true 时）
     semantic_edges_written: int = 0                         # T-135：本次落库写入的语义边数（source='l1_conflict'）
     #: ST-58/T-296（G3-c）：**逐条**裁决留痕，与 `new_memories` 下标对齐。
     #: 每项 ``{new_memory_index, action, candidate_ids, reason, idempotent_skip}``。
@@ -677,6 +678,8 @@ DEFAULT_NEAR_DUP: dict = {
     "enabled": True,
     "threshold": 0.92,
     "gray_zone": 0.85,
+    # 2026-11-08 用户定：≥threshold 直接判 discarded（不人工复核）；行保留可审计/可翻案。
+    "auto_discard": True,
 }
 
 #: E2 影子计数阈值（2026-11-05）：score ∈ [0.90, threshold) 记 shadow——
@@ -701,6 +704,8 @@ def _near_dup_cfg(cfg: dict | None) -> dict:
         if isinstance(nd, dict):
             if isinstance(nd.get("enabled"), bool):
                 base["enabled"] = nd["enabled"]
+            if isinstance(nd.get("auto_discard"), bool):
+                base["auto_discard"] = nd["auto_discard"]
             for k in ("threshold", "gray_zone"):
                 v = nd.get(k)
                 # bool 是 int 子类，显式排除；仅接受 int/float 数值
@@ -849,11 +854,19 @@ def _quarantine_if_near_dup(
         logger.warning("near_dup 命中缺 matched_id（不变式破坏），放行: score=%s | content=%s", nd.score, content)
         return False
     result.near_dup_quarantined += 1
+    nd_cfg = _near_dup_cfg(cfg)
+    auto = bool(nd_cfg.get("auto_discard"))
+    if auto:
+        result.near_dup_auto_discarded += 1
     try:
         near_dup_dao.upsert_hit(
             mem_conn, content, nd.matched_id, nd.score,
             source_ref=source_ref,
             dimension_ids=new_mem.get("dimension_ids", new_mem.get("dimensions")),
+            status="discarded" if auto else "pending",
+            discard_reason=(
+                f"auto:score>={nd_cfg['threshold']:.2f}" if auto else None
+            ),
         )
     except Exception as e:
         logger.warning(
@@ -880,7 +893,8 @@ def _record_near_dup_run(
     """
     n, m = result.near_dup_quarantined, result.near_dup_gray
     s = result.near_dup_shadow
-    if n + m + s <= 0:
+    a = result.near_dup_auto_discarded
+    if n + m + s + a <= 0:
         return
     from sgme.data.refine_dao import RefineRunRecorder
 
@@ -898,6 +912,7 @@ def _record_near_dup_run(
             "near_dup_quarantined": n,
             "near_dup_gray": m,
             "near_dup_shadow_090": s,
+            "near_dup_auto_discarded": a,
         },
         status="ok", error=None,
     )

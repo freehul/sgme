@@ -1,7 +1,7 @@
 // 近似重复隔离区 API（/v1/admin/near-dup/*，2026-11-05 B313）
 //
-// 灰区 = 提炼时判定「像重复但拿不准」的新记忆：不进记忆池、暂存隔离区，
-// 等人工裁决是重复（丢弃）还是独立事实（放行补录）。
+// 灰区 = 提炼时判定「像重复」的新记忆：不进记忆池。
+// 2026-11-08 起 ≥threshold 自动 discarded（行保留可翻案）；pending 仅剩遗留/关闭 auto_discard 的条目。
 //
 // 端点形状以服务端 sgme/server/routes_review.py 为准：
 //   GET  /v1/admin/near-dup/quarantine?status=&limit=&offset=
