@@ -367,6 +367,68 @@ def _vector_block(mem_conn: sqlite3.Connection, cfg: dict) -> dict[str, Any]:
     return {**vec_avail, "connectivity": conn_check}
 
 
+# ---------- 时间锚可信度（D-26 / B323，2026-11-13） ----------
+
+#: occurred_at 与 created_at 相等占比的告警阈值（>= 即告警）
+OCCURRED_EQUAL_RATIO_WARN = 0.5
+#: 样本下限：新库/小库不告警，避免噪音
+OCCURRED_MIN_SAMPLE = 100
+#: 进程级节流窗口（秒）：同一失真状态不随心跳刷屏
+_OCCURRED_ALERT_SUPPRESS_SEC = 3600
+_OCCURRED_ALERT_LAST_PUBLISHED: datetime | None = None
+
+
+def _publish_occurred_anomaly(mem_conn: sqlite3.Connection, report: dict, threshold: float) -> None:
+    """时间锚失真（occurred_at 大比例等于 created_at）→ anomaly_warn。
+
+    背景（B323）：2.0 提示词曾静默丢掉 source_message_ids，落库兜底让 99% 的记忆
+    occurred_at == created_at，时间轴实际按提炼时间排，且**没有任何观测面**。
+    本函数与 publish_dimension_anomaly 同构：节流 + 发布失败仅日志。
+    """
+    global _OCCURRED_ALERT_LAST_PUBLISHED
+    now = datetime.now(timezone.utc)
+    if _OCCURRED_ALERT_LAST_PUBLISHED is not None:
+        if (now - _OCCURRED_ALERT_LAST_PUBLISHED).total_seconds() < _OCCURRED_ALERT_SUPPRESS_SEC:
+            return
+    _OCCURRED_ALERT_LAST_PUBLISHED = now
+    try:
+        from sgme.signal import engine as signal_engine
+        signal_engine.publish(
+            event_type="anomaly_warn",
+            source="occurred_at_fallback",
+            payload={
+                "component": "occurred_reliability",
+                "active_total": report.get("active_total"),
+                "comparable": report.get("comparable"),
+                "equal_to_created": report.get("equal_to_created"),
+                "equal_ratio": report.get("equal_ratio"),
+                "warn_threshold": threshold,
+                "hint": "记忆时间锚大比例等于入库时间：时间轴退化为提炼时间（D-26）。"
+                        "排查：提炼链是否产出 source_message_ids / 块级时间兜底是否生效；"
+                        "核对：GET /v1/health 的 occurred_reliability。",
+            },
+            mem_conn=mem_conn,
+        )
+    except Exception as e:  # noqa: BLE001 —— 信号发布必须健壮，禁止上抛
+        logger.warning("时间锚 anomaly_warn 发布失败（不阻塞）: %s", e)
+
+
+def _occurred_block(mem_conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict:
+    """health 的时间锚可信度块（数据来自 stats_dao，data 层唯一出口）。"""
+    report = stats_dao.occurred_reliability(mem_conn)
+    threshold = float((cfg.get("health") or {}).get("occurred_equal_ratio_warn", OCCURRED_EQUAL_RATIO_WARN))
+    ratio = report.get("equal_ratio")
+    report["warn_threshold"] = threshold
+    report["degraded"] = bool(
+        report["comparable"] >= OCCURRED_MIN_SAMPLE
+        and ratio is not None
+        and ratio >= threshold
+    )
+    if report["degraded"]:
+        _publish_occurred_anomaly(mem_conn, report, threshold)
+    return report
+
+
 def health(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -421,6 +483,8 @@ def health(
         "llm": heartbeat["llm"],
         # —— ST-22②：向量可用性（引擎 + 数据规模；永不抛异常）——
         "vector": _vector_block(mem_conn, cfg),
+        # —— B323：时间锚可信度（只增不改既有字段）——
+        "occurred_reliability": _occurred_block(mem_conn, cfg),
         # —— T-53：模型 Key 缺失引导（免费托底新用户；只增不改既有字段）——
         "model_config": {
             "missing_keys": detect_missing_model_keys(cfg),
@@ -486,6 +550,8 @@ def http_payload(data: dict[str, Any]) -> dict[str, Any]:
         "onboarding": data.get("onboarding"),
         # EP-11：凭据模块主密钥状态（只增不改，追加末尾）
         "credentials_ok": data.get("credentials_ok"),
+        # B323：时间锚可信度（只增不改；MCP 契约冻结不动）
+        "occurred_reliability": data.get("occurred_reliability"),
     }
 
 

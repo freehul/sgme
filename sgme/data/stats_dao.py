@@ -264,3 +264,33 @@ def count_vector_rows(conn: sqlite3.Connection) -> dict[str, int]:
         except Exception:
             counts[table] = 0
     return counts
+
+
+def occurred_reliability(conn: sqlite3.Connection) -> dict:
+    """时间锚可信度：active 记忆里 occurred_at 与 created_at 完全相等的占比。
+
+    口径（D-26 / B323，2026-11-13）：落库兜底 o_at = occurred_at or created_at 会让
+    映射失败的新记忆看起来「有值但等于入库时间」。本指标用于发现「时间轴退化为提炼
+    时间」这类静默语义失真——正常应远低于 1.0；接近 1.0 说明提示词/映射链断了。
+
+    Returns:
+        {"active_total", "comparable", "equal_to_created", "equal_ratio"}；
+        comparable = 两列均非空的行数；无样本时 equal_ratio 为 None。
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "       SUM(CASE WHEN occurred_at = created_at THEN 1 ELSE 0 END) AS equal_cnt, "
+        "       SUM(CASE WHEN occurred_at IS NOT NULL AND created_at IS NOT NULL "
+        "                THEN 1 ELSE 0 END) AS comparable "
+        "FROM memories WHERE status = ?",
+        ("active",),
+    ).fetchone()
+    total = int(row["total"] or 0)
+    equal = int(row["equal_cnt"] or 0)
+    comparable = int(row["comparable"] or 0)
+    return {
+        "active_total": total,
+        "comparable": comparable,
+        "equal_to_created": equal,
+        "equal_ratio": round(equal / comparable, 4) if comparable else None,
+    }
