@@ -789,6 +789,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_dim_priority(conn)
     _migrate_2_0_tables(conn)
     _migrate_memory_pages_table(conn)
+    _migrate_routing_inbox_table(conn)
     _migrate_role_life_table(conn)
     _migrate_quarantine_discard_reason(conn)
     _migrate_memory_cards_table(conn)
@@ -2061,4 +2062,40 @@ CREATE INDEX IF NOT EXISTS idx_mpage_mem ON memory_pages(memory_id);
 def _migrate_memory_pages_table(conn: sqlite3.Connection) -> None:
     """建/补 memory_pages（幂等）。多语句必须用 executescript。"""
     conn.executescript(MEMORY_PAGES_DDL)
+    conn.commit()
+
+
+# ---------- 三平面分流兜底（v0.3 S1，2026-11-14） ----------
+# routing_inbox：提炼时「低置信 / 归类不了」的单元停靠站。
+# 设计铁律（v0.3 §3.4 / §4）：分流先落库、成功后才允许 memory 不写；
+# 任何不确定都先进这里，**绝不静默丢弃**——丢一条就再也找不回来。
+# 与 skill_candidates 同款「独立 DDL + 迁移函数」模式（不进 MEMORY_DDL）：
+# 老库 schema_versions 已登记 memory_v4，塞进 MEMORY_DDL 不会重跑。
+ROUTING_INBOX_DDL = """
+CREATE TABLE IF NOT EXISTS routing_inbox (
+  inbox_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_ref    TEXT NOT NULL,
+  source_type   TEXT NOT NULL,
+  content       TEXT NOT NULL,
+  route_guess   TEXT,
+  confidence    REAL NOT NULL DEFAULT 0.0,
+  reason        TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','routed','discarded')),
+  routed_to     TEXT,
+  created_at    TEXT NOT NULL,
+  resolved_at   TEXT,
+  resolved_by   TEXT);
+CREATE INDEX IF NOT EXISTS idx_routing_inbox_status
+  ON routing_inbox(status, created_at);
+"""
+
+
+def _migrate_routing_inbox_table(conn: sqlite3.Connection) -> None:
+    """老库迁移：建 routing_inbox 表（v0.3 S1，2026-11-14）。幂等。
+
+    与 _migrate_demands_table 同模式：独立成 ROUTING_INBOX_DDL + 本迁移函数，
+    老库靠这里补表（CREATE TABLE IF NOT EXISTS 重复调用无副作用）。
+    """
+    conn.executescript(ROUTING_INBOX_DDL)
     conn.commit()

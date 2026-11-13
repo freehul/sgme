@@ -367,6 +367,16 @@ DEFAULT_SEARCH_CONFIG = {
     "valid_period": {
         "enabled": True,
     },
+    # 三平面分流·检索侧过滤（v0.3 S3，2026-11-14）：`/v1/search` 只返回
+    # route IS NULL OR route='memory' 的记忆——技能/知识候选不该污染记忆检索。
+    #
+    # ⚠️ **灰度默认关，且不能急着开**：生产存量里 route=skill_candidate 有 7,220 条，
+    # 它们的知识还没迁进 skills/wiki（S7 存量治理才做）。先开过滤 = 这批内容在检索里
+    # 暂时失联（问「LM Studio 怎么配」会查不到）。正确顺序是 S7 迁完再开。
+    # 注入侧不受此开关影响——画像注入早在 D-67 就按 routes=('memory',) 过滤了。
+    "routing": {
+        "enabled": False,
+    },
 }
 
 # 数据目录（T-23：未设 SGME_HOME = 项目根，零回归；设置后跟随 $SGME_HOME）
@@ -570,6 +580,18 @@ DEFAULT_L3_ADJUDICATE_CONFIG = {
 #    代价是高频写入场景每轮都触发一次提炼）。改这个默认值前请先确认生产策略是否需要同步；
 #    反之改生产值时也需回看此处注释。
 DEFAULT_REFINE_CONFIG = {
+    # 提炼总闸（2026-11-14）：True = 全局暂停提炼。与 refine_on_append / batch_scan
+    # 这类「入口开关」不同，本开关在**执行层**（refine_file / async_refine_worker /
+    # batch_scan / append 联动）统一生效——已启动的批次也会在下一个文件前停下。
+    # 语义沿用首链熔断的 deferred：文件保持 status=new、不计 fail_count、不调 LLM。
+    # 背景（交接 2026-11-13）：此前唯一停法是重启 Gateway，而 dsh 适配器每 turn
+    # 结束无条件 trigger-async（limit=50）——重启三秒后又被点着，等于停不住。
+    "paused": False,
+    # 三平面分流分发（v0.3 S2，2026-11-14）：落库后把 route=skill_candidate 的记忆
+    # 自动转进技能候选池（skills.db），免去人工触发。**灰度默认关**——先观察，
+    # 确认候选池不被灌爆再开。开关放 refine 段而非新开 routing 段，是因为它本就是
+    # 提炼落库的一环，config_update(section="refine") 即可热切。
+    "routing_enabled": False,
     "refine_on_append": False,
     "batch_scan": {
         "enabled": True,
@@ -1326,6 +1348,7 @@ def _merge_search_config(user_cfg: dict | None) -> dict:
         "vector": dict(DEFAULT_SEARCH_CONFIG["vector"]),
         "rrf": dict(DEFAULT_SEARCH_CONFIG["rrf"]),
         "graph": dict(DEFAULT_SEARCH_CONFIG["graph"]),
+        "routing": dict(DEFAULT_SEARCH_CONFIG["routing"]),
     }
     if not isinstance(user_cfg, dict):
         user_cfg = {}
@@ -1335,6 +1358,8 @@ def _merge_search_config(user_cfg: dict | None) -> dict:
         base["rrf"].update(user_cfg["rrf"])
     if isinstance(user_cfg.get("graph"), dict):
         base["graph"].update(user_cfg["graph"])
+    if isinstance(user_cfg.get("routing"), dict):
+        base["routing"].update(user_cfg["routing"])
     # embedding 段兜底（providers.yaml）：search.vector.provider 引用优先，
     # 否则缺连接字段时取默认（volc-plan）补
     if not base["vector"].get("base_url") or not base["vector"].get("api_key_env"):
@@ -1488,6 +1513,10 @@ def _merge_refine_config(user_cfg: dict | None) -> dict:
     base = dict(DEFAULT_REFINE_CONFIG)
     if not isinstance(user_cfg, dict):
         return base
+    if isinstance(user_cfg.get("paused"), bool):
+        base["paused"] = user_cfg["paused"]
+    if isinstance(user_cfg.get("routing_enabled"), bool):
+        base["routing_enabled"] = user_cfg["routing_enabled"]
     if isinstance(user_cfg.get("refine_on_append"), bool):
         base["refine_on_append"] = user_cfg["refine_on_append"]
     bs = user_cfg.get("batch_scan")
@@ -1849,6 +1878,8 @@ SECTION_KEYS: dict[str, set[str]] = {
     "l3": {"rules"},
     "scene_aggregate": {"enabled", "max_scenes", "warn_thresholds"},
     "refine": {
+        # 2026-11-14：提炼总闸（执行层生效，含运行中批次）+ 三平面分流分发
+        "paused", "routing_enabled",
         "refine_on_append", "batch_scan",
         # 2026-11-06：llm_override 此前不在白名单 → 接口改提炼模型被静默丢弃
         # （agnes 把 max_tokens 上限降到 4096 后，生产改不回来、整条链全 400）。
@@ -1863,7 +1894,7 @@ SECTION_KEYS: dict[str, set[str]] = {
         "chunk_replay_enabled", "chunk_replay_max_failures", "chunk_replay_max_attempts",
         "append_debounce_s", "append_min_new_messages",
     },
-    "search": {"vector", "rrf"},
+    "search": {"vector", "rrf", "graph", "routing"},
     "backup": {"dir", "schedule", "raw_cold_days", "remote_dir"},
     "dream": {"enabled", "schedule", "max_files", "ttl_mark", "archive_days", "report_dir", "purge_expired"},
     "scene_gc": {"enabled", "merge_threshold", "min_threshold", "trigger_at", "max_merges"},

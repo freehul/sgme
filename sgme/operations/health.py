@@ -429,6 +429,29 @@ def _occurred_block(mem_conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict:
     return report
 
 
+#: person 占比告警线（v0.3 §7；D2 拍板：只告警不阻断）
+PERSON_RATIO_WARN = 0.50
+
+
+def _composition_block(mem_conn: sqlite3.Connection) -> dict[str, Any]:
+    """记忆组成块（v0.3 S5）：取 stats_dao 快照 + 是否触发告警。
+
+    永不抛：统计是观测项，读不到就让 health 照常返回（与 _vector_block 同纪律）。
+    """
+    try:
+        from sgme.data import stats_dao
+
+        comp = stats_dao.memory_composition(mem_conn)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("记忆组成统计失败（不影响 health）: %s", e)
+        return {"available": False, "error": str(e)}
+    ratio = float(comp.get("person_ratio") or 0.0)
+    comp["available"] = True
+    comp["person_ratio_warn_threshold"] = PERSON_RATIO_WARN
+    comp["person_ratio_low"] = bool(comp.get("total") and ratio < PERSON_RATIO_WARN)
+    return comp
+
+
 def health(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -521,7 +544,12 @@ def health(
             "heartbeat_ok": heartbeat["heartbeat_ok"],
             # T-144：空库首启 → "never_refined"；正常 → "ok"；停摆 → "stalled"
             "state": raw_refinement.get("state"),
+            # 2026-11-14：提炼总闸（只增不改——追加末尾，不动既有键序）
+            "paused": bool((cfg.get("refine") or {}).get("paused", False)),
         },
+        # —— v0.3 S5（2026-11-14）：记忆组成指标（只增不改，追加末尾）——
+        # D2 拍板：不做硬门禁，只做观测；person/tech 是「记忆减重」的量化口径。
+        "memory_composition": _composition_block(mem_conn),
         # —— MCP 历史形态：engine 原始透传，勿加工 ——
         "refinement_raw": raw_refinement,
     }
@@ -539,6 +567,8 @@ def http_payload(data: dict[str, Any]) -> dict[str, Any]:
         "version": data["version"],
         "llm": data["llm"],
         "refinement": data["refinement"],
+        # v0.3 S5（2026-11-14）：记忆组成指标（只增不改，追加在既有字段之后）
+        "memory_composition": data.get("memory_composition"),
         "vector": data["vector"],
         "model_config": data["model_config"],
         # ST-34：自动更新检测（只增不改既有字段）
@@ -565,4 +595,6 @@ def mcp_payload(data: dict[str, Any]) -> dict[str, Any]:
         "version": data["version"],
         "llm": data["llm"],
         "refinement": data["refinement_raw"],
+        # v0.3 S5（2026-11-14）：MCP 形态同样给组成指标（只增不改既有字段）
+        "memory_composition": data.get("memory_composition"),
     }

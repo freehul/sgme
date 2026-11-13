@@ -173,6 +173,23 @@ def _refine_section(cfg: dict) -> dict:
     return section if isinstance(section, dict) else {}
 
 
+def is_paused(cfg: dict) -> bool:
+    """refine.paused（提炼总闸；2026-11-14 新增）。
+
+    与 refine_on_append / batch_scan.enabled 的区别：那两个是**入口开关**
+    （不再启动新的触发），本开关是**执行开关**——已经在跑的批次、每 turn 的
+    trigger-async、批扫、append 联动，全都在下一个文件前停下。
+
+    背景（交接 2026-11-13）：此前唯一停法是重启 Gateway，而 dsh 适配器每 turn
+    结束无条件 POST /v1/admin/refine/trigger-async（limit=50），重启三秒后队列
+    又被点着，等于停不住。
+
+    语义：暂停期返回 deferred 结果（文件保持 status=new、不计 fail_count、
+    不调 LLM），恢复后自动接着跑，无需重新排队。
+    """
+    return bool(_refine_section(cfg).get("paused", False))
+
+
 def max_file_attempts(cfg: dict) -> int:
     """refine.max_file_attempts（失败熔断阈值；默认 5，非法 / <1 回退默认）。"""
     default = int(config.DEFAULT_REFINE_CONFIG.get("max_file_attempts", 5))
@@ -380,6 +397,18 @@ def refine_file(
     if rf is None:
         result.status = "error"
         result.error = f"raw_files 表无记录: {file_id}"
+        return result
+
+    # 提炼总闸（2026-11-14）：refine.paused=true 时直接延后——不读体积、不解析、
+    # 不调 LLM，文件保持 status=new、不计 fail_count；解除后自动接着跑。
+    # 放在 E4 体积闸之前是刻意的：暂停期不该改动任何文件状态（含标 error）。
+    if is_paused(cfg):
+        result.status = "deferred"
+        result.deferred = True
+        result.error = "refine_paused"
+        logger.info(
+            "提炼已暂停（refine.paused=true），跳过（file=%s，保持 status=new）", file_id,
+        )
         return result
 
     # E4 体积闸（2026-11-05，B312 待办 2）：超限文件不进解析 / LLM——历史上

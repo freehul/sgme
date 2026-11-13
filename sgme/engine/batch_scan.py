@@ -145,6 +145,16 @@ def _run_batch_scan_locked(
     """提炼锁已持有的扫描体（run_batch_scan 内部使用，勿直接调用）。"""
     # 首链熔断（2026-11-05）：熔断期内整轮暂停——此时任何提炼都会降级到付费
     # 备用模型（生产实测一天 975 次）；文件保持 status=new，冷却后自动重试。
+    # 提炼总闸（2026-11-14）：暂停期整轮跳过——连队列都不扫，文件保持 status=new。
+    if refine_mod.is_paused(cfg):
+        logger.info("Batch 兜底扫描跳过：提炼已暂停（refine.paused=true）")
+        return {
+            "status": "paused",
+            "message": "提炼已暂停（refine.paused=true），跳过本轮",
+            "scanned": 0, "refined": 0, "failed": 0, "memory_count": 0,
+            "errors": [],
+        }
+
     from sgme.llm import chain as llm_chain
 
     if llm_chain.is_primary_open("refinement"):

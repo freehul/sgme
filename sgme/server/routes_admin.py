@@ -439,6 +439,142 @@ def refine_trigger_async(
 
 
 
+# ---------- 三平面分流兜底队列 inbox（v0.3 S1，2026-11-14） ----------
+#
+# 定位：提炼产出「低置信 / 归类不了」时的停靠站。设计铁律是**先存后丢**——
+# 分流先落库、成功后才允许 memory 不写；任何不确定都先进这里，绝不静默丢弃。
+# 端点只做人工裁决（routed 指定落点 / discarded 明确不要），收尾必须留 resolved_by。
+
+@router.get("/v1/admin/inbox")
+def list_inbox(
+    request: Request,
+    status: str = "pending",
+    limit: int = 50,
+    offset: int = 0,
+    _: str = Depends(require_admin_key),
+):
+    """列待归类单元（默认只看 pending）。"""
+    from sgme.operations.routing_inbox import http_payload as inbox_payload
+    from sgme.operations.routing_inbox import list_inbox as list_inbox_operation
+
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    data = run_operation(
+        list_inbox_operation, mem_conn,
+        status=status, limit=limit, offset=offset,
+    )
+    return inbox_payload(data)
+
+
+@router.post("/v1/admin/inbox/{inbox_id}/route")
+def route_inbox_item(
+    inbox_id: int,
+    payload: dict,
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """人工指定落点（payload: {"routed_to": "memory_id/page_id/技能名", "by": "user"}）。"""
+    from sgme.operations.routing_inbox import http_payload as inbox_payload
+    from sgme.operations.routing_inbox import resolve_inbox as resolve_inbox_operation
+
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    data = run_operation(
+        resolve_inbox_operation, mem_conn, inbox_id,
+        action="routed",
+        routed_to=(payload or {}).get("routed_to"),
+        resolved_by=(payload or {}).get("by") or "user",
+    )
+    return inbox_payload(data)
+
+
+@router.post("/v1/admin/inbox/{inbox_id}/discard")
+def discard_inbox_item(
+    inbox_id: int,
+    request: Request,
+    payload: dict | None = None,
+    _: str = Depends(require_admin_key),
+):
+    """明确不要（软收尾，行保留可溯源）。"""
+    from sgme.operations.routing_inbox import http_payload as inbox_payload
+    from sgme.operations.routing_inbox import resolve_inbox as resolve_inbox_operation
+
+    mem_conn: sqlite3.Connection = request.app.state.mem_conn
+    data = run_operation(
+        resolve_inbox_operation, mem_conn, inbox_id,
+        action="discarded",
+        resolved_by=(payload or {}).get("by") or "user",
+    )
+    return inbox_payload(data)
+
+
+# ---------- 提炼总闸（2026-11-14）：POST pause / resume + GET 状态 ----------
+#
+# 背景（交接 2026-11-13 会话收尾）：此前**没有**停提炼的办法。refine_on_append 与
+# batch_scan.enabled 只挡「自动触发」，挡不住 POST /v1/admin/refine/trigger-async
+# ——dsh 适配器每 turn 结束无条件调一次（limit=50），所以重启 Gateway 只能停一下，
+# 用户说一句话（turn 结束）队列又被点着，实测重启后 3 秒恢复跑批。
+#
+# 本组端点写的是 refine.paused，与上面两个入口开关的区别是**执行层**生效：
+# refine_file / pipeline.async_refine_worker（含循环内复查）/ batch_scan /
+# append 联动 四处都检查，**正在跑的批次也会在下一个文件前停下**。
+# 语义沿用首链熔断的 deferred：文件保持 status=new、不计 fail_count、不调 LLM，
+# 解除后自动接着跑，无需重新排队（不丢、不重复计费）。
+#
+# 配置写入复用 operations.config.update_config（配置唯一读写方在 sgme.config），
+# 因此 paused 同时出现在 GET /v1/admin/config/refine 里，也支持直接
+# PUT /v1/admin/config {"section":"refine","values":{"paused":true}}。
+
+
+@router.post("/v1/admin/refine/pause", operation_id="refine_pause")
+def refine_pause(request: Request, _: str = Depends(require_admin_key)):
+    """暂停全部提炼：执行层生效，正在跑的批次在下一个文件前停下。"""
+    from sgme.operations.config import update_config as config_update_operation
+
+    return run_operation(
+        config_update_operation,
+        request.app.state.cfg,
+        section="refine",
+        values={"paused": True},
+    )
+
+
+@router.post("/v1/admin/refine/resume", operation_id="refine_resume")
+def refine_resume(request: Request, _: str = Depends(require_admin_key)):
+    """解除提炼暂停：队列里的 status=new 文件会在下次触发时照常提炼。"""
+    from sgme.operations.config import update_config as config_update_operation
+
+    return run_operation(
+        config_update_operation,
+        request.app.state.cfg,
+        section="refine",
+        values={"paused": False},
+    )
+
+
+@router.get("/v1/admin/refine/pause", operation_id="refine_pause_status")
+def refine_pause_status(request: Request, _: str = Depends(require_admin_key)):
+    """查询提炼总闸与队列水位（暂停/恢复前后核对用）。
+
+    queue_depth 是当前 status='new' 的文件数——暂停期它只增不减（新会话照常
+    落 L0），恢复后按这个数判断还需要跑多久。
+    """
+    from sgme.data import session_dao as session_dao_mod
+
+    cfg = request.app.state.cfg
+    session_conn: sqlite3.Connection = request.app.state.session_conn
+    refine_cfg = cfg.get("refine") or {}
+    batch_scan = refine_cfg.get("batch_scan") or {}
+    try:
+        queue_depth = session_dao_mod.count_by_status(session_conn, "new")
+    except Exception:  # noqa: BLE001——水位是观测项，读不到不该让端点失败
+        queue_depth = None
+    return {
+        "paused": bool(refine_cfg.get("paused", False)),
+        "queue_depth": queue_depth,
+        "refine_on_append": bool(refine_cfg.get("refine_on_append", False)),
+        "batch_scan_enabled": bool(batch_scan.get("enabled", False)),
+    }
+
+
 # ---------- 场景状态写端点：已下线（9.6 / D-53，2026-11-05） ----------
 #
 # POST /v1/admin/scenes/{scene_id}/status 与 POST /v1/admin/scene-gc/trigger

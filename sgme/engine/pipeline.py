@@ -189,6 +189,7 @@ def persist_memories(
         # L1.5 落库完成后：L2 场景聚合 + embedding + 信号（记忆已带 memory_id）
         refine_mod.finalize_refinement(refine_result, mem_conn, cfg)
         _evaluate_cost_alert(mem_conn, cfg)
+        _dispatch_after_persist_safe(refine_result, mem_conn, cfg)
         return stats
     except Exception as e:
         # L1.5 异常 → 降级直存
@@ -205,7 +206,34 @@ def persist_memories(
         stats["supersession_rejected"] = len(superseded)
         refine_mod.finalize_refinement(refine_result, mem_conn, cfg)
         _evaluate_cost_alert(mem_conn, cfg)
+        _dispatch_after_persist_safe(refine_result, mem_conn, cfg)
         return stats
+
+
+def _dispatch_after_persist_safe(
+    refine_result,
+    mem_conn: sqlite3.Connection,
+    cfg: dict,
+) -> None:
+    """三平面分流分发的安全包装（v0.3 S2，2026-11-14）。
+
+    位置：L1.5 落库完成之后、返回调用方之前。此时记忆已带 memory_id，
+    具备分发前提（skill_candidates 的幂等锚就是 memory_id）。
+
+    旁路铁律：分流是「让记忆更好找」，不是「让记忆存在」——任何异常只记日志，
+    绝不回滚已落库的记忆、绝不打断提炼主流程。
+    """
+    try:
+        from sgme.engine import routing as routing_mod
+
+        routing_mod.dispatch_after_persist(
+            getattr(refine_result, "memories", None) or [],
+            mem_conn,
+            cfg,
+            file_id=getattr(refine_result, "file_id", None),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("三平面分流调用失败（不影响已落库记忆）: %s", e)
 
 
 def _write_unit_edges_safe(
@@ -530,6 +558,11 @@ def async_refine_worker(
     """
     from sgme.data import db as db_mod
 
+    # 提炼总闸（2026-11-14）：暂停期直接返回，不建连接、不扫队列。
+    if refine_mod.is_paused(cfg):
+        logger.info("提炼已暂停（refine.paused=true），本次触发直接忽略")
+        return
+
     # llm_override（2026-11-06）：L1 与 L3 统一用动态链。
     cfg = refine_mod.apply_llm_override(cfg)
     mem_conn: sqlite3.Connection | None = None
@@ -551,11 +584,18 @@ def async_refine_worker(
             new_files = session_dao.list_by_status(session_conn, "new", limit=limit)
             processed = 0
             for rf in new_files:
+                # 提炼总闸（2026-11-14）：每文件前复查——paused 是**执行层**开关，
+                # 运行中的批次也要能当轮停下（不是只在入口拦新触发）。
+                if refine_mod.is_paused(cfg):
+                    logger.warning(
+                        "提炼已暂停（refine.paused），本批中止（已处理 %d 个，剩余保持 new）",
+                        processed)
+                    break
                 try:
                     r = refine_mod.refine_file(rf["file_id"], mem_conn, session_conn, cfg)
                     if getattr(r, "deferred", False):
                         logger.warning(
-                            "async refine 首链熔断中，暂停本批（已处理 %d 个，剩余保持 new）",
+                            "async refine 延后（首链熔断或已暂停），本批中止（已处理 %d 个，剩余保持 new）",
                             processed)
                         break
                     if r.memories:
@@ -757,6 +797,10 @@ def _maybe_refine_on_append(
     import threading
 
     refine_cfg = cfg.get("refine", {}) or {}
+    # 提炼总闸（2026-11-14）：暂停期连线程都不起。
+    if refine_cfg.get("paused", False):
+        logger.info("append 联动跳过：提炼已暂停（refine.paused=true，file=%s）", file_id)
+        return
     if not refine_cfg.get("refine_on_append", False):
         return
 
@@ -796,6 +840,11 @@ def _maybe_refine_on_append(
         t_session: sqlite3.Connection | None = None
         try:
             t_mem, t_session, _ = db_mod.init_databases(data_dir)
+            # 提炼总闸（2026-11-14）：线程已起但配置在期间被暂停 → 直接退出
+            # （cfg 是共享字典，热生效；这里复查一次防竞态）。
+            if refine_mod.is_paused(cfg):
+                logger.info("append 联动提炼退出：提炼已暂停（file=%s）", file_id)
+                return
             # 首链熔断（2026-11-05）：熔断期内跳过联动提炼，避免降级烧付费模型。
             from sgme.llm import chain as llm_chain
             if llm_chain.is_primary_open("refinement"):

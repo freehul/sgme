@@ -645,6 +645,11 @@ def search_memories(
     if _valid_period_enabled(cfg or {}):
         results = _filter_expired(mem_conn, results)
 
+    # v0.3 S3（2026-11-14）：三平面分流·检索侧过滤——技能/知识候选不污染记忆检索
+    # （灰度默认关，见 search.routing.enabled 的存量依赖说明）
+    if _route_filter_enabled(cfg or {}):
+        results = _filter_by_route(mem_conn, results, cfg or {})
+
     # ST-39 T-139：Guardrail 召回后过滤（敏感记忆不返回；默认关=灰度）
     if _guardrail_read_enabled(cfg or {}):
         results = _filter_guardrail(results, cfg or {})
@@ -945,6 +950,45 @@ def _filter_expired(mem_conn: sqlite3.Connection, results: list[dict]) -> list[d
     if not expired:
         return results
     return [r for r in results if r["memory_id"] not in expired]
+
+
+def _route_filter_enabled(cfg: dict | None) -> bool:
+    """search.routing.enabled（三平面分流·检索侧过滤，v0.3 S3）。
+
+    ⚠️ 灰度默认关：生产存量 route=skill_candidate 有 7,220 条，知识还没迁进
+    skills/wiki 之前开过滤 = 这批内容在检索里暂时失联（S7 存量治理后再开）。
+    """
+    routing = ((cfg or {}).get("search") or {}).get("routing") or {}
+    return bool(routing.get("enabled", False))
+
+
+def _filter_by_route(
+    mem_conn: sqlite3.Connection,
+    results: list[dict],
+    cfg: dict | None = None,
+) -> list[dict]:
+    """v0.3 S3：召回后只保留 `route IS NULL OR route='memory'` 的记忆。
+
+    为什么放在融合后统一过滤（而不是改各处 SQL）：召回有四条路（BM25 / 向量 /
+    图邻居 / LIKE 兜底），逐条改 SQL 必有漏网；此处一处过滤覆盖全部，
+    与 _filter_expired / _filter_guardrail 同款站位。
+
+    NULL 按 memory 对待（1.x 存量没有 route 标记，不能因为缺标记就消失）。
+    查不到的 memory_id 一并剔除——正常情况下不会发生（id 都来自 memories 表）。
+    """
+    if not results:
+        return results
+    ids = [r["memory_id"] for r in results]
+    ph = ",".join("?" * len(ids))
+    keep = {
+        r[0]
+        for r in mem_conn.execute(
+            f"SELECT memory_id FROM memories WHERE memory_id IN ({ph}) "
+            "AND COALESCE(route, 'memory') = 'memory'",
+            (*ids,),
+        )
+    }
+    return [r for r in results if r["memory_id"] in keep]
 
 
 def _filter_by_dimensions(
