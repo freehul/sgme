@@ -61,15 +61,15 @@ WorkBuddy 本机会话（`~/.workbuddy/workbuddy.db` + `~/.workbuddy/projects/<c
 | L0 `metadata` 字段 | 类型 | 来源（workbuddy.db `sessions` 列） | 语义 |
 |---|---|---|---|
 | `origin` | string | 固定 `"workbuddy"` | 数据来源标识，便于跨适配器区分 |
-| `playground` | bool | `is_playground != 0` | 试验场会话：照常落 L0/可溯源，**不进记忆池** |
-| `background_automation` | bool | `is_background_automation != 0` | 后台自动化/巡检会话：同上，**不进记忆池** |
+| `playground` | bool | `is_playground != 0` | 试验场会话：照常落 L0 并**正常提炼**，仅 metadata 打标 |
+| `background_automation` | bool | `is_background_automation != 0` | 后台自动化/巡检会话：落 L0 但不进记忆池 |
 
 入库与过滤规则：
 
 1. **跳过不导入**：`deleted_at` 非空（用户已删）的会话不落盘；其余全部导入。
 2. **全量导入**：`is_playground` / `is_background_automation` 为真的会话照常生成 L0 文件，`metadata` 两键显式写 `true/false`（缺省即 `false`，但建议显式写以简化下游判断）。
-3. **提炼侧过滤**（服务端 `sgme/engine/refine.py`）：L0 `metadata.playground` 或 `metadata.background_automation` 为真 → **不调 LLM、不产记忆**，游标与内容哈希照常推进（`RefineResult.skipped_reason=metadata_playground|metadata_background_automation`）。原件永久保留，管理员仍可按 `file_id` 溯源。
-4. 检索与画像注入只消费记忆池，因此巡检类内容不会污染 `search` / `inject` 结果。
+3. **提炼侧过滤**（服务端 `sgme/engine/refine.py`）：仅 `metadata.background_automation` 为真 → **不调 LLM、不产记忆**，游标与内容哈希照常推进（`RefineResult.skipped_reason=metadata_background_automation`）。原件永久保留，管理员仍可按 `file_id` 溯源。<br>⚠️ `playground` **不跳过提炼**（2026-11-13 返工 1：实测 18/35 场 `is_playground=1` 是主要工作会话，跳过会静默丢知识）；`metadata_playground` 取值已废弃。
+4. 检索与画像注入只消费记忆池，因此后台自动化内容不会污染 `search` / `inject` 结果。
 
 ## 目录
 

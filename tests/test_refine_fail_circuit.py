@@ -179,23 +179,13 @@ def test_drop_batch_publishes_anomaly_warn(raw_dir, mem_conn, session_conn, cfg,
 
 
 # ======================================================================
-# 1c. R4（2026-11-13）：playground / background_automation 打标 → 提炼侧跳过
+# 1c. R4（2026-11-13，返工 1 收窄）：仅 background_automation 跳过提炼
 # ======================================================================
 
-@pytest.mark.parametrize(
-    "meta,reason",
-    [
-        ({"origin": "workbuddy", "playground": True, "background_automation": False},
-         "metadata_playground"),
-        ({"origin": "workbuddy", "playground": False, "background_automation": True},
-         "metadata_background_automation"),
-    ],
-)
-def test_metadata_flags_skip_memory_pool(raw_dir, mem_conn, session_conn, cfg, monkeypatch, meta, reason):
-    """D1：巡检/后台自动化会话全量入库，但提炼侧不产记忆（不调 LLM）。"""
-    fid = f"f-meta-{reason}"
+def _seed_meta_file(raw_dir, session_conn, file_id, meta):
+    """造一份带 metadata 的 L0 + raw_files 行（status=new）。"""
     store.write_new_file(
-        file_id=fid, session_key=f"sess_{reason}",
+        file_id=file_id, session_key=f"sess_{file_id}",
         started_at="2026-11-05T10:00:00Z", agent_id="workbuddy",
         first_messages=[
             {"timestamp": "2026-11-05T10:00:00Z", "role": "user", "content": "巡检：检查服务状态"},
@@ -204,22 +194,80 @@ def test_metadata_flags_skip_memory_pool(raw_dir, mem_conn, session_conn, cfg, m
         metadata=meta,
     )
     session_dao.insert_raw_file(
-        session_conn, file_id=fid, path=store.relative_path(fid),
-        session_key=f"sess_{reason}", started_at="2026-11-05T10:00:00Z",
-        agent_id="workbuddy", status="new", size=store.file_size(fid),
+        session_conn, file_id=file_id, path=store.relative_path(file_id),
+        session_key=f"sess_{file_id}", started_at="2026-11-05T10:00:00Z",
+        agent_id="workbuddy", status="new", size=store.file_size(file_id),
     )
+    return file_id
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {"origin": "workbuddy", "playground": False, "background_automation": True},
+        # background 优先：即使 playground 同时为真，也按后台自动化跳过
+        {"origin": "workbuddy", "playground": True, "background_automation": True},
+    ],
+)
+def test_background_automation_skips_memory_pool(
+    raw_dir, mem_conn, session_conn, cfg, monkeypatch, meta
+):
+    """D1：后台自动化会话全量入库，但提炼侧不产记忆（不调 LLM）。"""
+    fid = _seed_meta_file(raw_dir, session_conn, f"f-meta-bg-{int(meta['playground'])}", meta)
     monkeypatch.setattr(
         refine_mod.l2_extraction, "extract_memories",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("打标会话不应调用 LLM")),
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("后台自动化会话不应调用 LLM")),
     )
 
     result = refine_mod.refine_file(fid, mem_conn, session_conn, cfg)
     assert result.status == "refined"
     assert result.memories == []
-    assert result.skipped_reason == reason
+    assert result.skipped_reason == "metadata_background_automation"
     assert result.new_last_refined_seq == 2      # 游标推进，避免重复扫描
     assert result.content_hash                  # 哈希同步，避免下次误判「内容变化」
     assert mem_conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
+def test_playground_metadata_does_not_skip_refine(
+    raw_dir, mem_conn, session_conn, cfg, monkeypatch
+):
+    """返工 1：playground=1 只打标，必须照常提炼。
+
+    实测 18/35 场 `is_playground=1` 是主要工作会话（「分析抖音视频」等），
+    跳过等于静默丢知识 —— 这里断言 LLM 真被调用且产出记忆。
+    """
+    fid = _seed_meta_file(
+        raw_dir, session_conn, "f-meta-pg",
+        {"origin": "workbuddy", "playground": True, "background_automation": False},
+    )
+    calls: list[int] = []
+    raw_memory = {
+        "content": "用户要求删除操作一律走回收站",
+        "dimensions": ["preferences"],
+        "memory_type": "persona",
+        "priority": 80,
+        "time_velocity": "static",
+        "source_message_ids": [],
+        "occurred_at": None,
+        "supersedes": [],
+        "facts": [],
+    }
+
+    def fake_extract(*args, **kwargs):
+        calls.append(1)
+        return (
+            [raw_memory], "fake-provider",
+            {"stage": "l1_extraction", "version": "v013", "variant": None},
+        )
+
+    monkeypatch.setattr(refine_mod.l2_extraction, "extract_memories", fake_extract)
+
+    result = refine_mod.refine_file(fid, mem_conn, session_conn, cfg)
+    assert calls, "playground 会话必须走正常提炼路径（LLM 被调用）"
+    assert result.skipped_reason is None, "playground 不应产生 skipped_reason"
+    assert result.status == "refined", result.error
+    assert result.memories, "playground 会话必须照常产记忆"
+    assert result.memories[0]["content"] == raw_memory["content"]
 
 
 # ======================================================================

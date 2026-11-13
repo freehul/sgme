@@ -115,9 +115,9 @@ class RefineResult:
     # （finish_reason="length"）；**仅计量**，不参与提交闸/重试判定。
     # 明细随逐块 refine_runs.action_counts["l1_truncated_chunks"] 落库。
     truncated_chunks: int = 0
-    # D1（2026-11-13）：按 L0 metadata 跳过提炼的原因（playground /
-    # background_automation）；None = 正常提炼。跳过时游标照常推进（原件保留、
-    # 不重复扫），但**不进记忆池**。
+    # D1（2026-11-13，返工 1 收窄）：按 L0 metadata 跳过提炼的原因——
+    # 仅 background_automation；playground 只打标、照常提炼（该常量已废弃）。
+    # None = 正常提炼。跳过时游标照常推进（原件保留、不重复扫），但**不进记忆池**。
     skipped_reason: str | None = None
 
 
@@ -443,12 +443,15 @@ def refine_file(
                     stored_hash[:8], current_hash[:8], file_id)
         full_refine = True
 
-    # D1（2026-11-13 用户拍板）：巡检类（playground）/ 后台自动化会话
+    # D1（2026-11-13 用户拍板，2026-11-13 返工 1 收窄）：后台自动化会话
     # **全量入库但打标**——L0 原件照常保留，但提炼侧按 metadata 过滤，
     # 不进记忆池（不调 LLM、不产记忆）。游标与哈希照常推进，避免重复扫描。
+    # ⚠️ playground **不跳过**：实测 18/35 场 playground=1 是主要工作会话
+    # （如「分析抖音视频」），跳过等于静默丢知识；该键只打标、照常提炼。
+    # 常量 `metadata_playground` 已废弃，仅为兼容旧库/旧测试保留语义。
     meta = (parsed.frontmatter or {}).get("metadata") or {}
-    if isinstance(meta, dict) and (meta.get("playground") or meta.get("background_automation")):
-        reason = "metadata_playground" if meta.get("playground") else "metadata_background_automation"
+    if isinstance(meta, dict) and meta.get("background_automation"):
+        reason = "metadata_background_automation"
         result.new_last_refined_seq = max((m.seq for m in parsed.messages), default=0)
         result.content_hash = current_hash
         result.skipped_reason = reason
