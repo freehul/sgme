@@ -947,6 +947,8 @@ def build_mcp_server():
         dimensions: list[str] | None = None,
         match: str = "any",
         include_sources: bool = True,
+        since: str | None = None,
+        until: str | None = None,
         ctx: Context | None = None,
     ) -> str:
         """混合检索：BM25 + 向量 + RRF，带溯源。
@@ -958,6 +960,8 @@ def build_mcp_server():
         dimensions: 维度标签过滤（可选，如 ["goals", "status"]）。
         match: "any"=命中任一维度 / "all"=全部命中（缺省 any）。
         include_sources: 是否展开溯源 trace（缺省 True）。
+        since / until: memory 层 occurred_at 绝对时间窗（D-26 / T6），
+        ISO8601（如 2026-11-01T00:00:00+08:00）；不支持相对时间。
 
         W06（2026-11-08）：memory 层每条结果带顶层 ``facts``（2.0 取
         ``l2_facts_json.facts`，1.x 回落三元组）与 ``causes``（`{from,to}`）——
@@ -984,6 +988,8 @@ def build_mcp_server():
             dimensions=dimensions,
             match=match,
             include_sources=include_sources,
+            since=since,
+            until=until,
             # T4（2026-11-13）：补注入 wiki/skills 连接——此前只传 mem/session/cfg，
             # 导致 scopes=["wiki_pages"] 恒空（B3），skills 回退内存索引。
             wiki_conn=_app_state.get("wiki_conn"),

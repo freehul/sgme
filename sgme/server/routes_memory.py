@@ -78,6 +78,9 @@ class SearchRequest(BaseModel):
     match: str = "any"
     limit: int = 10
     include_sources: bool = True
+    # D-26 / T6（2026-11-13）：记忆层 occurred_at 绝对时间窗（ISO8601，不做相对时间）
+    since: str | None = None
+    until: str | None = None
 
 
 
@@ -199,6 +202,8 @@ def search_memories(
         match=payload.match,
         limit=payload.limit,
         include_sources=payload.include_sources,
+        since=payload.since,
+        until=payload.until,
         wiki_conn=wiki_conn,
         # T-112：技能层走 skills.db（FTS5 + 持久化向量）；禁用时为 None，操作层回退内存索引
         skills_conn=getattr(request.app.state, "skills_conn", None),

@@ -31,6 +31,9 @@
 - match: 维度匹配语义，缺省 "any"
 - limit: 每层结果上限（HTTP 缺省 10；MCP 缺省 5，入口侧再 ``min(limit, 20)`` 封顶）
 - include_sources: 是否展开溯源 trace（缺省 True）
+- since / until: 记忆层 occurred_at 绝对时间窗（D-26 / T6，2026-11-13；
+  只支持 ISO8601 绝对时间，**不解析**「上周/上个月」等相对表达）。
+  ``occurred_at`` 为 NULL 的记忆在设了任一边界时不返回；非 ISO8601 → 400/error
 
 响应结构（历史契约差异，v0.8 待统一，现在**不得**合并）
 ------------------------------------------------------
@@ -70,6 +73,7 @@ import json
 import logging
 import re
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -394,6 +398,29 @@ def _search_skills_layer(
     return out
 
 
+def _validate_time_bound(name: str, value: Any) -> str | None:
+    """校验 occurred_at 绝对时间边界（D-26 / T6）。
+
+    - ``None`` / 空串 → None（不设边界）
+    - 非字符串或非 ISO8601 → ``InvalidArgs``（D3：不解析相对时间，明确拒绝）
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidArgs(f"{name} 必须为 ISO8601 时间字符串")
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise InvalidArgs(
+            f"{name} 必须为绝对 ISO8601 时间（如 2026-11-01T00:00:00+08:00），"
+            "不支持「上周/上个月」等相对时间"
+        ) from None
+    return raw
+
+
 def search(
     mem_conn: sqlite3.Connection,
     session_conn: sqlite3.Connection,
@@ -405,6 +432,8 @@ def search(
     match: str = "any",
     limit: int = 10,
     include_sources: bool = True,
+    since: str | None = None,
+    until: str | None = None,
     client: httpx.Client | None = None,
     wiki_conn: sqlite3.Connection | None = None,
     skills_conn: sqlite3.Connection | None = None,
@@ -436,6 +465,9 @@ def search(
         match: "any"=命中任一维度 / "all"=全部命中，缺省 any。
         limit: 每层结果上限。
         include_sources: 是否展开溯源 trace。
+        since / until: 记忆层 occurred_at 绝对时间窗（D-26 / T6）。只接受 ISO8601
+            绝对时间；只作用于 memory 层（occurred_at 是记忆的时间锚点），
+            设边界时 occurred_at 为 NULL 的记忆不返回。
         client: 可选 httpx 客户端（向量 embed 注入点；缺省 None = v0.6 行为）。
         wiki_conn: wiki.db 连接（wiki_pages 层用）。None 或该层检索失败 →
             空结果，不影响 memory / scenes 层（T-34：wiki 扩展不可用不拖累整体）。
@@ -462,6 +494,8 @@ def search(
         scopes = DEFAULT_SCOPES
     if not isinstance(scopes, list) or not all(isinstance(s, str) for s in scopes):
         raise InvalidArgs("scopes 必须为字符串列表")
+    since = _validate_time_bound("since", since)
+    until = _validate_time_bound("until", until)
 
     # —— 检索术语别名归一化（ST-19）：旧术语查询 → 标准术语后检索 ——
     # 统一在 operations 层（HTTP/MCP 唯一查询入口）做，data 层保持纯检索；
@@ -482,6 +516,8 @@ def search(
                 cfg=cfg,
                 client=client,
                 agent_id=agent_id,  # T-140：多 Agent scope（默认 None=不过滤）
+                since=since,  # T6 / D-26：occurred_at 绝对时间窗
+                until=until,
             )
             results.extend(memory_layer)
             # T-252：记忆调用统计（双源之一：检索命中）——A2 政策放宽**仅限本表**

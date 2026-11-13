@@ -369,6 +369,8 @@ def recall_routes(
     limit: int = 10,
     cfg: dict | None = None,
     client: httpx.Client | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> tuple[list[dict], list[dict], list[str]]:
     """双路原始召回：BM25（含全部降级链）+ 向量（含全部降级链），**不做 RRF 融合**。
 
@@ -402,16 +404,22 @@ def recall_routes(
 
     try:
         if dimensions:
-            bm25_results = _search_with_dims(mem_conn, fts_query, dimensions, match, limit)
+            bm25_results = _search_with_dims(
+                mem_conn, fts_query, dimensions, match, limit, since, until
+            )
         else:
-            bm25_results = _search_no_dims(mem_conn, fts_query, limit)
+            bm25_results = _search_no_dims(mem_conn, fts_query, limit, since, until)
     except sqlite3.OperationalError:
         # FTS5 不可用 → 降级 LIKE
-        bm25_results = _search_like_fallback(mem_conn, query, dimensions, match, limit)
+        bm25_results = _search_like_fallback(
+            mem_conn, query, dimensions, match, limit, since, until
+        )
 
     # FTS5 无结果（如中文默认 tokenizer 不分词）→ LIKE 兜底
     if not bm25_results:
-        bm25_results = _search_like_fallback(mem_conn, query, dimensions, match, limit)
+        bm25_results = _search_like_fallback(
+            mem_conn, query, dimensions, match, limit, since, until
+        )
 
     # 向量检索（cfg 提供且 enabled 时）
     routes = ["bm25", "label"] if dimensions else ["bm25"]
@@ -576,6 +584,8 @@ def search_memories(
     cfg: dict | None = None,
     client: httpx.Client | None = None,
     agent_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> list[dict]:
     """检索：FTS5 BM25 + 维度标签过滤 + 向量检索 + 图召回（ST-38 T-134）+ RRF 融合 + trace。
 
@@ -584,6 +594,8 @@ def search_memories(
     - cfg 提供 + search.vector.enabled → 叠加向量检索 + RRF 融合
     - 向量不可达 → 自动降级纯 BM25
     - trace: memory_sources 展开 → raw_files.path
+    - since/until（D-26 / T6）：occurred_at 绝对 ISO8601 时间窗过滤，NULL 视为未知排除；
+      BM25/LIKE 在 SQL 内过滤，向量/图候选在融合前补过滤
     - 返回 [{rank, score, source, memory_id, content, dimensions, priority, updated_at, trace, routes}]
 
     实现：双路召回委托 `recall_routes`（纯重构，对外行为不变），
@@ -600,7 +612,11 @@ def search_memories(
         limit=limit,
         cfg=cfg,
         client=client,
+        since=since,
+        until=until,
     )
+    # 向量/图候选不经 BM25 SQL，统一在融合前按 occurred_at 过滤（T6）
+    vec_results = _filter_by_time_range(vec_results, since, until)
 
     # RRF 融合：vec 或 graph 任一非空 ⇔ 进入融合分支（ST-38 T-134 图路并入）
     # - 仅 vec：行为与原实现逐字节等价（graph_results=None）
@@ -998,19 +1014,67 @@ def _clean_en_term(term: str) -> str:
     return t
 
 
-def _search_no_dims(mem_conn: sqlite3.Connection, fts_query: str, limit: int) -> list[dict]:
-    sql = """
+def _time_bounds_clause(
+    alias: str, since: str | None, until: str | None
+) -> tuple[str, list[Any]]:
+    """occurred_at 绝对时间过滤（D-26 / T6，2026-11-13）。
+
+    - 只做绝对 ISO8601 的 ``since`` / ``until``（D3：不做「上周/上个月」相对解析）
+    - ``occurred_at IS NULL``（时间未知）在设了任一边界时排除——不能确认落在区间内
+    - 比较为字符串比较：调用方须与库内 occurred_at 用同一 ISO8601 书写口径
+      （含时区偏移时按字面比较，跨时区查询需自行统一偏移）
+    """
+    if not since and not until:
+        return "", []
+    col = f"{alias}.occurred_at" if alias else "occurred_at"
+    sql = f" AND {col} IS NOT NULL"
+    params: list[Any] = []
+    if since:
+        sql += f" AND {col} >= ?"
+        params.append(since)
+    if until:
+        sql += f" AND {col} <= ?"
+        params.append(until)
+    return sql, params
+
+
+def _filter_by_time_range(rows: list[dict], since: str | None, until: str | None) -> list[dict]:
+    """结果级时间过滤（向量/图路候选不在 BM25 SQL 内，RRF 前补齐）。"""
+    if not since and not until:
+        return rows
+    out: list[dict] = []
+    for r in rows:
+        ts = (r.get("occurred_at") or "").strip()
+        if not ts:
+            continue
+        if since and ts < since:
+            continue
+        if until and ts > until:
+            continue
+        out.append(r)
+    return out
+
+
+def _search_no_dims(
+    mem_conn: sqlite3.Connection,
+    fts_query: str,
+    limit: int,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict]:
+    time_sql, time_params = _time_bounds_clause("m", since, until)
+    sql = f"""
         SELECT m.memory_id, m.content, m.priority, m.updated_at,
                m.occurred_at, m.facts_json,
                bm25(memories_fts) AS score
         FROM memories_fts f
         JOIN memories m ON m.rowid = f.rowid
         WHERE memories_fts MATCH ?
-          AND m.status != 'rejected'
+          AND m.status != 'rejected'{time_sql}
         ORDER BY score ASC
         LIMIT ?
     """
-    cur = mem_conn.execute(sql, (fts_query, limit))
+    cur = mem_conn.execute(sql, (fts_query, *time_params, limit))
     return _rows_to_dicts(cur)
 
 
@@ -1020,9 +1084,12 @@ def _search_with_dims(
     dimensions: list[str],
     match: str,
     limit: int,
+    since: str | None = None,
+    until: str | None = None,
 ) -> list[dict]:
     """FTS5 + 维度标签过滤。"""
     placeholders = ",".join("?" * len(dimensions))
+    time_sql, time_params = _time_bounds_clause("m", since, until)
     base = f"""
         SELECT m.memory_id, m.content, m.priority, m.updated_at,
                m.occurred_at, m.facts_json,
@@ -1032,9 +1099,9 @@ def _search_with_dims(
         JOIN memory_tags t ON t.memory_id = m.memory_id
         WHERE memories_fts MATCH ?
           AND t.dimension_id IN ({placeholders})
-          AND m.status != 'rejected'
+          AND m.status != 'rejected'{time_sql}
     """
-    params: list[Any] = [fts_query, *dimensions]
+    params: list[Any] = [fts_query, *time_params, *dimensions]
     if match == "all":
         base += " GROUP BY m.memory_id HAVING COUNT(DISTINCT t.dimension_id)=?"
         params.append(len(dimensions))
@@ -1052,6 +1119,8 @@ def _search_like_fallback(
     dimensions: list[str] | None,
     match: str,
     limit: int,
+    since: str | None = None,
+    until: str | None = None,
 ) -> list[dict]:
     """FTS5 不可用/空召回时降级 LIKE 检索：按词 OR（中文检索分词 v0.3 §2）。
 
@@ -1083,11 +1152,13 @@ def _search_like_fallback(
     # status（及维度）过滤，rejected 记忆经兜底被重新捞回
     # （触发链：FTS 路过滤 rejected 后空召回 → 兜底守卫「过滤后为空」触发）。
     like_clauses = "(" + " OR ".join(["content LIKE ?"] * len(terms)) + ")"
+    time_sql, time_params = _time_bounds_clause("", since, until)
     sql = (
         "SELECT memory_id, content, priority, updated_at, occurred_at, facts_json, 0.0 AS score "
-        f"FROM memories WHERE {like_clauses} AND status != 'rejected'"
+        f"FROM memories WHERE {like_clauses} AND status != 'rejected'{time_sql}"
     )
     params: list[Any] = [f"%{t}%" for t in terms]
+    params.extend(time_params)
     if dimensions:
         placeholders = ",".join("?" * len(dimensions))
         if match == "all":

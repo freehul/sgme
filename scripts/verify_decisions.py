@@ -131,6 +131,9 @@ FILES = {
     "persona_block": S / "profile" / "persona_block.py",
     "persona_extract": S / "engine" / "persona_extract.py",
     "routes_memory": S / "server" / "routes_memory.py",
+    # T6（2026-11-13）：检索时间过滤断言
+    "search_ops": S / "operations" / "search.py",
+    "search_data": S / "data" / "search" / "__init__.py",
     "migration": S / "migration.py",
     "stage3": ROOT / "scripts" / "migrate_stage3_backfill.py",
     "regression_inject": S / "regression_inject.py",
@@ -327,6 +330,10 @@ def _(self):
         ("老库迁移函数", *has("db", "_migrate_mem_occurred_at")),
         ("因果边落库（causes）", *has("l3_adjudicate", "write_unit_edges")),
         ("归属边落库（belongs_to）", *has("l3_adjudicate", "write_unit_edges")),
+        # T6（2026-11-13）：检索时间过滤首版（D3 拍板只做绝对 ISO8601）
+        ("检索时间过滤参数（operations）", *has("search_ops", "since: str | None = None")),
+        ("occurred_at SQL 过滤（data）", *has("search_data", "_time_bounds_clause", "since")),
+        ("HTTP 入口透传 since/until", *has("routes_memory", "since=payload.since")),
     ]
 
 

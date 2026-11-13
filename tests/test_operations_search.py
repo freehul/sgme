@@ -165,7 +165,8 @@ def mcp(conns, cfg, raw_dir, mock_llm):
 
 # ---------- 工具 ----------
 
-def _insert_memory(mem_conn: sqlite3.Connection, content: str, mid: str | None = None) -> str:
+def _insert_memory(mem_conn: sqlite3.Connection, content: str, mid: str | None = None,
+                   occurred_at: str | None = None) -> str:
     """插入一条测试记忆（tech_stack 维度 + 可选溯源）。"""
     return memory_dao.insert_memory(
         mem_conn, content=content, memory_type="persona",
@@ -173,6 +174,7 @@ def _insert_memory(mem_conn: sqlite3.Connection, content: str, mid: str | None =
         dimension_ids=["tech_stack"],
         memory_id=mid,
         sources=None,
+        occurred_at=occurred_at,
     )
 
 
@@ -594,6 +596,110 @@ def test_search_layered_limit_caps_each_layer(conns, cfg, mock_vector):
     assert by_source.get("wiki_scene", 0) <= 1
     assert by_source.get("wiki_pages", 0) <= 1
     assert len(res.data["results"]) <= 3
+
+
+def test_search_since_until_filters_occurred_at(conns, cfg, mock_vector):
+    """T6 / D-26：since/until 按 occurred_at 绝对时间窗过滤 memory 层。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    _insert_memory(mem_conn, "量子计算 十月", mid="mem-oct",
+                   occurred_at="2026-10-05T10:00:00+08:00")
+    _insert_memory(mem_conn, "量子计算 十一月", mid="mem-nov",
+                   occurred_at="2026-11-05T10:00:00+08:00")
+
+    # Act
+    since_res = search(mem_conn, session_conn, cfg, query="量子计算",
+                       scopes=["memory"], since="2026-11-01T00:00:00+08:00")
+    until_res = search(mem_conn, session_conn, cfg, query="量子计算",
+                       scopes=["memory"], until="2026-10-31T23:59:59+08:00")
+    window_res = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["memory"],
+                        since="2026-10-01T00:00:00+08:00",
+                        until="2026-10-31T23:59:59+08:00")
+
+    # Assert
+    assert [r["memory_id"] for r in since_res.data["results"]] == ["mem-nov"]
+    assert [r["memory_id"] for r in until_res.data["results"]] == ["mem-oct"]
+    assert [r["memory_id"] for r in window_res.data["results"]] == ["mem-oct"]
+
+
+def test_search_time_window_excludes_null_occurred_at(conns, cfg, mock_vector):
+    """occurred_at 为 NULL（时间未知）→ 设了任一边界即排除；不设边界照常返回。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    mid = _insert_memory(mem_conn, "量子计算 时间未知", mid="mem-null")
+    mem_conn.execute("UPDATE memories SET occurred_at=NULL WHERE memory_id=?", (mid,))
+    mem_conn.commit()
+
+    # Act
+    plain = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["memory"])
+    bounded = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["memory"],
+                     since="2026-01-01T00:00:00+08:00")
+
+    # Assert
+    assert [r["memory_id"] for r in plain.data["results"]] == ["mem-null"]
+    assert bounded.data["results"] == []
+
+
+@pytest.mark.parametrize("bad_bound, field", [
+    ("上周", "since"),
+    ("2026/11/01", "until"),
+    ("2026-13-01T00:00:00+08:00", "since"),
+])
+def test_search_invalid_time_bound_raises_invalid_args(conns, cfg, mock_vector,
+                                                       bad_bound, field):
+    """非 ISO8601 / 相对时间 → InvalidArgs（D3：不做相对时间解析）。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    kwargs = {field: bad_bound}
+
+    # Act / Assert
+    with pytest.raises(InvalidArgs) as ei:
+        search(mem_conn, session_conn, cfg, query="量子计算", scopes=["memory"], **kwargs)
+    assert ei.value.error_code == ERR_INVALID_ARGS
+
+
+def test_http_endpoint_time_window(client, conns, mock_vector):
+    """HTTP /v1/search 透传 since/until；非法值 → 400。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    _insert_memory(mem_conn, "量子计算 十月", mid="mem-http-oct",
+                   occurred_at="2026-10-05T10:00:00+08:00")
+    _insert_memory(mem_conn, "量子计算 十一月", mid="mem-http-nov",
+                   occurred_at="2026-11-05T10:00:00+08:00")
+
+    # Act
+    ok = client.post("/v1/search",
+                     json={"query": "量子计算", "scopes": ["memory"],
+                           "since": "2026-11-01T00:00:00+08:00"},
+                     headers=AGENT_HEADERS)
+    bad = client.post("/v1/search",
+                      json={"query": "量子计算", "scopes": ["memory"], "since": "上周"},
+                      headers=AGENT_HEADERS)
+
+    # Assert
+    assert ok.status_code == 200, ok.text
+    assert [r["memory_id"] for r in ok.json()["results"]] == ["mem-http-nov"]
+    assert bad.status_code == 400, bad.text
+
+
+def test_mcp_search_time_window(mcp, conns, mock_vector):
+    """MCP search 支持 since 过滤（T6 入口透传）。"""
+    # Arrange
+    mem_conn, session_conn, _ = conns
+    _insert_memory(mem_conn, "量子计算 十月", mid="mem-mcp-oct",
+                   occurred_at="2026-10-05T10:00:00+08:00")
+    _insert_memory(mem_conn, "量子计算 十一月", mid="mem-mcp-nov",
+                   occurred_at="2026-11-05T10:00:00+08:00")
+
+    # Act
+    text = _call_mcp(mcp, "search", {
+        "query": "量子计算", "scopes": ["memory"],
+        "since": "2026-11-01T00:00:00+08:00",
+    })
+
+    # Assert
+    data = json.loads(text)
+    assert [r["memory_id"] for r in data["results"]] == ["mem-mcp-nov"]
 
 
 def test_http_endpoint_wiki_pages_scope(client, conns, mock_vector):
