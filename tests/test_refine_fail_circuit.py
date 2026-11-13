@@ -179,6 +179,50 @@ def test_drop_batch_publishes_anomaly_warn(raw_dir, mem_conn, session_conn, cfg,
 
 
 # ======================================================================
+# 1c. R4（2026-11-13）：playground / background_automation 打标 → 提炼侧跳过
+# ======================================================================
+
+@pytest.mark.parametrize(
+    "meta,reason",
+    [
+        ({"origin": "workbuddy", "playground": True, "background_automation": False},
+         "metadata_playground"),
+        ({"origin": "workbuddy", "playground": False, "background_automation": True},
+         "metadata_background_automation"),
+    ],
+)
+def test_metadata_flags_skip_memory_pool(raw_dir, mem_conn, session_conn, cfg, monkeypatch, meta, reason):
+    """D1：巡检/后台自动化会话全量入库，但提炼侧不产记忆（不调 LLM）。"""
+    fid = f"f-meta-{reason}"
+    store.write_new_file(
+        file_id=fid, session_key=f"sess_{reason}",
+        started_at="2026-11-05T10:00:00Z", agent_id="workbuddy",
+        first_messages=[
+            {"timestamp": "2026-11-05T10:00:00Z", "role": "user", "content": "巡检：检查服务状态"},
+            {"timestamp": "2026-11-05T10:01:00Z", "role": "assistant", "content": "一切正常"},
+        ],
+        metadata=meta,
+    )
+    session_dao.insert_raw_file(
+        session_conn, file_id=fid, path=store.relative_path(fid),
+        session_key=f"sess_{reason}", started_at="2026-11-05T10:00:00Z",
+        agent_id="workbuddy", status="new", size=store.file_size(fid),
+    )
+    monkeypatch.setattr(
+        refine_mod.l2_extraction, "extract_memories",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("打标会话不应调用 LLM")),
+    )
+
+    result = refine_mod.refine_file(fid, mem_conn, session_conn, cfg)
+    assert result.status == "refined"
+    assert result.memories == []
+    assert result.skipped_reason == reason
+    assert result.new_last_refined_seq == 2      # 游标推进，避免重复扫描
+    assert result.content_hash                  # 哈希同步，避免下次误判「内容变化」
+    assert mem_conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
+
+
+# ======================================================================
 # 2. 成功路径清零
 # ======================================================================
 

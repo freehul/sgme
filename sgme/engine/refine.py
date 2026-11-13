@@ -115,6 +115,10 @@ class RefineResult:
     # （finish_reason="length"）；**仅计量**，不参与提交闸/重试判定。
     # 明细随逐块 refine_runs.action_counts["l1_truncated_chunks"] 落库。
     truncated_chunks: int = 0
+    # D1（2026-11-13）：按 L0 metadata 跳过提炼的原因（playground /
+    # background_automation）；None = 正常提炼。跳过时游标照常推进（原件保留、
+    # 不重复扫），但**不进记忆池**。
+    skipped_reason: str | None = None
 
 
 #: 自注入画像块（dsh/hermes 把 Tier0 画像当 user 消息写进原件时的标记）
@@ -438,6 +442,18 @@ def refine_file(
         logger.info("文件内容变化（哈希 %s → %s），全量重提炼 file=%s",
                     stored_hash[:8], current_hash[:8], file_id)
         full_refine = True
+
+    # D1（2026-11-13 用户拍板）：巡检类（playground）/ 后台自动化会话
+    # **全量入库但打标**——L0 原件照常保留，但提炼侧按 metadata 过滤，
+    # 不进记忆池（不调 LLM、不产记忆）。游标与哈希照常推进，避免重复扫描。
+    meta = (parsed.frontmatter or {}).get("metadata") or {}
+    if isinstance(meta, dict) and (meta.get("playground") or meta.get("background_automation")):
+        reason = "metadata_playground" if meta.get("playground") else "metadata_background_automation"
+        result.new_last_refined_seq = max((m.seq for m in parsed.messages), default=0)
+        result.content_hash = current_hash
+        result.skipped_reason = reason
+        logger.info("按 metadata 跳过提炼（不进记忆池）: file=%s reason=%s", file_id, reason)
+        return result
 
     last_seq = 0 if full_refine else (rf.get("last_refined_seq") or 0)
     incremental = store.extract_incremental(parsed, last_seq)

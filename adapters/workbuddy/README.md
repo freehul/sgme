@@ -54,6 +54,23 @@ python scripts/sgme_client.py env-info       # 生效端点与密钥来源（不
 | 待办/项目/创意登记 | MCP `demand-create` / `project-register` / `idea-add`（`project_id` 一律大写） | MCP（HTTP 端为 admin 端点） |
 | 接入自检 | `selfcheck.py`：静态矩阵（45/45 双覆盖）+ 连通性实测 + 身份来源 | 全端点 |
 
+## 会话同步与抽样面（R4，2026-11-13）
+
+WorkBuddy 本机会话（`~/.workbuddy/workbuddy.db` + `~/.workbuddy/projects/<cwd>/<sessionId>.jsonl`）由 `scripts/sync_sessions.py` 增量同步进 SGME。**抽样面口径 = 全量入库 + 打标，不在入库侧丢弃**（用户 2026-11-13 拍板 D1）：
+
+| L0 `metadata` 字段 | 类型 | 来源（workbuddy.db `sessions` 列） | 语义 |
+|---|---|---|---|
+| `origin` | string | 固定 `"workbuddy"` | 数据来源标识，便于跨适配器区分 |
+| `playground` | bool | `is_playground != 0` | 试验场会话：照常落 L0/可溯源，**不进记忆池** |
+| `background_automation` | bool | `is_background_automation != 0` | 后台自动化/巡检会话：同上，**不进记忆池** |
+
+入库与过滤规则：
+
+1. **跳过不导入**：`deleted_at` 非空（用户已删）的会话不落盘；其余全部导入。
+2. **全量导入**：`is_playground` / `is_background_automation` 为真的会话照常生成 L0 文件，`metadata` 两键显式写 `true/false`（缺省即 `false`，但建议显式写以简化下游判断）。
+3. **提炼侧过滤**（服务端 `sgme/engine/refine.py`）：L0 `metadata.playground` 或 `metadata.background_automation` 为真 → **不调 LLM、不产记忆**，游标与内容哈希照常推进（`RefineResult.skipped_reason=metadata_playground|metadata_background_automation`）。原件永久保留，管理员仍可按 `file_id` 溯源。
+4. 检索与画像注入只消费记忆池，因此巡检类内容不会污染 `search` / `inject` 结果。
+
 ## 目录
 
 ```
