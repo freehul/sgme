@@ -310,6 +310,10 @@ def normalize_memories(
             ts_list = [seq_ts[s] for s in src_ids if s in seq_ts]
             if ts_list:
                 occ = max(ts_list)
+        if not occ:
+            # 兜底链（D-26，2026-11-13 修复）：2.0 提示词无 source_message_ids →
+            # 用所在块的最大消息时间（会话时间），而不是落库时刻 created_at。
+            occ = (rm.get("_chunk_ts") or "").strip() or None
         normalized_memories.append({
             "content": rm["content"],
             "memory_type": rm["memory_type"],
@@ -507,6 +511,12 @@ def refine_file(
     conversations = [
         _format_conversation(chunk_msgs, file_id) for chunk_msgs in msg_chunks
     ]
+    # D-26 修复（2026-11-13）：2.0 提示词不再产出 source_message_ids，精确映射失效 →
+    # 逐块记录「该块最大消息时间」，供归一化层兜底 occurred_at（否则退化成落库时刻）。
+    chunk_ts: list[str | None] = [
+        (max((getattr(m, "timestamp", "") or "" for m in chunk_msgs), default="") or None)
+        for chunk_msgs in msg_chunks
+    ]
 
     dimensions = cfg["dimensions"]
 
@@ -525,6 +535,7 @@ def refine_file(
             chunk_retry_backoff_s=float((cfg.get("refine") or {}).get("chunk_retry_backoff_s", 5.0)),
             # D-80：块级缓存默认开（refine.chunk_cache_enabled=false 可关）
             cache_enabled=bool((cfg.get("refine") or {}).get("chunk_cache_enabled", True)),
+            chunk_ts=chunk_ts,
         )
         result.prompt_versions["l1_extraction"] = prompt_meta
         # 块级失败（2026-11-03）：单块失败被 continue 吞掉，整份仍会标 refined →
@@ -590,6 +601,10 @@ def refine_file(
         raw_memories, dimensions, mem_conn,
         file_id=file_id, seq_ts=seq_ts, sunk_refs=sunk_refs,
     )
+    _missing_occ = sum(1 for _m in normalized_memories if not _m.get("occurred_at"))
+    if _missing_occ:
+        logger.warning("occurred_at 回退落库时间 %d/%d 条（来源消息与块时间戳均缺失，file=%s）",
+                       _missing_occ, len(normalized_memories), file_id)
 
     result.memories = normalized_memories
     result.stats = batch_stats

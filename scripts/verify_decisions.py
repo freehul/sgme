@@ -334,6 +334,10 @@ def _(self):
         ("检索时间过滤参数（operations）", *has("search_ops", "since: str | None = None")),
         ("occurred_at SQL 过滤（data）", *has("search_data", "_time_bounds_clause", "since")),
         ("HTTP 入口透传 since/until", *has("routes_memory", "since=payload.since")),
+        # 2026-11-13 语义修复：2.0 提示词无 source_message_ids → 必须用块级会话时间兜底，
+        # 否则 occurred_at 静默退化成 created_at（时间轴按提炼时间排，D-26 名存实亡）。
+        ("块级会话时间兜底（refine）", *has("refine", "_chunk_ts")),
+        ("块时间打标（l2_extraction）", *has("l2_extraction", "_tag_chunk_ts")),
     ]
 
 

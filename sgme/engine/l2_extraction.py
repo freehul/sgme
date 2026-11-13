@@ -882,6 +882,18 @@ def _extract_chunk_with_retry(
     raise last_err  # type: ignore[misc]
 
 
+def _tag_chunk_ts(memories: list[dict], ts: str | None) -> None:
+    """给块内记忆打上「所在块的最大消息时间」（D-26 兜底用，落库前会被剥掉）。
+
+    2.0 提示词（v013 起）不再产出 source_message_ids，没有它就无法做精确的
+    occurred_at 映射；本标记让归一化层退而用**块级会话时间**，而不是落库时刻。
+    """
+    if not ts:
+        return
+    for m in memories:
+        m.setdefault("_chunk_ts", ts)
+
+
 def extract_memories(
     conversation: str | list[str],
     dimensions: list[dict],
@@ -895,6 +907,7 @@ def extract_memories(
     chunk_retry_times: int = 2,
     chunk_retry_backoff_s: float = 5.0,
     cache_enabled: bool = False,
+    chunk_ts: list[str | None] | None = None,
 ) -> tuple[list[dict], str, dict]:
     """完整 L1 提取：render → call_with_fallback → parse。
 
@@ -926,7 +939,7 @@ def extract_memories(
         total_chars = len(conversation)
     if len(chunks) == 1:
         # 单块同样退避重试：小文件一次抖动就整份判死最不划算（2026-11-03）
-        return _extract_chunk_with_retry(
+        memories, provider, meta = _extract_chunk_with_retry(
             chunks[0], dimensions, llm_cfg, client=client,
             bucket_ctx=bucket_ctx, mem_conn=mem_conn,
             sunk_refs_text=sunk_refs_text,
@@ -934,6 +947,8 @@ def extract_memories(
             label="L1 单块",
             cache_enabled=cache_enabled, chunk_index=0,
         )
+        _tag_chunk_ts(memories, chunk_ts[0] if chunk_ts else None)
+        return memories, provider, meta
 
     # 多块：逐块提炼 + 按 content 去重合并
     logger.info("L1 长会话分块提炼: %d 字符 → %d 块", total_chars, len(chunks))
@@ -972,6 +987,7 @@ def extract_memories(
             key = m.get("content", "").strip()
             if key and key not in seen_contents:
                 seen_contents.add(key)
+                _tag_chunk_ts([m], chunk_ts[idx] if chunk_ts and idx < len(chunk_ts) else None)
                 all_memories.append(m)
     logger.info("L1 分块合并: 原始 %d 块 → 去重后 %d 条记忆（失败块 %d）",
                 len(chunks), len(all_memories), failed_chunks)
