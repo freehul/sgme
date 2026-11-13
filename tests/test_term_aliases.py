@@ -35,6 +35,7 @@ AGENT_HEADERS = {"X-API-Key": "test-agent-key"}
 EXPECTED_TERM_ALIASES = {
     "daemon": "gateway",
     "SGME Server": "gateway",
+    "时间线": "时间轴",  # R2（2026-11-13）：时间线 ↔ 时间轴 双向召回
 }
 
 
@@ -194,6 +195,15 @@ def test_normalize_no_alias_unchanged():
     """不含别名 → 逐字符不变（连大小写/空白都不动，行为不变）。"""
     q = "Python  FastAPI  底座"
     assert normalize_query_terms(q, EXPECTED_TERM_ALIASES) == q
+
+
+def test_normalize_timeline_alias():
+    """R2：中文别名「时间线」扩展出「时间轴」（CJK 相邻不阻挡匹配）。"""
+    assert normalize_query_terms("时间线", EXPECTED_TERM_ALIASES) == "时间线 时间轴"
+    assert normalize_query_terms("回忆时间线", EXPECTED_TERM_ALIASES) == "回忆时间线 时间轴"
+    # 标准术语已在查询中 → 不重复注入
+    assert normalize_query_terms("时间轴", EXPECTED_TERM_ALIASES) == "时间轴"
+    assert normalize_query_terms("时间线 时间轴", EXPECTED_TERM_ALIASES) == "时间线 时间轴"
 
 
 def test_normalize_empty_inputs():

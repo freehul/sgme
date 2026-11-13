@@ -12,3 +12,6 @@ term_aliases:
   # 改名 Gateway 前的旧服务名 → 标准术语 gateway
   daemon: gateway
   SGME Server: gateway
+  # 时间线（R2，2026-11-13）：口语「时间线」与设计文档「时间轴」互召回
+  # （查询扩展语义：命中「时间线」时保留原词并追加「时间轴」，双向可召回）
+  时间线: 时间轴
