@@ -108,7 +108,7 @@ HTTP 层零依赖；MCP 层需 mcp 库，用 `<project-root>/.venv/Scripts/pytho
 | 1 | agent_onboarding | MCP | `agent-onboarding` |
 | 2 | append | HTTP | `append --session <key> --text "……"` |
 | 3 | inject | HTTP | `inject --mode daily\|coding\|work\|full` |
-| 4 | search | HTTP | `search "<query>" --scopes memory,skills,wiki` |
+| 4 | search | HTTP | `search "<query>" --scopes memory,skills,wiki`（`wiki`=场景层+知识库页面；只要页面传 `wiki_pages`，查原始会话传 `sessions`） |
 | 5 | answer | HTTP | `answer "<问题>"` |
 | 6 | wiki_search | HTTP | `wiki-search "<q>"` |
 | 7 | wiki_pages | HTTP | `wiki-pages` |

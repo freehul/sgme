@@ -382,6 +382,27 @@ def test_mcp_search_default_scopes_memory_only(mcp):
     assert all(res.get("source") == "skills" for res in data2["results"])
 
 
+def test_mcp_search_wiki_pages_scope_uses_injected_wiki_conn(mcp):
+    """T4：MCP search 显式 scopes=["wiki_pages"] 经注入的 wiki_conn 命中页面。
+
+    回归背景：mcp_server 的 search 调用此前只传 mem/session/cfg，wiki_conn 恒
+    None → scopes=["wiki_pages"]（及 T4 起 wiki 展开的页面层）永远空结果。
+    """
+    from sgme.data import wiki_dao
+    from sgme.mcp_server import _app_state
+    from sgme.wiki.fts import init_wiki_fts
+
+    wiki_conn = _app_state["wiki_conn"]
+    init_wiki_fts(wiki_conn)  # fixtures 未建 wiki FTS；LIKE 兜底会被别名扩展后的整串挡住
+    wiki_dao.insert_page(wiki_conn, page_id="mcp-page-1",
+                         title="时间线设计", content="时间线 页面知识")
+
+    text, _ = _call(mcp, "search", {"query": "时间线", "limit": 5, "scopes": ["wiki_pages"]})
+    data = json.loads(text)
+    assert any(res["source"] == "wiki_pages" and res["page_id"] == "mcp-page-1"
+               for res in data["results"]), data
+
+
 def _app_state_mem_conn():
     """取绑定态 mem_conn（MCP 测试直查插桩用）。"""
     from sgme.mcp_server import _app_state

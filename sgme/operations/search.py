@@ -426,6 +426,11 @@ def search(
         cfg: 运行时配置（向量检索开关 / RRF k 等，透传业务层）。
         query: 检索词。空串**不报错**（v0.6 行为：返回空结果）。
         scopes: 检索层列表；None → ["memory"]（pydantic 缺省语义）。
+            **层语义（T4，2026-11-13 定稿）**：
+            - ``memory`` 记忆池；``sessions`` L0 原始层；``skills`` 技能库；
+            - ``wiki`` / ``scenes`` = 知识支柱全层：**场景层 + 页面层**（wiki 展开
+              到 wiki_pages，显式再传 wiki_pages 不重复检索）；
+            - ``wiki_pages`` 仅页面层（保留给只要页面的调用方）。
             未知 scope 值被忽略（v0.6 行为），不报错。
         dimensions: 维度标签过滤（可选）。
         match: "any"=命中任一维度 / "all"=全部命中，缺省 any。
@@ -491,7 +496,12 @@ def search(
                 caller or agent_id,
             )
         # 层 2：wiki 场景叙事文档（L2；"scenes" 为历史别名 scope，两者等价）
-        if "wiki" in scopes or "scenes" in scopes:
+        # T4（2026-11-13）：`wiki` 语义定为「知识支柱全层」——场景层 + 页面层
+        # （历史上 wiki 只查场景、wiki_pages 要另传，导致 q=时间线 漏召回 D-26
+        # 这类只在页面层的知识）。显式传 wiki_pages 时与展开结果**不重复检索**。
+        include_scenes = "wiki" in scopes or "scenes" in scopes
+        include_pages = "wiki_pages" in scopes or include_scenes
+        if include_scenes:
             results.extend(
                 search_mod.search_scenes(
                     mem_conn, query, limit=limit, cfg=cfg, client=client,
@@ -500,7 +510,7 @@ def search(
         # 层 3：wiki 知识库页面（wiki_pages 表，T-34 新增）
         # 容错隔离：wiki_conn 为 None 或检索失败 → 该层空结果 + WARNING，
         # 不拖累 memory / scenes 层（wiki 扩展不可用≠整体搜索失败）。
-        if "wiki_pages" in scopes:
+        if include_pages:
             results.extend(_search_wiki_pages(wiki_conn, query, limit))
         # 层 4：L0 原始层会话（raw_files 索引，ST-33 新增）
         # 容错隔离（对称 wiki_pages 层）：session_conn 为 None 或检索失败

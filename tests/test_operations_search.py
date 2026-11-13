@@ -508,6 +508,94 @@ def test_search_multi_scope_includes_wiki_pages(conns, cfg, mock_vector):
     assert sources.index("memory") < sources.index("wiki_scene") < sources.index("wiki_pages")
 
 
+# ---------- 5b-2. T4（2026-11-13）：wiki scope 展开页面层 ----------
+
+def test_search_wiki_scope_expands_to_wiki_pages(conns, cfg, mock_vector):
+    """scopes=["wiki"] → 场景层 + 页面层（wiki 即知识支柱全层，T4）。
+
+    回归背景：历史上 wiki 只查场景，只在 wiki_pages 的知识（如 D-26 决策页）
+    对 q=时间线 永久漏召回。
+    """
+    # Arrange
+    mem_conn, session_conn, wiki_conn = conns
+    _insert_scene(mem_conn, "scene-expand", "时间线设计", "时间线 场景叙事")
+    _insert_wiki_page(wiki_conn, "page-expand", "D-26 决策", "时间线 页面知识")
+
+    # Act
+    res = search(mem_conn, session_conn, cfg,
+                 query="时间线", scopes=["wiki"], wiki_conn=wiki_conn)
+
+    # Assert
+    assert res.ok is True
+    sources = [r["source"] for r in res.data["results"]]
+    assert "wiki_scene" in sources
+    assert "wiki_pages" in sources
+
+
+def test_search_wiki_scope_does_not_change_memory_layer(conns, cfg, mock_vector):
+    """wiki 展开页面层后 memory 层条数不回归（T4 验收）。"""
+    # Arrange
+    mem_conn, session_conn, wiki_conn = conns
+    for i in range(3):
+        _insert_memory(mem_conn, f"量子计算 记忆 {i}")
+    _insert_wiki_page(wiki_conn, "page-mem-inv", "量子计算", "量子计算 页面")
+
+    # Act
+    res_mem = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["memory"])
+    res_wiki = search(mem_conn, session_conn, cfg, query="量子计算",
+                      scopes=["memory", "wiki"], wiki_conn=wiki_conn)
+
+    # Assert
+    mem_only = [r for r in res_mem.data["results"] if r["source"] == "memory"]
+    mem_with = [r for r in res_wiki.data["results"] if r["source"] == "memory"]
+    assert len(mem_only) == len(mem_with) == 3
+
+
+def test_search_wiki_and_wiki_pages_not_duplicated(conns, cfg, mock_vector):
+    """wiki + wiki_pages 同时传 → 页面层只检索一次，结果不重复（T4）。"""
+    # Arrange
+    mem_conn, session_conn, wiki_conn = conns
+    _insert_wiki_page(wiki_conn, "page-dup", "时间线设计", "时间线 页面知识")
+
+    # Act
+    res_wiki = search(mem_conn, session_conn, cfg, query="时间线",
+                      scopes=["wiki"], wiki_conn=wiki_conn)
+    res_both = search(mem_conn, session_conn, cfg, query="时间线",
+                      scopes=["wiki", "wiki_pages"], wiki_conn=wiki_conn)
+
+    # Assert
+    pages_wiki = [r for r in res_wiki.data["results"] if r["source"] == "wiki_pages"]
+    pages_both = [r for r in res_both.data["results"] if r["source"] == "wiki_pages"]
+    assert len(pages_wiki) == len(pages_both) == 1
+    assert pages_both[0]["page_id"] == "page-dup"
+
+
+def test_search_layered_limit_caps_each_layer(conns, cfg, mock_vector):
+    """limit 按层封顶：各层 ≤ limit，总条数 ≤ 层数×limit（T4 验收）。"""
+    # Arrange
+    mem_conn, session_conn, wiki_conn = conns
+    for i in range(3):
+        _insert_memory(mem_conn, f"量子计算 记忆 {i}")
+    for i in range(3):
+        _insert_scene(mem_conn, f"scene-lim-{i}", f"量子计算 场景 {i}", "量子计算 内容")
+    for i in range(3):
+        _insert_wiki_page(wiki_conn, f"page-lim-{i}", f"量子计算 页面 {i}", "量子计算 内容")
+
+    # Act
+    res = search(mem_conn, session_conn, cfg, query="量子计算",
+                 scopes=["memory", "wiki"], limit=1, wiki_conn=wiki_conn)
+
+    # Assert
+    assert res.ok is True
+    by_source: dict[str, int] = {}
+    for r in res.data["results"]:
+        by_source[r["source"]] = by_source.get(r["source"], 0) + 1
+    assert by_source.get("memory", 0) == 1
+    assert by_source.get("wiki_scene", 0) <= 1
+    assert by_source.get("wiki_pages", 0) <= 1
+    assert len(res.data["results"]) <= 3
+
+
 def test_http_endpoint_wiki_pages_scope(client, conns, mock_vector):
     """HTTP /v1/search 经 app.state.wiki_conn 注入 → wiki_pages 层可用。"""
     # Arrange

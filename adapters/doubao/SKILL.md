@@ -84,7 +84,7 @@ SGME 事件三类：`care_*`（关怀）、`memory_updated`（记忆更新）、
 | 1 | agent_onboarding | MCP | `sgme_client.py agent-onboarding` |
 | 2 | append | HTTP | `sgme_client.py append --session <key> --text "……" [--role user\|assistant] [--file <path>]` |
 | 3 | inject | HTTP | `sgme_client.py inject --mode daily\|coding\|work\|full` |
-| 4 | search | HTTP | `sgme_client.py search "<query>" --limit 5 [--scopes memory,skills,wiki]` |
+| 4 | search | HTTP | `sgme_client.py search "<query>" --limit 5 [--scopes memory,skills,wiki]`（`wiki`=场景层+知识库页面；只要页面传 `wiki_pages`，查原始会话传 `sessions`） |
 | 5 | answer | HTTP | `sgme_client.py answer "<问题>"` |
 | 6 | wiki_search | HTTP | `sgme_client.py wiki-search "<q>"` |
 | 7 | wiki_pages | HTTP | `sgme_client.py wiki-pages [--category <c>]` |

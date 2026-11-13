@@ -984,6 +984,10 @@ def build_mcp_server():
             dimensions=dimensions,
             match=match,
             include_sources=include_sources,
+            # T4（2026-11-13）：补注入 wiki/skills 连接——此前只传 mem/session/cfg，
+            # 导致 scopes=["wiki_pages"] 恒空（B3），skills 回退内存索引。
+            wiki_conn=_app_state.get("wiki_conn"),
+            skills_conn=_app_state.get("skills_conn"),
             # T-252 补：调用方反查（鉴权 key → agent_id；直调/失败 → unknown），
             # 仅用于记忆调用统计（source='search'）记录，不影响 T-140 scope 语义。
             caller=_usage_caller(ctx),
