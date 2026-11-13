@@ -218,3 +218,58 @@ def test_dry_run_writes_nothing(tmp_path):
     assert report["appended_messages"] == 1   # 报告口径：计划发送的消息数
     assert client.calls == []
     assert not state_path.exists()
+
+
+# ---------------------------------------------------------------- 同步窗口（2026-11-13）
+
+def test_resolve_window_defaults_to_seven_days():
+    now = ss.datetime(2026, 11, 13, 12, 0, tzinfo=ss.TZ)
+    got = ss.resolve_since_ms(None, None, False, now=now)
+    want = int((now - ss.timedelta(days=ss.DEFAULT_WINDOW_DAYS)).timestamp() * 1000)
+    assert got == want
+
+
+def test_resolve_window_all_disables():
+    assert ss.resolve_since_ms(None, None, True) is None
+
+
+def test_resolve_window_zero_days_disables():
+    assert ss.resolve_since_ms(None, 0, False) is None
+
+
+def test_resolve_window_custom_days():
+    now = ss.datetime(2026, 11, 13, 12, 0, tzinfo=ss.TZ)
+    got = ss.resolve_since_ms(None, 30, False, now=now)
+    want = int((now - ss.timedelta(days=30)).timestamp() * 1000)
+    assert got == want
+
+
+def test_resolve_window_since_overrides_all_forms():
+    want = ss._parse_since("2026-11-07")
+    now = ss.datetime(2026, 11, 13, 12, 0, tzinfo=ss.TZ)
+    assert ss.resolve_since_ms("2026-11-07", 30, True, now=now) == want
+
+
+def test_parser_defaults_are_windowed_not_full():
+    args = ss.build_parser().parse_args([])
+    assert args.days is None and args.all is False and args.since is None
+    args_all = ss.build_parser().parse_args(["--all"])
+    assert args_all.all is True
+    args_days = ss.build_parser().parse_args(["--days", "3"])
+    assert args_days.days == 3
+
+
+def test_window_filters_discovery(tmp_path):
+    """窗口下界真的作用到 discover_sessions（老会话被过滤）。"""
+    now = ss.datetime(2026, 11, 13, 12, 0, tzinfo=ss.TZ)
+    old_ms = int((now - ss.timedelta(days=40)).timestamp() * 1000)
+    new_ms = int((now - ss.timedelta(days=1)).timestamp() * 1000)
+    db = tmp_path / "wb.db"
+    _make_db(db, [
+        {"id": "old-old-old-old-old", "updated_at": str(old_ms)},
+        {"id": "new-new-new-new-new", "updated_at": str(new_ms)},
+    ])
+    since = ss.resolve_since_ms(None, None, False, now=now)
+    got = [r["id"][:3] for r in ss.discover_sessions(db, since)]
+    assert got == ["new"]
+    assert len(ss.discover_sessions(db, None)) == 2

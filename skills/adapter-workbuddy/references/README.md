@@ -70,6 +70,7 @@ WorkBuddy 本机会话（`~/.workbuddy/workbuddy.db` + `~/.workbuddy/projects/<c
 2. **全量导入**：`is_playground` / `is_background_automation` 为真的会话照常生成 L0 文件，`metadata` 两键显式写 `true/false`（缺省即 `false`，但建议显式写以简化下游判断）。
 3. **提炼侧过滤**（服务端 `sgme/engine/refine.py`）：仅 `metadata.background_automation` 为真 → **不调 LLM、不产记忆**，游标与内容哈希照常推进（`RefineResult.skipped_reason=metadata_background_automation`）。原件永久保留，管理员仍可按 `file_id` 溯源。<br>⚠️ `playground` **不跳过提炼**（2026-11-13 返工 1：实测 18/35 场 `is_playground=1` 是主要工作会话，跳过会静默丢知识）；`metadata_playground` 取值已废弃。
 4. 检索与画像注入只消费记忆池，因此后台自动化内容不会污染 `search` / `inject` 结果。
+5. **同步窗口（2026-11-13）**：`sync_sessions.py` 默认只处理 `updated_at` 在**最近 7 天**内的会话（`--days N` 改天数、`--days 0`/`--all` 不限、`--since YYYY-MM-DD` 显式下界且优先级最高）。实测全量历史 **517 场 / 727 MB**，裸跑会灌爆 L0 并触发海量提炼——**日常不要裸跑**，补历史请显式 `--all` 并分批。
 
 ## 目录
 

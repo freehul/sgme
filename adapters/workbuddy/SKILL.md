@@ -45,7 +45,7 @@ description: WorkBuddy 的 SGME（拾光记忆）官方适配器。当对话涉�
 
 1. **每轮对话结束 `append` 当前轮次**——同一会话同一 `session_key`。
 2. **会话结束 `refine-trigger`**（永远 async）。
-2b. **兜底补录**：若本轮没走 append（或要补历史），跑 `python scripts/sync_sessions.py` 把 WorkBuddy 本地会话增量同步进 SGME（幂等，可重复跑；`--dry-run` 只看覆盖报告）。
+2b. **兜底补录**：若本轮没走 append（或要补历史），跑 `python scripts/sync_sessions.py` 把 WorkBuddy 本地会话增量同步进 SGME（幂等，可重复跑；**默认只同步最近 7 天**，`--days N` 改窗口、`--all` 补全量历史、`--dry-run` 只看覆盖报告）。
 3. **对话开始 `inject` 取画像 / `search` 检索相关记忆**。
 4. **主动关怀靠消费信号**：`signal-pull` → `signal-claim` → 关怀 → `signal-ack`。可选 `care_watch.py pull` 轮询。
 5. **对话开始（或用户指定角色）`role-list` → `role-assemble`**——换皮不换芯。

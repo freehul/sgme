@@ -18,10 +18,19 @@
 - **幂等**：首条 append 的 ``started_at`` 取该批首条消息时间（确定性），
   崩溃重跑被服务端按 ``session_key + started_at`` 幂等丢弃。
 
+窗口（2026-11-13 追加，防裸跑灌全量）：
+
+- 默认只同步 `updated_at` 在**最近 7 天**内的会话（全量历史 700MB+，裸跑会灌爆 L0
+  并触发海量提炼）；
+- `--days N` 改窗口天数（`0` = 不限）；
+- `--all` 显式关闭窗口（等价 `--days 0`）；
+- `--since YYYY-MM-DD` 显式指定下界，优先于 `--days` / `--all`。
+
 用法::
 
-    python scripts/sync_sessions.py              # 增量同步 + 覆盖报告
-    python scripts/sync_sessions.py --since 2026-11-07 --dry-run
+    python scripts/sync_sessions.py              # 增量同步（默认近 7 天）
+    python scripts/sync_sessions.py --all        # 全量历史（谨慎）
+    python scripts/sync_sessions.py --days 30 --dry-run
     python scripts/sync_sessions.py --json       # 机器可读报告
 
 退出码：0 = 跑完（个别会话失败也记在报告里）；2 = 参数/环境错误。
@@ -50,6 +59,8 @@ ARGS_CAP = 800
 #: WorkBuddy 会话时间以本机时区（+08:00）落 L0，与 ``since=YYYY-MM-DD`` 字符串过滤对齐
 TZ = timezone(timedelta(hours=8))
 STATE_VERSION = 1
+#: 默认同步窗口（天）：只处理 updated_at 落在窗口内的会话，防裸跑灌全量历史
+DEFAULT_WINDOW_DAYS = 7
 
 
 def home_dir() -> Path:
@@ -339,12 +350,37 @@ def _parse_since(value: str | None) -> int | None:
     return int(dt.timestamp() * 1000)
 
 
+def resolve_since_ms(
+    since: str | None,
+    days: int | None,
+    all_sessions: bool,
+    now: datetime | None = None,
+) -> int | None:
+    """决定同步窗口下界（epoch 毫秒）。
+
+    优先级：`--since` > `--all` > `--days`（缺省 `DEFAULT_WINDOW_DAYS` 天）。
+    返回 None 表示不限（全量历史）。
+    """
+    if since:
+        return _parse_since(since)
+    if all_sessions:
+        return None
+    window = DEFAULT_WINDOW_DAYS if days is None else days
+    if window <= 0:
+        return None
+    base = now or datetime.now(TZ)
+    return int((base - timedelta(days=window)).timestamp() * 1000)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="WorkBuddy 会话增量同步到 SGME")
     p.add_argument("--db", default=str(default_db_path()), help="workbuddy.db 路径")
     p.add_argument("--projects", default=str(default_projects_dir()), help="projects 目录")
     p.add_argument("--state", default=str(default_state_path()), help="游标文件")
-    p.add_argument("--since", help="只同步 updated_at >= 该日期（YYYY-MM-DD）")
+    p.add_argument("--since", help="只同步 updated_at >= 该日期（YYYY-MM-DD）；优先于 --days/--all")
+    p.add_argument("--days", type=int, default=None,
+                   help=f"窗口天数（缺省 {DEFAULT_WINDOW_DAYS}；0 = 不限）")
+    p.add_argument("--all", action="store_true", help="不限窗口，全量历史（谨慎）")
     p.add_argument("--limit", type=int, default=0, help="最多处理 N 场（0=不限）")
     p.add_argument("--dry-run", action="store_true", help="只报告，不写 SGME/游标")
     p.add_argument("--json", action="store_true", help="输出 JSON 报告")
@@ -362,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
     db_path = Path(args.db)
     projects_dir = Path(args.projects)
     state_path = Path(args.state)
-    since_ms = _parse_since(args.since)
+    since_ms = resolve_since_ms(args.since, args.days, args.all)
     rows = discover_sessions(db_path, since_ms)
     if args.limit and args.limit > 0:
         rows = rows[: args.limit]
@@ -374,6 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=1))
     else:
         print(
+            f"[窗口 since={args.since or ('all' if args.all or args.days == 0 else f'近 {args.days if args.days is not None else DEFAULT_WINDOW_DAYS} 天')} since_ms={since_ms}] "
             f"扫描 {report['scanned']} 场 / 入库 {report['ingested']} 场"
             f"（新增消息 {report['appended_messages']} 条）/ 跳过 {report['skipped']} 场"
             f" / 失败 {report['failed']} 场"
