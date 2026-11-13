@@ -185,6 +185,23 @@ export interface RefineFailure {
   error: string | null
 }
 
+export interface RefineErrorRuns {
+  /** 尝试级失败总数（refine_runs status='error' 行） */
+  error_total: number
+  /** 近 window_hours 小时的尝试级失败行数 */
+  error_window: number
+  /** drop_batch（LLM 全链失败、整块内容被丢弃）累计行数 */
+  drop_batch_total: number
+  /** 近 window_hours 小时的 drop_batch 行数 */
+  drop_batch_window: number
+  /** 出现过尝试级失败的文件数（去重） */
+  error_files_total: number
+  /** 近 window_hours 小时出现过失败的文件数（去重） */
+  error_files_window: number
+  /** 统计窗口（小时） */
+  window_hours: number
+}
+
 export interface RefineStatus {
   /** 队列水位：待提炼（raw_files.status=new） */
   pending: number
@@ -197,6 +214,10 @@ export interface RefineStatus {
   watermark: RefineWatermark
   /** 最近一条失败提炼记录（refine_runs status=error）；无失败为 null */
   last_failure: RefineFailure | null
+  /** 尝试级失败汇总（与 failed 口径不同，见 failed_definition） */
+  error_runs: RefineErrorRuns
+  /** 两种失败口径的人工说明（后端回） */
+  failed_definition: string
 }
 
 export function getRefineStatus() {

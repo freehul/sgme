@@ -109,6 +109,13 @@ def test_refine_status_http_endpoint(tmp_path, monkeypatch):
     # 与 MCP refine_status 同源：四计数齐备（operations.refine.refine_status）
     for k in ("pending", "completed", "failed", "total"):
         assert k in body, f"缺键 {k}: {body}"
+    # R1：尝试级失败口径与口径说明同时暴露（治「failed=0 但整批 drop_batch」误读）
+    for k in ("error_runs", "failed_definition"):
+        assert k in body, f"缺键 {k}: {body}"
+    assert set(body["error_runs"]) == {
+        "error_total", "error_window", "drop_batch_total", "drop_batch_window",
+        "error_files_total", "error_files_window", "window_hours",
+    }
     db_mod.close(mem_conn)
     db_mod.close(session_conn)
     db_mod.close(wiki_conn)

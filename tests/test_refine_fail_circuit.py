@@ -141,6 +141,44 @@ def test_chunk_failure_below_threshold_stays_retryable(
 
 
 # ======================================================================
+# 1b. R1（2026-11-13）：drop_batch → anomaly_warn（尝试级失败必须可见）
+# ======================================================================
+
+def test_drop_batch_publishes_anomaly_warn(raw_dir, mem_conn, session_conn, cfg, monkeypatch):
+    """LLM 全链失败（drop_batch）→ 发布 anomaly_warn，且进程内窗口节流。"""
+    from sgme.llm.provider import LLMUnavailable
+
+    fid = _setup_raw_file(raw_dir, session_conn, file_id="f-drop-batch")
+    monkeypatch.setattr(refine_mod, "_drop_batch_alert_last_at", 0.0)
+
+    def boom(*args, **kwargs):
+        try:
+            raise LLMUnavailable("全链降级失败，drop_batch")
+        except LLMUnavailable as e:
+            raise refine_mod.l2_extraction.RefineError(f"LLM 全链失败: {e}") from e
+
+    monkeypatch.setattr(refine_mod.l2_extraction, "extract_memories", boom)
+
+    result = refine_mod.refine_file(fid, mem_conn, session_conn, cfg)
+    assert result.status == "error"
+    assert result.anomaly_warn is True
+
+    rows = mem_conn.execute(
+        "SELECT source, payload FROM signal_events WHERE type='anomaly_warn'"
+    ).fetchall()
+    assert [r["source"] for r in rows] == ["refine_drop_batch"]
+    assert fid in rows[0]["payload"]
+
+    # 节流：同进程窗口内第二次失败不再发第二条（日志照常）
+    session_dao.mark_status(session_conn, fid, "new")
+    refine_mod.refine_file(fid, mem_conn, session_conn, cfg)
+    n = mem_conn.execute(
+        "SELECT COUNT(*) FROM signal_events WHERE source='refine_drop_batch'"
+    ).fetchone()[0]
+    assert n == 1
+
+
+# ======================================================================
 # 2. 成功路径清零
 # ======================================================================
 

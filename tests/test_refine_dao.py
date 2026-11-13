@@ -352,3 +352,66 @@ def test_candidate_ids_hash_stable():
     assert h1 == l15_mod._candidate_ids_hash(["b", "a"])   # 顺序无关
     assert h1 != l15_mod._candidate_ids_hash(["a", "c"])   # 异集异值
     assert len(h1) == 16
+
+
+# ---------- R1（2026-11-13）：尝试级失败口径汇总 ----------
+
+def _insert_run(conn, run_id, file_id, status, started_at, error=None):
+    conn.execute(
+        """
+        INSERT INTO refine_runs
+          (run_id, file_id, stage, version, variant, provider, bucket_key,
+           started_at, status, error)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+        """,
+        (run_id, file_id, "l1_extraction", "v001", None, "agnes", file_id,
+         started_at, status, error),
+    )
+    conn.commit()
+
+
+def test_runs_summary_empty(mem_conn):
+    """空表：全 0，window_hours 原样回。"""
+    from sgme.data import refine_dao
+
+    s = refine_dao.runs_summary(mem_conn)
+    assert s == {
+        "error_total": 0, "error_window": 0,
+        "drop_batch_total": 0, "drop_batch_window": 0,
+        "error_files_total": 0, "error_files_window": 0,
+        "window_hours": 24,
+    }
+
+
+def test_runs_summary_separates_attempt_and_file(mem_conn):
+    """尝试级口径：error 行（含同文件多次）+ drop_batch 子集 + 窗口过滤 + 文件去重。"""
+    from datetime import datetime, timedelta, timezone
+
+    from sgme.data import refine_dao
+
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    old = (now - timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 同文件 f1：近 24h 两次 drop_batch（模拟 429 风暴下的重试）
+    _insert_run(mem_conn, "r1", "f1", "error", recent, "LLM 全链失败: 全链降级失败，drop_batch")
+    _insert_run(mem_conn, "r2", "f1", "error", recent, "LLM 全链失败: 全链降级失败，drop_batch")
+    # 文件 f2：近 24h 普通解析失败
+    _insert_run(mem_conn, "r3", "f2", "error", recent, "输出解析失败")
+    # 文件 f3：48h 前 drop_batch（窗口外）
+    _insert_run(mem_conn, "r4", "f3", "error", old, "LLM 全链失败: 全链降级失败，drop_batch")
+    # 成功行不计数
+    _insert_run(mem_conn, "r5", "f4", "ok", recent)
+
+    s = refine_dao.runs_summary(mem_conn)
+    assert s["error_total"] == 4          # 尝试级：4 条 error 行
+    assert s["error_window"] == 3         # 近 24h：r1/r2/r3
+    assert s["drop_batch_total"] == 3     # r1/r2/r4
+    assert s["drop_batch_window"] == 2    # r1/r2
+    assert s["error_files_total"] == 3    # f1/f2/f3 去重
+    assert s["error_files_window"] == 2   # f1/f2
+    assert s["window_hours"] == 24
+
+    # 关窗（window_hours=0）→ 窗口字段全 0
+    s0 = refine_dao.runs_summary(mem_conn, window_hours=0)
+    assert s0["error_window"] == s0["drop_batch_window"] == s0["error_files_window"] == 0

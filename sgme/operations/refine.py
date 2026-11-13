@@ -518,6 +518,11 @@ def refine_status(
       —— refine_runs 按 ``started_at DESC`` 排序，取最近一条失败提炼记录
       （含 file_id/stage/error 文案）。引擎没有独立任务表，raw_files 状态
       与 refine_runs 失败记录是仅有的持久化进度来源。
+    - error_runs：``refine_dao.runs_summary``（尝试级失败口径汇总，R1）。
+      **口径区分**：``failed`` 是 raw_files 当前 status='error' 的文件级终态数；
+      ``error_runs`` 是 refine_runs 的 error 行（同一文件可多次失败 / 之后重试
+      成功），反映链路健康度。历史事故：只读 ``failed`` 会把「整批 drop_batch」
+      看成「没有失败」（A4）。
 
     Args:
         mem_conn: memory.db 连接（refine_runs 查询用）。
@@ -526,9 +531,11 @@ def refine_status(
     Returns:
         ``OperationResult(ok=True)``，data 为
         ``{"pending", "completed", "failed", "total", "watermark",
-        "last_failure"}``。本操作无失败态（查询类，异常按 v0.6 行为上抛）。
+        "last_failure", "error_runs", "failed_definition"}``。本操作无失败态
+        （查询类，异常按 v0.6 行为上抛）。
     """
     summary = stats_dao.raw_files_summary(session_conn)
+    runs = refine_dao.runs_summary(mem_conn)
     error_runs, _ = refine_dao.list_runs_page(mem_conn, status="error", limit=1)
     last_failure: dict[str, Any] | None = None
     if error_runs:
@@ -549,4 +556,9 @@ def refine_status(
             "watermark_age_sec": watermark_age_sec(summary["last_refined_at"]),
         },
         "last_failure": last_failure,
+        "error_runs": runs,
+        "failed_definition": (
+            "failed=raw_files 当前 status='error' 的文件数（文件级终态）；"
+            "error_runs=refine_runs 的 error 行（尝试级，含之后重试成功的）"
+        ),
     })

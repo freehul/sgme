@@ -17,7 +17,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("sgme.data.refine_dao")
 
@@ -433,3 +433,67 @@ def list_runs_page(
     ).fetchall()
 
     return [dict(r) for r in rows], int(total)
+
+
+#: drop_batch 错误行判定（llm/provider.py 全链失败统一文案含 "drop_batch"）
+_DROP_BATCH_LIKE = "%drop_batch%"
+
+
+def runs_summary(conn: sqlite3.Connection, *, window_hours: int = 24) -> dict:
+    """refine_runs 失败口径汇总（R1，2026-11-13）。
+
+    区分两种「失败」语义（历史事故：``failed=0`` 与 ``last_failure=drop_batch``
+    并存，被误读为「没有失败」）：
+
+    - **尝试级**（本函数）：``refine_runs.status='error'`` 行——同一文件可能多块
+      多次失败、也可能之后重试成功，反映的是**链路健康度**；
+    - **文件级终态**（``stats_dao.raw_files_summary``）：``raw_files.status='error'``
+      ——当前仍卡死、不再重试的文件数。
+
+    两者不可互相替代，调用方应分别命名展示。
+
+    Args:
+        conn: memory.db 连接（refine_runs 在 memory.db）。
+        window_hours: 近 N 小时窗口（按 ``started_at`` 比较；≤0 视为不过滤）。
+
+    Returns:
+        ``{"error_total", "error_window", "drop_batch_total", "drop_batch_window",
+        "error_files_total", "error_files_window", "window_hours"}``。
+    """
+    wh = int(window_hours) if window_hours and int(window_hours) > 0 else 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=wh)).strftime("%Y-%m-%dT%H:%M:%SZ") if wh else None
+
+    def _count(where: str, params: list) -> int:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM refine_runs WHERE {where}", params
+        ).fetchone()
+        return int(row["c"])
+
+    error_total = _count("status='error'", [])
+    drop_total = _count("status='error' AND error LIKE ?", [_DROP_BATCH_LIKE])
+    files_total = int(conn.execute(
+        "SELECT COUNT(DISTINCT file_id) AS c FROM refine_runs WHERE status='error'"
+    ).fetchone()["c"])
+
+    if cutoff:
+        error_window = _count("status='error' AND started_at >= ?", [cutoff])
+        drop_window = _count(
+            "status='error' AND error LIKE ? AND started_at >= ?",
+            [_DROP_BATCH_LIKE, cutoff],
+        )
+        files_window = int(conn.execute(
+            "SELECT COUNT(DISTINCT file_id) AS c FROM refine_runs "
+            "WHERE status='error' AND started_at >= ?", [cutoff],
+        ).fetchone()["c"])
+    else:
+        error_window = drop_window = files_window = 0
+
+    return {
+        "error_total": error_total,
+        "error_window": error_window,
+        "drop_batch_total": drop_total,
+        "drop_batch_window": drop_window,
+        "error_files_total": files_total,
+        "error_files_window": files_window,
+        "window_hours": wh,
+    }

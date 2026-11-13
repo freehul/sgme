@@ -26,6 +26,42 @@ from sgme.data import memory_dao, session_dao
 
 logger = logging.getLogger("sgme.engine.refine")
 
+#: drop_batch 告警节流窗口（秒）：同进程每窗口最多发 1 条，防 429 风暴刷屏
+DROP_BATCH_ALERT_INTERVAL_S = 3600.0
+_drop_batch_alert_last_at: float = 0.0
+
+
+def _publish_drop_batch_alert(mem_conn: sqlite3.Connection, file_id: str, error: str) -> None:
+    """drop_batch（LLM 全链失败、整块内容被丢弃）发布 anomaly_warn（R1）。
+
+    背景：drop_batch 只写 refine_runs 的 error 行 + ``raw_files.last_error``，
+    而 ``failed`` 计数只看 status='error' 的文件，导致「整批内容被丢」在健康面上
+    表现为「没有失败」（A4）。节流窗口内只发 1 条，日志每次照常输出。
+    告警是旁路：任何异常只记 warning，不影响提炼结果返回。
+    """
+    global _drop_batch_alert_last_at
+    now = time.time()
+    if now - _drop_batch_alert_last_at < DROP_BATCH_ALERT_INTERVAL_S:
+        logger.warning(
+            "drop_batch 告警节流中（窗口 %ss）：file_id=%s", DROP_BATCH_ALERT_INTERVAL_S, file_id,
+        )
+        return
+    _drop_batch_alert_last_at = now
+    try:
+        from sgme.signal import engine as signal_engine
+        signal_engine.publish(
+            "anomaly_warn",
+            "refine_drop_batch",
+            {
+                "message": "提炼 LLM 全链降级失败（drop_batch），整块内容被丢弃",
+                "file_id": file_id,
+                "error": str(error)[:300],
+            },
+            mem_conn,
+        )
+    except Exception as e:  # noqa: BLE001——告警是旁路，不影响提炼
+        logger.warning("drop_batch 告警发布失败（不阻塞）: %s", e)
+
 
 def apply_llm_override(cfg: dict) -> dict:
     """返回带 refine.llm_override 动态链的 cfg（幂等；未配置时原样返回）。
@@ -516,6 +552,9 @@ def refine_file(
         result.error = str(e)
         result.anomaly_warn = True
         result.failure_recorded = True
+        # R1：根因是 LLM 全链失败（drop_batch）→ 发布 anomaly_warn（节流）
+        if isinstance(e.__cause__, llm_provider.LLMUnavailable):
+            _publish_drop_batch_alert(mem_conn, file_id, result.error)
         # E3：LLM 全链失败属终态结果（与修复前 mark_status("error") 一致）
         record_refine_failure(session_conn, file_id, result.error, cfg, terminal=True)
         return result

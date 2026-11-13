@@ -291,6 +291,11 @@ onMounted(() => {
           <p class="fail-msg">{{ refine.last_failure.error || '（后端未回错误详情）' }}</p>
         </div>
         <p v-else class="desc">最近没有失败批次。</p>
+        <p v-if="refine.error_runs && refine.error_runs.error_total" class="desc">
+          尝试级失败（refine_runs error 行）：累计 {{ refine.error_runs.error_total }} 条 / 近
+          {{ refine.error_runs.window_hours }}h {{ refine.error_runs.error_window }} 条；其中 drop_batch
+          {{ refine.error_runs.drop_batch_total }} 条（LLM 全链失败、整块内容被丢弃，属尝试级，不等于文件卡死）。
+        </p>
       </template>
 
       <template v-if="runs && runs.items.length">
