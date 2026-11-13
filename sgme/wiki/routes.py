@@ -184,7 +184,7 @@ def build_page_html(page: dict) -> str:
 def list_wiki_pages(
     request: Request,
     category: str | None = Query(default=None),
-    status: str = Query(default="active", pattern="^(active|all|superseded)$"),
+    status: str = Query(default="active", pattern="^(active|all|superseded|draft)$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     _: str = Depends(require_agent_key),
@@ -357,6 +357,45 @@ def create_wiki_page(
     if not result.ok:
         raise api_error(result.error_code or "ERR_INTERNAL", result.message or "写入失败")
     return result.data
+
+
+# ---------- 草稿态转正（v0.3 S4，2026-11-14） ----------
+#
+# 背景：D5 拍板「wiki/skills 自动写入先落草稿态」——引擎自动写知识库的误写会污染
+# 检索，所以自动写入一律 status=draft，由评审转正。检索侧不用改：
+# search_wiki_fts 的 FTS / LIKE 两条路都写死 status='active'，草稿天然不出现。
+
+
+@router.post("/v1/wiki/pages/{page_id}/promote")
+def promote_wiki_page(
+    page_id: str,
+    request: Request,
+    payload: dict | None = None,
+    _: str = Depends(require_agent_key),
+):
+    """草稿转正：draft → active（评审通过后调用）。
+
+    只接受 draft → active；已 active 的重复调用返回 promoted=false（幂等）；
+    superseded 历史页不许复活（会打乱取代链）→ 409。
+    """
+    from sgme.data import wiki_dao
+
+    conn: sqlite3.Connection = request.app.state.wiki_conn
+    reviewer = str((payload or {}).get("reviewer") or "") or None
+    page = wiki_dao.get_page(conn, page_id)
+    if page is None:
+        raise api_error("ERR_NOT_FOUND", f"页面不存在: {page_id}")
+    current = str(page.get("status") or "")
+    if current == "superseded":
+        raise api_error("ERR_INVALID_ARGS", "已 superseded 的历史页不能转正（会打乱取代链）")
+    promoted = wiki_dao.promote_page(conn, page_id, reviewer=reviewer)
+    return {
+        "page_id": page_id,
+        "promoted": promoted,
+        "status_before": current,
+        "status": "active" if promoted else current,
+        "reviewer": reviewer,
+    }
 
 
 # ---------- ingest（对接 refinery，v0.7 §9/§10.2；T-13 任务落库 ingest_tasks） ----------

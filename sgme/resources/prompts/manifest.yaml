@@ -124,6 +124,11 @@ versions:
     sha256: 9c208e4e25da272a121d7d6c45e34f0e2c5f84a2239da80e77e6c389133ef428
     created_at: '2026-11-09T01:00:00Z'
     note: 'W09d（2026-11-09）：v022 + 按钮样本两类残余失败的硬口径——① causes 端点禁止写助手动作/结果句（已把…改成…/已处理/已完成/已部署/助手…），只能是 main_event/facts 原文；② 禁止截短/前缀/概括/省略后半句，端点必须与 content 完整相等；太长先拆短 fact 再复制。补「按钮+助手动作」完整正反例、输出前五问、端点并排比对自检。背景：zhipu 按钮样本 exact 75%（to 写助手动作句 / from 截短前缀）。真实 LLM 冒烟（2026-11-09，v023）：zhipu 按钮 32/32=100%、总体 44/44=100%；agnes 按钮 24/26=92.3%、总体 42/44=95.5%；详见 docs/plans/提示词v023-按钮causes冒烟-20261109.md；不写生产库。'
+  - version: v024
+    file: versions/l1_extraction/v024.txt
+    sha256: cedae41f070f467a54b36b82bc8b3b8685e555cc3d6ac958c8d41b24f24a0bac
+    created_at: '2026-11-14T00:00:00Z'
+    note: '三平面分流置信度契约（v0.3 §4，2026-11-14）：route 增 route_confidence/route_reason 两字段；落库侧 <0.6 进 routing_inbox 待人工裁决，>=0.6 才分流；技术细节按去向判归属（决策进 memory、实现进 skill_candidate、客观结论进 wiki_candidate）。**未切 active**——需 200 条 A/B 通过后切换（设计门禁 G5）。'
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt

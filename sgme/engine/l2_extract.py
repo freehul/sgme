@@ -108,6 +108,19 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _route_confidence(raw: Any) -> float:
+    """route 置信度归一（v0.3 S6，2026-11-14）。
+
+    ⚠️ **缺省 1.0 是有意的**：v023 及更早的提示词不输出该字段，缺字段若按 0 处理，
+    存量提示词产出的记忆会整批被判低置信、灌进 inbox。缺省高置信 = 行为与改造前一致。
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.0, min(1.0, value))
+
+
 def _base_record(
     *,
     content: str,
@@ -117,6 +130,7 @@ def _base_record(
     occurred_at: str | None,
     extra: dict[str, Any],
     valid_to: str | None = None,
+    route_confidence: float | None = None,
 ) -> dict[str, Any]:
     return {
         "content": content,
@@ -124,6 +138,11 @@ def _base_record(
         "memory_type": memory_type,
         "priority": DEFAULT_PRIORITY,
         "route": route if route in VALID_ROUTES else None,
+        # v0.3 S6：分流置信度与依据（只给分流判定用，不落 memories 表）
+        "route_confidence": route_confidence,
+        "route_reason": (
+            extra.pop("_route_reason", None) if isinstance(extra, dict) else None
+        ),
         "occurred_at": occurred_at,
         # D-43：planned/wished 的断言有效期（闸门 A 载体）
         "valid_to": valid_to,
@@ -147,6 +166,9 @@ def _flatten_unit(
     route = str(unit.get("route") or "").strip()
     if route == "discard":
         return []  # D-67：按来源判定的降噪结果，直接分流
+    # v0.3 S6：分流置信度与依据（v024 提示词输出；v023 及更早缺省 1.0/None）
+    unit_confidence = _route_confidence(unit.get("route_confidence"))
+    unit_reason = str(unit.get("route_reason") or "").strip() or None
 
     main = unit.get("main_event") or {}
     # 模型偶尔把 main_event 写成字符串（"main_event": "用户做了某事"）而不是对象，
@@ -225,6 +247,7 @@ def _flatten_unit(
                 "needs_review": 0,
                 "split_reason": decision.reason,
             },
+            route_confidence=unit_confidence,
         ))
 
     # 主干类型：含长期属性类事实（约束/习惯/偏好）→ persona，否则 fact。
@@ -260,7 +283,9 @@ def _flatten_unit(
             "l2_facts_json": json.dumps(
                 {"facts": kept_facts, "causes": causes}, ensure_ascii=False
             ) if (kept_facts or causes) else None,
+            "_route_reason": unit_reason,
         },
+        route_confidence=unit_confidence,
     )
     # W01 §2：单元上下文（ephemeral，仅在进程内传递，绝不落库）。
     # main_content 用**主干记录的实际 content**（已按 MAIN_MAX_CHARS 截断）——它是

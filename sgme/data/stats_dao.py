@@ -266,6 +266,95 @@ def count_vector_rows(conn: sqlite3.Connection) -> dict[str, int]:
     return counts
 
 
+# ---------- 记忆组成指标（v0.3 S5，2026-11-14） ----------
+#
+# 背景：记忆池「太重」的量化口径——技术+环境占标签约 2/3，而「关于人」的部分被挤。
+# 决策 D2（2026-11-14 用户拍板）：**不做硬门禁**，只做观测 + 告警。
+# 理由：80 字短条目里 ratio 极易被操纵（把技术内容写成「用户偏好折腾 X」就达标），
+# 拿它当闸会诱导模型造假；真正判好坏的是 200 条抽样人工评审。
+
+#: 「关于人」的维度（严格的文档口径，v0.3 §7）
+PERSON_DIMENSIONS = frozenset({
+    "identity", "family", "social", "preferences",
+    "habits", "status", "goals", "values",
+})
+
+#: 扩展口径：把「关注 / 能力 / 创意」也算进来（这些同样是人的属性，
+#: 但更容易和技术内容混同，故与严格口径分开报，供对照判读）
+PERSON_DIMENSIONS_EXTENDED = PERSON_DIMENSIONS | {"focus", "skills", "ideas"}
+
+#: 技术类维度
+TECH_DIMENSIONS = frozenset({"tech_stack", "environment"})
+
+
+def _covered(conn: sqlite3.Connection, dims: frozenset[str]) -> int:
+    """去重后的记忆覆盖数（一条记忆多维度只算一次，避免 ratio 超过 1）。"""
+    if not dims:
+        return 0
+    ph = ",".join("?" * len(dims))
+    row = conn.execute(
+        f"SELECT COUNT(DISTINCT memory_id) AS c FROM memory_tags "
+        f"WHERE dimension_id IN ({ph})",
+        tuple(sorted(dims)),
+    ).fetchone()
+    return int(row["c"]) if row else 0
+
+
+def memory_composition(conn: sqlite3.Connection) -> dict:
+    """记忆组成快照：人/技术占比 + 路由分布 + 长度 + 待归类积压。
+
+    口径说明（写死在这里，避免各调用方各算各的）：
+    - total：memories 全量（含 needs_review 待审，它们也是记忆）；
+    - person_ratio = 覆盖 person 维度的记忆数 / total（**不互斥**，一条记忆可同时算人又算技术）；
+    - route_dist：按 memories.route 分组，NULL 归"(null)"；
+    - inbox_pending：routing_inbox 待处理条数（分流兜底积压，恶化信号）。
+
+    Returns:
+        {total, person_covered, person_ratio, person_covered_extended,
+         person_ratio_extended, tech_covered, tech_ratio, route_dist,
+         avg_len, max_len, inbox_pending}
+    """
+    total = int(conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"] or 0)
+    if total == 0:
+        return {
+            "total": 0, "person_covered": 0, "person_ratio": 0.0,
+            "person_covered_extended": 0, "person_ratio_extended": 0.0,
+            "tech_covered": 0, "tech_ratio": 0.0, "route_dist": {},
+            "avg_len": 0.0, "max_len": 0, "inbox_pending": 0,
+        }
+    person_n = _covered(conn, PERSON_DIMENSIONS)
+    person_ext_n = _covered(conn, PERSON_DIMENSIONS_EXTENDED)
+    tech_n = _covered(conn, TECH_DIMENSIONS)
+    route_dist = {
+        str(r[0]): int(r[1])
+        for r in conn.execute(
+            "SELECT COALESCE(route, '(null)') AS k, COUNT(*) AS c FROM memories GROUP BY k"
+        )
+    }
+    lens = conn.execute(
+        "SELECT AVG(LENGTH(content)) AS a, MAX(LENGTH(content)) AS m FROM memories"
+    ).fetchone()
+    try:
+        inbox_pending = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM routing_inbox WHERE status = 'pending'"
+        ).fetchone()["c"] or 0)
+    except sqlite3.Error:
+        inbox_pending = 0  # 老库未建表时不报错
+    return {
+        "total": total,
+        "person_covered": person_n,
+        "person_ratio": round(person_n / total, 4),
+        "person_covered_extended": person_ext_n,
+        "person_ratio_extended": round(person_ext_n / total, 4),
+        "tech_covered": tech_n,
+        "tech_ratio": round(tech_n / total, 4),
+        "route_dist": route_dist,
+        "avg_len": round(float((lens["a"] if lens else 0) or 0), 1),
+        "max_len": int((lens["m"] if lens else 0) or 0),
+        "inbox_pending": inbox_pending,
+    }
+
+
 def occurred_reliability(conn: sqlite3.Connection) -> dict:
     """时间锚可信度：active 记忆里 occurred_at 与 created_at 完全相等的占比。
 

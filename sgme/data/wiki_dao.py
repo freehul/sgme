@@ -364,6 +364,35 @@ def mark_superseded(conn: sqlite3.Connection, page_id: str, supersedes_by: str) 
     return cur.rowcount > 0
 
 
+def promote_page(conn: sqlite3.Connection, page_id: str, reviewer: str | None = None) -> bool:
+    """草稿转正：status draft → active（v0.3 S4，2026-11-14）。
+
+    为什么要草稿态：引擎自动写知识库时，误写会污染检索（D5 拍板：
+    先落草稿、检索默认排除、评审转正）。检索侧的口径已经天然满足——
+    `search_wiki_fts` 的 FTS 与 LIKE 两条路都写死 `status='active'`，
+    所以草稿**不会**出现在 /v1/wiki/search 里，不需要额外过滤。
+
+    只接受 draft → active 这一条转移：已 active 的重复转正返回 False（幂等），
+    已 superseded 的不许复活（历史页转正会打乱取代链）。
+
+    Returns:
+        True = 本次真的从 draft 转成 active；False = 不存在 / 状态不是 draft。
+    """
+    row = conn.execute(
+        "SELECT status FROM wiki_pages WHERE page_id = ?", (page_id,)
+    ).fetchone()
+    if row is None or str(row[0] or "") != "draft":
+        return False
+    cur = conn.execute(
+        "UPDATE wiki_pages SET status='active', updated_at=? WHERE page_id=? AND status='draft'",
+        (_now_iso(), page_id),
+    )
+    if cur.rowcount and cur.rowcount > 0:
+        conn.commit()
+        return True
+    return False
+
+
 def delete_page(conn: sqlite3.Connection, page_id: str) -> bool:
     """删除页面（级联删除关联链接）。"""
     cur = conn.execute("SELECT 1 FROM wiki_pages WHERE page_id=?", (page_id,))
