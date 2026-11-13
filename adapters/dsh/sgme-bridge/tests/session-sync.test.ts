@@ -20,13 +20,22 @@ interface MockCtx {
   logger: { info: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> }
 }
 
-function makeMockCtx(): MockCtx & { handlerRef: { current: ((...args: unknown[]) => void) | null } } {
+function makeMockCtx(): MockCtx & {
+  handlerRef: { current: ((...args: unknown[]) => void) | null }
+  handlers: Record<string, (...args: unknown[]) => void>
+} {
   const handlerRef: { current: ((...args: unknown[]) => void) | null } = { current: null }
+  const handlers: Record<string, (...args: unknown[]) => void> = {}
   return {
     handlerRef,
-    on: vi.fn((_event: string, handler: (...args: unknown[]) => void) => {
-      handlerRef.current = handler
-      return () => { handlerRef.current = null }
+    handlers,
+    on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+      handlers[event] = handler
+      if (event === 'session/event') handlerRef.current = handler
+      return () => {
+        delete handlers[event]
+        if (event === 'session/event') handlerRef.current = null
+      }
     }),
     logger: {
       info: vi.fn(),
@@ -393,5 +402,62 @@ describe('session-sync 自进化触发', () => {
     ctx.handlerRef.current?.(ev('turn/end', 2000, { turn: 1 }))
     await flushMicrotasks()
     expect(evolve).not.toHaveBeenCalled()
+  })
+})
+
+// ---------- 2026-11-13：会话身份绑定（避免长驻进程内多会话混写） ----------
+
+describe('session identity（turn/start header）', () => {
+  it('header.id 决定 session_key（去掉 session- 前缀）', async () => {
+    const ctx = makeMockCtx()
+    const client = makeMockClient()
+    registerSessionSync(ctx, client, { agentId: 'dsh', syncOnTurnEnd: true, turnBatchSize: 1 })
+
+    ctx.handlers['turn/start']!({ agent: { session: { header: { id: 'session-abc-123' } } } })
+    ctx.handlerRef.current!(turnStartEvent(1000))
+    ctx.handlerRef.current!(userMessageEvent(1100, '你好'))
+    ctx.handlerRef.current!(turnEndEvent(2000))
+    await flushMicrotasks()
+
+    expect(client.append).toHaveBeenCalledTimes(1)
+    expect(client.append).toHaveBeenCalledWith(expect.objectContaining({
+      session_key: 'dsh-abc-123',
+    }))
+  })
+
+  it('同一进程切换会话 → session_key 随之切换，不再混写', async () => {
+    const ctx = makeMockCtx()
+    const client = makeMockClient()
+    registerSessionSync(ctx, client, { agentId: 'dsh', syncOnTurnEnd: true, turnBatchSize: 1 })
+
+    ctx.handlers['turn/start']!({ agent: { session: { header: { id: 'session-s1' } } } })
+    ctx.handlerRef.current!(turnStartEvent(1000))
+    ctx.handlerRef.current!(userMessageEvent(1100, '第一条'))
+    ctx.handlerRef.current!(turnEndEvent(2000))
+    await flushMicrotasks()
+
+    ctx.handlers['turn/start']!({ agent: { session: { header: { id: 'session-s2' } } } })
+    ctx.handlerRef.current!(turnStartEvent(3000))
+    ctx.handlerRef.current!(userMessageEvent(3100, '第二条'))
+    ctx.handlerRef.current!(turnEndEvent(4000))
+    await flushMicrotasks()
+
+    const calls = (client.append as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls
+    expect(calls.map((c) => c[0].session_key)).toEqual(['dsh-s1', 'dsh-s2'])
+  })
+
+  it('无 header 时回退到首条消息时间戳（旧行为不回归）', async () => {
+    const ctx = makeMockCtx()
+    const client = makeMockClient()
+    registerSessionSync(ctx, client, { agentId: 'dsh', syncOnTurnEnd: true, turnBatchSize: 1 })
+
+    ctx.handlerRef.current!(turnStartEvent(1000))
+    ctx.handlerRef.current!(userMessageEvent(1100, '你好'))
+    ctx.handlerRef.current!(turnEndEvent(2000))
+    await flushMicrotasks()
+
+    expect(client.append).toHaveBeenCalledWith(expect.objectContaining({
+      session_key: expect.stringMatching(/^dsh-\d+$/),
+    }))
   })
 })

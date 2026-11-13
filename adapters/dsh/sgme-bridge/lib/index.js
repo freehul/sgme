@@ -6682,6 +6682,39 @@ function registerSessionSync(ctx, client, config) {
 	let currentTurnStartMs;
 	let currentTurnId;
 	let sessionKey;
+	let sessionIdentity;
+	/** 从 turn/start 等 hook 载荷中取 DSH 会话身份（header.id / createdAt）。 */
+	function pickSessionIdentity(args) {
+		const seen = /* @__PURE__ */ new Set();
+		const visit = (v, depth) => {
+			if (!v || typeof v !== "object" || depth > 5 || seen.has(v)) return void 0;
+			seen.add(v);
+			const o = v;
+			const header = (o.session ?? o.agent?.session)?.header;
+			if (header) {
+				const cand = header.id ?? header.sessionId ?? header.session_id ?? header.createdAt;
+				if (typeof cand === "string" && cand.trim()) return cand.trim();
+				if (typeof cand === "number" && Number.isFinite(cand)) return String(cand);
+			}
+			for (const key of [
+				"agent",
+				"session",
+				"data",
+				"event"
+			]) {
+				const r = visit(o[key], depth + 1);
+				if (r) return r;
+			}
+		};
+		for (const a of args) {
+			const r = visit(a, 0);
+			if (r) return r;
+		}
+	}
+	/** header.id 常见形态 session-<uuid>；去掉前缀保持 L0 key 简短。 */
+	function normalizeSessionIdentity(id) {
+		return id.replace(/^session-/, "");
+	}
 	/** 从事件 args 中提取 event 对象（兼容 (event) / (session, event) 形态）。 */
 	function pickEvent(args) {
 		for (const a of args) if (typeof a === "object" && a !== null && "type" in a) return a;
@@ -6795,9 +6828,20 @@ function registerSessionSync(ctx, client, config) {
 			default: return;
 		}
 	};
-	const dispose = ctx.on("session/event", handler);
+	const disposeEvent = ctx.on("session/event", handler);
+	const disposeIdentity = ctx.on("turn/start", (...args) => {
+		const id = pickSessionIdentity(args);
+		if (!id) return;
+		if (sessionIdentity !== id) {
+			sessionIdentity = id;
+			sessionKey = normalizeSessionIdentity(id);
+		}
+	});
 	ctx.logger.info("[SGME session-sync] 已注册 v1.1 累积式同步监听（user/assistant/tool/turn）");
-	return dispose;
+	return () => {
+		disposeEvent();
+		disposeIdentity();
+	};
 }
 /**
 * 同步单个 turn 到 SGME。
