@@ -61,15 +61,50 @@ def _redact_generic(m: "re.Match[str]") -> str:
     return f"{m.group(1)}<REDACTED>{m.group(3)}"
 
 
+# R3（2026-11-13）：裸 token 形态补漏——
+# ①「关键字 + 空白 + 高熵值」：原通用兜底只认 [:＝] 分隔，"token XXX" 空格形态漏擦。
+#    值阈值 20 位（高于通用兜底的 16，降低把「token 说明文字」误擦的概率）。
+_KEYWORD_SPACE_SECRET_PATTERN = re.compile(
+    r"(?i)(\b(?:access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer|token|secret)\b[ \t]+)"
+    r"([A-Za-z0-9_\-.]{20,})"
+)
+
+# ② 裸高熵十六进制串（≥48 位，且数字与 a-f 字母同时出现）——64/128 位十六进制
+#    key 的常见形态；阈值取 48 避开 git 40 位 commit hash 与 32 位 md5，
+#    降低误擦正常正文（提交号/摘要值）的风险。
+_HEX_SECRET_PATTERN = re.compile(r"(?<![0-9A-Za-z_])[0-9a-fA-F]{48,}(?![0-9A-Za-z_])")
+
+
+def _redact_keyword_space(m: "re.Match[str]") -> str:
+    """关键字 + 空白形态替换：保留关键字与空白，只擦值。"""
+    return f"{m.group(1)}<REDACTED>"
+
+
+def _redact_hex(m: "re.Match[str]") -> str:
+    """裸十六进制替换：仅当同时含数字与 a-f 字母（真高熵）才擦。
+
+    纯数字长串（时间戳/ID）与纯字母串（全 a-f 的说明词）不处理，避免误伤。
+    """
+    value = m.group(0)
+    if re.search(r"\d", value) and re.search(r"[a-fA-F]", value):
+        return "<REDACTED>"
+    return value
+
+
 def redact_secrets(text: str) -> str:
     """擦除文本中的明文密钥值，防工具输出带 key 进 L0。
 
-    只替换「key 前缀 + 长随机串」的 key 值本身，不误伤变量名
-    （DEEPSEEK_API_KEY / VOLC_API_KEY 等）与占位符说明；
-    另有一层 keyword[:=]value 通用兜底（B196/F-6）。
+    覆盖四类形态：
+    - 前缀式 key（sk-/ark-/agt_/ghp_ 等，见 ``_SECRET_PATTERN``）；
+    - ``keyword[:=]value`` 通用兜底（B196/F-6）；
+    - ``关键字 + 空白 + 高熵值``（R3：``token XXX`` 空格形态）；
+    - 裸高熵十六进制串（R3：≥48 位且数字/字母混合）。
+    只擦值本身，不误伤变量名（DEEPSEEK_API_KEY / VOLC_API_KEY 等）与占位符说明。
     """
     text = _SECRET_PATTERN.sub("<REDACTED>", text)
-    return _GENERIC_SECRET_PATTERN.sub(_redact_generic, text)
+    text = _GENERIC_SECRET_PATTERN.sub(_redact_generic, text)
+    text = _KEYWORD_SPACE_SECRET_PATTERN.sub(_redact_keyword_space, text)
+    return _HEX_SECRET_PATTERN.sub(_redact_hex, text)
 
 
 # ---------- 数据结构 ----------

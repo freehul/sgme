@@ -315,3 +315,26 @@ def test_redact_secrets_covers_agt_and_generic():
     assert redact_secrets("今天聊聊架构与部署") == "今天聊聊架构与部署"
     assert redact_secrets("api_key=短值") == "api_key=短值"
     assert redact_secrets("token: <YOUR_API_KEY>") == "token: <YOUR_API_KEY>"
+
+
+def test_redact_secrets_covers_bare_token_forms():
+    """R3：空格形态 token 与裸高熵十六进制被擦，普通长串不误伤。"""
+    from sgme.raw.store import redact_secrets
+
+    # ① 关键字 + 空格 + 高熵值（原通用兜底只认 [:＝]）
+    assert redact_secrets("token abcdefghijklmnopqrstuvwxyz012345") == "token <REDACTED>"
+    assert redact_secrets("Bearer abcdefghijklmnopqrstuvwxyz012345") == "Bearer <REDACTED>"
+    assert redact_secrets("access_token abcdefghijklmnopqrstuvwxyz012345") == "access_token <REDACTED>"
+
+    # ② 裸高熵十六进制（64 位，数字与 a-f 混合）
+    hex64 = "0123456789abcdef" * 4
+    assert redact_secrets(f"值 {hex64} 结束") == "值 <REDACTED> 结束"
+
+    # ③ 不误伤：40 位 commit hash、32 位 md5、纯数字长串、普通说明文字
+    sha40 = "0123456789abcdef0123456789abcdef01234567"
+    assert redact_secrets(f"commit {sha40}") == f"commit {sha40}"
+    md5_32 = "0123456789abcdef0123456789abcdef"
+    assert redact_secrets(f"md5 {md5_32}") == f"md5 {md5_32}"
+    digits = "1" * 64
+    assert redact_secrets(f"id {digits}") == f"id {digits}"
+    assert redact_secrets("token 只有说明文字") == "token 只有说明文字"
