@@ -1468,6 +1468,7 @@ def search_skills_db(
                         "source": row.get("source") or "git",
                         "description": row.get("description") or "",
                         "category": row.get("category"),
+                        "status": row.get("status"),
                     }]
                 break
     routes = ["skills_rrf"] if (vec and set(fused) & set(vec)) else ["skills_bm25"]
