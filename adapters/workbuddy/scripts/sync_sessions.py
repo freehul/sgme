@@ -294,6 +294,9 @@ def sync_one(client, row: dict, state: dict, projects_dir: Path, *, dry_run: boo
     except SGMEError as exc:
         item.update({"status": "failed", "reason": f"append_error: {exc}"})
         return item
+    except Exception as exc:  # noqa: BLE001 —— 网络层断连（如 WinError 10054）不应中断整批
+        item.update({"status": "failed", "reason": f"append_error: {type(exc).__name__}: {exc}"})
+        return item
 
     if isinstance(resp, dict) and resp.get("file_id"):
         item["file_id"] = resp["file_id"]
