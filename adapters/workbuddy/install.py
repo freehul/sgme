@@ -165,7 +165,8 @@ def install(skills_root: Path) -> Path:
             shutil.copy2(src, dest / name)
     # T-406 起 sgme_client.py 依赖同级 skill_cache.py（两级技能缓存）。
     # 漏复制会让部署副本直接 ImportError、CLI 兜底整条链路不可用；新增依赖必须同步此清单。
-    for name in ("sgme_client.py", "care_watch.py", "selfcheck.py", "skill_cache.py"):
+    for name in ("sgme_client.py", "care_watch.py", "selfcheck.py", "skill_cache.py",
+                 "sync_sessions.py"):
         shutil.copy2(SCRIPT_DIR / name, dest / "scripts" / name)
     for loc in (SRC_DIR / "locales").glob("*.json"):
         shutil.copy2(loc, dest / "locales" / loc.name)

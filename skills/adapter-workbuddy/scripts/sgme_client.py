@@ -560,13 +560,24 @@ class SGME:
                 "api_compat": api_compat, "schema_version": schema}
 
     def append(self, session_key: str, text: str, role: str = "user",
-               agent_id: str | None = None, started_at: str | None = None) -> dict:
+               agent_id: str | None = None, started_at: str | None = None,
+               metadata: dict | None = None, raw: bool = False) -> dict:
+        """写 L0。
+
+        Args:
+            raw: True = ``text`` 已是完整 L0 正文（多消息块，如 sync_sessions.py
+                的会话同步），不再套单条 ``# ts role`` 头；False = 单条消息。
+            metadata: 仅对新文件生效（服务端只在新文件写 metadata），用于 D1 打标。
+        """
         ts = started_at or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        content = f"# {ts} {role}\n{text}"
-        return self._http("POST", "/v1/append", {
+        content = text if raw else f"# {ts} {role}\n{text}"
+        body = {
             "session_key": session_key, "started_at": ts,
             "content": content, "agent_id": agent_id or self.agent_id,
-        })
+        }
+        if metadata:
+            body["metadata"] = metadata
+        return self._http("POST", "/v1/append", body)
 
     def inject(self, mode: str = "daily", max_tokens: int | None = None):
         body = {"mode": mode}
