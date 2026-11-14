@@ -342,6 +342,11 @@ def list_all_sha(conn: sqlite3.Connection) -> dict[str, str]:
     return {r["name"]: r["sha256"] for r in conn.execute("SELECT name, sha256 FROM skills")}
 
 
+def all_skill_names(conn: sqlite3.Connection) -> set[str]:
+    """主表全部技能名（T5c apply_skill_names 撞名校验用）。"""
+    return {r[0] for r in conn.execute("SELECT name FROM skills").fetchall()}
+
+
 def diff_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> dict[str, list[str]]:
     """比对源记录与库内指纹，返回需要变更的名字集合。
 

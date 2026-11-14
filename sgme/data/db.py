@@ -859,6 +859,8 @@ def connect_skills(data_dir: str | Path | None = None) -> sqlite3.Connection:
     # 再补 skills.status（T-402 的函数会先查列是否存在，已补则跳过，不重复 ALTER）
     _migrate_skill_uses_strength(conn)
     _migrate_skills_uses_gate(conn)
+    # T5c（2026-11-15）：skill_candidates 补命名三列（suggested_name/naming_model/named_at）
+    _migrate_skill_candidates_naming(conn)
     # FTS5 虚表 + 同步触发器（幂等；与 wiki 的 init_wiki_fts 同职责，
     # 但技能库体量小且无需历史重建，直接在连接时就绪，避免调用方漏调）
     conn.executescript(SKILLS_FTS_DDL)
@@ -984,6 +986,11 @@ CREATE TABLE IF NOT EXISTS skill_candidates (
   reviewer        TEXT,
   source          TEXT NOT NULL DEFAULT 'memory_route',
   content_sha256  TEXT,
+  -- T5c（2026-11-15）：语义命名三件套（apply_skill_names.py 写入；
+  -- promote 时优先 suggested_name，见 operations/skill_candidates.py T7）
+  suggested_name  TEXT,
+  naming_model    TEXT,
+  named_at        TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
   reviewed_at     TEXT);
@@ -1168,6 +1175,30 @@ def _migrate_skills_uses_gate(conn: sqlite3.Connection) -> bool:
                 "ALTER TABLE skill_uses ADD COLUMN strength TEXT NOT NULL DEFAULT 'weak'"
             )
             changed = True
+    if changed:
+        conn.commit()
+    return changed
+
+
+def _migrate_skill_candidates_naming(conn: sqlite3.Connection) -> bool:
+    """老库迁移（T5c，2026-11-15）：skill_candidates 补命名三列。
+
+    suggested_name = 语义名（命名流程写入，promote 优先采用）；
+    naming_model = 命名来源模型（如 zcode-glm）；named_at = 命名时间。
+
+    Returns:
+        True = 本次发生了补列；False = 无需迁移（新库或已迁移过）。
+    """
+    changed = False
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_candidates'"
+    ).fetchone()
+    if has_table:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(skill_candidates)").fetchall()]
+        for col in ("suggested_name", "naming_model", "named_at"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE skill_candidates ADD COLUMN {col} TEXT")
+                changed = True
     if changed:
         conn.commit()
     return changed

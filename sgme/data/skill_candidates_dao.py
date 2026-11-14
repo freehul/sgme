@@ -202,6 +202,40 @@ def update_status(
     return cur.rowcount == 1
 
 
+def set_candidate_naming(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    name: str,
+    model: str,
+    named_at: str,
+) -> bool:
+    """写语义命名三件套（T5c，2026-11-15）：suggested_name / naming_model / named_at。
+
+    供 apply_skill_names.py 落库；不触碰审核状态与 updated_at（命名是元数据，
+    named_at 自带审计时间）。
+    """
+    cur = conn.execute(
+        """
+        UPDATE skill_candidates
+           SET suggested_name=?, naming_model=?, named_at=?
+         WHERE memory_id=?
+        """,
+        (name, model, named_at, memory_id),
+    )
+    return cur.rowcount == 1
+
+
+def memory_ids_by_content_sha(conn: sqlite3.Connection, sha: str) -> list[str]:
+    """同指纹候选的 memory_id 全集（T5c 广播用：同正文共用一个名字）；空指纹返回空。"""
+    if not sha:
+        return []
+    return [
+        r[0] for r in conn.execute(
+            "SELECT memory_id FROM skill_candidates WHERE content_sha256=?", (sha,)
+        ).fetchall()
+    ]
+
+
 def summary(conn: sqlite3.Connection, high_threshold: float = 0.8) -> dict[str, Any]:
     """候选池总览：{total, by_status, high_confidence}。"""
     by_status = {
