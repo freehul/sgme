@@ -129,10 +129,15 @@ def run(
     conn.row_factory = sqlite3.Row
     try:
         if apply:
-            # 老库补命名三列（幂等；dry-run 模式零写入不做迁移）
-            from sgme.data.db import _migrate_skill_candidates_naming
+            # 老库补列（幂等；dry-run 模式零写入不做迁移）：
+            # T5c 命名三列 + T9 三分类两列——本脚本要写的列必须先就位
+            from sgme.data.db import (
+                _migrate_skill_candidates_naming,
+                _migrate_skill_candidates_triage_columns,
+            )
 
             _migrate_skill_candidates_naming(conn)
+            _migrate_skill_candidates_triage_columns(conn)
 
         used_names: set[str] = skills_dao.all_skill_names(conn)
         named_at = _now_iso()
