@@ -1,32 +1,44 @@
 # -*- coding: utf-8 -*-
-"""scripts/apply_skill_names.py：T5c 命名导入校验落库（纯本地脚本，零 LLM）。
+"""scripts/apply_skill_names.py：T5c/T10 命名+三分类导入校验落库（纯本地脚本，零 LLM）。
 
 用途
 ----
-把命名阶段（T5b，zcode 会话内逐片生成）产出的 ``part-XXX.names.json`` 校验后
-写回 skills.db 的 ``skill_candidates.suggested_name``：
+把命名阶段（T5b，zcode 会话内逐片生成）产出的 ``part-XXX.meta.json`` 校验后
+写回 skills.db 的 ``skill_candidates``：
 
     python scripts/apply_skill_names.py --dir tmp/naming [--db <path>]            # dry-run
     python scripts/apply_skill_names.py --dir tmp/naming --apply                  # 真写
     python scripts/apply_skill_names.py --dir tmp/naming --apply --overwrite     # 覆盖已命名
 
+输入格式（T10 起：**meta.json**，name + kind + domain 一趟生成）
+----
+    {"part": 1, "items": [{"i": 0, "memory_id": "...", "name": "...",
+                            "kind": "skill|wiki|discard", "domain": "<白名单>",
+                            "why": "..."}]}
+旧 ``*.names.json``（v2 纯命名格式）**忽略并提示**，不静默当合法输入。
+
 校验规则（**不信任模型输出格式**，任一不过该条计 rejected，不写库、不中断整批）
 ----
 | 校验项 | 规则 |
 |---|---|
-| 数量 | names 条数 == 输入 items 条数（否则该片整体拒收） |
+| 数量 | items 条数 == 输入 items 条数（否则该片整体拒收） |
 | 对齐 | 每个 i 都在输入里，且 memory_id 与输入该 i 完全一致（防串号） |
-| 规范 | ``^[a-z0-9]+(-[a-z0-9]+)*$`` 且 ≤48 且不以 ``exp-`` 开头 |
+| 规范 | name ``^[a-z0-9]+(-[a-z0-9]+)*$`` 且 ≤48 且不以 ``exp-`` 开头 |
+| kind | ∈ {``skill``（进技能库）/ ``wiki``（进知识库）/ ``discard``（不沉淀）} |
+| domain | ∈ 24 领域白名单 ∪ {``other``}（禁止 tech_stack 等记忆维度 id） |
 | 重名 | 与 skills 主表比对 + 本次导入内去重：撞名自动加 ``-2``/``-3`` |
 | 同指纹 | 同 content_sha256 本次只收一条（一份正文一个名字，其余靠广播） |
 
 写入语义
 ----
-- 写 ``suggested_name`` + ``naming_model='zcode-glm'`` + ``named_at``；
-- **按 content_sha256 广播**：同指纹的其他候选（同一正文）共用这个名字一并写
+- 写 ``suggested_name`` + ``suggested_kind`` + ``suggested_domain`` +
+  ``naming_model='zcode-glm'`` + ``named_at``（五字段一并原子落库）；
+- **按 content_sha256 广播**：同指纹的其他候选（同一正文）共用名字与分类
   （dup_shares 计数）；已有 suggested_name 的行默认跳过，``--overwrite`` 才覆盖；
-- 默认 dry-run（零写入），``--apply`` 才真写；老库缺命名三列时 apply 前先跑
-  幂等迁移（``db._migrate_skill_candidates_naming``）。
+- 默认 dry-run（零写入），``--apply`` 才真写；老库缺列时 apply 前先跑幂等迁移。
+
+汇总：``{parts, items, applied, rejected, conflicts, dup_shares, skipped_named,
+by_kind, by_domain, ignored_names_files, rejected_details}``。
 
 退出码：0 = 全部干净；1 = 有 rejected（rejected 是信号，报给 lead 一起看，
 不要改数据迁就脚本）；2 = 用法/路径错误。
@@ -51,6 +63,19 @@ NAME_MAX_LEN = 48
 #: 命名来源模型（T5b 的命名本体是 zcode 会话内置 GLM）
 NAME_MODEL = "zcode-glm"
 MAX_REJECTED_DETAILS = 20
+
+#: T10 三分类（三个去向，不是三档质量）：判据见任务清单 §1.2
+VALID_KINDS: tuple[str, ...] = ("skill", "wiki", "discard")
+
+#: T10 领域白名单（24 领域 ∪ other；来源：真技能主表现存领域词。
+#: 禁止把 tech_stack / environment 这类记忆维度 id 当 domain 写入）
+DOMAIN_WHITELIST: frozenset[str] = frozenset({
+    "software-development", "hermes", "ai", "creative", "methodology", "github",
+    "design", "research", "network", "social-media", "devops", "tool",
+    "verification", "data", "security", "adapter", "media", "windows",
+    "email", "productivity", "linux", "business", "video-production",
+    "orchestration", "other",
+})
 
 
 def _now_iso() -> str:
@@ -80,18 +105,21 @@ def _dedupe_name(name: str, used: set[str]) -> str:
         n += 1
 
 
-def _find_pairs(naming_dir: Path) -> tuple[list[tuple[Path, Path]], list[Path]]:
-    """names 文件与输入分片配对；无配对输入的 names 记孤儿。"""
+def _find_pairs(
+    naming_dir: Path,
+) -> tuple[list[tuple[Path, Path]], list[Path], list[Path]]:
+    """meta 文件与输入分片配对；无配对输入的 meta 记孤儿；旧 names.json 记忽略。"""
     pairs: list[tuple[Path, Path]] = []
     orphans: list[Path] = []
-    for names_path in sorted(naming_dir.glob("part-*.names.json")):
-        # part-001.names.json -> part-001.json
-        part_path = naming_dir / f"{names_path.name[:-len('.names.json')]}.json"
+    for meta_path in sorted(naming_dir.glob("part-*.meta.json")):
+        # part-001.meta.json -> part-001.json
+        part_path = naming_dir / f"{meta_path.name[:-len('.meta.json')]}.json"
         if part_path.exists():
-            pairs.append((part_path, names_path))
+            pairs.append((part_path, meta_path))
         else:
-            orphans.append(names_path)
-    return pairs, orphans
+            orphans.append(meta_path)
+    legacy: list[Path] = sorted(naming_dir.glob("part-*.names.json"))
+    return pairs, orphans, legacy
 
 
 def run(
@@ -118,6 +146,9 @@ def run(
         "conflicts": 0,
         "dup_shares": 0,
         "skipped_named": 0,
+        "by_kind": {},
+        "by_domain": {},
+        "ignored_names_files": [],
         "rejected_details": [],
     }
 
@@ -141,28 +172,31 @@ def run(
 
         used_names: set[str] = skills_dao.all_skill_names(conn)
         named_at = _now_iso()
-        pairs, orphans = _find_pairs(Path(naming_dir))
-        for names_path in orphans:
-            reject(f"{names_path.name}: 无配对的输入分片文件，整份跳过")
+        pairs, orphans, legacy = _find_pairs(Path(naming_dir))
+        # T10：旧 *.names.json 是 v2 遗留格式——显式忽略并提示，不当合法输入
+        for names_path in legacy:
+            summary["ignored_names_files"].append(names_path.name)
+        for meta_path in orphans:
+            reject(f"{meta_path.name}: 无配对的输入分片文件，整份跳过")
 
-        for part_path, names_path in pairs:
+        for part_path, meta_path in pairs:
             try:
                 items = (json.loads(part_path.read_text(encoding="utf-8"))
                          .get("items") or [])
-                names = (json.loads(names_path.read_text(encoding="utf-8"))
-                         .get("names") or [])
+                metas = (json.loads(meta_path.read_text(encoding="utf-8"))
+                         .get("items") or [])
             except Exception as e:  # noqa: BLE001——坏文件只拒这一片
-                reject(f"{names_path.name}: 读取/解析失败（{e}）")
+                reject(f"{meta_path.name}: 读取/解析失败（{e}）")
                 continue
 
             summary["parts"] += 1
             summary["items"] += len(items)
-            if len(names) != len(items):
+            if len(metas) != len(items):
                 # 数量不符 → 该片整体拒收（逐条对齐已不可信）；明细行不再重复计数
                 for _it in items:
                     summary["rejected"] += 1
                 summary["rejected_details"].append(
-                    f"{names_path.name}: 数量不符（names {len(names)} != items"
+                    f"{meta_path.name}: 数量不符（meta {len(metas)} != items"
                     f" {len(items)}），整片拒收"
                 )
                 continue
@@ -173,42 +207,60 @@ def run(
             }
             claimed_shas: dict[str, str] = {}  # sha -> 本次已收的 memory_id
 
-            for entry in names:
+            for entry in metas:
                 if not isinstance(entry, dict):
-                    reject(f"{names_path.name}: 非法条目（非对象）")
+                    reject(f"{meta_path.name}: 非法条目（非对象）")
                     continue
                 idx = entry.get("i")
                 mid = str(entry.get("memory_id") or "")
                 name = str(entry.get("name") or "").strip()
+                kind = str(entry.get("kind") or "").strip()
+                domain = str(entry.get("domain") or "").strip()
                 input_item = by_index.get(idx) if isinstance(idx, int) else None
                 if input_item is None:
-                    reject(f"{names_path.name}: i={idx!r} 不在输入分片里")
+                    reject(f"{meta_path.name}: i={idx!r} 不在输入分片里")
                     continue
                 input_mid = str(input_item.get("memory_id") or "")
                 if mid != input_mid:
-                    # 串号：names 的 memory_id 与输入该 i 的不一致
+                    # 串号：meta 的 memory_id 与输入该 i 的不一致
                     reject(
-                        f"{names_path.name}: i={idx} memory_id 串号"
-                        f"（names={mid or '空'} != 输入={input_mid}）"
+                        f"{meta_path.name}: i={idx} memory_id 串号"
+                        f"（meta={mid or '空'} != 输入={input_mid}）"
                     )
                     continue
                 if not _is_valid_name(name):
                     reject(
-                        f"{names_path.name}: i={idx} 名字非法: {name!r}"
+                        f"{meta_path.name}: i={idx} 名字非法: {name!r}"
                         f"（规则：{NAME_RE.pattern}，≤{NAME_MAX_LEN}，不以 exp- 开头）"
+                    )
+                    continue
+                if kind not in VALID_KINDS:
+                    reject(
+                        f"{meta_path.name}: i={idx} kind 非法: {kind!r}"
+                        f"（合法值: {', '.join(VALID_KINDS)}）"
+                    )
+                    continue
+                if domain not in DOMAIN_WHITELIST:
+                    reject(
+                        f"{meta_path.name}: i={idx} domain 非法: {domain!r}"
+                        f"（须在 24 领域白名单 ∪ other，禁止记忆维度 id）"
                     )
                     continue
                 row = skill_candidates_dao.get_candidate(conn, input_mid)
                 if row is None:
-                    reject(f"{names_path.name}: i={idx} 候选不存在: {input_mid}")
+                    reject(f"{meta_path.name}: i={idx} 候选不存在: {input_mid}")
                     continue
                 sha = str(row.get("content_sha256") or "")
                 if sha and sha in claimed_shas:
                     reject(
-                        f"{names_path.name}: i={idx} 同指纹已在本次导入收过"
+                        f"{meta_path.name}: i={idx} 同指纹已在本次导入收过"
                         f"（{claimed_shas[sha]}），一份正文一个名字"
                     )
                     continue
+
+                # T10：两维分布按通过校验的条目计（dry-run/apply 同口径）
+                summary["by_kind"][kind] = summary["by_kind"].get(kind, 0) + 1
+                summary["by_domain"][domain] = summary["by_domain"].get(domain, 0) + 1
 
                 final = _dedupe_name(name, used_names)
                 if final != name:
@@ -232,6 +284,7 @@ def run(
                 if apply:
                     skill_candidates_dao.set_candidate_naming(
                         conn, input_mid, final, NAME_MODEL, named_at,
+                        kind=kind, domain=domain,
                     )
                     summary["applied"] += 1
                 for target_mid in targets[1:]:
@@ -244,6 +297,7 @@ def run(
                     if apply:
                         skill_candidates_dao.set_candidate_naming(
                             conn, target_mid, final, NAME_MODEL, named_at,
+                            kind=kind, domain=domain,
                         )
         if apply:
             conn.commit()

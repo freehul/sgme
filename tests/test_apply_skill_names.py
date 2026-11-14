@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""tests/test_apply_skill_names.py：T5c 命名导入脚本（2026-11-15）。
+"""tests/test_apply_skill_names.py：T5c 命名导入脚本（2026-11-15）＋T10 三分类升级。
 
-验收（任务清单-技能自动命名-20261115.md T5c）：
+T5c 验收（任务清单-技能自动命名-20261115.md）：
 1. 正常路径：写回 suggested_name / naming_model / named_at；默认 dry-run 零写入；
 2. **串号检测**：names 里 memory_id 与输入该 i 的不符 → 该条 rejected；
 3. 数量不符 → 该片整体 rejected；
@@ -11,7 +11,15 @@
 7. 同 sha 的多条候选共用名（按 content_sha256 广播，dup_shares 计数）；
 8. 已有 suggested_name 默认跳过，``--overwrite`` 才覆盖；
 9. 老库（无命名三列）``--apply`` 时自动补列（幂等迁移）；
-10. 孤儿 names 文件（无配对 part）→ 跳过并报告，不写库。
+10. 孤儿 meta 文件（无配对 part）→ 跳过并报告，不写库。
+
+T10 验收（任务清单-候选三分类-20261115.md）：
+11. 输入改 ``part-XXX.meta.json``（name + kind + domain）；
+12. 非法 kind（不在 skill/wiki/discard）→ rejected；
+13. 非法 domain（不在 24 白名单 ∪ other，如 ``tech_stack``/中文）→ rejected；
+14. 三列一并写：suggested_name / suggested_kind / suggested_domain；
+15. 旧 ``*.names.json`` 被忽略并提示（不静默当合法输入）；
+16. 汇总含 by_kind / by_domain 分布。
 
 全部离线：临时 sqlite，不触碰生产库。
 """
@@ -97,9 +105,20 @@ def _write_part(naming_dir: Path, num: int, memory_ids: list[str], shas: list[st
     return payload
 
 
-def _write_names(naming_dir: Path, num: int, entries: list[dict]):
-    payload = {"part": num, "names": entries}
-    (naming_dir / f"part-{num:03d}.names.json").write_text(
+def _write_meta(
+    naming_dir: Path, num: int, entries: list[dict],
+    *, kind: str = "skill", domain: str = "other",
+):
+    """写 part-XXX.meta.json（T10 契约：name + kind + domain，缺省补合法值）。"""
+    naming_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "part": num,
+        "items": [
+            {**e, "kind": e.get("kind", kind), "domain": e.get("domain", domain)}
+            for e in entries
+        ],
+    }
+    (naming_dir / f"part-{num:03d}.meta.json").write_text(
         json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
@@ -116,7 +135,7 @@ def test_apply_writes_naming_fields(skills_db, tmp_path):
     _insert_candidate(skills_db, "m-2", sha="sha-2")
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-1", "m-2"], ["sha-1", "sha-2"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-1", "name": "lmstudio-v1-prefix-404", "why": "w"},
         {"i": 1, "memory_id": "m-2", "name": "robocopy-symlink-broken", "why": "w"},
     ])
@@ -134,7 +153,7 @@ def test_dry_run_writes_nothing(skills_db, tmp_path):
     _insert_candidate(skills_db, "m-1", sha="sha-1")
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-1"], ["sha-1"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-1", "name": "valid-name-here", "why": "w"}])
     summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
                       apply=False, overwrite=False)
@@ -149,7 +168,7 @@ def test_count_mismatch_rejects_whole_part(skills_db, tmp_path):
     _insert_candidate(skills_db, "m-2", sha="sha-2")
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-1", "m-2"], ["sha-1", "sha-2"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-1", "name": "only-one-name", "why": "w"}])
     summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
                       apply=True, overwrite=False)
@@ -162,7 +181,7 @@ def test_wrong_memory_id_rejects_item_only(skills_db, tmp_path):
     _insert_candidate(skills_db, "m-2", sha="sha-2")
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-1", "m-2"], ["sha-1", "sha-2"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-OTHER", "name": "swapped-id-name", "why": "w"},  # 串号
         {"i": 1, "memory_id": "m-2", "name": "correct-item-name", "why": "w"},
     ])
@@ -180,7 +199,7 @@ def test_invalid_names_rejected(skills_db, tmp_path, bad):
     _insert_candidate(skills_db, "m-1", sha="sha-1")
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-1"], ["sha-1"])
-    _write_names(naming, 1, [{"i": 0, "memory_id": "m-1", "name": bad, "why": "w"}])
+    _write_meta(naming, 1, [{"i": 0, "memory_id": "m-1", "name": bad, "why": "w"}])
     summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
                       apply=True, overwrite=False)
     assert summary["applied"] == 0 and summary["rejected"] == 1
@@ -194,7 +213,7 @@ def test_collision_with_skills_main_table_gets_suffix(skills_db, tmp_path):
     _insert_candidate(skills_db, "m-1", sha="sha-1")
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-1"], ["sha-1"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-1", "name": "taken-name", "why": "w"}])
     summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
                       apply=True, overwrite=False)
@@ -207,7 +226,7 @@ def test_internal_duplicate_gets_suffix(skills_db, tmp_path):
     _insert_candidate(skills_db, "m-2", sha="sha-2")
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-1", "m-2"], ["sha-1", "sha-2"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-1", "name": "same-name-twice", "why": "w"},
         {"i": 1, "memory_id": "m-2", "name": "same-name-twice", "why": "w"},
     ])
@@ -223,7 +242,7 @@ def test_same_sha_broadcast(skills_db, tmp_path):
     _insert_candidate(skills_db, "m-shadow", sha="sha-dup")  # 同正文另一条（不在分片里）
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-main"], ["sha-dup"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-main", "name": "shared-body-name", "why": "w"}])
     summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
                       apply=True, overwrite=False)
@@ -238,7 +257,7 @@ def test_already_named_skipped_unless_overwrite(skills_db, tmp_path):
     _insert_candidate(skills_db, "m-1", sha="sha-1", suggested_name="old-name")
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-1"], ["sha-1"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-1", "name": "brand-new-name", "why": "w"}])
     summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
                       apply=True, overwrite=False)
@@ -282,7 +301,7 @@ def test_old_schema_migrated_on_apply(tmp_path):
     conn.close()
     naming = tmp_path / "naming"
     _write_part(naming, 1, ["m-old"], ["sha-old"])
-    _write_names(naming, 1, [
+    _write_meta(naming, 1, [
         {"i": 0, "memory_id": "m-old", "name": "old-schema-name", "why": "w"}])
     summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
                       apply=True, overwrite=False)
@@ -298,12 +317,119 @@ def test_old_schema_migrated_on_apply(tmp_path):
 def test_orphan_names_file_skipped(skills_db, tmp_path):
     naming = tmp_path / "naming"
     naming.mkdir(parents=True)
-    _write_names(naming, 9, [
+    _write_meta(naming, 9, [
         {"i": 0, "memory_id": "m-x", "name": "orphan-name", "why": "w"}])
     summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
                       apply=True, overwrite=False)
     assert summary["parts"] == 0 and summary["applied"] == 0
     assert any("part-009" in detail for detail in summary["rejected_details"])
+
+
+# ---------- T10：三分类（kind / domain） ----------
+
+def test_meta_writes_three_columns(skills_db, tmp_path):
+    """合法 meta：suggested_name / suggested_kind / suggested_domain 三列一并写。"""
+    _insert_candidate(skills_db, "m-1", sha="sha-1")
+    naming = tmp_path / "naming"
+    _write_part(naming, 1, ["m-1"], ["sha-1"])
+    _write_meta(naming, 1, [
+        {"i": 0, "memory_id": "m-1", "name": "valid-meta-name", "why": "w",
+         "kind": "wiki", "domain": "ai"}])
+    summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
+                      apply=True, overwrite=False)
+    assert summary["applied"] == 1 and summary["rejected"] == 0
+    row = _row(skills_db, "m-1")
+    assert row["suggested_name"] == "valid-meta-name"
+    assert row["suggested_kind"] == "wiki"
+    assert row["suggested_domain"] == "ai"
+
+
+def test_broadcast_shares_kind_and_domain(skills_db, tmp_path):
+    """同 sha 广播行共用 name + kind + domain（同一正文同一分类）。"""
+    _insert_candidate(skills_db, "m-main", sha="sha-dup")
+    _insert_candidate(skills_db, "m-shadow", sha="sha-dup")
+    naming = tmp_path / "naming"
+    _write_part(naming, 1, ["m-main"], ["sha-dup"])
+    _write_meta(naming, 1, [
+        {"i": 0, "memory_id": "m-main", "name": "shared-triage-name", "why": "w",
+         "kind": "discard", "domain": "tool"}])
+    summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
+                      apply=True, overwrite=False)
+    assert summary["applied"] == 1 and summary["dup_shares"] == 1
+    row = _row(skills_db, "m-shadow")
+    assert row["suggested_kind"] == "discard" and row["suggested_domain"] == "tool"
+
+
+@pytest.mark.parametrize("bad_kind", ["knowledge", "SKILL", ""])
+def test_invalid_kind_rejected(skills_db, tmp_path, bad_kind):
+    _insert_candidate(skills_db, "m-1", sha="sha-1")
+    naming = tmp_path / "naming"
+    _write_part(naming, 1, ["m-1"], ["sha-1"])
+    _write_meta(naming, 1, [
+        {"i": 0, "memory_id": "m-1", "name": "kind-check-name", "why": "w",
+         "kind": bad_kind}])
+    summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
+                      apply=True, overwrite=False)
+    assert summary["applied"] == 0 and summary["rejected"] == 1
+    assert _row(skills_db, "m-1")["suggested_kind"] is None
+
+
+@pytest.mark.parametrize("bad_domain", ["tech_stack", "环境", "environment", ""])
+def test_invalid_domain_rejected(skills_db, tmp_path, bad_domain):
+    _insert_candidate(skills_db, "m-1", sha="sha-1")
+    naming = tmp_path / "naming"
+    _write_part(naming, 1, ["m-1"], ["sha-1"])
+    _write_meta(naming, 1, [
+        {"i": 0, "memory_id": "m-1", "name": "domain-check-name", "why": "w",
+         "domain": bad_domain}])
+    summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
+                      apply=True, overwrite=False)
+    assert summary["applied"] == 0 and summary["rejected"] == 1
+    assert _row(skills_db, "m-1")["suggested_domain"] is None
+
+
+def test_legacy_names_json_ignored_with_notice(skills_db, tmp_path):
+    """旧 *.names.json 被忽略并提示（不静默当合法输入）。"""
+    _insert_candidate(skills_db, "m-1", sha="sha-1")
+    naming = tmp_path / "naming"
+    _write_part(naming, 1, ["m-1"], ["sha-1"])
+    # 旧格式（v2 遗留）：应被忽略
+    (naming / "part-001.names.json").write_text(json.dumps({
+        "part": 1,
+        "names": [{"i": 0, "memory_id": "m-1", "name": "legacy-format-name", "why": "w"}],
+    }, ensure_ascii=False), encoding="utf-8")
+    # 新格式：正常收
+    _write_meta(naming, 1, [
+        {"i": 0, "memory_id": "m-1", "name": "new-format-name", "why": "w"}])
+    summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
+                      apply=True, overwrite=False)
+    assert summary["applied"] == 1 and summary["rejected"] == 0
+    assert summary["ignored_names_files"] == ["part-001.names.json"]
+    assert _row(skills_db, "m-1")["suggested_name"] == "new-format-name"
+
+
+def test_by_kind_by_domain_summary(skills_db, tmp_path):
+    """汇总含 by_kind / by_domain 两维分布（按通过校验的条目计）。"""
+    for i in range(4):
+        _insert_candidate(skills_db, f"m-{i}", sha=f"sha-{i}")
+    naming = tmp_path / "naming"
+    _write_part(naming, 1, ["m-0", "m-1", "m-2", "m-3"],
+                [f"sha-{i}" for i in range(4)])
+    _write_meta(naming, 1, [
+        {"i": 0, "memory_id": "m-0", "name": "name-a", "why": "w",
+         "kind": "skill", "domain": "ai"},
+        {"i": 1, "memory_id": "m-1", "name": "name-b", "why": "w",
+         "kind": "wiki", "domain": "ai"},
+        {"i": 2, "memory_id": "m-2", "name": "name-c", "why": "w",
+         "kind": "wiki", "domain": "windows"},
+        {"i": 3, "memory_id": "m-3", "name": "name-d", "why": "w",
+         "kind": "discard", "domain": "tool"},
+    ])
+    summary = app.run(naming_dir=naming, db_path=tmp_path / "skills.db",
+                      apply=True, overwrite=False)
+    assert summary["applied"] == 4
+    assert summary["by_kind"] == {"skill": 1, "wiki": 2, "discard": 1}
+    assert summary["by_domain"] == {"ai": 2, "windows": 1, "tool": 1}
 
 
 # ---------- db.py 列迁移（T5c 前置） ----------
