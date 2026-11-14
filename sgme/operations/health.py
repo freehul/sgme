@@ -371,19 +371,24 @@ def _vector_block(mem_conn: sqlite3.Connection, cfg: dict) -> dict[str, Any]:
 
 #: occurred_at 与 created_at 相等占比的告警阈值（>= 即告警）
 OCCURRED_EQUAL_RATIO_WARN = 0.5
-#: 样本下限：新库/小库不告警，避免噪音
+#: 样本下限：新库/小库不告警，避免噪音（存量口径）
 OCCURRED_MIN_SAMPLE = 100
+#: 增量样本下限（T4，7 天窗口）：新链路样本小也要能报警，独立于存量样本线
+OCCURRED_RECENT_MIN_SAMPLE = 20
 #: 进程级节流窗口（秒）：同一失真状态不随心跳刷屏
 _OCCURRED_ALERT_SUPPRESS_SEC = 3600
 _OCCURRED_ALERT_LAST_PUBLISHED: datetime | None = None
 
 
 def _publish_occurred_anomaly(mem_conn: sqlite3.Connection, report: dict, threshold: float) -> None:
-    """时间锚失真（occurred_at 大比例等于 created_at）→ anomaly_warn。
+    """时间锚失真（增量口径 occurred_at 大比例等于 created_at）→ anomaly_warn。
 
     背景（B323）：2.0 提示词曾静默丢掉 source_message_ids，落库兜底让 99% 的记忆
     occurred_at == created_at，时间轴实际按提炼时间排，且**没有任何观测面**。
-    本函数与 publish_dimension_anomaly 同构：节流 + 发布失败仅日志。
+    T4（三缺口补齐 2026-11-14）起告警只看**增量口径**（最近 7 天）——存量超标是
+    B323 修复前的历史问题（40k+ 条），每 1 小时推一条夜里累积 12 条属噪音，
+    改为只在 health 展示（stock_degraded）。本函数与 publish_dimension_anomaly
+    同构：节流 + 发布失败仅日志。
     """
     global _OCCURRED_ALERT_LAST_PUBLISHED
     now = datetime.now(timezone.utc)
@@ -398,14 +403,20 @@ def _publish_occurred_anomaly(mem_conn: sqlite3.Connection, report: dict, thresh
             source="occurred_at_fallback",
             payload={
                 "component": "occurred_reliability",
+                "scope": "recent",  # T4：告警口径 = 增量（最近 7 天），存量只进 health
                 "active_total": report.get("active_total"),
                 "comparable": report.get("comparable"),
                 "equal_to_created": report.get("equal_to_created"),
                 "equal_ratio": report.get("equal_ratio"),
+                "recent_days": report.get("recent_days"),
+                "recent_total": report.get("recent_total"),
+                "recent_comparable": report.get("recent_comparable"),
+                "recent_equal_to_created": report.get("recent_equal_to_created"),
+                "recent_ratio": report.get("recent_ratio"),
                 "warn_threshold": threshold,
-                "hint": "记忆时间锚大比例等于入库时间：时间轴退化为提炼时间（D-26）。"
-                        "排查：提炼链是否产出 source_message_ids / 块级时间兜底是否生效；"
-                        "核对：GET /v1/health 的 occurred_reliability。",
+                "hint": "最近 7 天新增记忆的时间锚大比例等于入库时间：提炼链在持续产出"
+                        "失真数据（D-26）。排查：提炼链是否产出 source_message_ids /"
+                        " 块级时间兜底是否生效；核对：GET /v1/health 的 occurred_reliability。",
             },
             mem_conn=mem_conn,
         )
@@ -414,15 +425,27 @@ def _publish_occurred_anomaly(mem_conn: sqlite3.Connection, report: dict, thresh
 
 
 def _occurred_block(mem_conn: sqlite3.Connection, cfg: dict[str, Any]) -> dict:
-    """health 的时间锚可信度块（数据来自 stats_dao，data 层唯一出口）。"""
+    """health 的时间锚可信度块（数据来自 stats_dao，data 层唯一出口）。
+
+    T4（三缺口补齐 2026-11-14）增量/存量分离判定：
+    - ``degraded`` = **增量**（最近 7 天）超标 → 才发 anomaly_warn；
+    - ``stock_degraded`` = 存量（全量）超标 → 只进 health 展示，不告警。
+    两个口径的 ratio 都在块里（equal_ratio=存量 / recent_ratio=增量）。
+    """
     report = stats_dao.occurred_reliability(mem_conn)
     threshold = float((cfg.get("health") or {}).get("occurred_equal_ratio_warn", OCCURRED_EQUAL_RATIO_WARN))
     ratio = report.get("equal_ratio")
+    recent_ratio = report.get("recent_ratio")
     report["warn_threshold"] = threshold
-    report["degraded"] = bool(
+    report["stock_degraded"] = bool(
         report["comparable"] >= OCCURRED_MIN_SAMPLE
         and ratio is not None
         and ratio >= threshold
+    )
+    report["degraded"] = bool(
+        int(report.get("recent_comparable") or 0) >= OCCURRED_RECENT_MIN_SAMPLE
+        and recent_ratio is not None
+        and recent_ratio >= threshold
     )
     if report["degraded"]:
         _publish_occurred_anomaly(mem_conn, report, threshold)

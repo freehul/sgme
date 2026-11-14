@@ -33,7 +33,7 @@ from sgme.data import memory_dao, stats_dao
 # ---------- v0.6 冻结契约（改造前逐字段抄录，任何变动即破坏性变更） ----------
 # ST-22② 有意新增顶层 vector 字段（只增不改既有字段）——列表随之更新。
 
-HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "vector", "model_config", "update_available", "latest_version", "update_checked_at", "update_error", "onboarding", "credentials_ok", "occurred_reliability"]  # T-53/ST-34 只增不改；T-215 P1 接入指引指针；EP-11 凭据模块状态；B323 时间锚可信度
+HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "memory_composition", "vector", "model_config", "update_available", "latest_version", "update_checked_at", "update_error", "onboarding", "credentials_ok", "occurred_reliability"]  # T-53/ST-34 只增不改；T-215 P1 接入指引指针；EP-11 凭据模块状态；B323 时间锚可信度；v0.3 S5 记忆组成指标（344d009 落地时欠登记，T4 顺手补齐）
 HTTP_REFINEMENT_KEYS = [
     "watermark_age_sec",
     "queue_depth",
@@ -42,8 +42,9 @@ HTTP_REFINEMENT_KEYS = [
     "stalled_hours",
     "heartbeat_ok",
     "state",  # T-144：空库首启 never_refined / 正常 ok / 停摆 stalled（只增不改既有字段）
+    "paused",  # 2026-11-14 提炼总闸（7f5a55c 落地时欠登记，T4 顺手补齐）
 ]
-MCP_TOP_KEYS = ["status", "version", "llm", "refinement"]
+MCP_TOP_KEYS = ["status", "version", "llm", "refinement", "memory_composition"]  # v0.3 S5：MCP 形态同样给组成指标
 # MCP 的 refinement 是 engine check_refinement_stalled 的原始返回
 MCP_REFINEMENT_KEYS = ["stalled", "last_refined_at", "stalled_hours", "threshold_hours", "state"]
 

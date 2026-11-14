@@ -62,6 +62,8 @@ def test_block_not_degraded_below_sample(mem_conn, cfg):
 
 def test_block_degraded_publishes_signal_once(mem_conn, cfg, monkeypatch):
     monkeypatch.setattr(health_ops, "OCCURRED_MIN_SAMPLE", 1)
+    # T4 起告警判定走增量口径，样本线同样要放行小样本
+    monkeypatch.setattr(health_ops, "OCCURRED_RECENT_MIN_SAMPLE", 1)
     monkeypatch.setattr(health_ops, "_OCCURRED_ALERT_LAST_PUBLISHED", None)
     _mem(mem_conn, 1, equal=True)
     block = health_ops._occurred_block(mem_conn, cfg)
