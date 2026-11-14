@@ -456,15 +456,39 @@ def _merge_note(current: str | None, note: str | None) -> str | None:
     return text
 
 
+def _rewrite_frontmatter_name(content: str, name: str) -> str:
+    """把 frontmatter 的 ``name:`` 行改成最终技能名（T7）。
+
+    候选草稿的 frontmatter 是 build_skill_draft 用占位名渲染的，落成时必须与
+    最终名对齐（否则 SKILL.md 自相矛盾、后续 sync_index 会对不上）。只动首个
+    ``---`` 块内的 name 行，正文不碰；无 frontmatter / 无 name 行则原样返回。
+    """
+    if not content.startswith("---"):
+        return content
+    end = content.find("\n---", 3)
+    if end < 0:
+        return content
+    head, rest = content[:end], content[end:]
+    new_head, n = re.subn(
+        r"(?m)^name:.*$", lambda _m: f"name: {name}", head, count=1,
+    )
+    if n == 0:
+        return content
+    return new_head + rest
+
+
 def _promote_candidate_to_library(
     hub: Any | None,
     skills_conn: sqlite3.Connection,
     candidate: dict[str, Any],
+    final_name: str | None = None,
 ) -> OperationResult:
-    """promoted 两阶段落成（T3，三缺口补齐 2026-11-14）。
+    """promoted 两阶段落成（T3，三缺口补齐 2026-11-14；T7 集成命名）。
 
     ① ``skills_hub.put_skill`` 把候选的 SKILL.md 全文落成技能真源（hub 未提供 →
-       明确失败，绝不静默降级成「只改状态」）；
+       明确失败，绝不静默降级成「只改状态」）——最终名取 ``final_name``（T7：
+       入参 name > suggested_name > 占位名的解析在调用方完成并已过闸门），
+       frontmatter 的 name 行同步改写；
     ② 解析 frontmatter 后 ``skills_dao.upsert_skill`` 写 sqlite ``skills`` 主表——
        检索主表才有行（skill_search 可命中）；skills_fts 由既有触发器自动同步，
        本函数**不额外写索引**（db.py:965 污染防护口径不变，promoted 已审核可进）。
@@ -475,10 +499,11 @@ def _promote_candidate_to_library(
     from sgme.data import skills_dao
     from sgme.skills.indexer import parse_skill_md
 
-    name = str(candidate.get("name") or "").strip()
+    name = str(final_name or candidate.get("name") or "").strip()
     content = str(candidate.get("content") or "")
     if not name or not content:
         return OperationResult.fail(ERR_INVALID_ARGS, "候选缺 name/content，无法落成")
+    content = _rewrite_frontmatter_name(content, name)
     if hub is None:
         return OperationResult.fail(
             ERR_INVALID_ARGS,
@@ -514,6 +539,7 @@ def review_skill_candidate(
     note: str | None = None,
     reviewer: str | None = None,
     hub: Any | None = None,
+    name: str | None = None,
 ) -> OperationResult:
     """审核一条技能候选（幂等）：accepted / ignored / pending / promoted。
 
@@ -525,6 +551,11 @@ def review_skill_candidate(
       真落成技能（put_skill 真源 + skills 主表 upsert），成功后才标 promoted；
       只允许 accepted → promoted（pending/ignored 拒绝），落成失败候选保持 accepted。hub
       由调用方传入（HTTP/MCP 按 cfg 初始化 skills_hub；未启用 → 明确失败不降级）。
+    - T7（2026-11-15）：promoted 的最终名 = 入参 ``name`` > 候选 ``suggested_name``
+      > 候选 ``name``；**最终名仍是 exp- 占位名 → 拒绝**（不再落占位名，先跑命名
+      流程 export → 命名 → apply）；落成成功后把最终名写回候选行 ``name``
+      （保持单一真相源）。``name`` 入参目前只暴露在 operations 层，HTTP/MCP 面
+      未扩（避免动八适配器能力对账，后续需要再立项）。
     """
     status = _parse_status(decision, allow_none=False)
     assert status is not None  # allow_none=False 时必非空，供类型检查收窄
@@ -587,9 +618,26 @@ def review_skill_candidate(
                 ERR_INVALID_ARGS,
                 f"仅 accepted 候选可晋级 promoted（当前 {current or 'unknown'}）",
             )
-        landed = _promote_candidate_to_library(hub, skills_conn, existing)
+        # T7：最终名解析（入参 name > suggested_name > 占位名）+ 占位名闸门
+        final_name = (
+            str(name or "").strip()
+            or str(existing.get("suggested_name") or "").strip()
+            or str(existing.get("name") or "").strip()
+        )
+        if not final_name or final_name.startswith("exp-"):
+            return OperationResult.fail(
+                ERR_INVALID_ARGS,
+                f"候选尚未命名（name={final_name or '空'}），"
+                "先跑命名流程（export → 命名 → apply）",
+            )
+        landed = _promote_candidate_to_library(
+            hub, skills_conn, existing, final_name=final_name,
+        )
         if not landed.ok:
             return landed  # 候选行保持 accepted（技能不存在就绝不标 promoted）
+        # T7：单一真相源——候选行 name 同步为最终技能名（与下方 update_status
+        # 同一 commit 落库；失败时技能已存在、重试 promote 幂等自愈）
+        skill_candidates_dao.update_candidate_name(skills_conn, memory_id, final_name)
         # T6（2026-11-15）：skill 类目互链改落 promote 成功后（原在 engine/routing.py
         # 分流时写，用的是 exp- 占位名 = 悬空引用）。ref_id 取落成回执里的最终技能名；
         # 旁路语义：互链失败只告警不回滚——技能已真存在，链是「让它更好找」。
@@ -618,7 +666,8 @@ def review_skill_candidate(
     }
     if status == "promoted":
         # T3：落成回执并入审核结果（name/path 供调用方确认技能真已存在）
-        data.update({"name": str(existing.get("name") or ""), "library_written": True})
+        # T7：name 用最终技能名（不再是占位名）
+        data.update({"name": final_name, "library_written": True})
     return OperationResult.succeed(data)
 
 

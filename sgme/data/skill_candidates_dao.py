@@ -202,6 +202,17 @@ def update_status(
     return cur.rowcount == 1
 
 
+def update_candidate_name(
+    conn: sqlite3.Connection, memory_id: str, name: str
+) -> bool:
+    """更新候选行 name（T7：promote 落成后把最终技能名写回，保持单一真相源）。"""
+    cur = conn.execute(
+        "UPDATE skill_candidates SET name=?, updated_at=? WHERE memory_id=?",
+        (name, _now(), memory_id),
+    )
+    return cur.rowcount == 1
+
+
 def set_candidate_naming(
     conn: sqlite3.Connection,
     memory_id: str,

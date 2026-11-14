@@ -8,6 +8,12 @@
 5. dry-run 不写库
 6. hub 未提供 → 明确失败（不降级成「只改状态」）
 7. 批量：单条失败不中断；HTTP 端点默认 dry-run
+
+T7（2026-11-15，任务清单-技能自动命名）补充验收：
+8. 占位名（exp- 前缀）promote → 拒绝（候选尚未命名）
+9. suggested_name 存在 → 作为最终名落成
+10. 入参 name 覆盖 suggested_name
+11. 落成成功后最终名写回候选行 name（单一真相源）；SKILL.md frontmatter 同步
 """
 
 from __future__ import annotations
@@ -38,14 +44,17 @@ def _skill_md(name: str, content: str = "做法：先补 /v1 前缀再请求。"
     )
 
 
-def _insert_candidate(skills, memory_id, *, status="accepted", name="exp-test0001", content=None):
+def _insert_candidate(
+    skills, memory_id, *, status="accepted", name="test-skill-0001",
+    content=None, suggested_name=None,
+):
     now = "2026-11-14T00:00:00Z"
     skills.execute(
         "INSERT INTO skill_candidates (memory_id, name, description, content, category,"
-        " tags, confidence, status, source, created_at, updated_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        " tags, confidence, status, source, suggested_name, created_at, updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (memory_id, name, "测试候选技能", content or _skill_md(name), "testing",
-         json.dumps(["testing"]), 0.9, status, "memory_route", now, now),
+         json.dumps(["testing"]), 0.9, status, "memory_route", suggested_name, now, now),
     )
     skills.commit()
 
@@ -79,13 +88,14 @@ def test_accepted_promote_writes_library(conns, hub):
     r = sc_ops.review_skill_candidate(mem, skills, "m-p1", "promoted", hub=hub, reviewer="lead")
     assert r.ok, f"晋级应成功: {r.message}"
     assert r.data["library_written"] is True
-    # ① 真源落盘
-    skill_file = hub.root / "exp-test0001" / "SKILL.md"
+    # ① 真源落盘（T7：SKILL.md frontmatter 的 name 与最终名一致）
+    skill_file = hub.root / "test-skill-0001" / "SKILL.md"
     assert skill_file.is_file()
     assert "测试候选技能" in skill_file.read_text(encoding="utf-8")
+    assert "name: test-skill-0001" in skill_file.read_text(encoding="utf-8").split("\n---")[0]
     # ② sqlite skills 主表有该行
     rows = skills.execute(
-        "SELECT name, source, content FROM skills WHERE name='exp-test0001'"
+        "SELECT name, source, content FROM skills WHERE name='test-skill-0001'"
     ).fetchall()
     assert len(rows) == 1 and rows[0]["source"] == "candidate_promote"
     assert "先补 /v1 前缀" in rows[0]["content"]
@@ -121,7 +131,9 @@ def test_promote_is_idempotent(conns, hub):
     # 重复调用走同状态幂等分支（不重复落成、不再要求 hub）
     second = sc_ops.review_skill_candidate(mem, skills, "m-idem", "promoted", hub=None)
     assert second.ok and second.data["changed"] is False
-    assert skills.execute("SELECT COUNT(*) FROM skills WHERE name='exp-test0001'").fetchone()[0] == 1
+    assert skills.execute(
+        "SELECT COUNT(*) FROM skills WHERE name='test-skill-0001'"
+    ).fetchone()[0] == 1
 
 
 def test_pending_and_ignored_rejected(conns, hub):
@@ -156,7 +168,7 @@ def test_promote_without_hub_fails_not_degrades(conns):
 def test_batch_dry_run_writes_nothing(conns, hub):
     mem, skills = conns
     for i in range(3):
-        _insert_candidate(skills, f"m-d{i}", name=f"exp-dry{i:04d}")
+        _insert_candidate(skills, f"m-d{i}", name=f"test-dry-{i:03d}")
     r = sc_ops.promote_skill_candidates(mem, skills, hub, limit=10, apply=False)
     assert r.ok
     data = r.data
@@ -169,14 +181,14 @@ def test_batch_dry_run_writes_nothing(conns, hub):
         "SELECT DISTINCT status FROM skill_candidates"
     ).fetchall()
     assert [s["status"] for s in statuses] == ["accepted"]
-    assert not (hub.root / "exp-dry0000").exists()
+    assert not (hub.root / "test-dry-000").exists()
 
 
 def test_batch_apply_single_failure_does_not_stop(conns, hub):
     mem, skills = conns
-    _insert_candidate(skills, "m-a1", name="exp-ok0001")
+    _insert_candidate(skills, "m-a1", name="test-ok-0001")
     _insert_candidate(skills, "m-a2", name="bad/name")  # put_skill 校验非法名 → 单条失败
-    _insert_candidate(skills, "m-a3", name="exp-ok0003")
+    _insert_candidate(skills, "m-a3", name="test-ok-0003")
     r = sc_ops.promote_skill_candidates(mem, skills, hub, limit=10, apply=True, reviewer="lead")
     assert r.ok
     data = r.data
@@ -229,27 +241,112 @@ def _admin_headers():
 
 def test_http_promote_default_dry_run(api, conns):
     client, skills, hub_root = api
-    _insert_candidate(skills, "m-http1", name="exp-http0001")
+    _insert_candidate(skills, "m-http1", name="test-http-0001")
     resp = client.post("/v1/admin/skill-candidates/promote", json={"limit": 10},
                        headers=_admin_headers())
     assert resp.status_code == 200
     data = resp.json()
     assert data["apply"] is False and data["promoted"] == 0
-    assert [it["name"] for it in data["items"]] == ["exp-http0001"]
-    assert not (hub_root / "exp-http0001").exists()
+    assert [it["name"] for it in data["items"]] == ["test-http-0001"]
+    assert not (hub_root / "test-http-0001").exists()
     assert skills.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 0
 
 
 def test_http_promote_apply_writes_library(api):
     client, skills, hub_root = api
-    _insert_candidate(skills, "m-http2", name="exp-http0002")
+    _insert_candidate(skills, "m-http2", name="test-http-0002")
     resp = client.post("/v1/admin/skill-candidates/promote",
                        json={"limit": 10, "apply": True, "reviewer": "lead"},
                        headers=_admin_headers())
     assert resp.status_code == 200
     data = resp.json()
     assert data["apply"] is True and data["promoted"] == 1 and data["failed"] == 0
-    assert (hub_root / "exp-http0002" / "SKILL.md").is_file()
+    assert (hub_root / "test-http-0002" / "SKILL.md").is_file()
     assert skills.execute(
-        "SELECT COUNT(*) FROM skills WHERE name='exp-http0002'"
+        "SELECT COUNT(*) FROM skills WHERE name='test-http-0002'"
     ).fetchone()[0] == 1
+
+
+# ---------- T7（2026-11-15）：promote 集成命名 ----------
+
+def test_exp_placeholder_name_rejected(conns, hub):
+    """占位名（exp- 前缀）且无 suggested_name → 拒绝，候选保持 accepted。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t7a", name="exp-000b20d9")
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t7a", "promoted", hub=hub)
+    assert not r.ok and r.error_code == "ERR_INVALID_ARGS"
+    assert "先跑命名流程" in r.message
+    row = skills.execute(
+        "SELECT status FROM skill_candidates WHERE memory_id='m-t7a'"
+    ).fetchone()
+    assert row["status"] == "accepted"
+    assert skills.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 0
+    assert not (hub.root / "exp-000b20d9").exists()
+
+
+def test_suggested_name_used_on_promote(conns, hub):
+    """suggested_name 存在 → 作为最终名落成，并写回候选行 name（单一真相源）。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t7b", name="exp-000b20d9",
+                      suggested_name="lmstudio-int8-quant-load-fail")
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t7b", "promoted", hub=hub)
+    assert r.ok, f"晋级应成功: {r.message}"
+    assert r.data["name"] == "lmstudio-int8-quant-load-fail"
+    # 落成用最终名
+    assert (hub.root / "lmstudio-int8-quant-load-fail" / "SKILL.md").is_file()
+    assert skills.execute(
+        "SELECT COUNT(*) FROM skills WHERE name='lmstudio-int8-quant-load-fail'"
+    ).fetchone()[0] == 1
+    # 写回候选行 name + 状态 promoted
+    row = skills.execute(
+        "SELECT name, status FROM skill_candidates WHERE memory_id='m-t7b'"
+    ).fetchone()
+    assert row["name"] == "lmstudio-int8-quant-load-fail"
+    assert row["status"] == "promoted"
+
+
+def test_explicit_name_overrides_suggested(conns, hub):
+    """入参 name 优先于 suggested_name。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t7c", name="exp-000b20d9",
+                      suggested_name="suggested-fallback-name")
+    r = sc_ops.review_skill_candidate(
+        mem, skills, "m-t7c", "promoted", hub=hub, name="explicit-param-name",
+    )
+    assert r.ok and r.data["name"] == "explicit-param-name"
+    assert (hub.root / "explicit-param-name" / "SKILL.md").is_file()
+    row = skills.execute(
+        "SELECT name, status FROM skill_candidates WHERE memory_id='m-t7c'"
+    ).fetchone()
+    assert row["name"] == "explicit-param-name" and row["status"] == "promoted"
+    assert skills.execute(
+        "SELECT COUNT(*) FROM skills WHERE name='suggested-fallback-name'"
+    ).fetchone()[0] == 0
+
+
+def test_promoted_skill_md_frontmatter_renamed(conns, hub):
+    """落成的 SKILL.md frontmatter name 行 = 最终名（不再落占位名）。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t7d", name="exp-000b20d9",
+                      suggested_name="frontmatter-check-name")
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t7d", "promoted", hub=hub)
+    assert r.ok, r.message
+    text = (hub.root / "frontmatter-check-name" / "SKILL.md").read_text(encoding="utf-8")
+    frontmatter = text.split("\n---")[0]
+    assert "name: frontmatter-check-name" in frontmatter
+    assert "exp-000b20d9" not in frontmatter
+
+
+def test_explicit_exp_name_also_rejected(conns, hub):
+    """入参 name 传占位名同样拒绝（闸门看最终名，不看来路）。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t7e", name="exp-000b20d9",
+                      suggested_name="good-suggested-name")
+    r = sc_ops.review_skill_candidate(
+        mem, skills, "m-t7e", "promoted", hub=hub, name="exp-badparam1",
+    )
+    assert not r.ok and r.error_code == "ERR_INVALID_ARGS"
+    row = skills.execute(
+        "SELECT status FROM skill_candidates WHERE memory_id='m-t7e'"
+    ).fetchone()
+    assert row["status"] == "accepted"
