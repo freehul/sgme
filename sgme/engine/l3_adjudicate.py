@@ -959,6 +959,36 @@ def _record_empty_pool_run(
     )
 
 
+def _record_idempotent_skip_run(
+    mem_conn: sqlite3.Connection,
+    bucket_key: str,
+    skipped_n: int,
+    bucket_ctx,
+) -> None:
+    """T1（三缺口补齐 2026-11-14）：幂等跳过独立计数记录。
+
+    幂等跳过（同 source_ref 同内容已存在）不进批、不进 LLM 裁决，批路径的
+    action_counts 数不到它——此前与「LLM 判 skip」混在 result.skipped 里不可区分
+    （清单：便于区分「没做」与「做了但幂等跳过」）。与 ``_record_prescreen_skip_run``
+    / ``_record_empty_pool_run`` 同型：有信号才写一条 provider="idempotent_skip"
+    的独立 run，action_counts={"idempotent_skipped": n}。
+    """
+    if skipped_n <= 0:
+        return
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    pv = PromptStore().get("l1_conflict", bucket_ctx)
+    run_id = RefineRunRecorder.start(
+        mem_conn, file_id=bucket_key, stage="l1_conflict",
+        version=pv.version, variant=pv.variant,
+        provider="idempotent_skip", bucket_key=bucket_key,
+    )
+    RefineRunRecorder.finish(
+        mem_conn, run_id, memories_count=skipped_n,
+        action_counts={"idempotent_skipped": skipped_n}, status="ok", error=None,
+    )
+
+
 _EXTRA_KEYS = (
     "type", "subject", "certainty", "derivation", "modality", "route",
     "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
@@ -1610,6 +1640,8 @@ def resolve_conflicts(
         result.unit_edges = _write_unit_edges_safe(mem_conn, new_memories)
         # T1.7：全空短路独立记录（无条件写——本分支执行即写，n≥0，承载零候选事实）
         _record_empty_pool_run(mem_conn, bucket_key, stored_n, bucket_ctx)
+        # T1（三缺口补齐 2026-11-14）：幂等跳过独立记账（有信号才写）
+        _record_idempotent_skip_run(mem_conn, bucket_key, len(idem_skip), bucket_ctx)
         # T1.6：F1 独立计数记录（拦截/灰区有信号才写；与上条可共存，写入顺序无关）
         _record_near_dup_run(mem_conn, bucket_key, result, bucket_ctx)
         return result
@@ -1664,15 +1696,30 @@ def resolve_conflicts(
             provider="pending", bucket_key=bucket_key,
         )
         _run_done = False
+        _batch_counts: dict[str, int] = {}  # T1：批内 action 分布（供收尾日志复用，防二次统计）
 
         def _finish_run(status: str, error: str | None, decs: list | None) -> None:
             """收尾记账（幂等：一批只写一次）。"""
-            nonlocal _run_done
+            nonlocal _run_done, _batch_counts
             if _run_done:
                 return
+            # T1（三缺口补齐 2026-11-14）：action_counts 统计是旁路——异常只记日志、
+            # 回退空计数，绝不打断裁决主流程。ConflictDecision / dict 两形态都认。
+            counts: dict[str, int] = {}
+            try:
+                for d in (decs or []):
+                    a = getattr(d, "action", None)
+                    if a is None and isinstance(d, dict):
+                        a = d.get("action")
+                    a = str(a or "unknown")
+                    counts[a] = counts.get(a, 0) + 1
+            except Exception as exc:  # noqa: BLE001——旁路铁律，见上
+                logger.warning("L1.5 action_counts 统计失败（run_id=%s）: %s", run_id, exc)
+                counts = {}
+            _batch_counts = counts
             RefineRunRecorder.finish(
                 mem_conn, run_id, memories_count=len(batch.new_memories),
-                action_counts=dict(Counter(d.action for d in (decs or []))),
+                action_counts=counts,
                 status=status, error=error, usage=usage, provider=provider_name,
                 # F2（T1.7）：批路径候选留痕（short_circuit_reason 仅短路记录承载，不传）
                 candidate_count=len(batch.candidates),
@@ -1730,7 +1777,7 @@ def resolve_conflicts(
             _finish_run(run_status, run_error, decisions)
             logger.info("L1.5 批完成: version=%s variant=%s provider=%s actions=%s",
                         pv.version, pv.variant, provider_name,
-                        dict(Counter(d.action for d in (decisions or []))))
+                        dict(_batch_counts or {}))
             if result.prompt_meta is None:
                 result.prompt_meta = {"stage": "l1_conflict", "version": pv.version, "variant": pv.variant}
         finally:
@@ -1848,6 +1895,8 @@ def resolve_conflicts(
     # T1.6：F1 独立计数记录（拦截/灰区有信号才写；出口与全空短路分支互斥，
     # 覆盖 batches 为空的落库段路径）
     _record_near_dup_run(mem_conn, bucket_key, result, bucket_ctx)
+    # T1（三缺口补齐 2026-11-14）：幂等跳过独立记账（有信号才写）
+    _record_idempotent_skip_run(mem_conn, bucket_key, len(idem_skip), bucket_ctx)
 
     logger.info(
         "L1.5 完成: store=%d skip=%d update=%d merge=%d archived=%d warn=%s "
