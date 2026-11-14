@@ -5,7 +5,7 @@
 2. 开关开：route=skill_candidate 的记忆落库后自动进技能候选池（免人工捞）
 3. 幂等：重复分发不重复建候选
 4. route=memory 的记忆不受影响
-5. 互链：memory_pages 记一条 kind=skill / relation=derived_from
+5. 不写 skill 类目互链（T6，2026-11-15：占位名悬空引用；互链改由 promote 成功后补写）
 6. skills.db 不可用 → 跳过计数，不抛异常、不影响已落库记忆
 7. persist_memories 的接线是旁路：分流抛异常也不影响返回
 
@@ -88,9 +88,9 @@ def test_enabled_adopts_skill_candidate(conns, cfg):
     assert out["candidates"] == 1 and out["adopted"] == 1
     rows = _candidates(skills)
     assert len(rows) == 1 and rows[0][0] == "m-on"
-    # 互链
+    # T6：分流不写 skill 类目互链（占位名悬空引用；互链见 test_routing_links.py）
     pages = memory_dao.get_memory_pages(mem, "m-on")
-    assert any(p["kind"] == "skill" and p["relation"] == "derived_from" for p in pages)
+    assert not any(p["kind"] == "skill" for p in pages)
 
 
 def test_dispatch_is_idempotent(conns, cfg):

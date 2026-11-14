@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from datetime import datetime, timezone
@@ -41,6 +42,8 @@ from sgme.operations.errors import (
 
 DEFAULT_LIMIT: int = 50
 MAX_LIMIT: int = 200
+
+logger = logging.getLogger("sgme.operations.skill_candidates")
 
 # 高置信阈值：0.8 分 + 硬门槛（见 score_candidate）
 CONFIDENCE_THRESHOLD: float = 0.8
@@ -587,6 +590,19 @@ def review_skill_candidate(
         landed = _promote_candidate_to_library(hub, skills_conn, existing)
         if not landed.ok:
             return landed  # 候选行保持 accepted（技能不存在就绝不标 promoted）
+        # T6（2026-11-15）：skill 类目互链改落 promote 成功后（原在 engine/routing.py
+        # 分流时写，用的是 exp- 占位名 = 悬空引用）。ref_id 取落成回执里的最终技能名；
+        # 旁路语义：互链失败只告警不回滚——技能已真存在，链是「让它更好找」。
+        try:
+            memory_dao.link_memory_pages(
+                mem_conn, memory_id,
+                [{"kind": "skill", "ref_id": str(landed.data.get("name") or "")}],
+                relation="derived_from",
+            )
+        except Exception as e:  # noqa: BLE001——互链是旁路，不挡晋级回执
+            logger.warning(
+                "promote 互链失败（不影响晋级）memory=%s: %s", memory_id, e,
+            )
 
     merged = _merge_note(existing.get("note"), note)
     skill_candidates_dao.update_status(

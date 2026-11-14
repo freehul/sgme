@@ -22,7 +22,9 @@ v0.2 §11.2 定下的顺序是「先分流落库 → 成功 → 才允许 memory
 当前范围（灰度）
 ----------------
 - `route=skill_candidate` → `skill_candidates` 候选池（复用 operations 层已验证的
-  幂等/去重/置信度逻辑）+ `memory_pages` 互链；
+  幂等/去重/置信度逻辑）。**不写 `memory_pages` 互链**（T6，2026-11-15）：候选名
+  是 `exp-` 占位名，技能没落成时互链就是悬空引用——互链改由
+  ``review_skill_candidate`` promote 成功后补写（ref_id=最终技能名）；
 - `route=wiki_candidate` → **wiki_pages 草稿**（T2，2026-11-14：status='draft'、
   检索天然排除、人工 promote 转正）+ `memory_pages` 互链；
 - 总开关 `refine.routing_enabled` **默认关**。
@@ -186,7 +188,6 @@ def _dispatch_skill_targets(
         stats["skipped"] += len(targets)
         return
     try:
-        from sgme.data import memory_dao
         from sgme.operations import skill_candidates as sc_ops
 
         for memory in targets:
@@ -209,14 +210,8 @@ def _dispatch_skill_targets(
                     stats["adopted"] += 1
                 else:
                     stats["duplicates"] += 1
-                # 互链：这条记忆的详情在该技能（v0.3 §3.5，memory_pages 是现成载体）
-                name = data.get("name")
-                if name:
-                    stats["linked"] += memory_dao.link_memory_pages(
-                        mem_conn, memory_id,
-                        [{"kind": "skill", "ref_id": name}],
-                        relation="derived_from",
-                    )
+                # T6（2026-11-15）：不再写 skill 类目互链——此时 name 还是 exp- 占位名，
+                # 技能没落成时互链就是悬空引用；互链改由 promote 成功后补写。
             except Exception as e:  # noqa: BLE001——单条失败不影响其余
                 stats["errors"] += 1
                 logger.warning(
@@ -228,9 +223,9 @@ def _dispatch_skill_targets(
             pass
         if stats["adopted"] or stats["errors"]:
             logger.info(
-                "三平面分流 file=%s：候选 %d / 新入池 %d / 重复 %d / 互链 %d / 失败 %d",
+                "三平面分流 file=%s：候选 %d / 新入池 %d / 重复 %d / 失败 %d",
                 file_id, stats["candidates"], stats["adopted"],
-                stats["duplicates"], stats["linked"], stats["errors"],
+                stats["duplicates"], stats["errors"],
             )
     except Exception as e:  # noqa: BLE001——分流整体是旁路
         logger.warning("三平面分流整体失败（不影响已落库记忆）file=%s: %s", file_id, e)
