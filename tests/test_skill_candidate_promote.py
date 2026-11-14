@@ -14,6 +14,12 @@ T7（2026-11-15，任务清单-技能自动命名）补充验收：
 9. suggested_name 存在 → 作为最终名落成
 10. 入参 name 覆盖 suggested_name
 11. 落成成功后最终名写回候选行 name（单一真相源）；SKILL.md frontmatter 同步
+
+T11（2026-11-15，任务清单-候选三分类）补充验收：
+12. suggested_kind=wiki → 拒绝，文案含知识库通道提示
+13. suggested_kind=discard → 拒绝，提示标 ignored
+14. kind=skill → 落成后 skills.category == suggested_domain（不再用记忆维度）
+15. 无 suggested_domain → category='other'
 """
 
 from __future__ import annotations
@@ -46,15 +52,17 @@ def _skill_md(name: str, content: str = "做法：先补 /v1 前缀再请求。"
 
 def _insert_candidate(
     skills, memory_id, *, status="accepted", name="test-skill-0001",
-    content=None, suggested_name=None,
+    content=None, suggested_name=None, suggested_kind=None, suggested_domain=None,
 ):
     now = "2026-11-14T00:00:00Z"
     skills.execute(
         "INSERT INTO skill_candidates (memory_id, name, description, content, category,"
-        " tags, confidence, status, source, suggested_name, created_at, updated_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        " tags, confidence, status, source, suggested_name, suggested_kind,"
+        " suggested_domain, created_at, updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (memory_id, name, "测试候选技能", content or _skill_md(name), "testing",
-         json.dumps(["testing"]), 0.9, status, "memory_route", suggested_name, now, now),
+         json.dumps(["testing"]), 0.9, status, "memory_route", suggested_name,
+         suggested_kind, suggested_domain, now, now),
     )
     skills.commit()
 
@@ -350,3 +358,80 @@ def test_explicit_exp_name_also_rejected(conns, hub):
         "SELECT status FROM skill_candidates WHERE memory_id='m-t7e'"
     ).fetchone()
     assert row["status"] == "accepted"
+
+
+# ---------- T11（2026-11-15）：promote 接入 kind + domain ----------
+
+def test_wiki_kind_rejected_with_channel_hint(conns, hub):
+    """kind=wiki → 拒绝 promote，提示走知识库通道。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t11a", name="exp-000b20d9",
+                      suggested_name="wiki-kind-skill-name",
+                      suggested_kind="wiki", suggested_domain="ai")
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t11a", "promoted", hub=hub)
+    assert not r.ok and r.error_code == "ERR_INVALID_ARGS"
+    assert "wiki" in r.message and "知识库" in r.message
+    row = skills.execute(
+        "SELECT status FROM skill_candidates WHERE memory_id='m-t11a'"
+    ).fetchone()
+    assert row["status"] == "accepted"
+    assert skills.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 0
+
+
+def test_discard_kind_rejected(conns, hub):
+    """kind=discard → 拒绝，提示改标 ignored。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t11b", name="exp-000b20d9",
+                      suggested_name="discard-kind-skill-name",
+                      suggested_kind="discard", suggested_domain="tool")
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t11b", "promoted", hub=hub)
+    assert not r.ok and r.error_code == "ERR_INVALID_ARGS"
+    assert "ignored" in r.message
+    row = skills.execute(
+        "SELECT status FROM skill_candidates WHERE memory_id='m-t11b'"
+    ).fetchone()
+    assert row["status"] == "accepted"
+    assert skills.execute("SELECT COUNT(*) FROM skills").fetchone()[0] == 0
+
+
+def test_skill_kind_promotes_with_domain_category(conns, hub):
+    """kind=skill → 落成，skills.category = suggested_domain（不再用记忆维度）。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t11c", name="exp-000b20d9",
+                      suggested_name="domain-category-skill",
+                      suggested_kind="skill", suggested_domain="ai")
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t11c", "promoted", hub=hub)
+    assert r.ok, r.message
+    row = skills.execute(
+        "SELECT category FROM skills WHERE name='domain-category-skill'"
+    ).fetchone()
+    assert row["category"] == "ai"  # 不是夹具里的记忆维度 testing
+    # SKILL.md frontmatter category 同步为领域
+    text = (hub.root / "domain-category-skill" / "SKILL.md").read_text(encoding="utf-8")
+    assert "category: ai" in text.split("\n---")[0]
+
+
+def test_missing_domain_falls_back_to_other(conns, hub):
+    """无 suggested_domain → category='other'（不阻断）。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t11d", name="exp-000b20d9",
+                      suggested_name="no-domain-skill",
+                      suggested_kind="skill", suggested_domain=None)
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t11d", "promoted", hub=hub)
+    assert r.ok, r.message
+    row = skills.execute(
+        "SELECT category FROM skills WHERE name='no-domain-skill'"
+    ).fetchone()
+    assert row["category"] == "other"
+
+
+def test_unclassified_kind_still_promotes(conns, hub):
+    """向后兼容：未分类（kind=NULL）但已命名的候选仍可 promote（T7 行为不变）。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t11e", name="exp-000b20d9",
+                      suggested_name="unclassified-skill", suggested_kind=None)
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t11e", "promoted", hub=hub)
+    assert r.ok, r.message
+    assert skills.execute(
+        "SELECT COUNT(*) FROM skills WHERE name='unclassified-skill'"
+    ).fetchone()[0] == 1

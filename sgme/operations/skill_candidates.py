@@ -456,12 +456,12 @@ def _merge_note(current: str | None, note: str | None) -> str | None:
     return text
 
 
-def _rewrite_frontmatter_name(content: str, name: str) -> str:
-    """把 frontmatter 的 ``name:`` 行改成最终技能名（T7）。
+def _rewrite_frontmatter_line(content: str, field: str, value: str) -> str:
+    """把 frontmatter 里指定字段的行改成新值（只动首个 ``---`` 块，正文不碰）。
 
-    候选草稿的 frontmatter 是 build_skill_draft 用占位名渲染的，落成时必须与
-    最终名对齐（否则 SKILL.md 自相矛盾、后续 sync_index 会对不上）。只动首个
-    ``---`` 块内的 name 行，正文不碰；无 frontmatter / 无 name 行则原样返回。
+    候选草稿的 frontmatter 是 build_skill_draft 用占位名/记忆维度渲染的，落成时
+    必须与最终值对齐（否则 SKILL.md 自相矛盾、后续 sync_index 会对不上）；
+    无 frontmatter / 无该字段行则原样返回。
     """
     if not content.startswith("---"):
         return content
@@ -470,7 +470,7 @@ def _rewrite_frontmatter_name(content: str, name: str) -> str:
         return content
     head, rest = content[:end], content[end:]
     new_head, n = re.subn(
-        r"(?m)^name:.*$", lambda _m: f"name: {name}", head, count=1,
+        rf"(?m)^{field}:.*$", lambda _m: f"{field}: {value}", head, count=1,
     )
     if n == 0:
         return content
@@ -483,7 +483,7 @@ def _promote_candidate_to_library(
     candidate: dict[str, Any],
     final_name: str | None = None,
 ) -> OperationResult:
-    """promoted 两阶段落成（T3，三缺口补齐 2026-11-14；T7 集成命名）。
+    """promoted 两阶段落成（T3，三缺口补齐 2026-11-14；T7 集成命名；T11 接入分类）。
 
     ① ``skills_hub.put_skill`` 把候选的 SKILL.md 全文落成技能真源（hub 未提供 →
        明确失败，绝不静默降级成「只改状态」）——最终名取 ``final_name``（T7：
@@ -492,6 +492,9 @@ def _promote_candidate_to_library(
     ② 解析 frontmatter 后 ``skills_dao.upsert_skill`` 写 sqlite ``skills`` 主表——
        检索主表才有行（skill_search 可命中）；skills_fts 由既有触发器自动同步，
        本函数**不额外写索引**（db.py:965 污染防护口径不变，promoted 已审核可进）。
+    ③ T11（2026-11-15）：category 取 ``suggested_domain``（**不再用记忆维度**——
+       现行 ``category = dimensions[0]`` 是分类错位根因），缺省回落 ``other`` 并记
+       warning；frontmatter category 行同步改写。
 
     任一步失败 → 返回 fail（调用方保持候选 accepted），绝不出现
     「标了 promoted 但技能不存在」。
@@ -503,7 +506,15 @@ def _promote_candidate_to_library(
     content = str(candidate.get("content") or "")
     if not name or not content:
         return OperationResult.fail(ERR_INVALID_ARGS, "候选缺 name/content，无法落成")
-    content = _rewrite_frontmatter_name(content, name)
+    domain = str(candidate.get("suggested_domain") or "").strip()
+    if not domain:
+        logger.warning(
+            "promote 无 suggested_domain，category 回落 other memory=%s",
+            candidate.get("memory_id"),
+        )
+        domain = "other"
+    content = _rewrite_frontmatter_line(content, "name", name)
+    content = _rewrite_frontmatter_line(content, "category", domain)
     if hub is None:
         return OperationResult.fail(
             ERR_INVALID_ARGS,
@@ -517,7 +528,7 @@ def _promote_candidate_to_library(
             "name": name,
             "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             "description": str(meta.get("description") or candidate.get("description") or ""),
-            "category": meta.get("category") or candidate.get("category"),
+            "category": domain,  # T11：领域归一，不再用记忆维度
             "tags": meta.get("tags") or candidate.get("tags") or [],
             "version": meta.get("version"),
             "pattern": meta.get("pattern"),
@@ -556,6 +567,10 @@ def review_skill_candidate(
       流程 export → 命名 → apply）；落成成功后把最终名写回候选行 ``name``
       （保持单一真相源）。``name`` 入参目前只暴露在 operations 层，HTTP/MCP 面
       未扩（避免动八适配器能力对账，后续需要再立项）。
+    - T11（2026-11-15）：三分类闸门——``suggested_kind='wiki'`` 拒绝 promote
+      （走知识库通道）、``'discard'`` 拒绝（改标 ignored）；``'skill'`` 或未分类
+      （向后兼容）放行。落成 ``category`` 取 ``suggested_domain``（不再用记忆维度），
+      缺省回落 ``other`` 并记 warning。
     """
     status = _parse_status(decision, allow_none=False)
     assert status is not None  # allow_none=False 时必非空，供类型检查收窄
@@ -629,6 +644,20 @@ def review_skill_candidate(
                 ERR_INVALID_ARGS,
                 f"候选尚未命名（name={final_name or '空'}），"
                 "先跑命名流程（export → 命名 → apply）",
+            )
+        # T11（2026-11-15）：三分类去向闸门——kind 决定 promote 该不该发生
+        kind = str(existing.get("suggested_kind") or "").strip()
+        if kind == "wiki":
+            return OperationResult.fail(
+                ERR_INVALID_ARGS,
+                "该候选判定为 wiki（知识类），应走知识库通道而非技能库："
+                "POST /v1/wiki/pages",
+            )
+        if kind == "discard":
+            return OperationResult.fail(
+                ERR_INVALID_ARGS,
+                "该候选判定为 discard（无沉淀价值），如确认请改标 ignored"
+                "（review decision=ignored）",
             )
         landed = _promote_candidate_to_library(
             hub, skills_conn, existing, final_name=final_name,
