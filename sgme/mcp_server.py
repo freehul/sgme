@@ -2161,6 +2161,15 @@ def build_mcp_server():
         ok, err = _require_admin(ctx)
         if not ok:
             return json.dumps({"error": err, "code": "ERR_FORBIDDEN"}, ensure_ascii=False)
+        # T3（三缺口补齐 2026-11-14）：promoted 真落成需要 hub——按 cfg 初始化
+        # skills_hub（未启用 → None → operations 层对 promoted 明确失败，不降级）。
+        hub = None
+        try:
+            from sgme.skills_hub import init as init_skills_hub
+
+            hub = init_skills_hub(_app_state.get("cfg"))
+        except Exception:  # noqa: BLE001——配置非法按「无 hub」处理
+            hub = None
         data = _op_json(
             sc.review_skill_candidate,
             _app_state.get("mem_conn"),
@@ -2169,6 +2178,7 @@ def build_mcp_server():
             decision,
             note=note,
             reviewer=reviewer,
+            hub=hub,
         )
         return json.dumps(data, ensure_ascii=False)
 

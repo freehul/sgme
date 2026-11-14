@@ -32,6 +32,7 @@ from typing import Any
 
 from sgme.data import memory_dao, skill_candidates_dao
 from sgme.operations.errors import (
+    ERR_INTERNAL,
     ERR_INVALID_ARGS,
     ERR_NOT_FOUND,
     InvalidArgs,
@@ -452,6 +453,56 @@ def _merge_note(current: str | None, note: str | None) -> str | None:
     return text
 
 
+def _promote_candidate_to_library(
+    hub: Any | None,
+    skills_conn: sqlite3.Connection,
+    candidate: dict[str, Any],
+) -> OperationResult:
+    """promoted 两阶段落成（T3，三缺口补齐 2026-11-14）。
+
+    ① ``skills_hub.put_skill`` 把候选的 SKILL.md 全文落成技能真源（hub 未提供 →
+       明确失败，绝不静默降级成「只改状态」）；
+    ② 解析 frontmatter 后 ``skills_dao.upsert_skill`` 写 sqlite ``skills`` 主表——
+       检索主表才有行（skill_search 可命中）；skills_fts 由既有触发器自动同步，
+       本函数**不额外写索引**（db.py:965 污染防护口径不变，promoted 已审核可进）。
+
+    任一步失败 → 返回 fail（调用方保持候选 accepted），绝不出现
+    「标了 promoted 但技能不存在」。
+    """
+    from sgme.data import skills_dao
+    from sgme.skills.indexer import parse_skill_md
+
+    name = str(candidate.get("name") or "").strip()
+    content = str(candidate.get("content") or "")
+    if not name or not content:
+        return OperationResult.fail(ERR_INVALID_ARGS, "候选缺 name/content，无法落成")
+    if hub is None:
+        return OperationResult.fail(
+            ERR_INVALID_ARGS,
+            "skills_hub 未启用，无法落成技能（promoted 要求真写技能库，不降级）",
+        )
+    try:
+        path = hub.put_skill(name=name, content=content)  # ① 真源落盘（ValueError=非法名）
+        parsed = parse_skill_md(content)
+        meta = parsed.get("meta") or {}
+        skills_dao.upsert_skill(skills_conn, {  # ② sqlite 主表索引
+            "name": name,
+            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "description": str(meta.get("description") or candidate.get("description") or ""),
+            "category": meta.get("category") or candidate.get("category"),
+            "tags": meta.get("tags") or candidate.get("tags") or [],
+            "version": meta.get("version"),
+            "pattern": meta.get("pattern"),
+            "source": "candidate_promote",
+            "origin_path": str(getattr(hub, "root", "") or ""),
+            "content": parsed.get("body") or content,
+        })
+        skills_conn.commit()
+    except Exception as e:  # noqa: BLE001——落成失败候选保持 accepted（清单硬要求）
+        return OperationResult.fail(ERR_INTERNAL, f"技能落成失败（候选保持 accepted）: {e}")
+    return OperationResult.succeed({"name": name, "path": str(path), "library_written": True})
+
+
 def review_skill_candidate(
     mem_conn: sqlite3.Connection,
     skills_conn: sqlite3.Connection | None,
@@ -459,13 +510,18 @@ def review_skill_candidate(
     decision: str,
     note: str | None = None,
     reviewer: str | None = None,
+    hub: Any | None = None,
 ) -> OperationResult:
     """审核一条技能候选（幂等）：accepted / ignored / pending / promoted。
 
     - 候选不存在时先自动转入（等同 adopt），再落决策——让「直接忽略一条待消费
       记忆」也能一次调用完成；
     - 状态未变且备注已存在 → ``changed=False``，不写库、不动时间戳；
-    - 状态相同但补了新备注 → 只追加备注（changed=True，状态不变）。
+    - 状态相同但补了新备注 → 只追加备注（changed=True，状态不变）；
+    - T3（三缺口补齐 2026-11-14）：promoted 是**两阶段**——先把候选的 SKILL.md
+      真落成技能（put_skill 真源 + skills 主表 upsert），成功后才标 promoted；
+      只允许 accepted → promoted（pending/ignored 拒绝），落成失败候选保持 accepted。hub
+      由调用方传入（HTTP/MCP 按 cfg 初始化 skills_hub；未启用 → 明确失败不降级）。
     """
     status = _parse_status(decision, allow_none=False)
     assert status is not None  # allow_none=False 时必非空，供类型检查收窄
@@ -519,20 +575,105 @@ def review_skill_candidate(
             }
         )
 
+    # T3（三缺口补齐 2026-11-14）：promoted 真落成（两阶段）。promoted→promoted 的
+    # 幂等由上方同状态分支覆盖，不重复落成；其余来源状态一律先过闸门。
+    if status == "promoted":
+        current = str(existing.get("status") or "")
+        if current != "accepted":
+            return OperationResult.fail(
+                ERR_INVALID_ARGS,
+                f"仅 accepted 候选可晋级 promoted（当前 {current or 'unknown'}）",
+            )
+        landed = _promote_candidate_to_library(hub, skills_conn, existing)
+        if not landed.ok:
+            return landed  # 候选行保持 accepted（技能不存在就绝不标 promoted）
+
     merged = _merge_note(existing.get("note"), note)
     skill_candidates_dao.update_status(
         skills_conn, memory_id, status, note=merged, reviewer=reviewer
     )
     skills_conn.commit()
-    return OperationResult.succeed(
-        {
-            "candidate_id": existing["candidate_id"],
-            "memory_id": memory_id,
-            "status": status,
-            "changed": True,
-            "created": False,
-        }
-    )
+    data = {
+        "candidate_id": existing["candidate_id"],
+        "memory_id": memory_id,
+        "status": status,
+        "changed": True,
+        "created": False,
+    }
+    if status == "promoted":
+        # T3：落成回执并入审核结果（name/path 供调用方确认技能真已存在）
+        data.update({"name": str(existing.get("name") or ""), "library_written": True})
+    return OperationResult.succeed(data)
+
+
+def promote_skill_candidates(
+    mem_conn: sqlite3.Connection,
+    skills_conn: sqlite3.Connection | None,
+    hub: Any | None,
+    limit: int = 20,
+    apply: bool = False,
+    reviewer: str | None = None,
+) -> OperationResult:
+    """批量晋级 accepted 候选为正式技能（T3 批量入口；**默认 dry-run**）。
+
+    - dry-run（apply=False）：只列将晋级的候选清单（confidence DESC），零写入——
+      生产 1,041 条 accepted 全量晋级会撑爆技能库（主表现有 556 条），必须
+      dry-run 报数交人工确认后再分批 limit 执行；
+    - apply=True：逐条走 ``review_skill_candidate`` 两阶段落成，单条失败不中断；
+    - 返回 ``{apply, total_accepted, promoted, failed, items[]}``。
+    """
+    if skills_conn is None:
+        return OperationResult.fail(ERR_INVALID_ARGS, "skills 模块未启用（skills.db 不可用）")
+    limit_val = _parse_limit(limit)
+    rows = skill_candidates_dao.list_candidates(skills_conn, status="accepted", limit=limit_val)
+    total_accepted = skill_candidates_dao.count_candidates(skills_conn, status="accepted")
+    items: list[dict[str, Any]] = []
+    promoted = 0
+    failed = 0
+    if not apply:
+        for c in rows:
+            items.append({
+                "memory_id": c.get("memory_id"),
+                "name": c.get("name"),
+                "confidence": c.get("confidence"),
+                "would_promote": True,
+            })
+        return OperationResult.succeed({
+            "apply": False,
+            "total_accepted": total_accepted,
+            "promoted": 0,
+            "failed": 0,
+            "items": items,
+        })
+    for c in rows:
+        memory_id = str(c.get("memory_id") or "")
+        r = review_skill_candidate(
+            mem_conn, skills_conn, memory_id, "promoted",
+            reviewer=reviewer, hub=hub,
+        )
+        if r.ok:
+            promoted += 1
+            items.append({
+                "memory_id": memory_id,
+                "name": c.get("name"),
+                "promoted": True,
+                **({"path": r.data.get("path")} if isinstance(r.data, dict) and r.data.get("path") else {}),
+            })
+        else:
+            failed += 1
+            items.append({
+                "memory_id": memory_id,
+                "name": c.get("name"),
+                "promoted": False,
+                "error": r.message,
+            })
+    return OperationResult.succeed({
+        "apply": True,
+        "total_accepted": total_accepted,
+        "promoted": promoted,
+        "failed": failed,
+        "items": items,
+    })
 
 
 # ---------- 候选池列表 ----------
@@ -587,6 +728,7 @@ __all__ = [
     "candidate_summary",
     "list_pending_route_memories",
     "list_skill_candidates",
+    "promote_skill_candidates",
     "review_skill_candidate",
     "score_candidate",
 ]

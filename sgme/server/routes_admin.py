@@ -1402,6 +1402,14 @@ class SkillCandidateReviewRequest(BaseModel):
     reviewer: str | None = None
 
 
+class SkillCandidatePromoteRequest(BaseModel):
+    """T3 批量晋级（默认 dry-run）：apply=true 才真写技能库。"""
+
+    limit: int = 20
+    apply: bool = False
+    reviewer: str | None = None
+
+
 def _skill_candidates_conn(request: Request):
     """取 skills.db 连接（模块未启用 → 400）。"""
     conn = getattr(request.app.state, "skills_conn", None)
@@ -1492,7 +1500,11 @@ def admin_skill_candidate_review(
     request: Request,
     _: str = Depends(require_admin_key),
 ):
-    """标记候选 accepted / ignored / pending / promoted（幂等）。"""
+    """标记候选 accepted / ignored / pending / promoted（幂等）。
+
+    T3（三缺口补齐 2026-11-14）：promoted 真落成技能库（put_skill 真源 +
+    skills 主表 upsert）；skills_hub 未启用时 promoted 明确失败（不降级）。
+    """
     from sgme.operations import skill_candidates as sc
 
     r = sc.review_skill_candidate(
@@ -1502,10 +1514,52 @@ def admin_skill_candidate_review(
         payload.decision,
         note=payload.note,
         reviewer=payload.reviewer,
+        hub=_try_init_skills_hub(request),
     )
     if not r.ok:
         raise api_error(r.error_code or "ERR_INTERNAL", r.message or "审核候选失败")
     return r.data
+
+
+@router.post("/v1/admin/skill-candidates/promote")
+def admin_skill_candidates_promote(
+    payload: SkillCandidatePromoteRequest,
+    request: Request,
+    _: str = Depends(require_admin_key),
+):
+    """批量晋级 accepted 候选为正式技能（T3 批量入口）。
+
+    **默认 dry-run**（只出清单零写入）；``apply: true`` 才真写。
+    生产 accepted 存量大（1,041 条），必须先 dry-run 报数、再分批 limit 执行。
+    """
+    from sgme.operations import skill_candidates as sc
+
+    hub = _try_init_skills_hub(request) if payload.apply else None
+    r = sc.promote_skill_candidates(
+        request.app.state.mem_conn,
+        _skill_candidates_conn(request),
+        hub,
+        limit=payload.limit,
+        apply=payload.apply,
+        reviewer=payload.reviewer,
+    )
+    if not r.ok:
+        raise api_error(r.error_code or "ERR_INTERNAL", r.message or "批量晋级失败")
+    return r.data
+
+
+def _try_init_skills_hub(request: Request):
+    """按 cfg 初始化 skills_hub（T3）；未启用/配置非法返回 None，不抛。
+
+    promoted 落成需要 hub；None 传入 operations 层会明确失败（不降级），
+    这里只负责「尝试拿」，错误语义由 operations 层给。
+    """
+    try:
+        from sgme.skills_hub import init as init_skills_hub
+
+        return init_skills_hub(request.app.state.cfg)
+    except Exception:  # noqa: BLE001——未启用/非法配置都按「无 hub」处理
+        return None
 
 
 # ---------- GET /v1/admin/skills（技能仓库基础信息 + 列表） ----------
