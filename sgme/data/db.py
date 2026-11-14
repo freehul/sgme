@@ -861,6 +861,8 @@ def connect_skills(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_skills_uses_gate(conn)
     # T5c（2026-11-15）：skill_candidates 补命名三列（suggested_name/naming_model/named_at）
     _migrate_skill_candidates_naming(conn)
+    # T9（2026-11-15）：skill_candidates 补三分类两列（suggested_kind/suggested_domain）
+    _migrate_skill_candidates_triage_columns(conn)
     # FTS5 虚表 + 同步触发器（幂等；与 wiki 的 init_wiki_fts 同职责，
     # 但技能库体量小且无需历史重建，直接在连接时就绪，避免调用方漏调）
     conn.executescript(SKILLS_FTS_DDL)
@@ -991,6 +993,10 @@ CREATE TABLE IF NOT EXISTS skill_candidates (
   suggested_name  TEXT,
   naming_model    TEXT,
   named_at        TEXT,
+  -- T9（2026-11-15）：三分类（skill=可执行进技能库 / wiki=可查证进知识库 /
+  -- discard=不沉淀）+ 领域白名单（校验在 apply_skill_names.py，列不设约束）
+  suggested_kind   TEXT,
+  suggested_domain TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
   reviewed_at     TEXT);
@@ -1196,6 +1202,30 @@ def _migrate_skill_candidates_naming(conn: sqlite3.Connection) -> bool:
     if has_table:
         cols = [r[1] for r in conn.execute("PRAGMA table_info(skill_candidates)").fetchall()]
         for col in ("suggested_name", "naming_model", "named_at"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE skill_candidates ADD COLUMN {col} TEXT")
+                changed = True
+    if changed:
+        conn.commit()
+    return changed
+
+
+def _migrate_skill_candidates_triage_columns(conn: sqlite3.Connection) -> bool:
+    """老库迁移（T9，2026-11-15）：skill_candidates 补三分类两列。
+
+    suggested_kind = skill | wiki | discard（三去向，不是三档质量）；
+    suggested_domain = 24 领域白名单 ∪ {other}（校验在 apply_skill_names.py）。
+
+    Returns:
+        True = 本次发生了补列；False = 无需迁移（新库或已迁移过）。
+    """
+    changed = False
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='skill_candidates'"
+    ).fetchone()
+    if has_table:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(skill_candidates)").fetchall()]
+        for col in ("suggested_kind", "suggested_domain"):
             if col not in cols:
                 conn.execute(f"ALTER TABLE skill_candidates ADD COLUMN {col} TEXT")
                 changed = True

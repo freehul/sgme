@@ -219,19 +219,25 @@ def set_candidate_naming(
     name: str,
     model: str,
     named_at: str,
+    kind: str | None = None,
+    domain: str | None = None,
 ) -> bool:
-    """写语义命名三件套（T5c，2026-11-15）：suggested_name / naming_model / named_at。
+    """写语义命名 + 三分类（T5c/T9，2026-11-15）：五字段一并原子落库。
 
+    suggested_name / naming_model / named_at（T5c 命名三件套）+
+    suggested_kind / suggested_domain（T9 三分类，None=不写保持原值）。
     供 apply_skill_names.py 落库；不触碰审核状态与 updated_at（命名是元数据，
     named_at 自带审计时间）。
     """
     cur = conn.execute(
         """
         UPDATE skill_candidates
-           SET suggested_name=?, naming_model=?, named_at=?
+           SET suggested_name=?, naming_model=?, named_at=?,
+               suggested_kind=COALESCE(?, suggested_kind),
+               suggested_domain=COALESCE(?, suggested_domain)
          WHERE memory_id=?
         """,
-        (name, model, named_at, memory_id),
+        (name, model, named_at, kind, domain, memory_id),
     )
     return cur.rowcount == 1
 
