@@ -23,7 +23,8 @@ v0.2 §11.2 定下的顺序是「先分流落库 → 成功 → 才允许 memory
 ----------------
 - `route=skill_candidate` → `skill_candidates` 候选池（复用 operations 层已验证的
   幂等/去重/置信度逻辑）+ `memory_pages` 互链；
-- `route=wiki_candidate` → **本轮不处理**（wiki 草稿通道在 S4），只计数；
+- `route=wiki_candidate` → **wiki_pages 草稿**（T2，2026-11-14：status='draft'、
+  检索天然排除、人工 promote 转正）+ `memory_pages` 互链；
 - 总开关 `refine.routing_enabled` **默认关**。
 
 失败语义
@@ -39,8 +40,8 @@ from typing import Any
 
 logger = logging.getLogger("sgme.engine.routing")
 
-#: 本轮处理的路由（wiki_candidate 的自动写入通道未接，仍留在 memories）
-_HANDLED_ROUTES = ("skill_candidate",)
+#: 本轮处理的路由（T2 接通 wiki_candidate：落 wiki_pages 草稿 + memory_pages 互链）
+_HANDLED_ROUTES = ("skill_candidate", "wiki_candidate")
 
 #: 分流置信度阈值（v0.3 §4）：低于此值不进候选池，改进 inbox 等人工裁决
 LOW_CONFIDENCE = 0.6
@@ -71,6 +72,22 @@ def _open_skills_conn(mem_conn: sqlite3.Connection) -> sqlite3.Connection | None
         return None
 
 
+def _open_wiki_conn(mem_conn: sqlite3.Connection) -> sqlite3.Connection | None:
+    """T2：按 memory.db 推导 data_dir 后自建 wiki.db 连接（失败返回 None）。
+
+    照 _open_skills_conn 同款（resolve_data_dir 推导 + 用完即关），原因相同：
+    persist_memories 的调用方只持有 mem_conn，为分流改签名会波及全部落库路径。
+    """
+    try:
+        from sgme.data import db as db_mod
+
+        data_dir = db_mod.resolve_data_dir(mem_conn)
+        return db_mod.connect_wiki(data_dir)
+    except Exception as e:  # noqa: BLE001——wiki 库不可用不该影响记忆落库
+        logger.warning("分流跳过：wiki.db 连接失败（%s）", e)
+        return None
+
+
 def dispatch_after_persist(
     memories: list[dict[str, Any]],
     mem_conn: sqlite3.Connection,
@@ -88,7 +105,8 @@ def dispatch_after_persist(
         file_id: 来源文件（仅日志/统计用）。
 
     Returns:
-        `{enabled, candidates, adopted, duplicates, linked, skipped, errors}`
+        `{enabled, candidates, adopted, duplicates, linked, skipped, errors,
+        inbox, wiki_written}`
     """
     stats: dict[str, Any] = {
         "enabled": False,
@@ -99,6 +117,8 @@ def dispatch_after_persist(
         "skipped": 0,
         "errors": 0,
         "inbox": 0,
+        # T2（三缺口补齐 2026-11-14）：wiki 草稿写入数（含幂等更新）
+        "wiki_written": 0,
     }
     if not memories or not is_enabled(cfg):
         return stats
@@ -112,43 +132,65 @@ def dispatch_after_persist(
     if not targets:
         return stats
 
+    # v0.3 §4 兜底矩阵：置信度不足 → 进 inbox 等人工裁决，绝不静默丢。
+    # 缺 route_confidence（v023 及更早）按高置信处理——见 LOW_CONFIDENCE 注释。
+    # 公共前置：对 skills / wiki 两条分支同样生效（T2：低置信不进 wiki 草稿）。
+    pending: list[dict[str, Any]] = []
+    for memory in targets:
+        memory_id = memory["memory_id"]
+        conf = memory.get("route_confidence")
+        if conf is not None:
+            try:
+                low = float(conf) < LOW_CONFIDENCE
+            except (TypeError, ValueError):
+                low = False
+            if low:
+                try:
+                    from sgme.data import routing_inbox_dao
+
+                    routing_inbox_dao.create(
+                        mem_conn,
+                        source_ref=memory_id,
+                        source_type="memory",
+                        content=str(memory.get("content") or ""),
+                        route_guess=memory.get("route"),
+                        confidence=float(conf),
+                        reason=memory.get("route_reason"),
+                    )
+                    stats["inbox"] += 1
+                except Exception as e:  # noqa: BLE001
+                    stats["errors"] += 1
+                    logger.warning("低置信入 inbox 失败 memory=%s: %s", memory_id, e)
+                continue
+        pending.append(memory)
+
+    # 按 route 分组，两条分支各自独立（连接失败只 skip 本组，互不拖累）
+    skill_targets = [m for m in pending if m.get("route") == "skill_candidate"]
+    wiki_targets = [m for m in pending if m.get("route") == "wiki_candidate"]
+    if skill_targets:
+        _dispatch_skill_targets(skill_targets, mem_conn, stats, file_id)
+    if wiki_targets:
+        _dispatch_wiki_targets(wiki_targets, mem_conn, stats, file_id)
+    return stats
+
+
+def _dispatch_skill_targets(
+    targets: list[dict[str, Any]],
+    mem_conn: sqlite3.Connection,
+    stats: dict[str, Any],
+    file_id: str | None,
+) -> None:
+    """skill_candidate → skill_candidates 候选池（原 S2 逻辑，拆出与 wiki 分支并列）。"""
     skills_conn = _open_skills_conn(mem_conn)
     if skills_conn is None:
-        stats["skipped"] = len(targets)
-        return stats
-
+        stats["skipped"] += len(targets)
+        return
     try:
         from sgme.data import memory_dao
         from sgme.operations import skill_candidates as sc_ops
 
         for memory in targets:
             memory_id = memory["memory_id"]
-            # v0.3 §4 兜底矩阵：置信度不足 → 进 inbox 等人工裁决，绝不静默丢。
-            # 缺 route_confidence（v023 及更早）按高置信处理——见 _route_confidence()。
-            conf = memory.get("route_confidence")
-            if conf is not None:
-                try:
-                    low = float(conf) < LOW_CONFIDENCE
-                except (TypeError, ValueError):
-                    low = False
-                if low:
-                    try:
-                        from sgme.data import routing_inbox_dao
-
-                        routing_inbox_dao.create(
-                            mem_conn,
-                            source_ref=memory_id,
-                            source_type="memory",
-                            content=str(memory.get("content") or ""),
-                            route_guess=memory.get("route"),
-                            confidence=float(conf),
-                            reason=memory.get("route_reason"),
-                        )
-                        stats["inbox"] += 1
-                    except Exception as e:  # noqa: BLE001
-                        stats["errors"] += 1
-                        logger.warning("低置信入 inbox 失败 memory=%s: %s", memory_id, e)
-                    continue
             try:
                 # 复用运维侧已验证的口径：幂等（memory_id UNIQUE）+ 正文指纹去重 +
                 # 高置信直接 accepted、其余 pending。commit=False 由本函数按批提交。
@@ -190,15 +232,96 @@ def dispatch_after_persist(
                 file_id, stats["candidates"], stats["adopted"],
                 stats["duplicates"], stats["linked"], stats["errors"],
             )
-        return stats
     except Exception as e:  # noqa: BLE001——分流整体是旁路
         logger.warning("三平面分流整体失败（不影响已落库记忆）file=%s: %s", file_id, e)
         stats["errors"] += 1
-        return stats
     finally:
         try:
             from sgme.data import db as db_mod
 
             db_mod.close(skills_conn)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _dispatch_wiki_targets(
+    targets: list[dict[str, Any]],
+    mem_conn: sqlite3.Connection,
+    stats: dict[str, Any],
+    file_id: str | None,
+) -> None:
+    """T2（三缺口补齐 2026-11-14）：wiki_candidate → wiki_pages 草稿 + memory_pages 互链。
+
+    接收端前提（v0.3 S4 已就绪）：wiki_pages.status='draft'、检索侧 search_wiki_fts
+    的 FTS/LIKE 两条路都只认 active（草稿天然不进检索）、promote_page 人工转正。
+    page_id 确定性生成（``refine-{memory_id}``）：insert_page 按 page_id 幂等更新，
+    同一条记忆重跑命中同一页，不产生第二页。
+
+    旁路语义与 skills 分支一致：单条失败计 errors、连接失败整组计 skipped，
+    绝不影响已落库记忆。
+    """
+    wiki_conn = _open_wiki_conn(mem_conn)
+    if wiki_conn is None:
+        stats["skipped"] += len(targets)
+        return
+    try:
+        from sgme import wiki_classify
+        from sgme.data import memory_dao, wiki_dao
+        from sgme.wiki import fts as wiki_fts
+
+        try:
+            # 照 operations.wiki 先例：FTS 虚拟表/触发器先幂等就位，插入即索引
+            # （草稿行也会进 FTS 表，但查询侧写死 status='active'，不影响检索口径）。
+            wiki_fts.init_wiki_fts(wiki_conn)
+        except Exception as e:  # noqa: BLE001——索引就位失败不拦写入
+            logger.warning("分流 wiki：init_wiki_fts 失败（写入继续）file=%s: %s", file_id, e)
+
+        for memory in targets:
+            memory_id = memory["memory_id"]
+            try:
+                content = str(memory.get("content") or "")
+                page_id = f"refine-{memory_id}"
+                # 标题：正文首行 ≤30 字（headline 同口径），空回退 page_id；
+                # 草稿不进检索，转正评审时人工可改，此处只求可辨认。
+                title = wiki_classify.headline(content, page_id) or page_id
+                wiki_dao.insert_page(
+                    wiki_conn, page_id,
+                    title=title,
+                    content=content,
+                    source_type="refine",
+                    status="draft",
+                    page_type="topic",
+                    description=content[:60],
+                    updated_by=f"agent_{memory.get('agent_tag') or 'unknown'}",
+                )
+                stats["wiki_written"] += 1
+                # 互链：这条记忆的详情在该 wiki 页（与 skills 分支同款）
+                stats["linked"] += memory_dao.link_memory_pages(
+                    mem_conn, memory_id,
+                    [{"kind": "wiki", "ref_id": page_id}],
+                    relation="derived_from",
+                )
+            except Exception as e:  # noqa: BLE001——单条失败不影响其余
+                stats["errors"] += 1
+                logger.warning(
+                    "分流异常（wiki 草稿）file=%s memory=%s: %s", file_id, memory_id, e,
+                )
+        try:
+            wiki_conn.commit()
+        except Exception:  # noqa: BLE001
+            pass
+        if stats["wiki_written"] or stats["errors"]:
+            logger.info(
+                "三平面分流 wiki file=%s：候选 %d / 草稿写入 %d / 互链 %d / 失败 %d",
+                file_id, len(targets), stats["wiki_written"], stats["linked"], stats["errors"],
+            )
+    except Exception as e:  # noqa: BLE001——分流整体是旁路
+        logger.warning("三平面分流 wiki 整体失败（不影响已落库记忆）file=%s: %s", file_id, e)
+        stats["errors"] += 1
+    finally:
+        try:
+            from sgme.data import db as db_mod
+
+            db_mod.close(wiki_conn)
         except Exception:  # noqa: BLE001
             pass
