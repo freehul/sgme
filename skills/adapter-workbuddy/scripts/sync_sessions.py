@@ -42,6 +42,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -294,6 +295,9 @@ def sync_one(client, row: dict, state: dict, projects_dir: Path, *, dry_run: boo
     except SGMEError as exc:
         item.update({"status": "failed", "reason": f"append_error: {exc}"})
         return item
+    except Exception as exc:  # noqa: BLE001 —— 网络层断连（如 WinError 10054）不应中断整批
+        item.update({"status": "failed", "reason": f"append_error: {type(exc).__name__}: {exc}"})
+        return item
 
     if isinstance(resp, dict) and resp.get("file_id"):
         item["file_id"] = resp["file_id"]
@@ -307,7 +311,8 @@ def sync_one(client, row: dict, state: dict, projects_dir: Path, *, dry_run: boo
 
 
 def sync_all(client, rows: list[dict], state: dict, projects_dir: Path, *,
-             dry_run: bool = False, state_path: Path | None = None) -> dict:
+             dry_run: bool = False, state_path: Path | None = None,
+             sleep_ms: int = 0) -> dict:
     """批量同步 + 覆盖报告（扫到 N / 入库 M / 跳过 K + 原因）。"""
     items = []
     for row in rows:
@@ -315,6 +320,8 @@ def sync_all(client, rows: list[dict], state: dict, projects_dir: Path, *,
         items.append(item)
         if state_path and not dry_run:
             save_state(state_path, state)
+        if sleep_ms > 0 and not dry_run:
+            time.sleep(sleep_ms / 1000.0)
 
     skip_reasons: dict[str, int] = {}
     for it in items:
@@ -381,6 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--days", type=int, default=None,
                    help=f"窗口天数（缺省 {DEFAULT_WINDOW_DAYS}；0 = 不限）")
     p.add_argument("--all", action="store_true", help="不限窗口，全量历史（谨慎）")
+    p.add_argument("--sleep-ms", type=int, default=0, help="每场之间休眠毫秒数（防 429；建议 300~1000）")
     p.add_argument("--limit", type=int, default=0, help="最多处理 N 场（0=不限）")
     p.add_argument("--dry-run", action="store_true", help="只报告，不写 SGME/游标")
     p.add_argument("--json", action="store_true", help="输出 JSON 报告")
@@ -404,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         rows = rows[: args.limit]
 
     state = load_state(state_path)
-    report = sync_all(client, rows, state, projects_dir, dry_run=args.dry_run, state_path=state_path)
+    report = sync_all(client, rows, state, projects_dir, dry_run=args.dry_run, state_path=state_path, sleep_ms=args.sleep_ms)
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=1))
