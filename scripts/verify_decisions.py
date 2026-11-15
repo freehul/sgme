@@ -62,7 +62,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 S = ROOT / "sgme"
 
-# 决策全集条数（D-1～D-80，其中 D-38～D-42 五个编号保留未用；D-79 core 记忆卡待施工）
+# 决策全集条数（D-1～D-80，其中 D-38～D-42 五个编号保留未用）
 TOTAL_DECISIONS = 75
 
 # 常用文件（断言按需取用；文件不存在 → 该断言判失败，并给出预期路径）
@@ -157,6 +157,17 @@ FILES = {
     "mimo_watch": ROOT / "adapters" / "mimo" / "scripts" / "care_watch.py",
     "workbuddy_watch": ROOT / "adapters" / "workbuddy" / "scripts" / "care_watch.py",
     "zcode_watch": ROOT / "adapters" / "zcode" / "scripts" / "care_watch.py",
+    # D-79（2026-11-05）：core 记忆卡（G-2 补断言 2026-11-16）
+    "memory_card_dao": S / "data" / "memory_card_dao.py",
+    "core_cards_mod": S / "profile" / "core_cards.py",
+    "routes_cards": S / "server" / "routes_cards.py",
+    "operations_cards": S / "operations" / "cards.py",
+    # D-25：标注集与七指标跑分脚手架（G-2 补断言 2026-11-16）
+    "persona_loader": ROOT / "eval" / "persona" / "loader.py",
+    "persona_metrics_mod": ROOT / "eval" / "persona" / "metrics.py",
+    "persona_annotation_report": ROOT / "scripts" / "persona_annotation_report.py",
+    "persona_metrics_report": ROOT / "scripts" / "persona_metrics_report.py",
+    "persona_predictions": ROOT / "scripts" / "persona_predictions.py",
 }
 
 _cache: dict[str, str] = {}
@@ -772,6 +783,71 @@ def _(self):
         ("运维端点", *has("routes_ops", "refine-efficiency")),
         ("配置默认值", *has("config", "chunk_cache_enabled")),
         ("配置白名单（接口可改）", *has("config", '"chunk_replay_enabled", "chunk_replay_max_failures"')),
+    ]
+
+
+@check("D-49", "注入预算门控（core > 模板 section > persona_block，只落注入侧）", "partial")
+def _(self):
+    # 2026-11-05 落地（G-2 补断言 2026-11-16）：门控本体 + operations/HTTP/MCP 三层透传；
+    # 文档自记剩余缺口 = 三项灰度验收指标实跑（满足才转 default-on，任一破线保持灰度）
+    # → partial，断言只覆盖已声明的门控机制面。
+    return [
+        ("预算门控实现（max_tokens=None 行为不变）", *has("profile_inject", "def apply_inject_budget", "if max_tokens is None")),
+        ("core 永不裁剪（附加块优先级表）", *has("profile_inject", "NON_SECTION_KINDS", '"core_cards"')),
+        ("裁剪过程写 stats（budget_* 如实留痕）", *has("profile_inject", "budget_max_tokens", "budget_unmet")),
+        ("operations 两分支接线（非死代码）", *has("inject_ops", "apply_inject_budget(response, max_tokens)")),
+        ("HTTP 入口透传 max_tokens", *has("routes_memory", "max_tokens=payload.max_tokens")),
+        ("MCP 入口透传 max_tokens", *has("mcp_server", "max_tokens=max_tokens")),
+    ]
+
+
+@check("D-79", "core 记忆卡与三层记忆分工（memory_cards + 硬上限 + 每次必注）", "done")
+def _(self):
+    # 2026-11-05 落地（G-2 补断言 2026-11-16）：设计文档 §3.9 决策 + §3.10「2026-11-05
+    # 同批改造：关于你 新建（core 记忆卡编辑器）」+ §3.6 tier0「2026-11-05 已砍除（D-79）」。
+    # 补充决策表的候选制入卡（memory_card_candidates）属拍板项、无实现声明，不入断言面。
+    return [
+        ("memory_cards 表", *has("db", "CREATE TABLE IF NOT EXISTS memory_cards")),
+        ("修改历史表（可溯源不删）", *has("db", "CREATE TABLE IF NOT EXISTS memory_card_history")),
+        ("老库迁移接线", *has("db", "_migrate_memory_cards_table")),
+        ("硬上限 单卡400/单槽120", *has("db", "CARD_MAX_CHARS = 400", "SLOT_MAX_CHARS = 120")),
+        ("一槽一值覆盖写 + 留痕", *has("memory_card_dao", "def upsert_slot", "INSERT INTO memory_card_history")),
+        ("超限拒绝（防退化成段落）", *has("memory_card_dao", "CardLimitError")),
+        ("core 块渲染（每次必注）", *has("core_cards_mod", "def build_core_block")),
+        ("注入接线（operations 主路径）", *has("inject_ops", "core_cards_mod.build_core_block")),
+        ("注入预算永不裁剪 core", *has("profile_inject", "core_cards")),
+        ("operations 层实现", *has("operations_cards", "def list_cards", "def update_slot")),
+        ("HTTP 端点（/v1/admin/cards）", *has("routes_cards", "/v1/admin/cards")),
+        ("app 注册 cards 路由", *has("app", "routes_cards")),
+        ("MCP 三工具（list/update/history）", *has("mcp_server", "card_list", "card_update", "card_history")),
+        ("WebUI 关于你页（CardView）", (ROOT / "ui" / "src" / "views" / "cards" / "CardView.vue").exists(),
+         "ui/src/views/cards/CardView.vue"),
+    ]
+
+
+@check("D-25", "标注集=静态黄金集（九类 35 条）+ 七指标跑分脚手架", "partial")
+def _(self):
+    # 已落地（文档 B297/B303/B308 声明，G-2 补断言 2026-11-16）：loader 九类校验与覆盖
+    # 统计 + 35 条标注集（2026-11-04 用户抽查通过，user_checked=true）+ 七指标 evaluate +
+    # 三个 CLI（覆盖报告/跑分报告/预测生成器）。
+    # 未落地 = 预测对 35 条真跑（等额度授权，属费用动作）→ partial。
+    cases_rel = "eval/persona/cases_v001_draft.yaml"
+    cases_path = ROOT / cases_rel
+    try:
+        cases_text = cases_path.read_text(encoding="utf-8") if cases_path.exists() else ""
+    except OSError:
+        cases_text = ""
+    n_true = cases_text.count("user_checked: true")
+    n_false = cases_text.count("user_checked: false")
+    cases_ok = n_true >= 35 and n_false == 0
+    return [
+        ("九类覆盖矩阵 + 加载/校验", *has("persona_loader", "CATEGORY_TARGETS", "def load_cases", "def validate_set")),
+        ("覆盖缺口统计", *has("persona_loader", "def coverage")),
+        (f"标注集 35 条且抽查通过（true×{n_true}/false×{n_false}）", cases_ok, cases_rel),
+        ("七指标 evaluate（确定性，不调 LLM）", *has("persona_metrics_mod", "def evaluate")),
+        ("覆盖报告 CLI", *has("persona_annotation_report", "def main")),
+        ("跑分报告 CLI", *has("persona_metrics_report", "def main")),
+        ("预测生成器（--dry-run 不调 LLM）", *has("persona_predictions", "def main", "--dry-run")),
     ]
 
 
