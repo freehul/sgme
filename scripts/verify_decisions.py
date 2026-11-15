@@ -170,6 +170,7 @@ FILES = {
     "persona_predictions": ROOT / "scripts" / "persona_predictions.py",
     # D-6 / D-45（G-2 补断言第二批 2026-11-16）
     "registry_dimensions": S / "resources" / "registry" / "dimensions.yaml",
+    "ui_roles_view": ROOT / "ui" / "src" / "views" / "care" / "RolesView.vue",
     "llm_provider": S / "llm" / "provider.py",
     "llm_resolve": S / "llm" / "resolve.py",
 }
@@ -921,6 +922,25 @@ def _(self):
         ("409 冲突清单", *has("compat", "CONFLICT_RULES")),
         ("410 下线清单", *has("compat", "GONE_RULES")),
         ("强制守卫开关", *has("compat", "enforce_gone")),
+    ]
+
+
+@check("D-3", "角色编辑工作台（WebUI：六槽位可视化编辑 + 试对话预览）", "partial")
+def _(self):
+    # 未落地 = 测试指标展示（D-74 阈值未拍板前不进门禁）。
+    return [
+        ("角色工作台视图存在", *exists("ui/src/views/care/RolesView.vue")),
+        ("六槽位可编辑", *has("ui_roles_view", "六槽位", "sgme_profile")),
+        ("试对话/装配预览", *has("ui_roles_view", "试对话")),
+    ]
+
+
+@check("D-4", "知识支柱下 wiki 与 skills 两个独立平级子模块", "done")
+def _(self):
+    # 两个包各自独立存在（合并只是能力归类，不是实现合并）。
+    return [
+        ("wiki 模块独立", *exists("sgme/wiki/__init__.py")),
+        ("skills 模块独立", *exists("sgme/skills/__init__.py")),
     ]
 
 
