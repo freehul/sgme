@@ -168,6 +168,10 @@ FILES = {
     "persona_annotation_report": ROOT / "scripts" / "persona_annotation_report.py",
     "persona_metrics_report": ROOT / "scripts" / "persona_metrics_report.py",
     "persona_predictions": ROOT / "scripts" / "persona_predictions.py",
+    # D-6 / D-45（G-2 补断言第二批 2026-11-16）
+    "registry_dimensions": S / "resources" / "registry" / "dimensions.yaml",
+    "llm_provider": S / "llm" / "provider.py",
+    "llm_resolve": S / "llm" / "resolve.py",
 }
 
 _cache: dict[str, str] = {}
@@ -917,6 +921,25 @@ def _(self):
         ("409 冲突清单", *has("compat", "CONFLICT_RULES")),
         ("410 下线清单", *has("compat", "GONE_RULES")),
         ("强制守卫开关", *has("compat", "enforce_gone")),
+    ]
+
+
+@check("D-6", "维度展示用中文，英文 id 附在边上", "partial")
+def _(self):
+    # 注册表一行为一维度：id 英文 snake_case（存储/归一化用）+ display_name 中文（展示用）。
+    return [
+        ("注册表 id 字段", *has("registry_dimensions", "- id: identity")),
+        ("注册表中文展示名", *has("registry_dimensions", "display_name: 身份")),
+    ]
+
+
+@check("D-45", "max_tokens 传递缺陷修复（声明了预算但调用处没传）", "partial")
+def _(self):
+    # 修复口径：provider 构造请求时从配置读 max_tokens（provider.py:191），
+    # 且动态链重建时继承采样参数（resolve.py 说明 max_tokens 在继承列表中）。
+    return [
+        ("provider 从配置取 max_tokens", *has("llm_provider", '"max_tokens": provider_cfg.get("max_tokens"')),
+        ("动态链继承 max_tokens", *has("llm_resolve", "max_tokens")),
     ]
 
 
