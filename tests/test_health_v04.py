@@ -440,3 +440,62 @@ def test_health_endpoint_no_key_401(tmp_path, cfg, raw_dir, monkeypatch):
         db_mod.close(mem_conn)
         db_mod.close(session_conn)
         db_mod.close(wiki_conn)
+
+# ---------- 5. 有意停机（refine.paused）不算停摆 ----------
+# 2026-11-15：v024 提示词定稿前主动停提炼（用户授权的变更冻结窗口）。
+# 若仍按水位判停摆，健康检查每轮都会刷 anomaly_warn。
+
+def test_check_refinement_stalled_paused_not_stall(session_conn):
+    """paused=True → 水位虽超阈值仍判 paused、stalled=False。"""
+    # Arrange
+    _insert_raw_file(session_conn, "f-paused", refined_at=_iso(100))
+
+    # Act
+    result = health_mod.check_refinement_stalled(
+        session_conn, threshold_hours=24, paused=True
+    )
+
+    # Assert
+    assert result["stalled"] is False
+    assert result["state"] == "paused"
+    assert result["last_refined_at"] is not None  # 水位仍可观测
+
+
+def test_check_refinement_stalled_default_still_stalls(session_conn):
+    """默认 paused=False → 水位超阈值仍判停摆（防误关）。"""
+    # Arrange
+    _insert_raw_file(session_conn, "f-late", refined_at=_iso(100))
+
+    # Act
+    result = health_mod.check_refinement_stalled(session_conn, threshold_hours=24)
+
+    # Assert
+    assert result["stalled"] is True
+    assert result["state"] == "stalled"
+
+
+def test_check_heartbeat_paused_skips_anomaly(mem_conn, session_conn, monkeypatch):
+    """paused=true → 水位超阈值也不发 anomaly_warn，heartbeat_ok=True。"""
+    # Arrange
+    published: list[dict] = []
+    monkeypatch.setattr(
+        health_mod, "check_llm_available",
+        lambda c, client=None: {
+            "available": True, "provider": "mock", "model": "mock", "error": None,
+        },
+    )
+    import sgme.signal.engine as signal_engine
+
+    monkeypatch.setattr(signal_engine, "publish", lambda **kw: published.append(kw))
+    _insert_raw_file(session_conn, "f-hb", refined_at=_iso(100))
+
+    # Act
+    result = health_mod.check_heartbeat(
+        mem_conn, session_conn, {"refine": {"paused": True}}
+    )
+
+    # Assert：顶层契约不变（不新增 refine_paused），语义体现在 refinement.state
+    assert result["refinement"]["state"] == "paused"
+    assert result["stalled"] is False
+    assert result["heartbeat_ok"] is True
+    assert published == []

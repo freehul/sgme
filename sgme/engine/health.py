@@ -171,6 +171,8 @@ def check_seq_progression(
 def check_refinement_stalled(
     session_conn: sqlite3.Connection,
     threshold_hours: int = 24,
+    *,
+    paused: bool = False,
 ) -> dict:
     """检测提炼水位是否停滞。
 
@@ -180,6 +182,9 @@ def check_refinement_stalled(
     - 空库（raw_files 无任何 refined 记录）→ **不算停摆**（T-144：全新库首启
       从未提炼即判停摆会让新手误以为装坏），状态标记 ``state="never_refined"``、
       ``stalled=False``；提炼一次后转常规时间/序号水位判定
+    - **有意停机**（``refine.paused=true``，用户授权的变更冻结窗口，如换提示词版本前
+      刻意停提炼以免重复烧 token）→ 不算停摆，``state="paused"``、``stalled=False``。
+      否则健康检查每轮按水位判停摆，会刷出无意义的 anomaly_warn。
     - 返回字段（契约冻结：既有字段不得删改，仅 T-144 新增 ``state``）：
       stalled / last_refined_at / stalled_hours / threshold_hours / state
     - ``state`` 取值：``"never_refined"``（全空）／ ``"ok"``（水位正常）／
@@ -190,6 +195,16 @@ def check_refinement_stalled(
     )
     row = cur.fetchone()
     last_refined = row["last"] if row else None
+
+    # 有意停机：水位再久也不算停摆（用户授权的变更冻结窗口）
+    if paused:
+        return {
+            "stalled": False,
+            "last_refined_at": last_refined,
+            "stalled_hours": None,
+            "threshold_hours": threshold_hours,
+            "state": "paused",
+        }
 
     if not last_refined:
         # 空库/从未提炼 → 不算停摆（T-144：全新库首启不误报装坏）
@@ -470,7 +485,9 @@ def check_heartbeat(
     - 返回字段：llm / refinement / queue_depth / heartbeat_ok / stalled
     """
     llm_info = check_llm_available(cfg, client=client)
-    refine_info = check_refinement_stalled(session_conn)
+    # 有意停机（refine.paused）不算停摆：变更冻结窗口内不应刷 anomaly_warn
+    refine_paused = bool(((cfg or {}).get("refine") or {}).get("paused"))
+    refine_info = check_refinement_stalled(session_conn, paused=refine_paused)
 
     # T-12：序号水位细节（供 anomaly_warn 载荷与调用方观测，非 /v1/health 契约字段）
     seq_info = check_seq_progression(
@@ -510,6 +527,7 @@ def check_heartbeat(
             "threshold_hours": refine_info.get("threshold_hours"),
             # T-12 新增：序号水位细节（窗口内空转 = 人为/异常停摆的可观测信号）
             "seq_stalled": seq_stalled,
+            "refine_paused": refine_paused,
             "window_refined_count": seq_info["window_refined_count"],
             "window_max_seq": seq_info["window_max_seq"],
             "window_hours": seq_info["window_hours"],

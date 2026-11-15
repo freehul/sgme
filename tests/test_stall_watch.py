@@ -31,7 +31,15 @@ from sgme.data import memory_dao
 
 # ---------- 契约常量（与 test_operations_health.py 冻结值一致） ----------
 
-HTTP_TOP_KEYS = ["status", "version", "llm", "refinement", "vector", "model_config", "update_available", "latest_version", "update_checked_at", "update_error", "onboarding", "credentials_ok"]  # T-53/ST-34 只增不改；T-215 P1 接入指引指针（补漏：ea1270a 只更了 test_operations_health 侧）；EP-11 凭据模块状态
+HTTP_TOP_KEYS = [
+    "status", "version", "llm", "refinement",
+    # 2026-11-14 v0.3 S5：记忆组成指标（只增不改，插在 refinement 之后）
+    "memory_composition",
+    "vector", "model_config", "update_available", "latest_version",
+    "update_checked_at", "update_error", "onboarding", "credentials_ok",
+    # B323：时间锚可信度（只增不改，追加末尾）
+    "occurred_reliability",
+]  # T-53/ST-34 只增不改；T-215 P1 接入指引指针（补漏：ea1270a 只更了 test_operations_health 侧）；EP-11 凭据模块状态
 HTTP_REFINEMENT_KEYS = [
     "watermark_age_sec",
     "queue_depth",
@@ -39,7 +47,8 @@ HTTP_REFINEMENT_KEYS = [
     "stalled",
     "stalled_hours",
     "heartbeat_ok",
-    "state",  # T-144：只增不改既有字段（never_refined / ok / stalled）
+    "state",  # T-144：只增不改既有字段（never_refined / ok / stalled / paused）
+    "paused",  # 2026-11-14：提炼总闸（只增不改，追加末尾）
 ]
 STALLED_CONTRACT_KEYS = ["stalled", "last_refined_at", "stalled_hours", "threshold_hours", "state"]
 
