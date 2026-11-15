@@ -55,3 +55,17 @@ def test_postprocess_bundles_three_outputs():
     assert out["category"] == "研究调研"
     assert out["page_type"] == "topic"
     assert out["headline"] == "结论"
+
+def test_path_rules_cover_project_scoped_categories():
+    """2026-11-16（A-4 回填前置）：旧 category 里项目内二级路径（airdt/design）与
+    资产库（local-assets）没有一级前缀可映射，长期落在「未分类」——按语义补精确路径规则。"""
+    assert wc.classify_category("airdt/design") == "设计文档"
+    assert wc.classify_category("local-assets") == "实体档案"
+    assert wc.page_type_for(wc.classify_category("local-assets")) == "entity"
+
+
+def test_path_rules_are_exact_not_prefix_wide():
+    """精确匹配：同项目下其它二级路径不得被顺带归类，规则不许放宽成前缀通配。"""
+    assert wc.classify_category("airdt/price-lib") == "未分类"
+    assert wc.classify_category("airdt/knowledge") == "未分类"
+    assert wc.classify_category("local-assets-old") == "未分类"

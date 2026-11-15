@@ -41,6 +41,14 @@ _PREFIX_RULES: tuple[tuple[str, str], ...] = (
     ("runbook", "操作手册"),
 )
 
+# 精确路径规则（完整旧 category，小写比较）→ 类名，**先于一级前缀**匹配。
+# 2026-11-16 补：项目内二级路径与资产库没有一级前缀可映射，长期落「未分类」；
+# 只做精确匹配，不许放宽成前缀通配（同项目其它二级路径必须仍留「未分类」）。
+_PATH_RULES: tuple[tuple[str, str], ...] = (
+    ("airdt/design", "设计文档"),
+    ("local-assets", "实体档案"),
+)
+
 # 标题/正文特征兜底（顺序即优先级）
 _TEXT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"索引|目录|index", re.I), "索引"),
@@ -55,11 +63,16 @@ _INDEX_HINTS = re.compile(r"索引|目录|index", re.I)
 
 
 def classify_category(raw_category: str | None, title: str = "", content: str = "") -> str:
-    """规则分类：已是合法类名 → 原样；路径前缀 → 类名；标题/正文特征兜底；否则未分类。"""
+    """规则分类：已是合法类名 → 原样；精确路径 → 类名；一级前缀 → 类名；
+    标题/正文特征兜底；否则未分类。"""
     raw = (raw_category or "").strip()
     if raw in CATEGORY_NAMES:
         return raw
     if raw:
+        low = raw.lower()
+        for path, cls in _PATH_RULES:
+            if low == path:
+                return cls
         head = raw.split("/", 1)[0].strip().lower()
         for prefix, cls in _PREFIX_RULES:
             if head == prefix:
