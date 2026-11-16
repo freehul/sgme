@@ -170,6 +170,8 @@ FILES = {
     "persona_predictions": ROOT / "scripts" / "persona_predictions.py",
     # D-6 / D-45（G-2 补断言第二批 2026-11-16）
     "registry_dimensions": S / "resources" / "registry" / "dimensions.yaml",
+    "operations_inject": S / "operations" / "inject.py",
+    "test_operations_inject": ROOT / "tests" / "test_operations_inject.py",
     "ui_roles_view": ROOT / "ui" / "src" / "views" / "care" / "RolesView.vue",
     "llm_provider": S / "llm" / "provider.py",
     "llm_resolve": S / "llm" / "resolve.py",
@@ -941,6 +943,17 @@ def _(self):
     return [
         ("wiki 模块独立", *exists("sgme/wiki/__init__.py")),
         ("skills 模块独立", *exists("sgme/skills/__init__.py")),
+    ]
+
+
+@check("D-47", "空分类显式声明（不许静默省略）", "done")
+def _(self):
+    # 2026-11-16 核实：落地方式是**全空时在 stats.note 附可行动提示**
+    # （ST-22④ _attach_empty_note），不是「渲染一句未检索到」；有两条测试锁死。
+    # 早前「grep 未检索到 0 命中 = 未实现」的判断有误，已更正。
+    return [
+        ("空结果 note 逻辑", *has("operations_inject", "_attach_empty_note", "暂无相关记忆")),
+        ("空结果测试", *has("test_operations_inject", "test_inject_empty_result_has_note")),
     ]
 
 
