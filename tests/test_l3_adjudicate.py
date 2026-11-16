@@ -281,14 +281,24 @@ def test_build_batches_packs_groups_within_budget():
 
 
 def test_build_batches_boundary_exact_fit_and_overflow():
-    """T-18：批次边界——恰好等于预算放入一批，超 1 token 拆批；单组超预算独立成批不丢弃。"""
+    """T-18：批次边界——恰好等于预算放入一批，超 1 token 拆批；单组超预算独立成批不丢弃。
+
+    T-295（B3b）注：union 口径对**并集总量**只 ceil 一次，sum 口径逐组 ceil 后累加
+    ——两组无共享候选时两者恰差 1 token 的舍入差，故「−1 拆批」边界按口径分开断言。
+    """
     g0, g1 = _mk_group(0, 1, 3000), _mk_group(1, 1, 3000)
     c0, c1 = l3_adjudicate.estimate_group_tokens(g0), l3_adjudicate.estimate_group_tokens(g1)
     overhead = l3_adjudicate.TEMPLATE_OVERHEAD_TOKENS
-    # 恰好放下（模板开销 + 两组）→ 一批
+    # 恰好放下（模板开销 + 两组）→ 一批（两口径一致）
     assert len(l3_adjudicate.build_batches([g0, g1], overhead + c0 + c1)) == 1
-    # 少 1 token → 拆成两批
-    assert len(l3_adjudicate.build_batches([g0, g1], overhead + c0 + c1 - 1)) == 2
+    # sum 口径（回退开关）：少 1 token → 拆成两批（逐组 ceil 累加语义不变）
+    assert len(l3_adjudicate.build_batches(
+        [g0, g1], overhead + c0 + c1 - 1, estimate_mode="sum")) == 2
+    # union 口径：并集 ceil 一次比 sum 累加少 1 token（3595 vs 3596），
+    # 预算 −1 时 800+3595=4395 ≤ 4395 仍恰好一批
+    assert len(l3_adjudicate.build_batches([g0, g1], overhead + c0 + c1 - 1)) == 1
+    # union 口径再少 1 token → 拆成两批
+    assert len(l3_adjudicate.build_batches([g0, g1], overhead + c0 + c1 - 2)) == 2
     # 单组自身超预算 → 独立成批不丢弃
     ghuge = _mk_group(2, 1, 100000)
     batches = l3_adjudicate.build_batches([ghuge], 100)

@@ -567,6 +567,11 @@ DEFAULT_L3_ADJUDICATE_CONFIG = {
     "candidate_dedup": {
         "enabled": False,
     },
+    # ST-58/T-295（B3b）：装箱估算口径。union（默认）= 批内候选**并集**去重计费，
+    # 与实际 prompt 构成一致；sum = 旧口径回退开关（各组之和，共享候选重复计费，
+    # 生产实测批级估算高估 1.3~1.8 倍）。⚠️ 与 B3a 常量标定（162/1.85/800）成对
+    # 落地，禁止单落常量不落口径（单落会抬高单组估算 → 批数上升、成本反向增加）。
+    "packing_estimate_mode": "union",
 }
 
 # 提炼调度默认兜底（2026-08-04 新增：文件到达联动 + Batch 兜底扫描）
@@ -1423,9 +1428,14 @@ def _merge_l3_adjudicate_config(user_cfg: dict | None) -> dict:
         "near_dup": dict(DEFAULT_L3_ADJUDICATE_CONFIG["near_dup"]),
         "candidate_fields": dict(DEFAULT_L3_ADJUDICATE_CONFIG["candidate_fields"]),
         "candidate_dedup": dict(DEFAULT_L3_ADJUDICATE_CONFIG["candidate_dedup"]),
+        # T-295（B3b）：union / sum 二值，非法值退回默认
+        "packing_estimate_mode": DEFAULT_L3_ADJUDICATE_CONFIG["packing_estimate_mode"],
     }
     if not isinstance(user_cfg, dict):
         return base
+    pem = user_cfg.get("packing_estimate_mode")
+    if pem in ("union", "sum"):
+        base["packing_estimate_mode"] = pem
     cf = user_cfg.get("candidate_fields")
     if isinstance(cf, dict):
         tgt = base["candidate_fields"]

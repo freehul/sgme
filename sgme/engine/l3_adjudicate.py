@@ -44,12 +44,14 @@ logger = logging.getLogger("sgme.engine.l3_adjudicate")
 DEFAULT_TOP_K = 50
 # build_candidate_pool 直调（无上下文预算）时的默认单记忆候选字符预算（兼容旧参数语义）
 DEFAULT_CHAR_BUDGET = 24000
-# 字符→token 估算比（CJK ≈ 1 字符/token，英文 ≈ 4 字符/token，取保守折中）
-CHARS_PER_TOKEN = 2.0
-# 每批 prompt 模板 + 指令固定开销（tokens，估算）
-TEMPLATE_OVERHEAD_TOKENS = 1500
-# 候选/新记忆格式化行开销（字符，估算）
-FORMAT_CHARS_PER_CANDIDATE = 120
+# 字符→token 估算比（T-295/B3a 实测标定：批级 prompt_tokens 与字符量隐含 1.86，
+# 取 1.85 保守；原 2.0 系「CJK/英文折中」拍脑袋值，高估 ~8% 放大批数。样本 n=2000）
+CHARS_PER_TOKEN = 1.85
+# 每批 prompt 模板 + 指令固定开销（tokens；T-295/B3a 实测 799（n=2000），原 1500 高估近一倍）
+TEMPLATE_OVERHEAD_TOKENS = 800
+# 候选/新记忆格式化行开销（字符；T-295/B3a 实测候均 162.3（n=2000，框架部分），
+# 原 120 低估 → 装箱塞太满触发超预算）
+FORMAT_CHARS_PER_CANDIDATE = 162
 FORMAT_CHARS_PER_NEW_MEMORY = 160
 # batch_budget 计算失败时的兜底预算（tokens）
 DEFAULT_BATCH_BUDGET = 24000
@@ -619,6 +621,7 @@ def build_batches(
     batch_budget: int,
     chars_per_token: float = CHARS_PER_TOKEN,
     template_overhead_tokens: int = TEMPLATE_OVERHEAD_TOKENS,
+    estimate_mode: str = "union",
 ) -> list[Batch]:
     """按上下文预算分批：同一新记忆只进一批，每批不超过预算。
 
@@ -626,6 +629,13 @@ def build_batches(
     - 每组（新记忆 + 其全部候选）整体放入一批，不拆散 → 同一新记忆只进一批
     - 当前批累积（模板开销 + 各组估算）再加下组超预算 → 开新批
     - 单组自身超预算（新记忆内容极大）→ 单独成批不丢弃（宁超不丢，记日志）
+
+    estimate_mode（ST-58/T-295，B3b）：
+    - ``union``（默认）：估算按**批内候选并集**计费——与实际 prompt 构成一致
+      （``_merge_group_candidates`` 去重后全部候选参与比对），共享候选只计一次；
+    - ``sum``：旧口径回退开关，各组估算之和累加（共享候选重复计费，
+      生产实测批级估算高估 1.3~1.8 倍）。⚠️ B3a 常量标定与 B3b 成对落地，
+      禁止单落常量不落口径（单落会抬高单组估算 → 批数上升、成本反向增加）。
     """
     batches: list[Batch] = []
     if not groups:
@@ -633,6 +643,10 @@ def build_batches(
     cur_groups: list[CandidateGroup] = []
     cur_cost = 0
     cur_start = groups[0].new_memory_index
+    # B3b 并集口径的批内累积状态（sum 模式不维护，零额外开销）
+    union_ids: set[str] = set()
+    union_cand_chars = 0     # 并集候选正文总字符（去重后）
+    union_new_chars = 0      # 批内新记忆字符总量（各组新记忆天然不重复）
 
     def flush() -> None:
         nonlocal cur_groups, cur_cost
@@ -646,18 +660,55 @@ def build_batches(
         cur_cost = 0
 
     for g in groups:
-        cost = estimate_group_tokens(g, chars_per_token)
-        if cur_groups and template_overhead_tokens + cur_cost + cost > batch_budget:
-            flush()
-            cur_start = g.new_memory_index
-        if cost > batch_budget and not cur_groups:
+        g_new = len(g.new_memory.get("content", "") or "") + FORMAT_CHARS_PER_NEW_MEMORY
+        g_ids = {str(c.get("memory_id")) for c in g.candidates}
+        g_cand_chars = sum(len(c.get("content", "") or "") for c in g.candidates)
+        fresh: set[str] = set()
+        fresh_chars = 0
+        cost = 0
+        alone = 0
+        # flush 后需按清零后的批内状态重算（union 口径的 trial 随并集状态变化）
+        for _attempt in range(2):
+            if estimate_mode == "union":
+                fresh = g_ids - union_ids
+                fresh_chars = sum(
+                    len(c.get("content", "") or "") for c in g.candidates
+                    if str(c.get("memory_id")) in fresh
+                )
+                # trial cost = 加入本组后的批内并集估算（已含全批，不再叠加 cur_cost）
+                cost = math.ceil((
+                    union_cand_chars + fresh_chars
+                    + FORMAT_CHARS_PER_CANDIDATE * (len(union_ids) + len(fresh))
+                    + union_new_chars + g_new
+                ) / chars_per_token)
+                # 单组自身超预算检查用「该组独占并集」口径（与 sum 模式的组估算同义）
+                alone = math.ceil((
+                    g_cand_chars + FORMAT_CHARS_PER_CANDIDATE * len(g.candidates) + g_new
+                ) / chars_per_token)
+                trial_total = cost
+            else:
+                cost = estimate_group_tokens(g, chars_per_token)
+                alone = cost
+                trial_total = cur_cost + cost
+            if cur_groups and template_overhead_tokens + trial_total > batch_budget:
+                flush()
+                cur_start = g.new_memory_index
+                continue
+            break
+        if alone > batch_budget and not cur_groups:
             # 单组自身超预算：独立成批不丢弃（每批不超过预算的例外，宁超不丢）
             logger.warning(
                 "L1.5 单组（新记忆#%d）估算 %d tokens 超批预算 %d → 独立成批不丢弃",
-                g.new_memory_index, cost, batch_budget,
+                g.new_memory_index, alone, batch_budget,
             )
         cur_groups.append(g)
-        cur_cost += cost
+        if estimate_mode == "union":
+            union_ids |= g_ids
+            union_cand_chars += fresh_chars
+            union_new_chars += g_new
+            cur_cost = cost  # cost 已是加入本组后的并集估算
+        else:
+            cur_cost += cost
     flush()
     return batches
 
@@ -1702,7 +1753,11 @@ def resolve_conflicts(
     # 无候选的新记忆不进任何批 → 无裁决 → 落库阶段默认 store（无冲突可能，短路到单记忆粒度）
     # 幂等跳过的记忆不进批（已确定 skip，省一次 LLM 调用）
     batched_groups = [g for g in groups if g.candidates and g.new_memory_index not in idem_skip]
-    batches = build_batches(batched_groups, budget)
+    # T-295（B3b）：装箱估算口径（union=默认并集口径 / sum=旧口径回退开关，config 层已校验）
+    estimate_mode = str(
+        ((cfg.get("l3_adjudicate") or {}).get("packing_estimate_mode")) or "union"
+    )
+    batches = build_batches(batched_groups, budget, estimate_mode=estimate_mode)
     if not batches:
         if batched_groups:
             # 理论上不可达（batched_groups 非空）；兜底：整批送检（宁超不丢）
@@ -1814,6 +1869,17 @@ def resolve_conflicts(
                     run_error = str(e2)
             # 记录 refine_run（每候选批一条；action 分布 + 版本 + provider；memories_count=本批新记忆数）
             _finish_run(run_status, run_error, decisions)
+            # T-295（B3 兜底断言）：实际 usage 超批预算 5% → anomaly_warn。
+            # 装箱估算失准的直接信号（估算口径漂移 / 模板开销变化），只告警不回滚
+            # ——超预算批本身已发出，此刻回滚反而丢裁决；观测驱动的口径再校准入口。
+            _pt = (usage or {}).get("prompt_tokens") if isinstance(usage, dict) else None
+            if isinstance(_pt, (int, float)) and _pt > budget * 1.05:
+                result.anomaly_warn = True
+                logger.warning(
+                    "L1.5 批实际 prompt_tokens=%.0f 超批预算 %d 的 5%% → anomaly_warn"
+                    "（装箱估算失准，复核 packing_estimate_mode 与 B3a 常量）",
+                    _pt, budget,
+                )
             logger.info("L1.5 批完成: version=%s variant=%s provider=%s actions=%s",
                         pv.version, pv.variant, provider_name,
                         dict(_batch_counts or {}))
