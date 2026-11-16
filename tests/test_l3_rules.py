@@ -91,3 +91,21 @@ def test_empty_new_content_stores():
     """空正文不在这里拦（交给入库校验），避免规则层与解析层职责重叠。"""
     d = adjudicate({"content": "", "subject": "self", "dimensions": []}, [])
     assert d.kind == "store"
+
+
+# ---------- T-316：改口词表注册表化 ----------
+
+def test_change_signals_loaded_from_registry():
+    """词表须从 resources/registry/change_signals.yaml 加载（D-28 版本化要求）。"""
+    from sgme.engine import l3_rules
+
+    assert "不再" in l3_rules.CHANGE_SIGNALS_ZH_LOADED
+    assert "no longer" in l3_rules.CHANGE_SIGNALS_EN_LOADED
+    # 加载函数对缺失/损坏文件回退内置兜底（主链不被注册表问题挡住）
+    zh_fb, en_fb = l3_rules._load_change_signals()
+    assert zh_fb and en_fb
+
+
+def test_change_signal_from_registry_content():
+    assert has_change_signal("现在改成 postgres 了") is True
+    assert has_change_signal("用户偏好全程中文沟通") is False

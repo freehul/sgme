@@ -102,3 +102,39 @@ def test_gray_zone_goes_to_llm(conn):
 def test_switch_off_by_default_keeps_old_behavior():
     cfg = {"l3": {}}
     assert (cfg.get("l3", {}).get("rules", {}) or {}).get("enabled", False) is False
+
+
+# ---------- T-316：规则命中独立记账 ----------
+
+def test_rule_hits_recorded_as_separate_run(conn):
+    """规则已决项不进批 → 单独一条 provider='l3_rules' run（命中率统计取数入口）。"""
+    import json as _json
+
+    old = _seed(conn, "用户偏好全程中文沟通")
+    cand = {"memory_id": old, "content": "用户偏好全程中文沟通", "subject": "self"}
+    new = {"content": "用户偏好全程中文沟通", "subject": "self", "dimension_ids": ["preferences"]}
+    cfg = sgme_config.load_config()
+    cfg.setdefault("l3", {})["rules"] = {"enabled": True}
+
+    decisions, remaining = l3_adjudicate._apply_l3_rules(conn, [_group(0, new, [cand])], set(), cfg)
+    assert 0 in decisions and decisions[0].action == "skip"
+
+    # 记账挂在 resolve_conflicts 主流程里；这里直接驱动机函数验证落库形态
+    l3_adjudicate._record_l3_rules_run(conn, "test-bucket", decisions, None)
+    rows = conn.execute(
+        "SELECT provider, memories_count, action_counts, status FROM refine_runs "
+        "WHERE stage='l1_conflict' AND provider='l3_rules'"
+    ).fetchall()
+    assert len(rows) == 1, f"应恰好一条 l3_rules run，实际 {len(rows)}"
+    assert rows[0]["memories_count"] == 1
+    assert _json.loads(rows[0]["action_counts"]) == {"rule_skip": 1}
+    assert rows[0]["status"] == "ok"
+
+
+def test_rule_run_absent_without_hits(conn):
+    """规则零命中 → 不写 l3_rules run（无信号不产噪音）。"""
+    l3_adjudicate._record_l3_rules_run(conn, "test-bucket", {}, None)
+    rows = conn.execute(
+        "SELECT run_id FROM refine_runs WHERE stage='l1_conflict' AND provider='l3_rules'"
+    ).fetchall()
+    assert rows == []

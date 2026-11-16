@@ -1,0 +1,30 @@
+# L3 规则层·改口信号词表（D-28 第二关）
+# 版本化注册表：扩口语改口句式只改这里（l3_rules.py 启动时加载；文件缺失/损坏
+# 回退内置兜底词表，绝不因注册表问题挡提炼主链）。
+version: 1
+zh:
+  - 不再
+  - 改成
+  - 换成
+  - 改回
+  - 改用
+  - 现在用
+  - 现在是
+  - 现在改
+  - 其实早就
+  - 以前是
+  - 已经不用
+  - 不做了
+  - 算了不改了
+  - 停止使用
+en:
+  - no longer
+  - instead
+  - switched to
+  - now using
+  - used to
+  - stopped using
+  - changed to
+  - not anymore
+  - anymore
+  - replaced with

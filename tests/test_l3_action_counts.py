@@ -65,7 +65,7 @@ def _batch_runs(mem_conn):
     return mem_conn.execute(
         "SELECT run_id, provider, action_counts, status, error FROM refine_runs "
         "WHERE stage='l1_conflict' AND provider NOT IN "
-        "('prescreen_skip', 'near_dup', 'empty_pool', 'idempotent_skip')",
+        "('prescreen_skip', 'near_dup', 'empty_pool', 'idempotent_skip', 'no_candidate', 'l3_rules')",
     ).fetchall()
 
 

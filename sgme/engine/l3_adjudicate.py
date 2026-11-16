@@ -1075,6 +1075,38 @@ def _record_no_candidate_run(
     )
 
 
+def _record_l3_rules_run(
+    mem_conn: sqlite3.Connection,
+    bucket_key: str,
+    decisions: dict[int, "ConflictDecision"],
+    bucket_ctx,
+) -> None:
+    """T-316：L3 规则层命中独立记账（验收「规则命中率统计」的取数入口）。
+
+    规则已决项不进批、批路径 action_counts 数不到——与 empty_pool / no_candidate /
+    idempotent_skip 同型独立记录：provider="l3_rules"、action_counts={"rule_<action>": n}
+    （update 即 supersede 落库动作，复用既有归档链）。规则零命中不写（无信号不产噪音）。
+    """
+    if not decisions:
+        return
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    counts: dict[str, int] = {}
+    for d in decisions.values():
+        key = f"rule_{getattr(d, 'action', 'unknown')}"
+        counts[key] = counts.get(key, 0) + 1
+    pv = PromptStore().get("l1_conflict", bucket_ctx)
+    run_id = RefineRunRecorder.start(
+        mem_conn, file_id=bucket_key, stage="l1_conflict",
+        version=pv.version, variant=pv.variant,
+        provider="l3_rules", bucket_key=bucket_key,
+    )
+    RefineRunRecorder.finish(
+        mem_conn, run_id, memories_count=len(decisions),
+        action_counts=counts, status="ok", error=None,
+    )
+
+
 _EXTRA_KEYS = (
     "type", "subject", "certainty", "derivation", "modality", "route",
     "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
@@ -1748,6 +1780,8 @@ def resolve_conflicts(
             dict(Counter(d.action for d in l3_rule_decisions.values())),
             sum(1 for g in groups if g.candidates),
         )
+        # T-316：规则命中独立记账（refine_runs 可查规则命中率；有信号才写）
+        _record_l3_rules_run(mem_conn, bucket_key, l3_rule_decisions, bucket_ctx)
 
     # 2. 分批（铁律 #7：按上下文预算分批，同一新记忆只进一批）
     # 无候选的新记忆不进任何批 → 无裁决 → 落库阶段默认 store（无冲突可能，短路到单记忆粒度）

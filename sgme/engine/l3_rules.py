@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 # 决策类型：
@@ -30,7 +31,9 @@ from typing import Any, Literal
 #   llm      → 灰区，交 LLM 1v1 裁决
 DecisionKind = Literal["store", "skip", "supersede", "llm"]
 
-# 改口信号词表（D-28：中英双语；扩口语改句式时只改这里，版本化进注册表）
+# 改口信号词表（D-28：中英双语）——**版本化进注册表** `resources/registry/change_signals.yaml`
+# （T-316 补实现：词表随注册表管理，扩口语改口句式只改 yaml）。文件缺失/损坏时
+# 回退下面的内置兜底词表（与注册表 v1 同内容），绝不因注册表问题挡提炼主链。
 CHANGE_SIGNALS_ZH = (
     "不再", "改成", "换成", "改回", "改用", "现在用", "现在是", "现在改",
     "其实早就", "以前是", "已经不用", "不做了", "算了不改了", "停止使用",
@@ -39,6 +42,29 @@ CHANGE_SIGNALS_EN = (
     "no longer", "instead", "switched to", "now using", "used to", "stopped using",
     "changed to", "not anymore", "anymore", "replaced with",
 )
+
+_SIGNALS_REGISTRY_PATH = (
+    Path(__file__).resolve().parent.parent / "resources" / "registry" / "change_signals.yaml"
+)
+
+
+def _load_change_signals() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """从注册表加载改口词表；任何异常回退内置兜底（主链不因词表问题中断）。"""
+    try:
+        import yaml
+
+        data = yaml.safe_load(_SIGNALS_REGISTRY_PATH.read_text(encoding="utf-8")) or {}
+        zh = tuple(str(x) for x in (data.get("zh") or []) if str(x).strip())
+        en = tuple(str(x) for x in (data.get("en") or []) if str(x).strip())
+        if zh or en:
+            return (zh or CHANGE_SIGNALS_ZH, en or CHANGE_SIGNALS_EN)
+    except Exception:  # noqa: BLE001——注册表缺失/损坏一律兜底
+        pass
+    return CHANGE_SIGNALS_ZH, CHANGE_SIGNALS_EN
+
+
+# 模块加载时读一次（提炼进程启动即定；改词表后重启生效——与注册表其余文件口径一致）
+CHANGE_SIGNALS_ZH_LOADED, CHANGE_SIGNALS_EN_LOADED = _load_change_signals()
 
 # 判重前的归一化：去标点/空白/大小写差异，中文全角转半角
 _PUNCT_RE = re.compile(r"[\s，。！？、；：\"'（）()\[\]{}<>《》!?,.;:]+")
@@ -69,10 +95,10 @@ def normalize_text(text: str) -> str:
 
 
 def has_change_signal(text: str) -> bool:
-    """是否含明确改口信号（D-28 第二关）。"""
+    """是否含明确改口信号（D-28 第二关；词表来自注册表 change_signals.yaml）。"""
     low = str(text or "").lower()
-    return any(sig in low for sig in CHANGE_SIGNALS_ZH) or any(
-        sig in low for sig in CHANGE_SIGNALS_EN
+    return any(sig in low for sig in CHANGE_SIGNALS_ZH_LOADED) or any(
+        sig in low for sig in CHANGE_SIGNALS_EN_LOADED
     )
 
 
