@@ -977,6 +977,38 @@ def _(self):
     ]
 
 
+# ---------- G-2 补断言第三批（2026-11-16 今晚批次）：D-32 / D-8 ----------
+
+@check("D-32", "能力维度并入技术栈（唯一结构合并）", "done")
+def _(self):
+    # 唯一可判核心：13 维终版注册表里 tech_stack 存在、capability/capabilities
+    # 不独立存在（并入=不再有独立能力维度；将来若新增 capability 维度即违反本决策）。
+    # 注册表其余语义（display_name 等）由 D-6 断言承载。
+    body = src("registry_dimensions")
+    if not body:
+        return [("注册表可读", False, "resources/registry/dimensions.yaml 不存在")]
+    has_ts = "id: tech_stack" in body
+    leaked = [kw for kw in ("id: capability",) if kw in body]
+    return [
+        ("tech_stack 维度存在", has_ts, "resources/registry/dimensions.yaml: id: tech_stack"),
+        ("capability 不再独立成维", not leaked,
+         (f"resources/registry/dimensions.yaml: 泄漏 {leaked}") if leaked
+         else "resources/registry/dimensions.yaml: 无 capability 独立维度"),
+    ]
+
+
+@check("D-8", "配置系统：三层覆盖（默认→配置文件→环境变量）+ 热重载 + 校验/版本迁移", "partial")
+def _(self):
+    # 已落地（G-2 补断言 2026-11-16）：第三层环境变量覆盖——ENV_OVERRIDES 映射表
+    # + get_env 引用 + 写入口 apply_section 的 env 托管剔除（_strip_env_managed）。
+    # 未落地 = 热重载与校验/版本迁移 → partial（与文档声明范围一致）。
+    return [
+        ("env 覆盖映射表", *has("config", "ENV_OVERRIDES: dict[str, str]")),
+        ("env 读取函数", *has("config", "def get_env")),
+        ("写入口剔除 env 托管字段", *has("config", "_strip_env_managed", "def apply_section")),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 对账
 # ---------------------------------------------------------------------------
