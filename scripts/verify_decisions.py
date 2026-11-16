@@ -71,6 +71,10 @@ FILES = {
     "db": S / "data" / "db.py",
     "memory_dao": S / "data" / "memory_dao.py",
     "wiki_dao": S / "data" / "wiki_dao.py",
+    "stats_dao": S / "data" / "stats_dao.py",
+    "health": S / "operations" / "health.py",
+    "routing": S / "engine" / "routing.py",
+    "sc_ops": S / "operations" / "skill_candidates.py",
     "memory_stats_dao": S / "data" / "memory_stats_dao.py",
     "llm_usage_dao": S / "data" / "llm_usage_dao.py",
     "l2_extraction": S / "engine" / "l2_extraction.py",
@@ -1006,6 +1010,63 @@ def _(self):
         ("env 覆盖映射表", *has("config", "ENV_OVERRIDES: dict[str, str]")),
         ("env 读取函数", *has("config", "def get_env")),
         ("写入口剔除 env 托管字段", *has("config", "_strip_env_managed", "def apply_section")),
+    ]
+
+
+# ---------- T-400 补断言第四批（2026-11-17）：三平面 5 项（D-86/D-88/D-89/D-90/D-92） ----------
+# 台账口径：D-86/88/89 已注记实现；D-90/92 设计文档声明「page_type 字段就绪」。
+# 只断代码可判部分；抽样人工评审（D-86 尾句）与项目树建成度（D-90）是流程/结构声明，不做断言。
+
+@check("D-86", "三平面 D2：person 占比不做硬门禁，改观测+告警+抽样评审", "done")
+def _(self):
+    # 可判核心：观测（stats_dao.memory_composition 的 person_ratio）+ 告警
+    # （health 的 PERSON_RATIO_WARN=0.50 与 person_ratio_low 布尔挂输出）。
+    return [
+        ("记忆组成观测含 person_ratio", *has("stats_dao", "def memory_composition", "person_ratio")),
+        ("告警阈值常量 0.50", *has("health", "PERSON_RATIO_WARN = 0.50")),
+        ("告警布尔挂 health 输出", *has("health", "person_ratio_low", "person_ratio_warn_threshold")),
+    ]
+
+
+@check("D-88", "三平面 D4：skill_candidate 自动进池，转正必须人工", "done")
+def _(self):
+    # 可判核心：① adopt 通道（记忆→候选池自动进池）；② 转正闸门只在人工审核函数里
+    # （仅 accepted 可 promoted）；③ 管线（自动链路）零 promote 引用——转正无自动路径。
+    pipeline_body = src("pipeline")
+    no_promote = "promoted" not in pipeline_body and "review_skill_candidate" not in pipeline_body
+    return [
+        ("adopt 自动进池端点", *has("routes_admin", "/v1/admin/skill-candidates/adopt")),
+        ("仅 accepted 可晋级的闸门", *has("sc_ops", "仅 accepted 候选可晋级 promoted")),
+        ("管线无自动 promote 引用", no_promote,
+         "engine/pipeline.py: 无 promote/review_skill_candidate 引用" if no_promote
+         else "engine/pipeline.py: 出现 promote 引用（自动转正路径？）"),
+    ]
+
+
+@check("D-89", "三平面 D5：自动写入落草稿态，检索默认不返回草稿", "done")
+def _(self):
+    # 可判核心：routing 自动写 wiki 落 status='draft'（T2）→ wiki_dao.promote_page
+    # 草稿转正（S4）→ 检索默认 WHERE status='active' 不返草稿。
+    return [
+        ("自动写入落 draft", *has("routing", 'status="draft"')),
+        ("草稿转正函数", *has("wiki_dao", "def promote_page", "status='draft'")),
+        ("检索默认过滤非 active", *has("wiki_dao", "WHERE status='active'")),
+    ]
+
+
+@check("D-90", "三平面 D6：项目粒度用项目树（index + topic 页型）", "done")
+def _(self):
+    # 可判核心：page_type 页型机制就绪（设计文档声明 index/topic/log/entity 四型，
+    # 实测 topic 866/index 33/log 4/entity 1）；项目树建成度不做断言。
+    return [
+        ("page_type 推断含 index/topic", *has("wiki_dao", "page_type", "entity / topic / log / index")),
+    ]
+
+
+@check("D-92", "三平面 D8：场景原文归档保留为 log 页型", "done")
+def _(self):
+    return [
+        ("page_type 推断含 log 归档页", *has("wiki_dao", "page_type", "log")),
     ]
 
 
