@@ -96,7 +96,12 @@ def audit_group(pages: list[dict], pages_by_id: dict[str, dict]) -> tuple[list[d
 
     # 链尾：组内 ingested_at 最新的页（active 才是健康终点）
     ordered = sorted(pages, key=lambda p: p["ingested_at"])
-    terminus = ordered[-1] if ordered else None
+    # T-392E（2026-11-16）：**draft 不是退休态**。草稿是「尚未发布」，不参与取代链评价；
+    # 全 draft 组直接跳过（否则 A-5 分流进来的草稿会被当成「终结页非 active」误报）。
+    published = [p for p in ordered if p["status"] != "draft"]
+    if not published:
+        return candidates, []
+    terminus = published[-1]
     if terminus and terminus["status"] != "active":
         # 终点自指 = C1 无后继下线（正常）；否则链尾异常
         if terminus["supersedes"] != terminus["page_id"]:

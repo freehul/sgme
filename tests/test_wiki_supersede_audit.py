@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.wiki_supersede_audit import run
+from scripts.wiki_supersede_audit import audit_group, run
 
 SCHEMA = """
 CREATE TABLE wiki_pages (
@@ -164,3 +164,26 @@ def test_readonly_no_writes(db):
     run(db)
     after = hashlib.sha256(db.read_bytes()).hexdigest()
     assert before == after
+
+def test_draft_only_group_is_not_flagged_as_retired():
+    """T-392E（2026-11-16）：全 draft 组不算「退休态」——草稿是未发布，不是已下线。
+
+    没有这条，A-5 分流进来的每条 wiki 草稿都会被误报成 terminus_not_active。
+    """
+    pages = [{"page_id": "d1", "title": "T", "status": "draft", "supersedes": "",
+              "ingested_at": "2026-11-16T00:00:00Z"}]
+    cands, rows = audit_group(pages, {p["page_id"]: p for p in pages})
+    assert cands == []
+    assert rows == []
+
+
+def test_draft_newest_with_active_below_is_not_terminus():
+    """草稿比 active 新时，链尾仍应取 active 页，不得因草稿报异常。"""
+    pages = [
+        {"page_id": "old", "title": "T", "status": "active", "supersedes": "",
+         "ingested_at": "2026-11-15T00:00:00Z"},
+        {"page_id": "new", "title": "T", "status": "draft", "supersedes": "",
+         "ingested_at": "2026-11-16T00:00:00Z"},
+    ]
+    cands, _rows = audit_group(pages, {p["page_id"]: p for p in pages})
+    assert [c["kind"] for c in cands] == []
