@@ -196,3 +196,53 @@ def test_counts_error_does_not_break_adjudication(mem_conn, cfg, monkeypatch):
     runs = _batch_runs(mem_conn)
     assert len(runs) == 1 and runs[0]["status"] == "ok"
     assert json.loads(runs[0]["action_counts"]) == {}  # 回退空计数，不带毒
+
+
+# ---------- T-321：无候选默认 store 独立留痕 ----------
+
+def test_no_candidate_store_recorded_as_separate_run(mem_conn, cfg):
+    """T-321：混合路径（部分记忆无候选）的无候选 store 必须独立留痕。
+
+    此前该路径 store 在 refine_runs 完全不可见：批 run 的 memories_count 数不到
+    （不进批）、``_record_empty_pool_run`` 只覆盖 1.6 全空短路分支——3 文件诊断跑
+    「记忆已落库但零裁决记录」的根因（分支未记账，非写入失败）。
+    """
+    cfg["l3_adjudicate"] = {"prescreen": None}
+    _insert_existing(mem_conn, "旧技术栈：Python 3.10", ["tech_stack"])
+    new_memories = [
+        {   # 有候选：同维度 + 关键词重叠 → 进批送 LLM
+            "content": "新技术栈：Python 3.11", "dimension_ids": ["tech_stack"],
+            "memory_type": "persona", "priority": 80, "time_velocity": "static",
+        },
+        {   # 无候选：goals 池为空 → 组级候选为空，不进批，走「无裁决默认 store」
+            "content": "今天午餐吃了红烧肉配米饭", "dimension_ids": ["goals"],
+            "memory_type": "persona", "priority": 50, "time_velocity": "static",
+        },
+    ]
+    result = l3_adjudicate.resolve_conflicts(
+        new_memories, mem_conn, cfg, client=_mock_llm_client("[]"),
+    )
+    assert len(result.stored) == 2, f"两条都应落库，实际 stored={result.stored}"
+    rows = mem_conn.execute(
+        "SELECT provider, memories_count, action_counts, status FROM refine_runs "
+        "WHERE stage='l1_conflict' AND provider='no_candidate'",
+    ).fetchall()
+    assert len(rows) == 1, f"应恰好一条 no_candidate run，实际 {[dict(r) for r in rows]}"
+    assert rows[0]["memories_count"] == 1
+    assert json.loads(rows[0]["action_counts"]) == {"no_candidate_store": 1}
+    assert rows[0]["status"] == "ok"
+
+
+def test_no_candidate_run_absent_when_all_have_candidates(mem_conn, cfg):
+    """全部记忆有候选 → 不产生 no_candidate run（无信号不产噪音，与同型范式一致）。"""
+    cfg["l3_adjudicate"] = {"prescreen": None}
+    _insert_existing(mem_conn, "旧事实丁", ["goals"])
+    new_memories = [{"content": "新事实丁", "dimension_ids": ["goals"],
+                     "memory_type": "persona", "priority": 50, "time_velocity": "static"}]
+    l3_adjudicate.resolve_conflicts(
+        new_memories, mem_conn, cfg, client=_mock_llm_client("[]"),
+    )
+    rows = mem_conn.execute(
+        "SELECT run_id FROM refine_runs WHERE stage='l1_conflict' AND provider='no_candidate'",
+    ).fetchall()
+    assert rows == [], f"无信号不应写 no_candidate run，实际 {rows}"

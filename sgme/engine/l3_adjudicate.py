@@ -989,6 +989,41 @@ def _record_idempotent_skip_run(
     )
 
 
+def _record_no_candidate_run(
+    mem_conn: sqlite3.Connection,
+    bucket_key: str,
+    stored_n: int,
+    bucket_ctx,
+) -> None:
+    """T-321：主路径「无候选默认 store」独立留痕（有信号才写）。
+
+    定位结论（T-321，2026-11-16）：3 文件诊断跑里后两个文件「记忆已落库但零裁决
+    记录」是**分支未记账**，不是写入失败——``_record_empty_pool_run`` 只覆盖
+    1.6 全空短路分支；主路径里候选组为空的新记忆走「无裁决默认 store」落库，
+    批路径 run 的 memories_count 数不到它们、其余同型独立记录（prescreen_skip /
+    near_dup / idempotent_skip）各管各的信号，于是这部分 store 在 refine_runs
+    完全不可见（``batches==[]`` 的落库段最严重：整文件零 run）。
+
+    本函数与 ``_record_empty_pool_run`` 同型：provider="no_candidate"，
+    action_counts={"no_candidate_store": n}，memories_count=n。只统计**实际落库**
+    的无候选 store（全池查重/近似重复隔离的 skip 由各自记录承载）。
+    """
+    if stored_n <= 0:
+        return
+    from sgme.data.refine_dao import RefineRunRecorder
+
+    pv = PromptStore().get("l1_conflict", bucket_ctx)
+    run_id = RefineRunRecorder.start(
+        mem_conn, file_id=bucket_key, stage="l1_conflict",
+        version=pv.version, variant=pv.variant,
+        provider="no_candidate", bucket_key=bucket_key,
+    )
+    RefineRunRecorder.finish(
+        mem_conn, run_id, memories_count=stored_n,
+        action_counts={"no_candidate_store": stored_n}, status="ok", error=None,
+    )
+
+
 _EXTRA_KEYS = (
     "type", "subject", "certainty", "derivation", "modality", "route",
     "feeling", "trait", "scene_key", "needs_review", "l2_facts_json",
@@ -1589,6 +1624,10 @@ def resolve_conflicts(
     prescreen_skipped = int(_prescreen_stats.get("prescreen_skipped", 0))
     result.prescreen_skipped = prescreen_skipped
     result.anomaly_warn = pool_warn
+    # T-321：无候选新记忆集合（组级候选为空）——这些记忆不进批、走「无裁决默认
+    # store」，须在 refine_runs 独立留痕（见 _record_no_candidate_run）。
+    no_cand_indices = {g.new_memory_index for g in groups if not g.candidates}
+    no_cand_store_n = 0
 
     # 1.55 候选集内去重（2026-11-05，l3_adjudicate.candidate_dedup，默认关）
     dedup_cfg = (cfg.get("l3_adjudicate", {}) or {}).get("candidate_dedup") or {}
@@ -1830,6 +1869,8 @@ def resolve_conflicts(
             )
             new_mem["memory_id"] = new_id  # 写回，供 L2 场景关联
             result.stored.append(new_id)
+            if i in no_cand_indices:  # T-321：无候选默认 store，独立留痕
+                no_cand_store_n += 1
         elif action == "skip":
             result.skipped.append(i)
         elif action == "update":
@@ -1897,6 +1938,9 @@ def resolve_conflicts(
     _record_near_dup_run(mem_conn, bucket_key, result, bucket_ctx)
     # T1（三缺口补齐 2026-11-14）：幂等跳过独立记账（有信号才写）
     _record_idempotent_skip_run(mem_conn, bucket_key, len(idem_skip), bucket_ctx)
+    # T-321：无候选默认 store 独立留痕（有信号才写——此后「记忆已落库但零裁决
+    # 记录」不再可能出现：至少有一条 no_candidate run 承载）
+    _record_no_candidate_run(mem_conn, bucket_key, no_cand_store_n, bucket_ctx)
 
     logger.info(
         "L1.5 完成: store=%d skip=%d update=%d merge=%d archived=%d warn=%s "
