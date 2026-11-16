@@ -140,3 +140,24 @@ def test_mcp_wiki_page_update(client):
     result = op(conn, "m1", "经验二", append=True, author="agent-dsh")
     assert result.ok
     assert "经验二" in wiki_dao.get_page(conn, "m1")["content"]
+
+def test_patch_superseded_self_pointer_by_default(conn, app):
+    """T-393E：不传 supersedes → 维持旧行为（自指），用于「组内无 active」的历史沉淀归一。"""
+    wiki_dao.insert_page(conn, page_id="p1", title="T", content="c", category="研究调研", status="superseded")
+    client = TestClient(app)
+    r = client.patch("/v1/wiki/pages/p1", json={"content": "x", "status": "superseded"},
+                     headers={"X-API-Key": "test-agent"})
+    assert r.status_code == 200
+    assert r.json()["supersedes"] == "p1"
+
+
+def test_patch_superseded_explicit_successor(conn, app):
+    """T-393E：显式 supersedes 指向后继 —— 修「自指但组内有 active 后继」的链断裂。"""
+    wiki_dao.insert_page(conn, page_id="old", title="T", content="c", category="研究调研", status="superseded")
+    client = TestClient(app)
+    r = client.patch("/v1/wiki/pages/old", json={"content": "x", "status": "superseded", "supersedes": "new"},
+                     headers={"X-API-Key": "test-agent"})
+    assert r.status_code == 200
+    assert r.json()["supersedes"] == "new"
+    row = conn.execute("SELECT supersedes FROM wiki_pages WHERE page_id='old'").fetchone()
+    assert row["supersedes"] == "new"

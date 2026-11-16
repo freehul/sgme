@@ -80,6 +80,9 @@ class WikiPageUpdateRequest(BaseModel):
     description: str | None = None
     author: str | None = None
     status: str | None = None  # PR-7：显式置 superseded（M4a 迁移原页归档；仅 active/superseded 两值）
+    # T-393E（2026-11-16）：自指改指后继。不给则保持旧行为（supersedes_by=page_id 自指），
+    # 给了就指向该页——修「同题组存在 active 后继但旧页自指」的链断裂。
+    supersedes: str | None = None
 
 
 class WikiEvolveRequest(BaseModel):
@@ -316,8 +319,9 @@ def update_wiki_page(
     conn: sqlite3.Connection = request.app.state.wiki_conn
     # PR-7：显式 superseded 归档（M4a）——在内容更新前执行，独立生效
     if payload.status == "superseded":
-        wiki_dao.mark_superseded(conn, page_id, supersedes_by=page_id)
-        return {"page_id": page_id, "status": "superseded"}
+        target = (payload.supersedes or "").strip() or page_id
+        wiki_dao.mark_superseded(conn, page_id, supersedes_by=target)
+        return {"page_id": page_id, "status": "superseded", "supersedes": target}
     result = update_page_operation(
         conn, page_id,
         content=payload.content, append=payload.append,
