@@ -521,6 +521,23 @@ def _promote_candidate_to_library(
             "skills_hub 未启用，无法落成技能（promoted 要求真写技能库，不降级）",
         )
     try:
+        # T-401（2026-11-17）：撞名检查必须在 put_skill/upsert_skill 之前——
+        # upsert_skill 是 ON CONFLICT(name) DO UPDATE（覆盖写），撞名会静默覆盖
+        # 主表已有技能；apply_skill_names.py 命名侧去重只是间接防护，promote 侧自查：
+        #   主表无同名行 → 放行；
+        #   同名行 sha256 与本次将写入内容一致 → 同一候选重试 promote（幂等自愈），放行；
+        #   其余（真撞名）→ 拒绝，候选保持 accepted，提示改用 -2 后缀或命名侧去重。
+        dup = skills_dao.get_skill(skills_conn, name)
+        if dup is not None and str(dup.get("sha256") or "") != hashlib.sha256(
+            content.encode("utf-8")
+        ).hexdigest():
+            return OperationResult.fail(
+                ERR_INVALID_ARGS,
+                f"技能主表已存在同名技能 name={name}（updated_at="
+                f"{dup.get('updated_at')}，source={dup.get('source')}），promote"
+                " 拒绝覆盖写；请改用其它名（如 " + name + "-2）或先在命名侧去重"
+                "（scripts/apply_skill_names.py 撞名自动 -2）",
+            )
         path = hub.put_skill(name=name, content=content)  # ① 真源落盘（ValueError=非法名）
         parsed = parse_skill_md(content)
         meta = parsed.get("meta") or {}

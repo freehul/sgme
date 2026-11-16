@@ -435,3 +435,59 @@ def test_unclassified_kind_still_promotes(conns, hub):
     assert skills.execute(
         "SELECT COUNT(*) FROM skills WHERE name='unclassified-skill'"
     ).fetchone()[0] == 1
+
+
+# ---------- T-401（2026-11-17）：promote 撞名检查 ----------
+
+def test_promote_name_conflict_rejected_no_overwrite(conns, hub):
+    """主表已有同名且内容不同的技能 → promote 拒绝；主表内容不被覆盖、真源不落盘。"""
+    mem, skills = conns
+    from sgme.data import skills_dao
+    skills_dao.upsert_skill(skills, {
+        "name": "conflicted-skill", "sha256": "a" * 64,
+        "description": "已有旧技能", "category": "ai", "content": "旧内容：不要覆盖我。",
+        "source": "manual", "origin_path": "",
+    })
+    skills.commit()
+    old_sha = skills_dao.get_skill(skills, "conflicted-skill")["sha256"]
+    _insert_candidate(skills, "m-t401a", name="exp-000c401a",
+                      suggested_name="conflicted-skill",
+                      suggested_kind="skill", suggested_domain="ai")
+    r = sc_ops.review_skill_candidate(mem, skills, "m-t401a", "promoted", hub=hub)
+    assert not r.ok, "撞名 promote 应被拒绝"
+    assert "同名技能" in r.message and "拒绝覆盖" in r.message
+    # 主表技能未被覆盖（sha 不变）
+    assert skills_dao.get_skill(skills, "conflicted-skill")["sha256"] == old_sha
+    # 候选保持 accepted（T3 硬要求：绝不出现标 promoted 但未落成）
+    row = skills.execute(
+        "SELECT status FROM skill_candidates WHERE memory_id='m-t401a'"
+    ).fetchone()
+    assert row["status"] == "accepted"
+    # hub 真源目录没有落盘
+    assert not (hub.root / "conflicted-skill").exists()
+
+
+def test_promote_same_content_retry_is_idempotent(conns, hub):
+    """同一候选 promote 成功后状态回退（模拟 update_status 中途失败）再重试 →
+    主表同名且 sha256 与本次写入一致 → 放行（幂等自愈，不误伤）。"""
+    mem, skills = conns
+    _insert_candidate(skills, "m-t401b", name="exp-000c401b",
+                      suggested_name="retry-skill",
+                      suggested_kind="skill", suggested_domain="ai")
+    r1 = sc_ops.review_skill_candidate(mem, skills, "m-t401b", "promoted", hub=hub)
+    assert r1.ok, r1.message
+    # 模拟落成后标状态失败：候选行回退 accepted
+    skills.execute(
+        "UPDATE skill_candidates SET status='accepted', name='exp-000c401b'"
+        " WHERE memory_id='m-t401b'"
+    )
+    skills.commit()
+    r2 = sc_ops.review_skill_candidate(mem, skills, "m-t401b", "promoted", hub=hub)
+    assert r2.ok, f"同内容重试应放行（幂等自愈）: {r2.message}"
+    assert skills.execute(
+        "SELECT COUNT(*) FROM skills WHERE name='retry-skill'"
+    ).fetchone()[0] == 1
+    row = skills.execute(
+        "SELECT status, name FROM skill_candidates WHERE memory_id='m-t401b'"
+    ).fetchone()
+    assert row["status"] == "promoted" and row["name"] == "retry-skill"
