@@ -180,6 +180,16 @@ FILES = {
     "ui_roles_view": ROOT / "ui" / "src" / "views" / "care" / "RolesView.vue",
     "llm_provider": S / "llm" / "provider.py",
     "llm_resolve": S / "llm" / "resolve.py",
+    # T-409（2026-11-17）：结构/部署/安全/归档四项的判据文件
+    "server_security": S / "server" / "security.py",
+    "ratelimit": S / "server" / "ratelimit.py",
+    "net_guard": S / "net_guard.py",
+    "raw_store": S / "raw" / "store.py",
+    "routes_onboarding": S / "server" / "routes_onboarding.py",
+    "ai_install_readme": ROOT / "AI-INSTALL" / "README.md",
+    "ai_install_selfcheck": ROOT / "AI-INSTALL" / "selfcheck.md",
+    "deploy_compose": ROOT / "deploy" / "nas-docker-compose.yml",
+    "bootstrap_venv": ROOT / "scripts" / "bootstrap_venv.bat",
 }
 
 _cache: dict[str, str] = {}
@@ -1067,6 +1077,89 @@ def _(self):
 def _(self):
     return [
         ("page_type 推断含 log 归档页", *has("wiki_dao", "page_type", "log")),
+    ]
+
+
+
+# ---------- T-409 补断言第五批（2026-11-17）：结构 / 部署 / 安全 / 归档 ----------
+# 挑选口径（台账 §五）：只挑**有廉价源码判据**者。明确不补的仍留在台账：
+#   设计语义类 D-2/D-12/D-24/D-75（"合并/抄现成/三原则/发布边界" 无代码符号可判）
+#   前提失效类 D-13~D-16（1.x 的 raw.db 多库滚动与 keep_think 在 2.0 全仓 0 命中）
+#   待实现后补 D-87/D-91/D-93（存量治理 S7 / 五类章法 / 索引页注入均未开工）
+
+
+@check("D-1", "四支柱 + 平台层结构（记忆/角色/知识/关怀 + 平台）", "done")
+def _(self):
+    # 可判核心 = 四个支柱各自有**独立包**（不是"全都塞进 data"），平台层入口与接入面独立存在。
+    # 支柱⇄包的对应按设计 §一 那段结构图：Memory=记忆层、Persona=角色、Knowledge=wiki+skills、Care=信号+装配。
+    return [
+        ("记忆支柱包（data + engine）", *exists("sgme/data/__init__.py")),
+        ("记忆支柱编排包（engine）", *exists("sgme/engine/__init__.py")),
+        ("角色支柱包（care = 人格卡/装配/角色管理）", *exists("sgme/care/__init__.py")),
+        ("角色支柱画像包（profile = 注入侧）", *exists("sgme/profile/__init__.py")),
+        ("知识支柱：wiki 子模块", *exists("sgme/wiki/__init__.py")),
+        ("知识支柱：skills 子模块（与 wiki 平级）", *exists("sgme/skills/__init__.py")),
+        ("关怀支柱包（signal = 信号引擎）", *exists("sgme/signal/__init__.py")),
+        ("平台层：HTTP 入口", *exists("sgme/server/__init__.py")),
+        ("平台层：MCP 入口", *exists("sgme/mcp_server.py")),
+        ("平台层：八家适配器目录", *exists("adapters")),
+        ("平台层：WebUI 目录", *exists("ui")),
+    ]
+
+
+@check("D-9", "部署两条路：本机直装 / Docker（NAS 与 VPS 共用）", "done")
+def _(self):
+    # 可判核心 = 两条路各有**可执行入口**（不是只有文档口述）：
+    #   Docker 路 = deploy/ 下的 compose 模板；本机直装路 = 项目级 venv 引导脚本。
+    # "不做全自动安装器" 是**否定性约束**（不新增 XX 符号），按台账 §四 的取舍不做符号断言。
+    return [
+        ("Docker 路：compose 模板", *exists("deploy/nas-docker-compose.yml")),
+        ("本机直装路：项目级 venv 引导", *exists("scripts/bootstrap_venv.bat")),
+        ("本机直装路：依赖锁定清单", *exists("requirements.txt")),
+    ]
+
+
+@check("D-10", "部署形态 = 材料包（compose 模板 + 幂等脚本 + AI 手册）+ agent 执行 + 自检闭环", "done")
+def _(self):
+    # 可判核心：材料包四件齐（模板 / 幂等安装脚本 / AI 手册 / 自检清单），且自检入口有在线端点。
+    return [
+        ("材料包：compose 模板", *exists("deploy/nas-docker-compose.yml")),
+        ("材料包：适配器幂等安装脚本（agent 执行）", *exists("adapters/dsh/install.py")),
+        ("材料包：hermes 侧安装脚本", *exists("adapters/hermes/install.py")),
+        ("材料包：AI 安装手册", *exists("AI-INSTALL/README.md")),
+        ("材料包：自检清单（doctor 闭环）", *exists("AI-INSTALL/selfcheck.md")),
+        ("自检/手册在线入口", *has("routes_onboarding", "/v1/onboarding/docs")),
+    ]
+
+
+@check("D-11", "VPS 外网安全：安全做成配置层（HTTPS/鉴权/限流/防火墙）", "partial")
+def _(self):
+    # 已落地 = 鉴权 + 限流 + 来源防护都走**配置层**（配置项 + 单点策略模块）：
+    #   限流：rate_limit_per_min / ip_rate_limit_per_min；来源：trusted_proxies 解析；
+    #   鉴权与默认 Key 本机限定：net_guard 单点；来源维度防护：SecurityGate。
+    # 未落地（设计声明"开发置后、设计预留"）：HTTPS 终结与防火墙规则在 NAS 反代/主机侧，
+    # 不在本仓代码，故不给符号断言——不得为凑覆盖率编一个。
+    return [
+        ("限流是配置项", *has("config", "rate_limit_per_min", "ip_rate_limit_per_min")),
+        ("来源可信代理解析是配置项", *has("config", "trusted_proxies")),
+        ("来源维度防护门（SecurityGate）", *has("server_security", "class SecurityGate")),
+        ("默认 Key 仅限本机（单点策略）", *has("net_guard", "本机回环来源集合")),
+    ]
+
+
+@check("D-17", "原件全量保留不删（来时路）；归档=滚动搬家", "partial")
+def _(self):
+    # 已落地 = 归档是**压缩搬家**且明确保留原文件；L0 写入层无任何删除路径。
+    # 未落地 = 决策里的「归档前置条件 = 会话已完成 L2 提炼」——archive_raw_cold 只按 mtime 天数判定，
+    # 无 refine 状态门控（2026-11-17 核实），故 partial。
+    raw = src("raw_store")
+    no_delete = not any(k in raw for k in ("os.remove", "unlink(", "rmtree"))
+    return [
+        ("冷归档函数存在（压缩搬家）", *has("backup_manager", "def archive_raw_cold")),
+        ("归档后原文件保留（仍参与溯源）", *has("backup_manager", "归档后原文件保留")),
+        ("L0 写入层无删除原件路径", no_delete,
+         "sgme/raw/store.py: 无 os.remove/unlink(/rmtree" if no_delete
+         else "sgme/raw/store.py: 出现删除调用（违反 D-17 原件不删）"),
     ]
 
 
