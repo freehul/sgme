@@ -560,7 +560,14 @@ DEFAULT_L3_ADJUDICATE_CONFIG = {
     # preset：full（现状）/ minimal（砍 dimensions + memory_type + priority，updated_at 缩为日期）
     # 单字段开关可显式覆盖 preset（用于三因子单变量对照）。
     "candidate_fields": {
+        # T-398（2026-11-17，用户拍板）：默认取 B256 值——**保 dimensions**，关掉
+        # memory_type 与 priority 两行。实测候均元数据 102.9 → 69.6 字符（省 33.4 字符
+        # ≈ 10.4 tokens/候选，单批约省 4.5K tokens ≈ prompt 的 7.7%）。
+        # preset 保持 full（不回退到被否决的 minimal：砍 dimensions 会 −10pp 准确率）。
+        # 回滚：把下面两个显式键删掉即回旧行为（preset=full 本身已是旧默认）。
         "preset": "full",
+        "show_memory_type": False,
+        "show_priority": False,
         "updated_at_format": "iso",   # iso（完整时间戳）| date（YYYY-MM-DD）
     },
     # 候选集内按归一化正文去重（2026-11-05）：只合并内容完全相同的候选，不减少不同候选。

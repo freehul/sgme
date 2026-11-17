@@ -145,3 +145,18 @@ def test_render_adjudication_backward_compatible_default():
     b = l3_adjudicate._render_adjudication_text(text, nm, _cands(2), None)
     assert a == b
     assert "dimensions:" in a
+
+def test_shipped_config_default_uses_b256():
+    """T-398（2026-11-17）：出厂默认即 B256 值——保 dimensions、关 type/priority。
+
+    回滚口径：删掉 config.py 里那两个显式键即回 full 旧行为（preset 仍是 full）。
+    """
+    from sgme.config import DEFAULT_L3_ADJUDICATE_CONFIG as D
+    cf = D["candidate_fields"]
+    assert cf["preset"] == "full"
+    assert cf.get("show_memory_type") is False
+    assert cf.get("show_priority") is False
+    f = l3_adjudicate.resolve_candidate_fields({"candidate_fields": cf})
+    assert f["show_dimensions"] is True      # 保 dimensions
+    assert f["show_memory_type"] is False
+    assert f["show_priority"] is False
