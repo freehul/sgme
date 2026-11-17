@@ -441,7 +441,11 @@ def _(self):
     ]
 
 
-@check("D-46", "三轴分离（生命周期/质量/来源）", "partial")
+@check("D-46", "三轴分离（生命周期/质量/来源）", "done")
+# 2026-11-18 升 done（依据：T-415 G-1 判定 + 生产实测）：原缺口 = 存量 `status='expired'` 回填，
+# 而设计 :1447 已记「实测 0 条」，2026-11-18 生产复核 `SELECT COUNT(*) WHERE status='expired'` = **0**，
+# 三轴字段 derivation/modality 非空 39,961 行（94.6%）→ 回填目标不存在，无剩余缺口。
+# 断言仍两条（三轴字段建列 + lifecycle 迁移），见下方函数；不是放宽，是把状态对上代码事实（C6）。
 def _(self):
     # 已落地 = 来源双轴列；未落地 = lifecycle 列与 TTL 到期不写 status（见 9.2 实际进度 4/9）
     return [
@@ -982,7 +986,10 @@ def _(self):
     ]
 
 
-@check("D-45", "max_tokens 传递缺陷修复（声明了预算但调用处没传）", "partial")
+@check("D-45", "max_tokens 传递缺陷修复（声明了预算但调用处没传）", "done")
+# 2026-11-18 升 done（依据：T-415 G-1 判定）：修复是「provider 构造请求时从配置取 + 动态链重建时继承」
+# 两处，均已落地（provider.py:191 / resolve.py:61 断言 2/2 过）；设计附录 §八第 9 条仍写「待施工排期」
+# 属**文档声明过期**，不是代码缺口。附录只读（第十四部分），故不在附录改，改在这里与台账。
 def _(self):
     # 修复口径：provider 构造请求时从配置读 max_tokens（provider.py:191），
     # 且动态链重建时继承采样参数（resolve.py 说明 max_tokens 在继承列表中）。
