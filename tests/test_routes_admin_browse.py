@@ -125,23 +125,29 @@ def _insert_run(
     memories_count: int = 3,
     error: str | None = None,
     elapsed_ms: int | None = None,
+    candidate_count: int | None = None,
 ) -> None:
     """直插 refine_runs（需要精确控制 started_at，故不用 RefineRunRecorder）。
 
     ``elapsed_ms``（ST-58/T-296）：默认 None = 模拟 A2（T-289）之前的老行，
     用于验证派生字段 `elapsed_ms_avg` 只在**有值**的行上求均值。
+
+    `candidate_count`（T-414）：默认 None = 非批路径（l1_extraction / l2_scene 结构上不承载）；
+    批路径（l1_conflict）才有值——用于验证该列能原样透出到浏览端点。
     """
     conn.execute(
         """
         INSERT INTO refine_runs
           (run_id, file_id, stage, version, variant, provider, bucket_key,
            started_at, finished_at, memories_count, prompt_tokens,
-           completion_tokens, total_tokens, action_counts, status, error, elapsed_ms)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           completion_tokens, total_tokens, action_counts, status, error, elapsed_ms,
+           candidate_count)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (run_id, f"file_{run_id}", stage, "v001", None, provider, "bk",
          started_at, started_at, memories_count, prompt_tokens,
-         completion_tokens, total_tokens, '{"store": 3}', status, error, elapsed_ms),
+         completion_tokens, total_tokens, '{"store": 3}', status, error, elapsed_ms,
+         candidate_count),
     )
     conn.commit()
 
@@ -255,6 +261,10 @@ def seeded(app, conns, raw_dir):
                 elapsed_ms=5000)
     _insert_run(mem_conn, "run_running", "tier0_summary", "running", "2026-08-10T13:00:00Z",
                 elapsed_ms=2000)
+    # T-414：批路径（l1_conflict）才承载 candidate_count；elapsed_ms 保持 NULL 模拟老行
+    _insert_run(mem_conn, "run_conflict", "l1_conflict", "ok", "2026-08-10T14:00:00Z",
+                prompt_tokens=None, completion_tokens=None, total_tokens=None,
+                candidate_count=7)
 
     # --- raw_files + 磁盘原文 ---
     _insert_raw(session_conn, "f_hermes_1", "hermes-aaa", "hermes", "refined", _iso(2))
@@ -539,7 +549,7 @@ def test_scenes_sort_status_and_limit_cap(client, seeded):
 def test_refine_runs_shows_all_statuses_by_default(client, seeded):
     """提炼监控**不做 status 缺省过滤**：error / running 默认可见。"""
     body = client.get("/v1/admin/refine_runs", headers=ADMIN).json()
-    assert body["total"] == 5
+    assert body["total"] == 6
     assert {r["status"] for r in body["items"]} == {"ok", "error", "running"}
 
 
@@ -554,9 +564,22 @@ def test_refine_runs_item_shape_and_filters(client, seeded):
         "stage_label",
         # 2.0.6（D-80）：块级三列可下钻——块指纹 / 是否缓存命中 / 复用 token
         "chunk_sha", "cache_hit", "reused_tokens",
+        # T-414（2026-11-17）：主线 C 的两个核心观测量——批内候选数 / 批耗时
+        "candidate_count", "elapsed_ms",
     }
+    # T-414：limit=1 取到最新一条 = run_conflict（l1_conflict 批路径）→ 候选数原样透出
+    newest = body["items"][0]
+    assert newest["run_id"] == "run_conflict"
+    assert newest["candidate_count"] == 7
+    assert newest["elapsed_ms"] is None, "老行形态：无 elapsed_ms 时应为 None，不得编 0"
     # action_counts 按库内 JSON 字符串原样透传
     assert isinstance(body["items"][0]["action_counts"], str)
+
+    # T-414：非批路径（l1_extraction）结构上不承载候选数 → None（不是缺键、不是 0）
+    all_rows = client.get("/v1/admin/refine_runs", headers=ADMIN).json()["items"]
+    plain = [r for r in all_rows if r["run_id"] == "run_ok_1"][0]
+    assert "candidate_count" in plain and plain["candidate_count"] is None
+    assert plain["elapsed_ms"] == 1000
 
     stage_hits = client.get(
         "/v1/admin/refine_runs?stage=l1_extraction", headers=ADMIN
@@ -583,7 +606,7 @@ def test_refine_runs_time_window_and_ordering(client, seeded):
     window = client.get(
         "/v1/admin/refine_runs?since=2026-08-10T00:00:00Z", headers=ADMIN
     ).json()
-    assert window["total"] == 3
+    assert window["total"] == 4
     assert all(r["started_at"] >= "2026-08-10T00:00:00Z" for r in window["items"])
 
 
@@ -688,8 +711,9 @@ def test_stats_detail_daily_grouping_and_totals(client, seeded):
                     "elapsed_ms_avg", "batch_utilization"):
         assert derived not in body["totals"], derived
 
-    assert body["totals"]["runs"] == 5
-    assert body["totals"]["ok"] == 3
+    # T-414：种入第 6 条（l1_conflict 批路径，无 token / 无 elapsed）→ runs +1，其余聚合不变
+    assert body["totals"]["runs"] == 6
+    assert body["totals"]["ok"] == 4
     assert body["totals"]["error"] == 1  # running 既不计 ok 也不计 error
     # 4 条有 token 的 run × 100/20/120；error 那条为 NULL → COALESCE 记 0
     assert body["totals"]["prompt_tokens"] == 400
@@ -761,7 +785,7 @@ def test_stats_detail_monthly_and_stage_filter(client, seeded):
     """monthly 归到月首；stage 过滤后只剩该 stage 的行。"""
     monthly = client.get("/v1/admin/stats/detail?period=monthly", headers=ADMIN).json()
     assert {i["period_key"] for i in monthly["items"]} == {"2026-08-01"}
-    assert monthly["totals"]["runs"] == 5
+    assert monthly["totals"]["runs"] == 6
 
     staged = client.get(
         "/v1/admin/stats/detail?period=daily&stage=l1_extraction", headers=ADMIN
@@ -782,7 +806,7 @@ def test_stats_detail_time_window_and_defaults(client, seeded):
         "/v1/admin/stats/detail?period=daily&from=2026-08-10T00:00:00Z", headers=ADMIN
     ).json()
     assert {i["period_key"] for i in windowed["items"]} == {"2026-08-10"}
-    assert windowed["totals"]["runs"] == 3
+    assert windowed["totals"]["runs"] == 4
 
 
 def test_stats_detail_invalid_params_400(client, seeded):

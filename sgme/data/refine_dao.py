@@ -365,6 +365,12 @@ _BROWSE_RUN_COLUMNS: tuple[str, ...] = (
     # D-80（2026-11-06）：块级成本三列随详情外泄——运维看板要能直接看到
     # 「这批有没有命中缓存 / 是哪个块」，否则效率指标只能看汇总、无法下钻到批次。
     "chunk_sha", "cache_hit", "reused_tokens",
+    # T-414（2026-11-17）：主线 C 的两个核心观测量必须能走官方 API——
+    #   candidate_count = 批内候选数（**仅批路径 l1_conflict 承载**；其余 stage 为 NULL，
+    #                     NULL 语义 = "该 stage 结构上不产生候选"，不是 0，不要 COALESCE）
+    #   elapsed_ms      = 批耗时（A2/T-289 起逐批记录；更早的存量行为 NULL）
+    # 之前只能容器内直连 sqlite 才能算「候均」，属绕过；补进契约后观测面自洽。
+    "candidate_count", "elapsed_ms",
 )
 
 
