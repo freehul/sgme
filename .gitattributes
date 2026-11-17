@@ -13,3 +13,8 @@ docker/entrypoint.sh text eol=lf
 
 # git 钩子：一律 LF（shebang 保护，同 *.sh 规则——2026-09-13 T-164）
 .githooks/* text eol=lf
+
+# 提示词文件一律 LF（T-364，2026-11-17）：防 Windows autocrlf=true 检出成 CRLF 后
+# 字节级 sha 对账漂移（prompt_registry.py verify 走字节口径会误报；文本口径不受影响）
+sgme/resources/prompts/*.txt text eol=lf
+sgme/resources/prompts/versions/**/*.txt text eol=lf
