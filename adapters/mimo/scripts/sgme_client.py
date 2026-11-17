@@ -446,6 +446,16 @@ class SGME:
     def memory_unreject(self, memory_id: str):
         return self._http("POST", f"/v1/memory/{urllib.parse.quote(memory_id)}/unreject")
 
+    def memory_delete(self, memory_id: str, reason: str | None = None):
+        """逻辑删除记忆（D-44 两态收口 T-420；仅 logical：rejected+user_delete+审计，可经 memory_unreject 恢复）。
+
+        彻底删除（purge）不经客户端/CLI：仅管理员走 WebUI 现场确认（D-54 两道门）。
+        """
+        body: dict = {"mode": "logical"}
+        if reason:
+            body["reason"] = reason
+        return self._http("POST", f"/v1/memory/{urllib.parse.quote(memory_id)}/delete", body)
+
     # ---------- HTTP 层：事件 ----------
     def events_pull(self, subscriber_id: str = AGENT_ID, limit: int | None = None):
         """拉取未消费事件（服务端无类型过滤，类型筛选由调用方在客户端完成）。"""
@@ -1064,6 +1074,12 @@ CMD_SPECS: list[dict] = [
         "cli": "memory-unreject", "help": "撤销「不采用」",
         "positionals": [{"dest": "memory_id", "help": "记忆 ID"}],
         "run": lambda c, a: c.memory_unreject(a.memory_id),
+    },
+    {
+        "cli": "memory-delete", "help": "逻辑删除记忆（可恢复；彻底删除仅管理员走 WebUI）",
+        "positionals": [{"dest": "memory_id", "help": "记忆 ID"}],
+        "options": [{"dest": "reason", "flag": "reason", "help": "删除原因（可选）"}],
+        "run": lambda c, a: c.memory_delete(a.memory_id, a.reason),
     },
     {
         "cli": "events-pull", "help": "拉取未消费事件/信号（--types 客户端前缀过滤）",

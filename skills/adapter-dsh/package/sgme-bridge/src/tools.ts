@@ -494,6 +494,7 @@ export function registerTools(
   ctx.tools.register(createHealthTool(client))
   ctx.tools.register(createStatsTool(client))
   ctx.tools.register(createMemoryUnrejectTool(client))
+  ctx.tools.register(createMemoryDeleteTool(client))
   ctx.tools.register(createSignalClearTool(client))
   ctx.tools.register(createWikiEvolveTriggerTool(client))
   ctx.tools.register(createConfigGetTool(client))
@@ -1454,6 +1455,40 @@ export function createStatsTool(client: SgmeClient) {
         `维度分布: ${dims || '-'}`,
         `已注册 agent: ${(s.agents ?? []).map((a) => `${a.agent_id}(${a.role})`).join(', ') || '-'}`,
       ].join('\n')
+    },
+  })
+}
+
+/** 创建 memory_delete 工具（逻辑删除，D-44 两态收口 T-420；仅 logical 可恢复）。 */
+export function createMemoryDeleteTool(client: SgmeClient) {
+  return defineTool({
+    name: 'memory_delete',
+    description: [
+      '逻辑删除记忆（D-44 两态；仅 logical：数据保留、退出主注入，可经 memory_unreject 恢复）。',
+      '彻底删除（purge）不经本工具：仅管理员走 WebUI 现场确认（D-54 两道门）。',
+    ].join(' '),
+    parameters: {
+      memory_id: {
+        type: 'string',
+        required: true,
+        description: '记忆 id（memory_search / memory_get 返回）',
+      },
+      reason: {
+        type: 'string',
+        description: '删除原因（可选；缺省落 user_delete）',
+      },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value as string }],
+    },
+    async execute(args, _exec) {
+      const a = args as unknown as { memory_id: string; reason?: string }
+      const resp = await client.memoryDelete(a.memory_id, a.reason ?? null)
+      if (!resp) {
+        return `[memory_delete 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`
+      }
+      return `[memory_delete 已逻辑删除：memory_id=${resp.memory_id}（可经 memory_unreject 恢复）]`
     },
   })
 }

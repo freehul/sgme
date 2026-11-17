@@ -1325,6 +1325,20 @@ class SGMEProvider(MemoryProvider):
             },
         },
         {
+            "name": "sgme_memory_delete",
+            "description": "逻辑删除记忆（D-44 两态收口 T-420；仅 logical：status=rejected + user_delete + 审计，"
+                           "数据保留、退出主注入，可经 sgme_memory_unreject 恢复）。"
+                           "彻底删除（purge）不经适配器：仅管理员走 WebUI 现场确认（D-54 两道门）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string", "description": "记忆 id"},
+                    "reason": {"type": "string", "description": "删除原因（可选；缺省落 user_delete）"},
+                },
+                "required": ["memory_id"],
+            },
+        },
+        {
             "name": "sgme_review_list",
             "description": "查看 SGME 待审记忆队列：提炼产物置信度不足时打 needs_review=1 闸门，"
                            "暂不进主注入，需人工逐条放行或拒绝。D-30：7 天未处理的会被自动消化"
@@ -2236,6 +2250,23 @@ class SGMEProvider(MemoryProvider):
         if err:
             return self._err(f"撤销不采用失败（memory_id={memory_id}）: {err}")
         return self._ok(data if isinstance(data, dict) else {"memory_id": memory_id, "status": "active"})
+
+    def _t_memory_delete(self, args: Dict[str, Any]) -> str:
+        """sgme_memory_delete：逻辑删除记忆（仅 logical，可恢复；彻底删除不经适配器）。"""
+        memory_id = _arg_str(args, "memory_id")
+        if not memory_id:
+            return self._err("缺少 memory_id")
+        body: Dict[str, Any] = {"mode": "logical"}
+        reason = _arg_str(args, "reason", 500)
+        if reason:
+            body["reason"] = reason
+        data, err = self._request(
+            "POST", f"/v1/memory/{_path_seg(memory_id)}/delete",
+            json_body=body,
+        )
+        if err:
+            return self._err(f"逻辑删除失败（memory_id={memory_id}）: {err}")
+        return self._ok(data if isinstance(data, dict) else {"memory_id": memory_id, "status": "deleted", "mode": "logical"})
 
     def _t_review_list(self, args: Dict[str, Any]) -> str:
         """sgme_review_list：待审记忆队列分页列表（needs_review=1）。需管理员 Key。"""

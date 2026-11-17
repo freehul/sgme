@@ -562,6 +562,18 @@ var SgmeClient = class {
 		}
 		return data;
 	}
+	/** 逻辑删除记忆（POST /v1/memory/{id}/delete，Agent Key；D-44 两态收口 T-420，仅 logical 可恢复）。失败返回 null。 */
+	async memoryDelete(memoryId, reason) {
+		const [data, err] = await this.post(`/v1/memory/${encodeURIComponent(memoryId)}/delete`, reason ? {
+			mode: "logical",
+			reason
+		} : { mode: "logical" }, "agent");
+		if (err) {
+			console.warn(`[sgme-bridge] memoryDelete failed: ${err}`);
+			return null;
+		}
+		return data;
+	}
 	async cardList() {
 		const [data, err] = await this.get("/v1/admin/cards", "agent");
 		if (err) {
@@ -4665,6 +4677,7 @@ function registerTools(ctx, client, defaultLimit, eventSubscriber) {
 	ctx.tools.register(createHealthTool(client));
 	ctx.tools.register(createStatsTool(client));
 	ctx.tools.register(createMemoryUnrejectTool(client));
+	ctx.tools.register(createMemoryDeleteTool(client));
 	ctx.tools.register(createSignalClearTool(client));
 	ctx.tools.register(createWikiEvolveTriggerTool(client));
 	ctx.tools.register(createConfigGetTool(client));
@@ -5510,6 +5523,37 @@ function createStatsTool(client) {
 				`维度分布: ${dims || "-"}`,
 				`已注册 agent: ${(s.agents ?? []).map((a) => `${a.agent_id}(${a.role})`).join(", ") || "-"}`
 			].join("\n");
+		}
+	});
+}
+/** 创建 memory_delete 工具（逻辑删除，D-44 两态收口 T-420；仅 logical 可恢复）。 */
+function createMemoryDeleteTool(client) {
+	return defineTool({
+		name: "memory_delete",
+		description: ["逻辑删除记忆（D-44 两态；仅 logical：数据保留、退出主注入，可经 memory_unreject 恢复）。", "彻底删除（purge）不经本工具：仅管理员走 WebUI 现场确认（D-54 两道门）。"].join(" "),
+		parameters: {
+			memory_id: {
+				type: "string",
+				required: true,
+				description: "记忆 id（memory_search / memory_get 返回）"
+			},
+			reason: {
+				type: "string",
+				description: "删除原因（可选；缺省落 user_delete）"
+			}
+		},
+		output: {
+			schema: { type: "string" },
+			render: (_args, value) => [{
+				type: "text",
+				text: value
+			}]
+		},
+		async execute(args, _exec) {
+			const a = args;
+			const resp = await client.memoryDelete(a.memory_id, a.reason ?? null);
+			if (!resp) return `[memory_delete 失败：记忆不存在或 Gateway 不可达（memory_id="${a.memory_id}"）]`;
+			return `[memory_delete 已逻辑删除：memory_id=${resp.memory_id}（可经 memory_unreject 恢复）]`;
 		}
 	});
 }
@@ -7238,7 +7282,7 @@ function apply(ctx, config) {
 		logger.info(`SGME 事件订阅已启动（SSE: ${config.baseUrl}/v1/events/stream）`);
 	}
 	registerTools({ tools: ctx.tools }, client, config.searchLimit, eventSubscriber);
-	logger.info("工具已注册（59）：memory_search/answer/memory_get/memory_reject/memory_unreject, wiki_search/pages/page/page_add/page_update, inject, signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, skill_search/digest/get/list/coldstart/materialize/put/delete/rename, skill_catalog_version/manifest/file_get/file_put/lint, conversation_search/persona_fill/guard_reply/health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger, review_list/review_approve/review_reject/review_auto_resolve, credential_list/get, near_dup_list/near_dup_discard/near_dup_restore, card_list/card_update/card_history");
+	logger.info("工具已注册（60）：memory_search/answer/memory_get/memory_reject/memory_unreject/memory_delete, wiki_search/pages/page/page_add/page_update, inject, signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, skill_search/digest/get/list/coldstart/materialize/put/delete/rename, skill_catalog_version/manifest/file_get/file_put/lint, conversation_search/persona_fill/guard_reply/health/stats/config_get/config_update/refine_status/refine_trigger/refine_batch/wiki_evolve_trigger, review_list/review_approve/review_reject/review_auto_resolve, credential_list/get, near_dup_list/near_dup_discard/near_dup_restore, card_list/card_update/card_history");
 	const contextCtx = {
 		on: ctx.on,
 		logger: {

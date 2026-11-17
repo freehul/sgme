@@ -257,13 +257,13 @@ describe('技能缓存/附件工具层', () => {
 })
 
 describe('工具注册面', () => {
-  it('五个新工具全部挂载（总数 59）', () => {
+  it('五个新工具全部挂载（总数 60，含 T-420 memory_delete）', () => {
     const registered: string[] = []
     const ctx = {
       tools: { register: (tool: unknown) => { registered.push((tool as { name: string }).name); return () => {} } },
     }
     registerTools(ctx as unknown as Parameters<typeof registerTools>[0], makeMockClient({}), 5)
-    expect(registered).toHaveLength(59)
+    expect(registered).toHaveLength(60)
     for (const name of [
       'skill_catalog_version', 'skill_manifest', 'skill_file_get', 'skill_file_put', 'skill_lint',
     ]) {

@@ -122,6 +122,23 @@ export function unrejectMemory(id: string) {
   return api.post<RejectResult>(`/v1/memory/${id}/unreject`)
 }
 
+// ---------- POST /v1/memory/{id}/delete（D-44 两态；T-420 UI 收口） ----------
+// logical=逻辑删除（可恢复，reject_reason=user_delete + 审计）；purge=彻底删除
+// （不可恢复，仅管理员 + 确认词「彻底删除」，服务端两道门强校验）
+export interface DeleteResult {
+  status?: string
+  memory_id?: string
+  mode?: string
+  recoverable?: boolean
+  [k: string]: unknown
+}
+export function deleteMemory(
+  id: string,
+  opts: { mode: 'logical' | 'purge'; reason?: string; confirm?: string },
+) {
+  return api.post<DeleteResult>(`/v1/memory/${id}/delete`, opts)
+}
+
 // ---------- POST /v1/search ----------
 export interface SearchTrace {
   [k: string]: unknown

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getMemory, rejectMemory, unrejectMemory, type MemoryDetail, type MemorySource, type MemoryContext, type MemoryContextEdge } from '../../api/memory'
+import { getMemory, rejectMemory, unrejectMemory, deleteMemory, type MemoryDetail, type MemorySource, type MemoryContext, type MemoryContextEdge } from '../../api/memory'
 import { ApiError } from '../../api/client'
 import { fmtTs } from '../../utils/format'
 
@@ -155,6 +155,46 @@ async function reject() {
   }
 }
 
+// ---------- 删除两态（D-44 / T-420）：logical 可恢复；purge 需确认词 + 二次确认 ----------
+const PURGE_PHRASE = '彻底删除'
+const purgePhrase = ref('')
+const purgeArmed = ref(false)
+
+async function logicalDelete() {
+  if (!window.confirm('逻辑删除：数据保留、退出主注入，可经「恢复为有效」撤销。确认？')) return
+  busy.value = true
+  error.value = ''
+  try {
+    await deleteMemory(id.value, { mode: 'logical' })
+    await load()
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+function armPurge() {
+  if (purgePhrase.value.trim() !== PURGE_PHRASE) return
+  purgeArmed.value = true
+}
+
+async function purge() {
+  if (!window.confirm('彻底删除不可恢复：物理清理主表/归档/子表/边（仅留审计快照）。二次确认？')) return
+  busy.value = true
+  error.value = ''
+  try {
+    await deleteMemory(id.value, { mode: 'purge', confirm: PURGE_PHRASE })
+    purgeArmed.value = false
+    purgePhrase.value = ''
+    router.push('/memories')
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function unreject() {
   busy.value = true
   error.value = ''
@@ -168,7 +208,11 @@ async function unreject() {
   }
 }
 
-watch(id, () => load(), { immediate: true })
+watch(id, () => {
+  purgeArmed.value = false
+  purgePhrase.value = ''
+  load()
+}, { immediate: true })
 </script>
 
 <template>
@@ -332,11 +376,59 @@ watch(id, () => load(), { immediate: true })
         </template>
         <button v-else :disabled="busy" @click="unreject">恢复为有效</button>
       </div>
+
+      <!-- 删除两态（D-44 / T-420）：逻辑删除可恢复；彻底删除需确认词 + 二次确认，服务端强校验 admin -->
+      <div class="panel">
+        <h3>删除（两态）</h3>
+        <template v-if="detail.memory.status !== 'rejected'">
+          <p class="del-hint">逻辑删除可恢复（数据保留、退出主注入）；彻底删除不可恢复（物理清理，仅管理员可执行）。</p>
+          <button class="danger" :disabled="busy" @click="logicalDelete">逻辑删除</button>
+        </template>
+        <p v-else class="del-hint">已逻辑删除：可用上方「恢复为有效」撤销。</p>
+        <div class="purge-zone">
+          <template v-if="!purgeArmed">
+            <input v-model="purgePhrase" placeholder="输入「彻底删除」解锁（不可恢复）" />
+            <button class="danger" :disabled="busy || purgePhrase.trim() !== PURGE_PHRASE" @click="armPurge">解锁彻底删除</button>
+          </template>
+          <template v-else>
+            <p class="del-warn">⚠️ 彻底删除不可恢复：物理清理主表/归档/子表/边，仅保留审计快照（结果页给剩余副本清单）。仅管理员 Key 可执行，普通调用返回 403。</p>
+            <button class="danger" :disabled="busy" @click="purge">确认彻底删除（二次确认）</button>
+            <button :disabled="busy" @click="purgeArmed = false">取消</button>
+          </template>
+        </div>
+      </div>
     </template>
   </div>
 </template>
 
 <style scoped>
+/* 删除两态（T-420）：提示/警戒文案与解锁输入，全部复用现有令牌 */
+.del-hint {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.del-warn {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.purge-zone {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.purge-zone input {
+  max-width: 22rem;
+}
+
 /* 记忆质量字段网格：两列自适应，窄屏自动并一列；全部复用现有令牌，不引入新色 */
 .q-grid {
   flex-direction: column;

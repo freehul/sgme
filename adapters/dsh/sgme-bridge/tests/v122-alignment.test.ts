@@ -719,13 +719,13 @@ describe('skill_put / skill_delete / skill_rename tool', () => {
 })
 
 describe('registerTools 1.2.2 对齐注册', () => {
-  it('新增 24 工具全部挂载且总数 59（T-207 ③ conversation_search；T-277 凭据；T-306 persona_fill；T-307 guard_reply；D-30 待审；2.0 技能缓存/附件 5 个；v0.6.8 近似重复 3 + 记忆卡 3）', () => {
+  it('新增 24 工具全部挂载且总数 60（T-207 ③ conversation_search；T-277 凭据；T-306 persona_fill；T-307 guard_reply；D-30 待审；2.0 技能缓存/附件 5 个；v0.6.8 近似重复 3 + 记忆卡 3；T-420 memory_delete）', () => {
     const registered: string[] = []
     const ctx = {
       tools: { register: (tool: unknown) => { registered.push((tool as ToolLike).name); return () => {} } },
     }
     registerTools(ctx as unknown as Parameters<typeof registerTools>[0], makeMockClient({}), 5)
-    expect(registered).toHaveLength(59)
+    expect(registered).toHaveLength(60)
     expect(registered).toContain('conversation_search')
     for (const name of [
       'answer', 'health', 'stats', 'memory_unreject', 'signal_clear',

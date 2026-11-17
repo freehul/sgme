@@ -139,7 +139,7 @@ export function apply(ctx: CordisContext, config: Config): void {
   const toolsCtx = { tools: ctx.tools }
   registerTools(toolsCtx, client, config.searchLimit, eventSubscriber)
   logger.info(
-    '工具已注册（59）：memory_search/answer/memory_get/memory_reject/memory_unreject, '
+    '工具已注册（60）：memory_search/answer/memory_get/memory_reject/memory_unreject/memory_delete, '
     + 'wiki_search/pages/page/page_add/page_update, inject, '
     + 'signal_pull/claim/ack/clear, idea_add/demand_create/project_register, role_list/assemble/active, '
     + 'skill_search/digest/get/list/coldstart/materialize/put/delete/rename, '

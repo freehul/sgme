@@ -512,6 +512,14 @@ export interface MemoryUnrejectResponse {
   status: string                   // active
 }
 
+/** POST /v1/memory/{id}/delete 响应体（D-44 两态收口 T-420；logical=可恢复）。 */
+export interface MemoryDeleteResponse {
+  memory_id: string
+  status: string                   // deleted
+  mode: string                     // logical
+  recoverable?: boolean
+}
+
 // ---------- 待审记忆队列类型（D-30：needs_review 闸门的人工放行/拒绝） ----------
 
 /** GET /v1/admin/review/pending 响应体（operations.review.list_pending，data 即响应）。 */
@@ -1377,6 +1385,20 @@ export class SgmeClient {
     )
     if (err) {
       console.warn(`[sgme-bridge] memoryUnreject failed: ${err}`)
+      return null
+    }
+    return data
+  }
+
+  /** 逻辑删除记忆（POST /v1/memory/{id}/delete，Agent Key；D-44 两态收口 T-420，仅 logical 可恢复）。失败返回 null。 */
+  async memoryDelete(memoryId: string, reason?: string | null): Promise<MemoryDeleteResponse | null> {
+    const [data, err] = await this.post<MemoryDeleteResponse>(
+      `/v1/memory/${encodeURIComponent(memoryId)}/delete`,
+      reason ? { mode: 'logical', reason } : { mode: 'logical' },
+      'agent',
+    )
+    if (err) {
+      console.warn(`[sgme-bridge] memoryDelete failed: ${err}`)
       return null
     }
     return data

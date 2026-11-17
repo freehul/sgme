@@ -1497,3 +1497,74 @@ def test_mcp_skill_file_put_path_outside_whitelist(mcp, mcp_skills_env, monkeypa
     data = json.loads(text)
     assert "error" in data, data
     assert data.get("violations"), data
+
+
+# ---------- T-420：MCP memory_delete（D-44/D-54 两态收口，MCP 面仅 logical） ----------
+
+def test_mcp_memory_delete_logical_and_reversible(mcp):
+    """memory_delete（MCP 面仅 logical）：rejected + user_delete + deletion_audit
+    审计；unreject 可恢复（D-44 逻辑删除可逆语义）。"""
+    from sgme.data import memory_dao
+
+    conn = mcp_test_conn()
+    mid = memory_dao.insert_memory(
+        conn, "待删除记忆内容", "fact", 50, "static", None, ["goals"],
+        agent_tag="mcp-test",
+    )
+    # 不传 reason → 落默认 user_delete（D-44 逻辑删除语义；显式 reason 会覆盖为该值）
+    r = _call(mcp, "memory_delete", {"memory_id": mid})
+    data = json.loads(r[0])
+    assert data.get("memory_id") == mid, data
+    # 操作层响应语义：status="deleted"（DB 行为 rejected，见下行断言）
+    assert data.get("status") == "deleted", data
+    assert data.get("mode") == "logical", data
+    assert data.get("recoverable") is True, data
+    row = conn.execute(
+        "SELECT status, reject_reason FROM memories WHERE memory_id=?", (mid,)
+    ).fetchone()
+    assert row[0] == "rejected" and row[1] == "user_delete"
+    audit = conn.execute(
+        "SELECT mode, triggered_by FROM deletion_audit WHERE memory_id=?", (mid,)
+    ).fetchall()
+    assert len(audit) == 1 and audit[0][0] == "logical"
+    # 可逆：unreject 恢复 active
+    r2 = _call(mcp, "memory_unreject", {"memory_id": mid})
+    assert json.loads(r2[0])["status"] == "active"
+
+
+def test_mcp_memory_delete_flat_error_missing(mcp):
+    """记忆不存在 → {"error": ...}（MCP 扁平错误约定，与 memory_reject 对称）。"""
+    r = _call(mcp, "memory_delete", {"memory_id": "no-such-id"})
+    data = json.loads(r[0])
+    assert "error" in data, data
+
+
+def test_mcp_memory_delete_has_no_purge_surface(mcp):
+    """MCP 面只开 logical（D-54：彻底删除仅管理员走 HTTP 现场确认）——
+    memory_delete 工具签名不得出现 mode/confirm/admin 参数。"""
+    import asyncio
+
+    tools = asyncio.run(mcp.list_tools())
+    tool = next(t for t in tools if t.name == "memory_delete")
+    schema = tool.inputSchema
+    props = schema.get("properties") if isinstance(schema, dict) else dict(schema.properties or {})
+    assert "memory_id" in props, props
+    assert not ({"mode", "confirm", "admin"} & set(props)), (
+        f"MCP memory_delete 不得暴露 purge 通道参数: {sorted(props)}"
+    )
+
+
+def test_mcp_memory_delete_idempotent_no_duplicate_audit(mcp):
+    """重复 logical 删除幂等：deletion_audit 不重复追加（与 operations 层语义一致）。"""
+    from sgme.data import memory_dao
+
+    conn = mcp_test_conn()
+    mid = memory_dao.insert_memory(
+        conn, "幂等删除记忆", "fact", 50, "static", None, ["goals"], agent_tag="mcp-test"
+    )
+    _call(mcp, "memory_delete", {"memory_id": mid})
+    _call(mcp, "memory_delete", {"memory_id": mid})
+    n = conn.execute(
+        "SELECT COUNT(*) FROM deletion_audit WHERE memory_id=?", (mid,)
+    ).fetchone()[0]
+    assert n == 1

@@ -630,6 +630,7 @@ ONBOARDING_TOOLS: tuple[dict[str, str], ...] = (
     {"name": "memory_get", "description": "单条记忆详情（内容/维度/TTL + 溯源 + 归档链）"},
     {"name": "memory_reject", "description": "标记记忆「不采用」（不删除、可恢复），带纠错理由"},
     {"name": "memory_unreject", "description": "撤销「不采用」：恢复为 active（rejected 误操作时用，T-163 补齐）"},
+    {"name": "memory_delete", "description": "逻辑删除记忆（D-44/D-54 两态收口 T-420：MCP 面仅 logical——status=rejected+user_delete+审计，可经 memory_unreject 恢复；彻底删除 purge 仅管理员走 HTTP 现场确认，不经 MCP）"},
     {"name": "refine_trigger", "description": "触发提炼：单文件或扫 status=new 批量（async_mode 分流同步/异步）"},
     {"name": "refine_batch", "description": "批量提炼：显式文件列表或扫全部未提炼，异步排队即返"},
     {"name": "review_list", "description": "待审记忆列表（needs_review=1 不进主注入，需人工放行/拒绝；D-30 七天未处理自动消化）"},
@@ -1101,6 +1102,36 @@ def build_mcp_server():
         mem_conn: sqlite3.Connection = _app_state["mem_conn"]
 
         data = _op_json(unreject_memory_operation, mem_conn, memory_id)
+        return json.dumps(data, ensure_ascii=False)
+
+    @mcp.tool()
+    @tool
+    def memory_delete(memory_id: str, reason: str | None = None, ctx: Context | None = None) -> str:
+        """逻辑删除记忆（D-44 两态；MCP 面仅 logical，可经 memory_unreject 恢复）。
+
+        T-420（批次9）：接线 operations.memory.delete_memory(mode="logical") 与
+        HTTP ``POST /v1/memory/{id}/delete`` 同一实现——logical（默认）=
+        ``status='rejected' + reject_reason='user_delete'`` + deletion_audit 审计，
+        数据完整保留、可恢复。**彻底删除（purge）不经 MCP**：仅管理员走 HTTP
+        现场确认（admin key + 确认词「彻底删除」两道门，D-54）。
+        记忆不存在返回 ``{"error": ...}``（MCP 扁平错误约定）。
+        """
+        import json
+        import sqlite3
+
+        # 规范：operations 一律走完整子模块路径导入（详见 operations/__init__.py）
+        from sgme.operations.memory import delete_memory as delete_memory_operation
+
+        mem_conn: sqlite3.Connection = _app_state["mem_conn"]
+
+        data = _op_json(
+            delete_memory_operation, mem_conn, memory_id,
+            mode="logical",
+            reason=reason,
+            triggered_by="user",
+            agent_id=_usage_caller(ctx),
+            admin=False,
+        )
         return json.dumps(data, ensure_ascii=False)
 
     # ---------- 管理 ----------
