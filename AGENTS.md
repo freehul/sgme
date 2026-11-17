@@ -210,6 +210,7 @@ gh api user/starred/freehul/sgme >/dev/null 2>&1 \
 ### 验收纪律
 
 - 每完成一个任务：跑该模块测试，再进下一个
+- ⚠️ **代码提交必须同批回写状态（2026-11-17 用户定，硬规则）**：任何提交若使某任务「完成 / 推进 / 变更 / 取消」，必须在**同一批提交**内同步回写 ① Backlog 状态行（`docs/requirements/SGME-Backlog-v0.2.md`）② `docs/plans/D-决策施工台账.md`（若涉及决策）③ `design/SGME-设计总纲-v1.0.md`（若影响未完成清单 / 计数 / 版本基线）。**只提交代码不改状态 = 未完成，退回重验。** 历史教训（2026-11-16 会话）：A-4、A-5、A-6、T-388/392/393/400/401 共 8 处已提交但状态未回写，导致下一轮按旧状态派单，差点重复劳动。
 - ⚠️ **适配器平级对齐（2026-09-19 用户定，ST-42；2026-09-22 扩至 MiMo 与 WorkBuddy；2026-09-26 增 ZCode T-208；2026-09-30 增 Codex ST-51；2026-10-01 增 Claude Code）**：hermes / dsh / doubao / mimo / workbuddy / zcode / codex / claude-code 八个官方适配器**平级**。SGME 新增任何 agent 可消费能力（= 新增 MCP 工具）时，必须在同一批工作内评估八个适配器的对齐，**未评估不算完成**；每处缺口必须在 `scripts/adapter_parity_map.yaml` 显式声明（`exemptions` 写理由 / `passthrough` 写通道 / `dynamic_forwarder` 写源码守卫 / `pending` 挂任务号）。Codex 与 Claude Code 为动态 MCP 代理，靠 `remote.list_tools()` + `remote.call_tool(` 锚点证明完整透传。日常检查 `python scripts/adapter_parity.py`，发布前必须过 `--strict`（待补齐也算失败）。历史教训：能力面接入默认落在 DSH 名下，Hermes 适配器停了 20 天无人察觉，造成「技能收进 SGME 却调不到」的真实断点。
 - pytest 分档（2026-08-13 用户定）：**常规改动**提交前跑相关模块测试（`python scripts/test_fast.py <关键词>` 或按 git diff 自动推导，秒级）；**全量 pytest** 只在里程碑/发布/跨模块重构后跑（约 10 分钟，零 LLM/网络消耗）；两种都**汇报 passed/failed 数字**，仅 exit code 不算证据（2026-08-11 用户纠正）
 - 提炼相关改动必须真实 LLM 冒烟（`python scripts/e2e_smoke_v04.py`）+ 查 Server 日志无 `L1.5 输出解析失败` / `降级直存`（mock 全绿≠真实可用，见开发规范）
