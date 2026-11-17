@@ -35,6 +35,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from sgme import config
+from sgme.engine.json_repair import _fix_invalid_escapes
 from sgme.llm import chain as llm_chain
 from sgme.llm import provider as llm_provider
 from sgme.prompts import BucketCtx, PromptStore
@@ -235,13 +236,13 @@ def _parse_json_lenient(text: str) -> list:
             return "\\r"
         return f"\\\\u{ord(ch):04x}"
 
-    def _fix_escape(m: _re.Match) -> str:
-        return "\\\\" + m.group(1)
-
     # 1. 裸控制字符（含未转义换行/制表/回车）→ 转义序列
     text = _re.sub(r"[\x00-\x1f\x7f]", _fix_control, text)
-    # 2. 无效转义：反斜杠 + 非(合法转义字符) → 双反斜杠
-    text = _re.sub(r"\\([^\\\"\/bfnrtu])", _fix_escape, text)
+    # 2. 无效转义 → 双反斜杠（T-297 收敛：复用 json_repair 的逐字符扫描式实现。
+    #    原正则 `\\([^\\\"\/bfnrtu])` 对「已配对反斜杠 + 后随非转义字符」（如
+    #    D:\\Projects 的第二个反斜杠后随 P）误判为非法转义、制造新的非法转义；
+    #    扫描式消费已配对两字符可避免，详见 json_repair._fix_invalid_escapes。）
+    text = _fix_invalid_escapes(text)
     # 3. 结构修复：对象/数组间缺逗号（模型常见：} {、] [、}\n{）
     #    只在 }/] 后没有逗号时补逗号；已有逗号（正常结构）不误伤
     def _fix_missing_comma(m: _re.Match) -> str:
@@ -273,10 +274,9 @@ def parse_scene_output(text: str) -> list[dict]:
 # 「无效 \X 转义 → 双反斜杠」，与本批为 L1.5 新增的 `json_repair` 同类能力。
 # 故本批只补 L1.5（它没有宽松路径），**不为 L2 另写一份**（防实现漂移，AGENTS.md
 # 「禁止另写一份防漂移」）。
-# ⚠️ 遗留项 → Backlog T-297：`_parse_json_lenient` 的正则 `\\([^\\"\/bfnrtu])`
-# 与 json_repair 早期正则有**同一缺陷**（已配对反斜杠后紧跟需转义字符时，会把
-# 第二个反斜杠误伤成 `\\\`，反而制造新的非法转义）；且两份实现重复。建议后续
-# 把两者收敛为同一实现。
+# ⚠️ 遗留项 → Backlog T-297（✅ 2026-11-17 已收敛）：`_parse_json_lenient` 第 2 步
+# 已改为复用 json_repair 的扫描式 `_fix_invalid_escapes`（原正则对「已配对反斜杠 +
+# 后随非转义字符」误伤，见该函数 docstring），两份实现归一。
 # ----------------------------------------------------------------
 
 
