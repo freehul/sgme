@@ -58,15 +58,24 @@ def _versions_at_least(minimum: int) -> list[dict]:
     return out
 
 
-def test_manifest_active_is_latest_registered():
-    """active 指向最新登记版本（发布态约定；回滚应显式修改本断言并留痕）。
+def test_manifest_active_is_latest_approved():
+    """active 指向最新**已批准**登记版本（T-411，2026-11-18 口径变更）。
 
-    v021 交付时此断言为 "v021"；v022 起改为「active == 最新版本」，
-    避免每次新增版本都要改 v021 的交付测试（发布决策由 manifest diff 体现）。
+    原口径「active == 最新登记版本」在「登记了新版本但用户决定暂不定稿」时会误红。
+    现口径：登记但未批准的版本在 manifest 里标 `status: candidate`，不参与本条判定；
+    发布决策仍由 manifest diff 体现（改 active 或去 candidate 都是显式改动）。
+    强度不减：active 落后于最新已批准版本、或 active 自己被标成 candidate，都会红。
     """
-    active = _manifest()["stages"]["l1_extraction"]["active"]
-    latest = max(_versions_at_least(21), key=lambda v: int(v["version"][1:]))["version"]
-    assert active == latest, f"active={active}，期望最新登记版本 {latest}"
+    manifest = _manifest()
+    active = manifest["stages"]["l1_extraction"]["active"]
+    approved = [v for v in _versions_at_least(21) if v.get("status") != "candidate"]
+    assert approved, "v021 起没有任何已批准版本"
+    latest = max(approved, key=lambda v: int(v["version"][1:]))["version"]
+    assert active == latest, f"active={active}，期望最新已批准版本 {latest}"
+    by_version = {v["version"]: v for v in _versions_at_least(1)}
+    assert by_version[active].get("status") != "candidate", (
+        f"active={active} 被标为 candidate：未批准的版本不得服役"
+    )
 
 
 def test_v021_registered_and_sha_matches():

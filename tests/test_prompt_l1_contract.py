@@ -34,6 +34,26 @@ def _manifest() -> dict:
     return yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
 
 
+# T-411（2026-11-18，用户拍板「暂不定稿」）：manifest 版本条目可带 status 字段。
+#   缺省（无该字段）/ "approved" = 已批准：参与一切契约断言。
+#   "candidate" = 已登记未批准：只参与「登记与 sha 一致性」，不参与 active 判定与结构硬约束强制。
+# 任何其它取值 → 判失败（防拼错把候选偷偷当批准）。
+_ALLOWED_STATUS = (None, "approved", "candidate")
+
+
+def _approved(items: list[dict]) -> list[dict]:
+    """已批准版本 = 不带 candidate 标记者。"""
+    return [i for i in items if i.get("status") != "candidate"]
+
+
+def _assert_statuses_legal(items: list[dict]) -> None:
+    for item in items:
+        assert item.get("status") in _ALLOWED_STATUS, (
+            f"{item['version']} 的 status={item.get('status')!r} 非法"
+            f"（只允许缺省/approved/candidate）"
+        )
+
+
 def _versions_at_least(minimum: int) -> list[dict]:
     """返回版本号 >= minimum 的 l1_extraction 版本条目。"""
     versions = _manifest()["versions"]["l1_extraction"]
@@ -47,9 +67,18 @@ def _versions_at_least(minimum: int) -> list[dict]:
 
 
 def test_v020_and_later_keep_structural_hard_constraint():
-    """v020 起每个版本都必须含 v014 的结构硬约束（正文 + 输出要求）。"""
-    versions = _versions_at_least(20)
-    assert versions, "未找到 v020 及以后的 l1_extraction 版本"
+    """v020 起每个**已批准**版本都必须含 v014 的结构硬约束（正文 + 输出要求）。
+
+    T-411 口径（2026-11-18）：`status: candidate` 的版本是「已登记未批准」的候选，
+    允许在定稿前暂缺锚点句；一旦去掉 candidate（或把 candidate 设成 active）即恢复强制。
+    —— 这不是放宽，而是把「未定稿」变成可判定数据：谁把候选当批准用，下面
+    test_working_copy_matches_active 与两条 active 断言会立刻红。
+    """
+    all_versions = _versions_at_least(20)
+    assert all_versions, "未找到 v020 及以后的 l1_extraction 版本"
+    _assert_statuses_legal(all_versions)
+    versions = _approved(all_versions)
+    assert versions, "v020 及以后没有任何已批准版本"
     for item in versions:
         text = (PROMPTS_ROOT / item["file"]).read_text(encoding="utf-8")
         for anchor in HARD_ANCHORS:
@@ -58,15 +87,15 @@ def test_v020_and_later_keep_structural_hard_constraint():
 
 
 def test_v020_and_later_no_stale_draft_status():
-    """v020 起不得再出现「草案、未激活」这类过期状态行。"""
-    for item in _versions_at_least(20):
+    """v020 起**已批准**版本不得再出现「草案、未激活」这类过期状态行。"""
+    for item in _approved(_versions_at_least(20)):
         text = (PROMPTS_ROOT / item["file"]).read_text(encoding="utf-8")
         assert STALE_STATUS not in text, f"{item['version']} 仍含过期状态行"
 
 
 def test_v020_and_later_version_chain_mentions_v014():
-    """头部版本链必须能溯源到 v014（分叉丢失的起点）。"""
-    for item in _versions_at_least(20):
+    """头部版本链必须能溯源到 v014（分叉丢失的起点）——已批准版本强制。"""
+    for item in _approved(_versions_at_least(20)):
         text = (PROMPTS_ROOT / item["file"]).read_text(encoding="utf-8")
         assert "# v014（2026-10-31）" in text, f"{item['version']} 版本链缺 v014"
 
@@ -76,6 +105,8 @@ def test_manifest_sha256_matches_v020_file():
 
     口径与 `PromptStore._lazy_verify_sha` 对齐：read_text 归一换行后按 UTF-8 计算文本 sha，
     避免 Windows autocrlf 把工作区转成 CRLF 时字节 sha 漂移造成误报。
+
+    T-411：**候选版本同样要 sha 一致**（登记了就得是那份文件，只是暂不批准生效）。
     """
     for item in _versions_at_least(20):
         path = PROMPTS_ROOT / item["file"]
@@ -85,10 +116,27 @@ def test_manifest_sha256_matches_v020_file():
         )
 
 
-def test_working_copy_matches_active_or_latest():
-    """工作副本必须与「最新登记版本」内容一致（防 @working 回退成旧提示词）。"""
-    versions = _versions_at_least(20)
-    latest = max(versions, key=lambda v: int(v["version"][1:]))
-    latest_text = (PROMPTS_ROOT / latest["file"]).read_text(encoding="utf-8")
+def test_working_copy_matches_active():
+    """工作副本必须与 **active** 版本逐字节一致（防 @working 回退成旧提示词）。
+
+    T-411（2026-11-18）口径变更：原断言写「工作副本 == 最新登记版本」，在「登记了新版本但
+    用户决定暂不定稿」时会误红——那时工作副本应当等于**仍在服役的 active 版本**，而新版本
+    只是 `status: candidate` 的候选。判定依据从「谁最新」改成「谁在服役」，强度不减：
+    工作副本与 active 漂移仍然立刻红，且下面额外拦「active 竟然是候选」。
+    """
+    active = _manifest()["stages"]["l1_extraction"]["active"]
+    versions = {v["version"]: v for v in _versions_at_least(1)}
+    if active.startswith("@"):  # @working 形态：工作副本即真源，无可比对象
+        return
+    assert active in versions, f"active={active} 未在 manifest 登记"
+    chosen = versions[active]
+    # active 永不得是 candidate —— 否则「未批准」的提示词已经在生产服役
+    assert chosen.get("status") != "candidate", (
+        f"active={active} 被标为 candidate：未批准的版本不得服役（先定稿去标，或把 active 切回已批准版本）"
+    )
+    assert int(active[1:]) >= 20, (
+        f"active={active} 低于 v020：v020 起才有结构硬约束契约，切回旧版需显式留痕"
+    )
+    active_text = (PROMPTS_ROOT / chosen["file"]).read_text(encoding="utf-8")
     working_text = (PROMPTS_ROOT / "l1_extraction.txt").read_text(encoding="utf-8")
-    assert working_text == latest_text, "工作副本与最新登记版本不一致"
+    assert working_text == active_text, f"工作副本与 active（{active}）不一致"

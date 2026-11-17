@@ -12,6 +12,8 @@ stages:
     ab:
       enabled: false
   l1_extraction:
+    # T-411（2026-11-18，用户拍板「暂不定稿」）：active 口径 = **最新已批准版本**。
+    # 登记但未批准的版本在 versions 条目里标 status: candidate，不参与 active 判定。
     active: v023
     ab:
       enabled: false
@@ -129,6 +131,12 @@ versions:
     sha256: cedae41f070f467a54b36b82bc8b3b8685e555cc3d6ac958c8d41b24f24a0bac
     created_at: '2026-11-14T00:00:00Z'
     note: '三平面分流置信度契约（v0.3 §4，2026-11-14）：route 增 route_confidence/route_reason 两字段；落库侧 <0.6 进 routing_inbox 待人工裁决，>=0.6 才分流；技术细节按去向判归属（决策进 memory、实现进 skill_candidate、客观结论进 wiki_candidate）。**未切 active**——需 200 条 A/B 通过后切换（设计门禁 G5）。'
+    # 2026-11-18 T-411（用户拍板「暂不定稿」）：显式标 candidate。
+    # 语义 = 已登记、可审阅，但**未批准**：
+    #   ① 不参与「active 必须指向最新登记版本」的判定（active 一律等于最新 *已批准* 版本）
+    #   ② 不要求在结构硬约束契约里立刻合规（定稿那一步必须补回锚点，补了才准去掉 candidate）
+    #   ③ 永不可是 active 本身——测试会拦（test_working_copy_matches_active 内含反向断言）
+    status: candidate
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt
