@@ -105,8 +105,10 @@ jobs:
                   print(f"[release] {method} -> HTTP {e.code}: {e.read().decode()[:300]}")
                   return None
 
-          listing = call("GET", f"{api}?access_token={tok}") or []
-          existing = next((x for x in listing if x.get("tag_name") == tag), None)
+          # T-365 幂等修复：按 tag 精确查（列表翻页会漏旧 release → 重复 POST 400 判红）
+          existing = call("GET", f"{api}/tags/{tag}?access_token={tok}")
+          if not isinstance(existing, dict) or not existing.get("id"):
+              existing = None
 
           if existing:
               # Gitee 的 PATCH 对必填字段做校验（漏 tag_name 会 400），与 POST 保持同形
@@ -121,6 +123,16 @@ jobs:
               payload = {"access_token": tok, "tag_name": tag, "name": name, "body": body,
                          "prerelease": False, "target_commitish": "main"}
               ok = call("POST", api, payload)
+              if not ok:
+                  # T-365 幂等兜底：push 事件可能已创建同名 release（POST 400），
+                  # 回查到 id 后改 PATCH 更新，不再判红
+                  dup = call("GET", f"{api}/tags/{tag}?access_token={tok}")
+                  if isinstance(dup, dict) and dup.get("id"):
+                      payload2 = {"access_token": tok, "tag_name": tag, "name": name,
+                                  "body": body, "prerelease": False}
+                      ok = call("PATCH", f"{api}/{dup['id']}", payload2)
+                      if ok:
+                          print(f"[release] {tag} 已存在，改为更新（id {dup['id']}）")
               if not ok:
                   print(f"[release] {tag} 创建失败")
                   raise SystemExit(1)
