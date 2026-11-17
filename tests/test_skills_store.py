@@ -191,6 +191,23 @@ class TestRemoveSkill:
         from sgme.skills.store import remove_skill
         r = remove_skill("victim", hard=True, source_dirs=[str(repo)])
         assert r["ok"] is True and not (repo / "victim").exists()
+    def test_hard_delete_warns_about_references_dir(self, repo):
+        """T-286：hard 删除连带删掉 references/ 时须警示（正文引用会断链→审计拒推）。"""
+        assert _write(repo, "withref")["ok"]
+        (repo / "withref" / "references").mkdir()
+        (repo / "withref" / "references" / "guide.md").write_text("# 指南", encoding="utf-8")
+        from sgme.skills.store import remove_skill
+        r = remove_skill("withref", hard=True, source_dirs=[str(repo)])
+        assert r["ok"] is True and not (repo / "withref").exists()
+        assert any("references" in w for w in r["warnings"])
+
+    def test_hard_delete_no_references_no_warning(self, repo):
+        """无 references/ 的技能 hard 删除不产生 references 警示。"""
+        assert _write(repo, "plain")["ok"]
+        from sgme.skills.store import remove_skill
+        r = remove_skill("plain", hard=True, source_dirs=[str(repo)])
+        assert r["ok"] is True
+        assert not any("references" in w for w in r["warnings"])
 
     def test_missing_skill_fails(self, repo):
         from sgme.skills.store import remove_skill

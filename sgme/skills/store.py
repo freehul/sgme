@@ -606,9 +606,16 @@ def remove_skill(name: str, hard: bool = False, force: bool = False,
         _require_skill_workspace(src)  # T-221：动盘前守卫（独立 git 技能仓）
         if hard:
             # 硬删：物理删目录 + commit（git 历史永存兜底）
+            has_refs = (src / name / "references").is_dir()  # T-286：references/ 连带删除警示
             shutil.rmtree(src / name, ignore_errors=True)
             committed = _commit_all(src, f"remove(hard) {name}")
             mode = "hard"
+            if has_refs:
+                mention_warnings.append(
+                    f"hard 删除连带删掉了「{name}/references/」目录：其他技能正文若有指向它的"
+                    " md 链接会断链 → 审计 R3 broken-link FAIL 拒推；请按真源版本"
+                    f"（git checkout -- {name}/references/<文件>）回补或同步移除正文引用"
+                )
         else:
             # 软删：frontmatter 加 deprecated: true 后 commit（宽限期可恢复）
             parsed = parse_skill_md((src / name / SKILL_FILE).read_text(encoding="utf-8"))
