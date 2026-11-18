@@ -767,6 +767,13 @@ def _merge_cost_alert_config(user_cfg: dict | None) -> dict:
     return _cfg({"cost_alert": user_cfg or {}})
 
 
+def _merge_cost_config(user_cfg: dict | None) -> dict:
+    """D-63（T-421，2026-11-18）：cost 段（默认值/合并的单一实现在 engine.cost_alert.cost_cfg）。"""
+    from sgme.engine.cost_alert import cost_cfg
+
+    return cost_cfg({"cost": user_cfg or {}})
+
+
 def _merge_migration_config(user_cfg: dict | None) -> dict:
     """D-55（2026-11-04）：迁移阶段开关（默认值/合并逻辑的单一实现在 sgme.migration）。"""
     from sgme.migration import migration_cfg
@@ -1847,6 +1854,8 @@ def load_config(
         "migration": _merge_migration_config(sgme_cfg.get("migration")),
         # P1-9（2026-11-04）：成本告警线（1.2× 提示 / 2× 告警，只告警不停服）
         "cost_alert": _merge_cost_alert_config(sgme_cfg.get("cost_alert")),
+        # D-63（T-421，2026-11-18）：cost 段——日汇总定时器 + 停摆开关（默认全 false）
+        "cost": _merge_cost_config(sgme_cfg.get("cost")),
         "scene_gc": sgme_cfg.get("scene_gc", _merge_scene_gc_config(None)),
         "credentials": sgme_cfg.get("credentials", _merge_credentials_config(None)),
         # 2026-11-02 任务 B：角色离线生活注入闸（assemble 读 cfg["role_life"]）

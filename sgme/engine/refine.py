@@ -411,6 +411,20 @@ def refine_file(
         )
         return result
 
+    # 成本停摆开关（D-63 · T-421，2026-11-18）：拉闸期同暂停语义——不调 LLM、
+    # 文件保持 status=new、不计 fail_count；解除后自动接着跑（同 is_paused 挂点）。
+    from sgme.engine.cost_alert import is_refine_blocked
+
+    if is_refine_blocked(cfg):
+        result.status = "deferred"
+        result.deferred = True
+        result.error = "cost_circuit_breaker"
+        logger.info(
+            "成本停摆开关开启（cost.circuit_breaker.enabled=true），跳过（file=%s，保持 status=new）",
+            file_id,
+        )
+        return result
+
     # E4 体积闸（2026-11-05，B312 待办 2）：超限文件不进解析 / LLM——历史上
     # 16.7 / 25.4 / 12.4 MB 三个超大文件占失败风暴 92%，反复超时且耗尽重试预算。
     # 终态：status='error' + last_error='file_too_large'；不计入 E3 失败次数

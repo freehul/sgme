@@ -1018,6 +1018,14 @@ def create_app(
                 _start_backup_scheduler(app)
             except Exception as e:
                 print(f"[SGME backup] 每日自动备份定时器启动失败（不影响启动）: {e}")
+            # D-63（T-421，2026-11-18）：LLM 用量每日汇总定时器（cost.summary，
+            # 默认 enabled=false——线程守候但到点跳过执行，配置热生效无需重启）。
+            # 账本兜底写入方：实时记账调用点缺位时保证 llm-cost 看板有当日汇总。
+            try:
+                from sgme.engine import cost_scheduler
+                cost_scheduler.ensure_scheduler(cfg, data_dir=d)
+            except Exception as e:
+                print(f"[SGME cost] 用量日汇总定时器启动失败（不影响启动）: {e}")
             # T-112：skills.db 首次同步 + 向量后台预热（daemon 线程，失败不阻断启动）。
             # 结构化同步快（403 条约 1-3 秒）；向量首次全量约 13 分钟（Ollama bge-m3
             # 每批 10 条约 19 秒），故只补一小批后交由循环预热逐步补齐——期间
@@ -1034,6 +1042,12 @@ def create_app(
         try:
             from sgme.engine import batch_scan as batch_scan_mod
             batch_scan_mod.stop_scheduler(timeout=2.0)
+        except Exception:
+            pass
+        # D-63（T-421）：成本汇总定时器线程置位停止（幂等，未启动无副作用）
+        try:
+            from sgme.engine import cost_scheduler as cost_sched_mod
+            cost_sched_mod.stop_scheduler(timeout=2.0)
         except Exception:
             pass
         try:

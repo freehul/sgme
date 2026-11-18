@@ -124,6 +124,10 @@ FILES = {
     "parity_map": ROOT / "scripts" / "adapter_parity_map.yaml",
     "migrate_baseline": ROOT / "scripts" / "migrate_2_0_baseline.py",
     "backfill_anchor": ROOT / "scripts" / "backfill_meaning_anchor.py",
+    "backfill_entry": ROOT / "scripts" / "backfill_llm_usage.py",  # T-421：D-63 回填入口断言用
+    "cost_meter": S / "engine" / "cost_meter.py",       # T-421：D-63 三缺口断言用
+    "cost_scheduler": S / "engine" / "cost_scheduler.py",
+    "cost_alert": S / "engine" / "cost_alert.py",
     "meaning_anchor_mod": S / "engine" / "meaning_anchor.py",
     "ttl_disp": S / "engine" / "ttl_disposition.py",
     "verify_migration": ROOT / "scripts" / "verify_migration.py",
@@ -932,13 +936,24 @@ def _(self):
     ]
 
 
-@check("D-63", "LLM 成本计量", "partial")
+@check("D-63", "LLM 成本计量", "done")
 def _(self):
-    # 已落地 = llm_usage_daily + 三阶段记账 + llm-cost 端点；未落地 = 告警线/04:00 汇总/
-    # 超限停摆/分块失败账本（§八第 12 条 ⬜）
+    # 已落地 = llm_usage_daily + 三阶段记账 + llm-cost 端点 + 告警线（cost_alert，只告警不停服）
+    # + 三缺口收口（T-421，2026-11-18）：①backfill 入口（scripts/backfill_llm_usage.py，
+    # 默认 dry-run --apply 才写）②04:00 日汇总（engine/cost_scheduler.py 守护定时器，
+    # D-7 口径不引 APScheduler，cost.summary.enabled 默认 false）③停摆开关
+    # （cost.circuit_breaker.enabled 默认 false；refine_file/batch_scan/async 入口三挂点）。
     return [
         ("llm_usage_daily 表", *has("llm_usage_dao", "llm_usage_daily")),
         ("成本查询端点", *has("routes_ops", "llm-cost")),
+        ("backfill 报告函数（dry-run 只读）", *has("cost_meter", "def pending_report")),
+        ("backfill 可执行入口脚本（--apply 才写）", *has("backfill_entry", "--apply")),
+        ("04:00 日汇总定时器（守护线程，不引 APScheduler）",
+         *has("cost_scheduler", "def _scheduler_loop", "def ensure_scheduler")),
+        ("停摆开关代码化（默认 false）",
+         *has("cost_alert", "is_refine_blocked", '"circuit_breaker": {"enabled": False}')),
+        ("拉闸跳过提炼（refine_file deferred 挂点）",
+         *has("refine", "cost_circuit_breaker")),
     ]
 
 

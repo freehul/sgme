@@ -563,6 +563,13 @@ def async_refine_worker(
         logger.info("提炼已暂停（refine.paused=true），本次触发直接忽略")
         return
 
+    # 成本停摆开关（D-63 · T-421，2026-11-18）：拉闸期直接返回（不建连接）。
+    from sgme.engine.cost_alert import is_refine_blocked
+
+    if is_refine_blocked(cfg):
+        logger.info("成本停摆开关开启（cost.circuit_breaker.enabled=true），本次触发直接忽略")
+        return
+
     # llm_override（2026-11-06）：L1 与 L3 统一用动态链。
     cfg = refine_mod.apply_llm_override(cfg)
     mem_conn: sqlite3.Connection | None = None

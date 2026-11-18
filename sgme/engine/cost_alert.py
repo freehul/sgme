@@ -31,6 +31,44 @@ DEFAULT_COST_ALERT_CONFIG = {
     "auto_after_months": 3,
 }
 
+# D-63（T-421，2026-11-18）：cost 段默认值——日汇总定时器 + 停摆开关。
+# 红线：新开关默认 enabled=false（生产零行为变化，由运维显式开启）。
+DEFAULT_COST_CONFIG = {
+    "summary": {"enabled": False, "schedule": "04:00"},   # 04:00 汇总（仿 backup_scheduler）
+    "circuit_breaker": {"enabled": False},                # 停摆开关：开 = 跳过提炼 + 告警
+}
+
+
+def cost_cfg(cfg: dict | None) -> dict:
+    """cost 段配置合并（默认值/合并的单一实现；config.load_config 委托到这里）。"""
+    base = {
+        "summary": dict(DEFAULT_COST_CONFIG["summary"]),
+        "circuit_breaker": dict(DEFAULT_COST_CONFIG["circuit_breaker"]),
+    }
+    usr = (cfg or {}).get("cost")
+    if not isinstance(usr, dict):
+        return base
+    for key in ("summary", "circuit_breaker"):
+        sub = usr.get(key)
+        if not isinstance(sub, dict):
+            continue
+        if "enabled" in sub:
+            base[key]["enabled"] = bool(sub["enabled"])
+        if key == "summary" and sub.get("schedule"):
+            base[key]["schedule"] = str(sub["schedule"])
+    return base
+
+
+def is_refine_blocked(cfg: dict | None) -> bool:
+    """停摆开关（D-63）：cost.circuit_breaker.enabled=true → 跳过提炼。
+
+    语义：「真停摆时只告警不跑，可手动开」——开关是**人工**判定后的手动闸
+    （额度失控由成本告警线提示，人确认失控才拉闸），不做自动触发；
+    拉闸期间 refine_file 一律 deferred（文件保持 status=new，不调 LLM、
+    不计 fail_count），解除后自动接着跑，无需重新排队。
+    """
+    return bool(cost_cfg(cfg)["circuit_breaker"]["enabled"])
+
 
 def _cfg(cfg: dict | None) -> dict:
     base = dict(DEFAULT_COST_ALERT_CONFIG)

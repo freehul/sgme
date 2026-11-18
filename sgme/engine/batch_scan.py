@@ -155,6 +155,23 @@ def _run_batch_scan_locked(
             "errors": [],
         }
 
+    # 成本停摆开关（D-63 · T-421，2026-11-18）：拉闸期整轮跳过 + 告警评估
+    # （evaluate_and_alert 按月+档去重，不会每轮刷屏）。
+    from sgme.engine.cost_alert import evaluate_and_alert, is_refine_blocked
+
+    if is_refine_blocked(cfg):
+        logger.warning("Batch 兜底扫描跳过：成本停摆开关开启（cost.circuit_breaker.enabled=true）")
+        try:
+            evaluate_and_alert(mem_conn, cfg)
+        except Exception as e:  # noqa: BLE001——告警失败不阻塞跳过分支
+            logger.warning("成本停摆告警评估异常: %s", e)
+        return {
+            "status": "blocked_by_cost",
+            "message": "成本停摆开关开启（cost.circuit_breaker.enabled=true），跳过本轮",
+            "scanned": 0, "refined": 0, "failed": 0, "memory_count": 0,
+            "errors": [],
+        }
+
     from sgme.llm import chain as llm_chain
 
     if llm_chain.is_primary_open("refinement"):

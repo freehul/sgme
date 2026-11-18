@@ -55,6 +55,38 @@ def extract_from_refine_run(run_row: dict) -> dict | None:
     }
 
 
+def pending_report(conn: sqlite3.Connection) -> dict:
+    """dry-run 报告：统计待回填批次数（只读，零写入——不建账本/游标表）。
+
+    D-63（T-421，2026-11-18）：给 backfill 一个「先看后跑」的入口——
+    脚本缺省只调用本函数报告 ``pending_runs``（与 backfill 的 SELECT 同口径），
+    确认无误加 --apply 才真正回填。refine_runs 表不存在时返回 0（空库可查）。
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='refine_runs'"
+    ).fetchone()
+    if not has_table:
+        return {"pending_runs": 0}
+    has_cursor = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='llm_usage_backfill'"
+    ).fetchone()
+    if not has_cursor:
+        # 游标表未建 = 一批都没回填过 → 全部 finished 批次都是待回填（只读零建表）
+        row = conn.execute(
+            "SELECT COUNT(*) FROM refine_runs WHERE finished_at IS NOT NULL"
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM refine_runs r
+            WHERE r.finished_at IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM llm_usage_backfill b WHERE b.run_id = r.run_id)
+            """
+        ).fetchone()
+    return {"pending_runs": int(row[0] or 0)}
+
+
 def backfill_from_refine_runs(conn: sqlite3.Connection, limit: int = 5000) -> dict:
     """从 refine_runs 回填历史用量到 llm_usage_daily（幂等，可重复执行）。
 
