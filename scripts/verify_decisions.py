@@ -125,6 +125,7 @@ FILES = {
     "migrate_baseline": ROOT / "scripts" / "migrate_2_0_baseline.py",
     "backfill_anchor": ROOT / "scripts" / "backfill_meaning_anchor.py",
     "backfill_entry": ROOT / "scripts" / "backfill_llm_usage.py",  # T-421：D-63 回填入口断言用
+    "profile_inject": S / "profile" / "inject.py",      # T-424：D-6 消费面断言用
     "cost_meter": S / "engine" / "cost_meter.py",       # T-421：D-63 三缺口断言用
     "cost_scheduler": S / "engine" / "cost_scheduler.py",
     "cost_alert": S / "engine" / "cost_alert.py",
@@ -1000,12 +1001,19 @@ def _(self):
     ]
 
 
-@check("D-6", "维度展示用中文，英文 id 附在边上", "partial")
+@check("D-6", "维度展示用中文，英文 id 附在边上", "done")
 def _(self):
     # 注册表一行为一维度：id 英文 snake_case（存储/归一化用）+ display_name 中文（展示用）。
+    # 消费面收口（T-424，2026-11-18）：UI 并显（MemoryList 中文为主+小字 id）+
+    # inject 侧纯增量透出 display_name（build_inject_blocks dimensions 键，
+    # 注册表缺失不炸、未知维度回退 id；调用点 operations/inject 两分支 + profile.inject）。
     return [
         ("注册表 id 字段", *has("registry_dimensions", "- id: identity")),
         ("注册表中文展示名", *has("registry_dimensions", "display_name: 身份")),
+        ("inject 块纯增量透出 display_name",
+         *has("profile_inject", 'block["dimensions"]', "display_name")),
+        ("注册表缺失/未知维度回退 id（不炸）",
+         *has("profile_inject", 'dim_names.get(d, d)', 'd.get("display_name") or d["id"]')),
     ]
 
 

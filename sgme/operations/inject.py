@@ -439,7 +439,7 @@ def inject(
                 caller,
             )
             # D-79（2026-11-05）：Tier0 摘要整体砍除——画像由 core 记忆卡承担
-            response = inject_mod.build_inject_blocks(tmpl, section_results)
+            response = inject_mod.build_inject_blocks(tmpl, section_results, dimensions=dimensions)
             # E7：跨 section 去重条数（0 也记——无重复是正常态，字段恒定便于观察）
             response.setdefault("stats", {})["dedupe_dropped"] = dupe_dropped
             # D-79（2026-11-05）：core 记忆卡——每次必注，排最前（稳定前缀利于缓存）。
@@ -517,7 +517,7 @@ def inject(
                 "name": "custom",
                 "sections": [{"title": "自定义查询", "query": {"dimensions": dims}}],
             }
-            response = inject_mod.build_inject_blocks(tmpl, [results])
+            response = inject_mod.build_inject_blocks(tmpl, [results], dimensions=dimensions)
             response["stats"]["mode"] = "custom"
             response["stats"]["dedupe_dropped"] = dupe_dropped
             response = _attach_key_missing_note(_attach_empty_note(response), cfg)

@@ -166,7 +166,7 @@ onMounted(() => { loadDims(); load() })
           <div class="dim-checks">
             <label v-for="d in dimOptions" :key="d.id" class="chk-chip" :class="{ on: selectedDims.includes(d.id) }">
               <input v-model="selectedDims" type="checkbox" :value="d.id" @change="apply" />
-              <span class="chk-chip-label">{{ d.display_name || d.id }}</span>
+              <span class="chk-chip-label">{{ d.display_name || d.id }}<span v-if="d.display_name" class="chk-chip-id">{{ d.id }}</span></span>
             </label>
             <span v-if="!dimOptions.length" class="dim-muted">（无维度）</span>
           </div>
@@ -319,6 +319,8 @@ onMounted(() => { loadDims(); load() })
 .chk-chip input { margin: 0; }
 .chk-chip.on { border-color: var(--brand); background: var(--brand-soft); color: var(--brand-text); }
 .chk-chip-label { white-space: nowrap; }
+/* D-6（T-424）：维度并显——中文为主，小字英文 id 附边上 */
+.chk-chip-id { margin-left: 3px; font-size: 10px; opacity: 0.55; }
 .dim-muted { font-size: 12px; color: var(--text-faint); }
 
 .split {

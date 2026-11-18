@@ -124,11 +124,16 @@ def build_inject_blocks(
     template: dict,
     section_results: list[list[dict]],
     avg_item_tokens: int = AVG_ITEM_TOKENS,
+    dimensions: list[dict] | None = None,
 ) -> dict:
     """拼装注入响应：{"blocks":[...], "stats":{...}}。
 
     - template: 加载后的模板
     - section_results: 每个 section 的查询结果（与 template.sections 顺序对应）
+    - dimensions（D-6 · T-424，2026-11-18）：维度注册表——传入时每个 section 块
+      **纯增量**带 ``dimensions: [{id, display_name}]``（中文为主，id 附边上）；
+      注册表缺行/缺 display_name 字段时 display_name 回退英文 id（不炸）；
+      不传（None 缺省）行为完全不变（无 dimensions 键）。
 
     Tier0 摘要已于 2026-11-05（D-79）整体砍除——画像由 core 记忆卡承担，
     本函数不再渲染任何 LLM 生成的摘要块。
@@ -137,6 +142,12 @@ def build_inject_blocks(
     total_items = 0
 
     sections = template.get("sections", [])
+    # D-6：id → 中文展示名映射（仅传入注册表时构建；缺行回退 id）
+    dim_names: dict[str, str] = {}
+    if dimensions:
+        for d in dimensions:
+            if isinstance(d, dict) and d.get("id"):
+                dim_names[d["id"]] = d.get("display_name") or d["id"]
     # 跨 section 去重（2026-08-18 修复）：多维度记忆会在多个 section 重复命中，
     # 同一记忆只保留在首个命中的 section（memory_id 判等，注入去重不丢语义）。
     # 内容前缀兜底：L1 提炼可能产生字符级细微差异的相似记忆（如句式微变），
@@ -169,11 +180,19 @@ def build_inject_blocks(
                     "content": content,
                     "memory_id": r.get("memory_id"),
                 })
-        blocks.append({
+        block = {
             "title": section.get("title", ""),
             "items": items,
             "present": len(items) > 0,
-        })
+        }
+        # D-6（T-424）：纯增量带维度展示名——只按本 section 的 query.dimensions 取，
+        # 注册表未传时不加键（行为不变）；查不到的维度 display_name 回退 id。
+        if dim_names:
+            block["dimensions"] = [
+                {"id": d, "display_name": dim_names.get(d, d)}
+                for d in (section.get("query", {}) or {}).get("dimensions", [])
+            ]
+        blocks.append(block)
         total_items += len(items)
 
     return {
@@ -370,7 +389,7 @@ def inject(
         query_section(mem_conn, s, dimensions)
         for s in template.get("sections", [])
     ]
-    result = build_inject_blocks(template, section_results)
+    result = build_inject_blocks(template, section_results, dimensions=dimensions)
     # ST-35 T-101：性格参考块（失败不阻塞注入）
     try:
         from sgme.profile.persona_block import build_persona_block
