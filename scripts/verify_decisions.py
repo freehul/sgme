@@ -115,6 +115,7 @@ FILES = {
     "prompts_manager": S / "prompts" / "manager.py",
     "raw_store": S / "raw" / "store.py",
     "backup_manager": S / "backup" / "manager.py",
+    "search": S / "data" / "search" / "__init__.py",  # T-423：检索回填读取路径断言用
     "mcp_server": S / "mcp_server.py",
     "config": S / "config.py",
     "app": S / "server" / "app.py",
@@ -394,14 +395,21 @@ def _(self):
     ]
 
 
-@check("D-30", "人工裁决队列 + 七天保守消化", "partial")
+@check("D-30", "人工裁决队列 + 七天保守消化 + 人工备注列", "done")
 def _(self):
-    # 已落地 = 待审队列/放行/拒绝/超期自动消化；未落地 = my_notes 独立列 + 工作台纠错按钮
+    # 已落地 = 待审队列/放行/拒绝/超期自动消化 + my_notes 独立列（T-423，2026-11-18）：
+    # DDL+幂等迁移 / reject 落库（None 保留）/ 三读取路径（详情/列表/检索）透出；
+    # 工作台纠错按钮属 D-31 记忆详情页（另卡，不影响本决策列落地）。
     return [
         ("待审列表操作", *has("review_ops", "def list_pending")),
         ("超期保守直存", *has("review_ops", "def auto_resolve_expired")),
         ("HTTP 待审端点", *has("routes_review", "/v1/admin/review/pending")),
         ("MCP 超期消化工具", *has("mcp_server", "review_auto_resolve")),
+        ("my_notes 列 DDL + 幂等迁移", *has("db", "_migrate_memory_my_notes", "my_notes TEXT")),
+        ("reject 落库带备注（None 保留既有）",
+         *has("memory_dao", "my_notes=COALESCE(?, my_notes)")),
+        ("列表读取路径透出", *has("memory_dao", '"notes", "custom_flag", "my_notes"')),
+        ("检索回填读取路径透出", *has("search", 'r["my_notes"] = row["my_notes"]')),
     ]
 
 

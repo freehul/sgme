@@ -336,6 +336,7 @@ def reject_memory(
     memory_id: str,
     *,
     reason: str | None = None,
+    my_notes: str | None = None,
 ) -> OperationResult:
     """用户纠错「不采用」：标记记忆为 rejected（不删除、可恢复）。
 
@@ -345,6 +346,10 @@ def reject_memory(
     3. DAO 返回 False（存在但更新 0 行，罕见竞态）→ ERR_INTERNAL「标记失败」；
     4. 幂等：重复 reject 更新 reason。
 
+    D-30（T-423，2026-11-18）：可选 ``my_notes`` 人工备注独立列——传值则写、
+    None 则保留既有备注；**响应键集不变**（``memory_id``/``status``/``reject_reason``），
+    MCP 面零漂移（八适配器无需感知）；备注读取走 memory_get / 列表 / 检索。
+
     HTTP 与 MCP 两入口共享同一响应形态（``memory_id``/``status``/``reject_reason``），
     故不设投影函数——data 即响应体（见 ``operations/__init__.py``：
     两端形态一致时不写投影函数）。
@@ -353,6 +358,7 @@ def reject_memory(
         mem_conn: memory.db 连接。
         memory_id: 记忆 id。
         reason: 纠错原因；None / 空串回落缺省值。
+        my_notes: 人工备注；None 保留既有值（D-30）。
 
     Returns:
         成功时 data 为 ``{"memory_id", "status", "reject_reason"}``（键序即 v0.6 响应序）。
@@ -361,7 +367,7 @@ def reject_memory(
     if not mem:
         return _not_found(memory_id)
     final_reason: str = reason or DEFAULT_REJECT_REASON
-    ok: bool = memory_dao.reject_memory(mem_conn, memory_id, final_reason)
+    ok: bool = memory_dao.reject_memory(mem_conn, memory_id, final_reason, my_notes=my_notes)
     if not ok:
         return OperationResult.fail(ERR_INTERNAL, "标记失败")
     return OperationResult.succeed({

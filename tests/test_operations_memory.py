@@ -267,7 +267,7 @@ def test_reject_memory_dao_zero_rowcount_is_internal_error(mem_conn, monkeypatch
     _insert(mem_conn)
     monkeypatch.setattr(
         "sgme.operations.memory.memory_dao.reject_memory",
-        lambda conn, mid, reason: False,
+        lambda conn, mid, reason, my_notes=None: False,  # T-423：DAO 增 my_notes 形参
     )
 
     # Act

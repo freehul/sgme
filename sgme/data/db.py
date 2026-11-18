@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS memories (
   prompt_version TEXT, content_seg TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   rejected_at TEXT, reject_reason TEXT,
+  -- D-30（T-423，2026-11-18）：人工备注独立列——记忆详情页 my_notes + 纠错按钮；
+  -- 与 reject_reason（纠错原因，语义不变）和遗留 notes（待审审核流水）互不占用
+  my_notes TEXT,
   occurred_at TEXT,   -- v0.5：记忆对应会话事件的真实发生时刻（vs created_at=提炼落库时刻）
   -- ---- 2.0 三轴分离（D-46）与时效五档（D-52）载体（迁移阶段 1，2026-11-04）----
   lifecycle TEXT,                       -- active / sleeping / archived；NULL 按注入谓词兜底视为 active
@@ -786,6 +789,7 @@ def connect_memory(data_dir: str | Path | None = None) -> sqlite3.Connection:
     _migrate_memory_2_0_columns(conn)
     # 2.0 迁移阶段 1（2026-11-04）：生命周期五列 + 维度优先级 + 四张正式表
     _migrate_memory_lifecycle_columns(conn)
+    _migrate_memory_my_notes(conn)
     _migrate_dim_priority(conn)
     _migrate_2_0_tables(conn)
     _migrate_memory_pages_table(conn)
@@ -1776,6 +1780,23 @@ def _migrate_memory_lifecycle_columns(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_mem_lifecycle ON memories(lifecycle, memory_id)"
     )
     conn.commit()
+
+
+def _migrate_memory_my_notes(conn: sqlite3.Connection) -> None:
+    """老库迁移（T-423 · D-30，2026-11-18）：memories 补人工备注独立列 ``my_notes``。
+
+    D-30：人工备注 = 记忆详情页 my_notes 独立列 + 纠错按钮（supersede 链）。
+
+    - 与 ``reject_reason``（纠错原因，语义不变）、遗留 ``notes``（待审审核流水，
+      review.py 写）互不占用，三者并列共存；
+    - 只加 memories 主表：归档面是「被取代记忆的冷备」，不承载人工修正态
+      （口径同 notes/custom_flag 迁移注记）；已删除/已归档行不做回填；
+    - 幂等：列已存在则无操作；重复执行安全。
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()]
+    if cols and "my_notes" not in cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN my_notes TEXT")
+        conn.commit()
 
 
 def _migrate_dim_priority(conn: sqlite3.Connection) -> None:

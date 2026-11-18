@@ -276,6 +276,7 @@ def reject_memory(
     2026-08-06 新增（用户明确：删除会造成更多问题，打标记以后不加载显示）。
     - 数据完整保留，仅 status='rejected'；查询/搜索/候选池一律过滤
     - body: {"reason": "用户说明的纠错原因"}（可选，默认"用户纠错"）
+      + {"my_notes": "人工备注"}（D-30 · T-423 可选；None 保留既有备注）
     - 幂等：重复 reject 更新 reason
 
     v0.7：业务逻辑已下沉 ``sgme.operations.memory``；本端点无 MCP 对端，
@@ -285,6 +286,7 @@ def reject_memory(
     return run_operation(
         reject_memory_operation, mem_conn, memory_id,
         reason=(body or {}).get("reason"),
+        my_notes=(body or {}).get("my_notes"),
     )
 
 

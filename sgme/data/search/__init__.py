@@ -555,7 +555,7 @@ def _enrich_l2_context(
         return results
     placeholders = ",".join("?" * len(ids))
     rows = mem_conn.execute(
-        "SELECT memory_id, occurred_at, facts_json, l2_facts_json FROM memories "
+        "SELECT memory_id, occurred_at, facts_json, l2_facts_json, my_notes FROM memories "
         f"WHERE memory_id IN ({placeholders})",
         ids,
     ).fetchall()
@@ -568,6 +568,8 @@ def _enrich_l2_context(
         )
         r["causes"] = l2["causes"]
         r.setdefault("occurred_at", row["occurred_at"] if row else None)
+        # D-30（T-423，2026-11-18）：人工备注纯增量透出（无数据为 None，键集恒定）
+        r["my_notes"] = row["my_notes"] if row else None
         r.pop("facts_json", None)
         r.pop("l2_facts_json", None)
     return results

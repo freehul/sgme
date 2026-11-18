@@ -401,6 +401,7 @@ def reject_memory(
     conn: sqlite3.Connection,
     memory_id: str,
     reason: str,
+    my_notes: str | None = None,
 ) -> bool:
     """用户纠错「不采用」：标记记忆为 rejected（不删除、可恢复）。
 
@@ -408,13 +409,16 @@ def reject_memory(
     - 只更新 status='rejected' + rejected_at + reject_reason，数据完整保留
     - 查询/搜索/候选池等读取路径过滤 status='rejected'
     - 幂等：重复 reject 更新 reject_reason，不报错
+    - D-30（T-423，2026-11-18）：可选 my_notes 人工备注独立列——传值则写，
+      None 则保留既有备注（COALESCE 语义，不覆写）；reject_reason 语义不变
     """
     cur = conn.execute(
         """
-        UPDATE memories SET status='rejected', rejected_at=?, reject_reason=?
+        UPDATE memories SET status='rejected', rejected_at=?, reject_reason=?,
+          my_notes=COALESCE(?, my_notes)
         WHERE memory_id=?
         """,
-        (_now_iso(), reason, memory_id),
+        (_now_iso(), reason, my_notes, memory_id),
     )
     conn.commit()
     return cur.rowcount > 0
@@ -972,7 +976,7 @@ _BROWSE_SORT_COLUMNS: dict[str, str] = {
 #: 0.8 ST-14 才加的列（创意池备注 / 人工标记）。本分支基线尚无，
 #: 按存在性探测后决定是否 SELECT——保证「基线独立可跑」与「合并 ST-14 后
 #: 自动生效」两种状态都正确，无需二次改码。
-_BROWSE_OPTIONAL_COLUMNS: tuple[str, ...] = ("notes", "custom_flag")
+_BROWSE_OPTIONAL_COLUMNS: tuple[str, ...] = ("notes", "custom_flag", "my_notes")
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
