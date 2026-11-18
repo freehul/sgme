@@ -204,7 +204,11 @@ def test_push_remote_skipped(tmp_path):
 # ---------- archive_raw_cold ----------
 
 def test_archive_raw_cold(tmp_path):
-    """>90 天文件被压缩。"""
+    """>90 天文件被压缩（压缩机制测试；D-17 门控行为见 test_archive_cold_gating.py）。
+
+    T-422（2026-11-18）：require_refined 默认 True（只归档已提炼会话），
+    本测试只验证压缩搬家机制，显式豁免门控（require_refined=False）。
+    """
     raw = tmp_path / "raw"
     raw.mkdir()
     archive = tmp_path / "archive"
@@ -216,7 +220,7 @@ def test_archive_raw_cold(tmp_path):
     old.write_text("old content", encoding="utf-8")
     _set_old_mtime(old, days_ago=100)
 
-    result = manager.archive_raw_cold(raw, archive, days=90)
+    result = manager.archive_raw_cold(raw, archive, days=90, require_refined=False)
 
     assert result["archived_count"] == 1
     assert len(result["files"]) == 1

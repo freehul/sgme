@@ -1155,16 +1155,20 @@ def _(self):
     ]
 
 
-@check("D-17", "原件全量保留不删（来时路）；归档=滚动搬家", "partial")
+@check("D-17", "原件全量保留不删（来时路）；归档=滚动搬家", "done")
 def _(self):
-    # 已落地 = 归档是**压缩搬家**且明确保留原文件；L0 写入层无任何删除路径。
-    # 未落地 = 决策里的「归档前置条件 = 会话已完成 L2 提炼」——archive_raw_cold 只按 mtime 天数判定，
-    # 无 refine 状态门控（2026-11-17 核实），故 partial。
+    # 已落地（T-422，2026-11-18）：归档是**压缩搬家**且明确保留原文件；L0 写入层无任何删除路径；
+    # 「归档前置条件 = 会话已完成 L2 提炼」由 archive_raw_cold 的 require_refined 门控落地
+    # （默认 True：status!='refined' 与状态查不到一律保守跳过；调用方 scripts/archive_raw_cold.py）。
     raw = src("raw_store")
     no_delete = not any(k in raw for k in ("os.remove", "unlink(", "rmtree"))
     return [
         ("冷归档函数存在（压缩搬家）", *has("backup_manager", "def archive_raw_cold")),
         ("归档后原文件保留（仍参与溯源）", *has("backup_manager", "归档后原文件保留")),
+        ("冷归档带 require_refined 门控（默认只归档已提炼）",
+         *has("backup_manager", "require_refined: bool = True")),
+        ("未提炼/状态缺失保守跳过（宁可不归档）",
+         *has("backup_manager", "skipped_unrefined", "skipped_no_status")),
         ("L0 写入层无删除原件路径", no_delete,
          "sgme/raw/store.py: 无 os.remove/unlink(/rmtree" if no_delete
          else "sgme/raw/store.py: 出现删除调用（违反 D-17 原件不删）"),

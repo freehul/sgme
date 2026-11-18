@@ -421,22 +421,40 @@ def archive_raw_cold(
     raw_dir: str | Path,
     archive_dir: str | Path,
     days: int = 90,
+    require_refined: bool = True,
+    session_conn: "sqlite3.Connection | None" = None,
 ) -> dict:
     """>days 天未修改的 .md 文件压缩为冷归档。
 
+    - D-17 前置门控（T-422，2026-11-18）：require_refined=True（默认）时只归档
+      raw_files.status='refined' 的会话——归档前置条件 = 已完成 L2 提炼，
+      未提炼（new/error/archived）与状态查不到（无行）一律保守跳过（宁可不归档）；
+      session_conn 为 None 且开门控时同样全部跳过（无状态可查 = 不归档）。
+    - require_refined=False 显式豁免走旧行为（只按 mtime），供手工兜底场景。
     - zstd 不可用时降级 gzip
     - 归档后原文件保留（仍参与溯源）
-    - 返回 {archived_count, files}
+    - 返回 {archived_count, files, skipped_unrefined, skipped_no_status}
     """
     raw_dir = Path(raw_dir)
     archive_dir = Path(archive_dir)
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     if not raw_dir.exists():
-        return {"archived_count": 0, "files": []}
+        return {"archived_count": 0, "files": [], "skipped_unrefined": 0, "skipped_no_status": 0}
 
     cutoff = time.time() - days * 86400
     archived: list[str] = []
+    skipped_unrefined = 0
+    skipped_no_status = 0
+
+    # D-17 门控：预载全量 status 映射（file_id → status；会话量级一次查询足够）
+    status_map: dict[str, str | None] = {}
+    if require_refined:
+        if session_conn is None:
+            logger.warning("archive_raw_cold: require_refined=True 但未提供 session_conn，全部保守跳过")
+        else:
+            cur = session_conn.execute("SELECT file_id, status FROM raw_files")
+            status_map = {row[0]: row[1] for row in cur.fetchall()}
 
     # 判断 zstd 是否可用
     use_zstd = False
@@ -451,13 +469,27 @@ def archive_raw_cold(
             continue
         if md_file.stat().st_mtime >= cutoff:
             continue
+        if require_refined:
+            status = status_map.get(md_file.stem)
+            if status is None:
+                # 状态查不到（无行 / 无连接）→ 保守跳过，宁可不归档
+                skipped_no_status += 1
+                continue
+            if status != "refined":
+                skipped_unrefined += 1
+                continue
         # 压缩为冷归档
         ext = ".zst" if use_zstd else ".gz"
         dst = archive_dir / (md_file.name + ext)
         _compress_file(md_file, dst)
         archived.append(str(dst))
 
-    return {"archived_count": len(archived), "files": archived}
+    return {
+        "archived_count": len(archived),
+        "files": archived,
+        "skipped_unrefined": skipped_unrefined,
+        "skipped_no_status": skipped_no_status,
+    }
 
 
 def parse_snapshot_level(name: str) -> str:
