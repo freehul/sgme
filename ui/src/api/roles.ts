@@ -26,6 +26,8 @@ export interface RoleCardData {
   system_prompt?: string | null
   post_history_instructions?: string | null
   character_book?: unknown
+  /** D-65（T-425）：隐私授权白名单——允许装配本角色的 agent_id；缺失/空 = 未启用隔离 */
+  privacy_agents?: string[]
   extensions?: {
     // 2.0 角色人生编辑器（SGME2.0-设计方案 V1.0 §4.2）：基线层（静态，工作台写定）
     sgme_profile?: SgmeProfile

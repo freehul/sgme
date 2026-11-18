@@ -108,6 +108,9 @@ const CARE_LEVEL_OPTIONS = [
   { value: 'push', label: '主动推送（关键信号才推）' },
 ] as const
 const careLevel = ref<'silent' | 'session' | 'push'>('silent')
+// D-65（T-425）：隐私授权白名单（工作台可看/加/删，走既有角色写端点）
+const privacyAgents = ref<string[]>([])
+const privacyInput = ref('')
 const careLevelLabel = computed(
   () => CARE_LEVEL_OPTIONS.find((o) => o.value === careLevel.value)?.label || '静默关怀',
 )
@@ -173,6 +176,8 @@ async function select(id: string) {
     fillProfileForms(d)
     // D-61：档位随角色卡载入（缺省 = 静默，老卡零迁移）
     careLevel.value = d.extensions?.sgme_care?.care_level ?? 'silent'
+    // D-65：白名单随角色卡载入（缺失 = 未启用隔离）
+    privacyAgents.value = Array.isArray(d.privacy_agents) ? [...d.privacy_agents] : []
     // persona（404 = 未生成）
     try {
       const p = await getPersona(id)
@@ -241,6 +246,44 @@ async function saveCareLevel() {
     await load()
     await select(selectedId.value)
     msg.value = `关怀档位已设为「${careLevelLabel.value}」`
+  } catch (e) {
+    msg.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+// ---------- D-65 隐私授权保存（走既有角色写端点，不新增后端能力） ----------
+function addPrivacyAgent() {
+  const id = privacyInput.value.trim()
+  if (!id) return
+  if (!privacyAgents.value.includes(id)) privacyAgents.value.push(id) // 重复加入幂等
+  privacyInput.value = ''
+}
+
+function removePrivacyAgent(id: string) {
+  privacyAgents.value = privacyAgents.value.filter((a) => a !== id)
+}
+
+async function savePrivacy() {
+  if (!selectedId.value || !detail.value) return
+  busy.value = true
+  msg.value = ''
+  try {
+    const data: RoleCardData = {
+      ...detail.value,
+      name: detail.value.name,
+      description: detail.value.description,
+    }
+    // 空列表不落键：字段缺失 = 未启用隔离（契约语义，老卡零迁移）
+    if (privacyAgents.value.length) data.privacy_agents = [...privacyAgents.value]
+    else delete data.privacy_agents
+    await saveRole(selectedId.value, data)
+    await load()
+    await select(selectedId.value)
+    msg.value = privacyAgents.value.length
+      ? `隐私授权已保存（白名单 ${privacyAgents.value.length} 个 agent）`
+      : '隐私授权已清空（未启用隔离）'
   } catch (e) {
     msg.value = e instanceof ApiError ? e.message : String(e)
   } finally {
@@ -606,6 +649,30 @@ onMounted(load)
           </select>
           <span class="care-level-note">当前：{{ careLevelLabel }}</span>
         </div>
+        <!-- D-65（T-425）隐私授权：privacy_agents 白名单可看/加/删，走既有角色写端点 -->
+        <div class="privacy-panel">
+          <label>隐私授权（装配白名单）</label>
+          <div v-if="privacyAgents.length" class="privacy-list">
+            <span v-for="a in privacyAgents" :key="a" class="privacy-chip">
+              {{ a }}
+              <button class="privacy-x" :disabled="busy" @click="removePrivacyAgent(a)">×</button>
+            </span>
+          </div>
+          <div class="privacy-row">
+            <input
+              v-model="privacyInput"
+              class="input privacy-input"
+              placeholder="agent_id（如 zcode / hermes），回车或点添加"
+              :disabled="busy"
+              @keyup.enter="addPrivacyAgent"
+            />
+            <button class="btn btn-sm" :disabled="busy || !privacyInput.trim()" @click="addPrivacyAgent">添加</button>
+            <button class="btn btn-sm" :disabled="busy" @click="savePrivacy">保存授权</button>
+          </div>
+          <span class="privacy-note">
+            {{ privacyAgents.length ? `白名单外 agent 装配将被拒绝并记审计（当前 ${privacyAgents.length} 个）` : '未启用隔离：白名单为空 = 仅创建者语义（现实现缺省）' }}
+          </span>
+        </div>
         <!-- D-61：管家类「就医/安全」提醒只做首次接入推荐提示，不默认开启 -->
         <p
           v-if="careLevel === 'silent' && detail.extensions?.sgme_care?.trigger_rules?.medical_day"
@@ -855,6 +922,19 @@ onMounted(load)
 .care-level-row { display: flex; align-items: center; gap: 8px; margin: var(--space-2) 0; font-size: var(--fs-sm); }
 .care-level-row select { padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
 .care-level-note { color: var(--text-muted); font-size: var(--fs-xs); }
+/* D-65（T-425）隐私授权面板 */
+.privacy-panel { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.privacy-panel > label { font-size: 12px; color: var(--text-faint); }
+.privacy-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.privacy-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px;
+}
+.privacy-x { border: none; background: none; cursor: pointer; color: var(--text-faint); padding: 0 2px; font-size: 13px; }
+.privacy-x:hover { color: var(--danger, #c0392b); }
+.privacy-row { display: flex; gap: 8px; align-items: center; }
+.privacy-input { max-width: 320px; }
+.privacy-note { font-size: 11px; color: var(--text-faint); }
 .care-level-hint { margin: 0 0 var(--space-2); font-size: var(--fs-xs); color: var(--warning, #d48806); }
 .edit-form { margin-top: var(--space-3); }
 .center { text-align: center; padding: var(--space-6); }

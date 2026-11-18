@@ -126,6 +126,7 @@ FILES = {
     "backfill_anchor": ROOT / "scripts" / "backfill_meaning_anchor.py",
     "backfill_entry": ROOT / "scripts" / "backfill_llm_usage.py",  # T-421：D-63 回填入口断言用
     "profile_inject": S / "profile" / "inject.py",      # T-424：D-6 消费面断言用
+    "roles_view": ROOT / "ui" / "src" / "views" / "care" / "RolesView.vue",  # T-425：D-65 授权页断言用
     "cost_meter": S / "engine" / "cost_meter.py",       # T-421：D-63 三缺口断言用
     "cost_scheduler": S / "engine" / "cost_scheduler.py",
     "cost_alert": S / "engine" / "cost_alert.py",
@@ -660,13 +661,17 @@ def _(self):
 
 
 # ---------- 角色 / 关怀 ----------
-@check("D-65", "角色隐私层访问控制", "partial")
+@check("D-65", "角色隐私层访问控制", "done")
 def _(self):
-    # 已落地 = ①②③（白名单/403/审计/告警）；未落地 = ④ 工作台授权页（§八第 8 条 ⬜）
+    # 已落地 = ①②③（白名单/403/审计/告警）+ ④ 工作台授权页（T-425，2026-11-18：
+    # RolesView 隐私授权面板，走既有角色写端点不新增后端能力；9 例契约锁测试
+    # tests/test_role_privacy_ui_path.py）。未落地 = 「按 agent 隔离记忆」（redesign 另卡）。
     return [
         ("白名单校验", *has("privacy_guard", "def check_access")),
         ("装配接线", *has("care_ops", "privacy_guard.check_access")),
         ("越权审计", *has("privacy_guard", "security_log")),
+        ("工作台授权页（读/加/删走既有写端点）",
+         *has("roles_view", "privacyAgents", "savePrivacy", "removePrivacyAgent")),
     ]
 
 
