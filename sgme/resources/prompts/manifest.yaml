@@ -14,7 +14,7 @@ stages:
   l1_extraction:
     # T-411（2026-11-18，用户拍板「暂不定稿」）：active 口径 = **最新已批准版本**。
     # 登记但未批准的版本在 versions 条目里标 status: candidate，不参与 active 判定。
-    active: v023
+    active: v025
     ab:
       enabled: false
   l1_conflict:
@@ -139,10 +139,9 @@ versions:
     status: candidate
   - version: v025
     file: versions/l1_extraction/v025.txt
-    sha256: a86badd9eac12e75c212159207996159e733f2596f5bb32139390e01ad129755
+    sha256: 83453e78a0f71416887a2b8455f211bc94d7b68508a3dee2fd9ae6e2585f3693
     created_at: '2026-11-19T00:00:00Z'
     note: '六处收紧（2026-11-19）：① route 判据表与技术内容表合并（原两表重叠）；② 置信度补四条正反对照（含一条 0.55 落 inbox 实例）；③ 写明 >=0.6 的分流落点；④ 划清 route_reason（判断句）与 causes 逐字复制的边界，防摘要习惯串味；⑤「决定+一句理由」明确落 facts[]；⑥ 命令/报错栈/代码片段原文归 discard。另压缩头部历史注释（规则要点已并入正文，v001–v024 说明见本 manifest）——正文体积 29,540→26,749 字节（-9.4%），省约 900 tokens/次输入。**未切 active**——需 200 条 A/B 通过后切换（设计门禁 G5）。'
-    status: candidate
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt

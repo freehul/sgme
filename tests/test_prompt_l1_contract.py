@@ -22,8 +22,13 @@ MANIFEST = PROMPTS_ROOT / "manifest.yaml"
 HARD_ANCHORS = (
     "结构是硬性的，不是建议",
     "禁止**输出平铺数组",
-    "自检：输出前逐个元素确认有 `main_event` / `dimensions` / `route` 三个键",
+    # 只锁「自检要确认这三个结构键」这件事，**不锁键的总数**：v024 起单元多出
+    # `route_confidence`（分流置信度契约），正文如写"四个键"，写死"三个键"就会
+    # 把「内容已正确演进」误判成「锚点丢失」。用前缀锚 + 下方独立断言共同约束。
+    "自检：输出前逐个元素确认有 `main_event` / `dimensions` / `route`",
 )
+# v024 起分流置信度契约必填字段：定稿版本必须带上（换成更实质的检查，不是纯放宽）
+REQUIRED_CONTRACT_FIELDS = ("route_confidence", "route_reason")
 # 输出要求末尾的第 8 条
 TAIL_ANCHOR = "禁止平铺数组——结构错了，2.0 字段全部作废"
 # 过期状态行（v019 及更早的草案残留；v020 起禁止出现）
@@ -84,6 +89,13 @@ def test_v020_and_later_keep_structural_hard_constraint():
         for anchor in HARD_ANCHORS:
             assert anchor in text, f"{item['version']} 丢失结构硬约束锚点：{anchor}"
         assert TAIL_ANCHOR in text, f"{item['version']} 丢失输出要求第 8 条"
+        # v024 起：分流置信度契约的两个必填字段必须在（定稿前必须有，未定稿也得有）
+        if int(item["version"][1:]) >= 24:
+            for field in REQUIRED_CONTRACT_FIELDS:
+                assert field in text, (
+                    f"{item['version']} 缺分流置信度契约字段 {field}——"
+                    f"该版本宣称走 v024 契约却未要求模型输出它"
+                )
 
 
 def test_v020_and_later_no_stale_draft_status():
