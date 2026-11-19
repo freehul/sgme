@@ -36,6 +36,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--staging", default=None, help="任务包目录（默认 home 同级 staging）")
     ap.add_argument("--file-id", default=None, help="只导入某个文件（冒烟）")
     ap.add_argument("--dry-run", action="store_true", help="只统计，不写库")
+    ap.add_argument("--file-list", default=None,
+                    help="只导入该清单里列出的 file_id（并行分片用；一行一个，忽略空行/注释）")
+    ap.add_argument("--lock-timeout", type=float, default=120.0,
+                    help="等待导入锁的秒数（并行多会话同时落库时用，默认 120）")
     args = ap.parse_args(argv)
 
     home = Path(args.home).resolve()
@@ -55,6 +59,12 @@ def main(argv: list[str] | None = None) -> int:
     cfg = cfg_mod.load_config()
     dims = cfg["dimensions"]
     mem_conn, session_conn, _ = db_mod.init_databases(home / "data")
+    # 2026-11-09：并行多会话落库时，WAL 下写写仍会撞锁——给足等待时间，避免 "database is locked"
+    for _c in (mem_conn, session_conn):
+        try:
+            _c.execute("pragma busy_timeout=30000")
+        except Exception:
+            pass
     # 维度注册表是 memory_tags 的外键目标：全新 home 必须先导入，否则 FK 失败
     try:
         from sgme.data import memory_dao
@@ -62,6 +72,32 @@ def main(argv: list[str] | None = None) -> int:
         memory_dao.import_registry(mem_conn, dims, cfg.get("aliases") or {})
     except Exception as e:  # noqa: BLE001——已导入过/幂等失败时不阻塞
         print("维度注册表导入失败（继续）: " + str(e))
+
+    # 2026-11-09：并行分片支持——只处理清单内的 file_id（分片边界必须按 file_id，
+    # 因为本脚本以「文件」为单位导入：一个文件的全部 chunk 都在同一个分片里才能收敛）。
+    allowed: set[str] | None = None
+    if args.file_list:
+        allowed = {
+            ln.strip() for ln in Path(args.file_list).read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        }
+
+    # 2026-11-09：并发落库互斥（多会话并行时 imported.json 是全量重写，
+    # 无锁会「后写覆盖先写」→ 已导入文件从记录里消失 → 下次重复导入）。
+    lock_path = staging / ".import.lock"
+    lock_fd = None
+    _deadline = datetime.now(timezone.utc).timestamp() + args.lock_timeout
+    while True:
+        try:
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(lock_fd, str(os.getpid()).encode())
+            break
+        except FileExistsError:
+            if datetime.now(timezone.utc).timestamp() >= _deadline:
+                print("另一个导入进程持锁超过 " + str(args.lock_timeout) + "s，本次退出（稍后重跑即可，幂等）")
+                return 3
+            import time as _time
+            _time.sleep(2)
 
     done_state_path = staging / "imported.json"
     imported: dict[str, dict] = {}
@@ -83,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
         for file_id in all_files:
             tasks = by_file.get(file_id, [])
             if args.file_id and args.file_id != file_id:
+                continue
+            if allowed is not None and file_id not in allowed:
                 continue
             if file_id in imported:
                 stats["files_skipped"] += 1
@@ -165,13 +203,31 @@ def main(argv: list[str] | None = None) -> int:
             stats["files_imported"] += 1
             stats["memories"] += len(normalized)
         if not args.dry_run:
-            done_state_path.write_text(
-                json.dumps(imported, ensure_ascii=False, indent=1), encoding="utf-8",
-            )
+            # 2026-11-09：写回前重新读盘并合并——即便有别的进程在此期间写过，
+            # 也不会把它的记录覆盖掉（原子替换，避免半截文件）。
+            merged: dict[str, dict] = {}
+            if done_state_path.exists():
+                try:
+                    merged = json.loads(done_state_path.read_text(encoding="utf-8"))
+                except Exception:
+                    merged = {}
+            merged.update(imported)
+            tmp_path = done_state_path.with_name(done_state_path.name + ".tmp")
+            tmp_path.write_text(json.dumps(merged, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp_path, done_state_path)
         print(json.dumps(stats, ensure_ascii=False))
         return 0
     finally:
         mem_conn.close()
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except Exception:
+                pass
+            try:
+                lock_path.unlink()
+            except Exception:
+                pass
         session_conn.close()
 
 
