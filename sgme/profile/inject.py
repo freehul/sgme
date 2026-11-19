@@ -156,6 +156,10 @@ def build_inject_blocks(
     seen_prefix: set[str] = set()
     for section, results in zip(sections, section_results):
         items = []
+        # D-53 替代方案（2026-11-20）：场景层退役后，scene_key（主维度:来源类）是
+        # 唯一还活着的「分组信息位」。这里按**实际注入的条目**统计分布，供消费方知道
+        # 这批记忆来自哪些来源类（桌面/移动/其他）——纯增量、不改取材逻辑。
+        scene_counts: dict[str, int] = {}
         for r in results:
             mid = r.get("memory_id")
             content = r.get("content", "")
@@ -168,6 +172,10 @@ def build_inject_blocks(
             seen_prefix.add(prefix)
             if mid:
                 seen_ids.add(mid)
+            # D-53：只统计真正进入 items 的条目（去重后），避免虚高
+            _sk = r.get("scene_key")
+            if _sk:
+                scene_counts[_sk] = scene_counts.get(_sk, 0) + 1
             rel = _relative_time(r.get("updated_at"))
             if rel:
                 items.append({
@@ -185,6 +193,14 @@ def build_inject_blocks(
             "items": items,
             "present": len(items) > 0,
         }
+        # D-53（2026-11-20）：纯增量带场景键分布——场景层退役后，消费方靠它判断
+        # 这批记忆的来源构成（如 tech_stack:desktop 12 条 / unknown 3 条）。
+        # 无 scene_key 结果时不加键（行为不变）；按条数降序，最多 5 项防止块膨胀。
+        if scene_counts:
+            block["scenes"] = [
+                {"key": k, "count": v}
+                for k, v in sorted(scene_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+            ]
         # D-6（T-424）：纯增量带维度展示名——只按本 section 的 query.dimensions 取，
         # 注册表未传时不加键（行为不变）；查不到的维度 display_name 回退 id。
         if dim_names:

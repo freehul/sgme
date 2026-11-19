@@ -470,6 +470,10 @@ def test_memories_item_contract_shape(client, seeded):
     assert set(item.keys()) == {
         "memory_id", "content", "dimensions", "memory_type", "priority", "status",
         "created_at", "updated_at", "occurred_at", "notes", "custom_flag", "source_ref",
+        # T-423（D-30，2026-11-18）：纠错备注独立列 my_notes，列表读取路径透出。
+        # 该列随 _BROWSE_OPTIONAL_COLUMNS 进入契约（老库缺失时降级 null），
+        # 契约集合必须同步——否则「加了列没更新契约」会被误判通过。
+        "my_notes",
     }
     assert isinstance(item["dimensions"], list)
     assert item["source_ref"] is None or isinstance(item["source_ref"], str)
