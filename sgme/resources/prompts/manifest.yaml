@@ -137,6 +137,12 @@ versions:
     #   ② 不要求在结构硬约束契约里立刻合规（定稿那一步必须补回锚点，补了才准去掉 candidate）
     #   ③ 永不可是 active 本身——测试会拦（test_working_copy_matches_active 内含反向断言）
     status: candidate
+  - version: v025
+    file: versions/l1_extraction/v025.txt
+    sha256: a86badd9eac12e75c212159207996159e733f2596f5bb32139390e01ad129755
+    created_at: '2026-11-19T00:00:00Z'
+    note: '六处收紧（2026-11-19）：① route 判据表与技术内容表合并（原两表重叠）；② 置信度补四条正反对照（含一条 0.55 落 inbox 实例）；③ 写明 >=0.6 的分流落点；④ 划清 route_reason（判断句）与 causes 逐字复制的边界，防摘要习惯串味；⑤「决定+一句理由」明确落 facts[]；⑥ 命令/报错栈/代码片段原文归 discard。另压缩头部历史注释（规则要点已并入正文，v001–v024 说明见本 manifest）——正文体积 29,540→26,749 字节（-9.4%），省约 900 tokens/次输入。**未切 active**——需 200 条 A/B 通过后切换（设计门禁 G5）。'
+    status: candidate
   l1_conflict:
   - version: v001
     file: versions/l1_conflict/v001.txt
