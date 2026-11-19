@@ -160,6 +160,32 @@ def test_activate_missing_version_raises(store):
 
 # ---------- list_versions ----------
 
+def test_list_versions_tolerates_status_field(store, prompts_root):
+    """manifest 条目带 T-411 的 status 字段时必须能解析。
+
+    回归（2026-11-19 实测线上 2.0.25）：v024 条目写 `status: candidate`，
+    而 VersionInfo 未声明该字段 → `VersionInfo(**v)` 抛 TypeError →
+    `/v1/prompts` 整个端点 500。候选态治理不能以打挂读接口为代价。
+    """
+    import yaml
+
+    store.publish("l1_extraction", note="n1")
+    mpath = prompts_root / "manifest.yaml"
+    manifest = yaml.safe_load(mpath.read_text(encoding="utf-8"))
+    manifest["versions"]["l1_extraction"][0]["status"] = "candidate"
+    mpath.write_text(yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    vers = PromptStore(prompts_root=prompts_root).list_versions("l1_extraction")
+    assert vers[0].status == "candidate"
+    assert vers[0].version == "v001"
+
+
+def test_version_info_status_defaults_approved(store):
+    """未写 status 的既有条目默认 approved —— 向后兼容，不改历史 manifest。"""
+    store.publish("l1_extraction", note="n1")
+    assert store.list_versions("l1_extraction")[0].status == "approved"
+
+
 def test_list_versions(store):
     """list_versions 返回全部已发布版本（按 version 升序）。"""
     assert store.list_versions("l1_extraction") == []

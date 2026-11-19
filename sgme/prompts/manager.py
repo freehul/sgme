@@ -65,12 +65,20 @@ class PromptVersion:
 
 @dataclass
 class VersionInfo:
-    """发布版本元数据（manifest versions 段一条）。"""
+    """发布版本元数据（manifest versions 段一条）。
+
+    status（T-411，2026-11-18）：候选态治理引入。取值 `approved`（参与
+    active 判定）或 `candidate`（已登记但未批准，永不激活）。**缺省
+    approved**——历史 manifest 条目没有该字段，保持向后兼容；若这里不给
+    默认值，`VersionInfo(**v)` 会在遇到 candidate 条目时抛 TypeError，
+    把 `/v1/prompts` 读接口整个打挂（2026-11-19 线上实测回归）。
+    """
     version: str
     file: str
     sha256: str
     created_at: str
     note: str
+    status: str = "approved"
 
 
 @dataclass
