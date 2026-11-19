@@ -231,11 +231,11 @@ def _prefetch_provider(monkeypatch, results: list[dict]):
     return p, fake
 
 
-def test_prefetch_scopes_include_wiki_and_split_blocks(monkeypatch):
-    """prefetch 走 scopes=[memory, wiki]，记忆与 L2 场景分块渲染。"""
+def test_prefetch_scopes_include_wiki_and_render_memory_block(monkeypatch):
+    """prefetch 走 scopes=[memory, wiki]；场景层退役后统一渲染「相关记忆」块。"""
     p, fake = _prefetch_provider(monkeypatch, [
         {"source": "memory", "content": "用户是独立开发者"},
-        {"source": "wiki_scene", "title": "SGME 开发", "content": "记忆引擎架构"},
+        {"source": "wiki_pages", "page_id": "p1", "title": "SGME 开发", "content": "记忆引擎架构"},
     ])
 
     out = p.prefetch("SGME 架构", session_id="s1")
@@ -243,7 +243,8 @@ def test_prefetch_scopes_include_wiki_and_split_blocks(monkeypatch):
     search = [c for c in fake.calls if c["url"].endswith("/v1/search")]
     assert len(search) == 1 and search[0]["json"]["scopes"] == ["memory", "wiki"]
     assert "# 相关记忆（SGME）" in out and "独立开发者" in out
-    assert "# 相关场景（L2 匹配）" in out and "[SGME 开发]" in out
+    assert "记忆引擎架构" in out
+    assert "相关场景" not in out
 
 
 def test_prefetch_empty_results_returns_empty(monkeypatch):

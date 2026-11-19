@@ -145,9 +145,9 @@ def health_overview(cfg: dict | None = None) -> dict:
             "blockers": blockers,
         },
         "manual_actions": [
-            "四表冻结（生产置只读 + deprecated_2_0 标记，不删行）",
-            "POST /v1/admin/scenes/{id}/status 路由已摘除（2026-11-05 本批）；剩余 POST /v1/admin/scene-gc/trigger 待摘或开 enforce_gone",
-            "按下线清单顺序执行后跑 e2e_smoke + 9.4 #9/#10",
+            "场景四表 rename `_retired` 待生产窗口执行（30 天观察期后再 DROP；只 rename 不 drop）",
+            "场景写/治理端点已全部摘除（T-427）：POST scenes/{id}/status、GET scene-gc/candidates、POST scene-gc/trigger",
+            "rename 后跑 e2e_smoke + 9.4 #9/#10；GET /v1/admin/scenes 应保持 200 只读",
             "WAL 巡检看 storage.memory_wal_alert；告警时在网关低峰执行 PRAGMA wal_checkpoint(TRUNCATE)",
         ],
     }

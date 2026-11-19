@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""edge_dao / memory_edges 测试（ST-38 T-133）。
+"""edge_dao / memory_edges 测试（ST-38 T-133；T-427 场景层退役后）。
 
 覆盖：建表幂等、create_edge 幂等、neighbors 双向去重、delete_by_source、
-backfill（supersession 双向边 / 场景共现 belongs_to / 每记忆 top_n 截断 /
-全局 cap 超限记 anomaly_warn / 幂等重跑 / dry-run 不写库 / 其他 source 保留 /
-仅 active 场景参与）。
+backfill（supersession 双向边 / 幂等重跑 / dry-run 不写库 / 其他 source 保留 /
+历史场景共现 belongs_to 边保留不删）。
 """
 from __future__ import annotations
 
@@ -29,21 +28,6 @@ def _mem(conn, mid: str, priority: int = 50, status: str = "active") -> None:
         "VALUES (?,?,?,?,?,?,?,?,?,?)",
         (mid, f"content-{mid}", "episodic", priority, "dynamic", None,
          "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", status, "2026-01-01T00:00:00Z"),
-    )
-
-
-def _scene(conn, sid: str, status: str = "active") -> None:
-    conn.execute(
-        "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (sid, f"scene-{sid}", "c", 1, status, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
-    )
-
-
-def _scene_mem(conn, sid: str, mid: str) -> None:
-    conn.execute(
-        "INSERT OR IGNORE INTO scene_memories (scene_id, memory_id) VALUES (?,?)",
-        (sid, mid),
     )
 
 
@@ -141,105 +125,37 @@ def test_backfill_supersession_directions(tmp_path):
     db.close(conn)
 
 
-# ---------- backfill：场景共现 ----------
+# ---------- backfill：历史场景边保留 ----------
 
-def test_backfill_scene_cooccurrence_weight(tmp_path):
+def test_backfill_preserves_legacy_scene_edges(tmp_path):
+    """T-427：场景共现源摘除后，历史 belongs_to 边保留不删（只重算 supersession）。"""
     conn = _conn(tmp_path)
-    for m in ("m1", "m2", "m3"):
-        _mem(conn, m)
-    _scene(conn, "s1")
-    _scene(conn, "s2")
-    _scene_mem(conn, "s1", "m1")
-    _scene_mem(conn, "s1", "m2")
-    _scene_mem(conn, "s2", "m1")
-    _scene_mem(conn, "s2", "m2")
-    _scene_mem(conn, "s2", "m3")
+    _mem(conn, "B")
+    _archive(conn, "A", superseded_by="B")
     conn.commit()
-    stats = edge_dao.backfill_system_edges(conn, top_n=8, min_weight=1)
-    # m1-m2 共现 2 个场景 → weight 2
-    rows = edge_dao.list_edges(conn, source="system", relation="belongs_to")
-    by_pair = {(r["from_id"], r["to_id"]): r["weight"] for r in rows}
-    assert by_pair.get(("m1", "m2")) == 2.0
-    # m1-m3 只共现 s2 → weight 1
-    assert by_pair.get(("m1", "m3")) == 1.0
-    assert stats["scene_pairs_raw"] == 4  # s1:1 + s2:3
+    edge_dao.create_edge(
+        conn, "m1", "m2", "belongs_to", weight=2.0, source=SYSTEM_SOURCE
+    )
+    conn.commit()
+
+    stats = edge_dao.backfill_system_edges(conn)
+    assert stats["total"] == 2  # 仅 supersedes + evolves_from
+    rows = edge_dao.list_edges(conn, source=SYSTEM_SOURCE, relation="belongs_to")
+    assert len(rows) == 1
+    assert (rows[0]["from_id"], rows[0]["to_id"]) == ("m1", "m2")
     db.close(conn)
 
 
-def test_backfill_scene_topn_truncation(tmp_path):
-    conn = _conn(tmp_path)
-    mems = [f"m{i}" for i in range(30)]
-    for m in mems:
-        _mem(conn, m, priority=100 - int(m[1:]))
-    _scene(conn, "big")
-    for m in mems:
-        _scene_mem(conn, "big", m)
-    conn.commit()
-    stats = edge_dao.backfill_system_edges(conn, top_n=3, per_scene_top_n=100, min_weight=1)
-    # 原始组合对 = C(30,2) = 435；top_n=3 截断后总边量 ≤ 30*3 = 90（防爆炸）
-    assert stats["scene_pairs_raw"] == 435
-    assert 0 < stats["belongs_to_edges"] <= len(mems) * 3
-    # 每记忆自己的出度（自己选出的邻居）≤ 3：m0 的 top-3 邻居都有边
-    for m in mems:
-        # belongs_to 边仅存规范方向；从 m 出发的边（from_id=m 或 to_id=m 且 m 为选中方）
-        # 直接断言：m 至少有一条 belongs_to 边（30 个节点不会全孤立），且总量受控
-        assert edge_dao.neighbors(conn, m, relation="belongs_to"), f"{m} 无邻居"
-    db.close(conn)
-
-
-def test_backfill_active_scenes_only_and_status_filter(tmp_path):
-    conn = _conn(tmp_path)
-    _mem(conn, "m1")
-    _mem(conn, "m2", status="rejected")  # 非 active 记忆不参与
-    _scene(conn, "sa", status="active")
-    _scene(conn, "sb", status="archived")  # 归档场景不参与
-    _scene_mem(conn, "sa", "m1")
-    _scene_mem(conn, "sb", "m1")
-    _scene_mem(conn, "sb", "m2")
-    conn.commit()
-    stats = edge_dao.backfill_system_edges(conn, top_n=8, min_weight=1)
-    assert stats["belongs_to_edges"] == 0  # sa 只有 m1 一条 → 无对
-    db.close(conn)
-
-
-# ---------- backfill：全局上限 + anomaly + 幂等 ----------
-
-def test_backfill_global_cap_anomaly(tmp_path):
-    conn = _conn(tmp_path)
-    mems = [f"m{i}" for i in range(20)]
-    for m in mems:
-        _mem(conn, m)
-    _scene(conn, "s")
-    for m in mems:
-        _scene_mem(conn, "s", m)
-    conn.commit()
-    stats = edge_dao.backfill_system_edges(conn, top_n=8, per_scene_top_n=100,
-                                           min_weight=1, global_cap=5)
-    assert stats["truncated"] > 0
-    assert stats["anomaly"] is not None
-    assert stats["total"] <= 5
-    # anomaly_warn 已发布到 signal_events
-    evs = conn.execute(
-        "SELECT * FROM signal_events WHERE type='anomaly_warn' AND source='edge_backfill'"
-    ).fetchall()
-    assert len(evs) >= 1
-    assert "edge_total" in evs[0]["payload"]
-    db.close(conn)
-
+# ---------- backfill：幂等 + dry-run + 其他 source 保留 ----------
 
 def test_backfill_idempotent(tmp_path):
     conn = _conn(tmp_path)
     _mem(conn, "B")
     _archive(conn, "A", superseded_by="B")
-    for m in ("m1", "m2", "m3"):
-        _mem(conn, m)
-    _scene(conn, "s1")
-    for m in ("m1", "m2", "m3"):
-        _scene_mem(conn, "s1", m)
     conn.commit()
-    s1 = edge_dao.backfill_system_edges(conn, top_n=8, min_weight=1)
+    s1 = edge_dao.backfill_system_edges(conn)
     c1 = edge_dao.edge_stats(conn)
-    s2 = edge_dao.backfill_system_edges(conn, top_n=8, min_weight=1)
+    s2 = edge_dao.backfill_system_edges(conn)
     c2 = edge_dao.edge_stats(conn)
     assert s1 == s2
     assert c1 == c2
@@ -250,8 +166,6 @@ def test_backfill_dry_run_no_write(tmp_path):
     conn = _conn(tmp_path)
     _mem(conn, "B")
     _archive(conn, "A", superseded_by="B")
-    _scene(conn, "s")
-    _scene_mem(conn, "s", "B")
     conn.commit()
     edge_dao.create_edge(conn, "X", "Y", "similar", source="llm")
     conn.commit()

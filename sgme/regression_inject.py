@@ -128,13 +128,19 @@ def scenes_facts(conn: sqlite3.Connection, inject_src: Path | str | None = None)
     scene_refs = text.count("scene")
     tables: dict[str, int | None] = {}
     for table in ("scenes", "scene_vectors"):
+        actual = table
         row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (actual,)
         ).fetchone()
+        if row is None:
+            actual = f"{table}_retired"  # T-427：四表 rename 后仍可观测
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (actual,)
+            ).fetchone()
         if row is None:
             tables[table] = None
         else:
-            tables[table] = conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+            tables[table] = conn.execute(f"SELECT COUNT(*) c FROM {actual}").fetchone()["c"]
     return {
         "inject_scene_refs": scene_refs,
         "inject_has_scene_path": scene_refs > 0,

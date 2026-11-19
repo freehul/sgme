@@ -79,12 +79,19 @@ def test_scene_status_405_on_wrong_method_shape(client):
 
 def test_scene_status_db_row_untouched(client, app):
     """端点摘除后这条路径不可能再写库：场景行状态保持原值。"""
-    from sgme.data import scene_dao
+    from sgme.data.db import SCENE_RETIRED_DDL
 
     mem_conn = app.state.mem_conn
-    scene_dao.insert_scene(mem_conn, "scene_x", "t", "c")
+    mem_conn.executescript(SCENE_RETIRED_DDL)
+    mem_conn.execute(
+        "INSERT INTO scenes (scene_id, title, content, created_at, updated_at) "
+        "VALUES ('scene_x', 't', 'c', '2026-11-20T00:00:00Z', '2026-11-20T00:00:00Z')"
+    )
+    mem_conn.commit()
     client.post(SCENE_STATUS_URL, json={"status": "archived"}, headers=ADMIN)
-    row = scene_dao.get_scene(mem_conn, "scene_x")
+    row = mem_conn.execute(
+        "SELECT status FROM scenes WHERE scene_id='scene_x'"
+    ).fetchone()
     assert row["status"] == "active"
 
 
@@ -99,9 +106,39 @@ def test_compat_gone_returns_410_when_enforced(client, app):
 
 
 def test_scene_list_kept_read_only(client):
-    """GET /v1/admin/scenes 只读列表保留（下线只针对写端点）。"""
+    """GET /v1/admin/scenes 只读列表保留（场景表缺失也返回 200 空列表）。"""
     resp = client.get("/v1/admin/scenes", headers=ADMIN)
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["items"], list)
     assert body["total"] == 0
+
+
+def test_scene_list_reads_retired_tables(client, app):
+    """四表 rename `_retired` 后只读端点仍 200 且能读到冻结数据（T-427）。"""
+    mem_conn = app.state.mem_conn
+    mem_conn.executescript(
+        """
+        CREATE TABLE scenes_retired (
+          scene_id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL,
+          heat INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          last_memory_added_at TEXT, content_seg TEXT);
+        CREATE TABLE scene_memories_retired (
+          scene_id TEXT NOT NULL, memory_id TEXT NOT NULL,
+          PRIMARY KEY (scene_id, memory_id));
+        """
+    )
+    mem_conn.execute(
+        "INSERT INTO scenes_retired (scene_id, title, content, heat, status, "
+        "created_at, updated_at) VALUES "
+        "('scene_r', '冻结场景', '历史正文', 7, 'active', "
+        "'2026-11-01T00:00:00Z', '2026-11-01T00:00:00Z')"
+    )
+    mem_conn.commit()
+    resp = client.get("/v1/admin/scenes", headers=ADMIN)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["scene_id"] == "scene_r"
+    assert body["items"][0]["heat"] == 7

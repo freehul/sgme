@@ -5,7 +5,7 @@
 2. 源库表保留（D5：不 DROP，作归档）
 3. 可重入（INSERT OR IGNORE，第二次执行行数不变）
 4. 备份失败立即中止（MigrationAbort，零搬运）
-5. scenes_fts 重建成功（迁移后 FTS 可检索）
+5. scenes_fts 不再重建（T-427 场景层退役，FTS 属回滚脚本职责）
 6. 历史空文件 data/sgme.db 清理
 """
 from __future__ import annotations
@@ -109,6 +109,12 @@ def _count(conn: sqlite3.Connection, table: str) -> int:
     return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
 def _migration():
     return _registry.load_migrations()[0]
 
@@ -142,13 +148,17 @@ def test_up_moves_all_tables(legacy_env):
     assert result["post_broken"] == 0
 
 
-def test_up_rebuilds_scenes_fts(legacy_env):
+def test_up_does_not_rebuild_scenes_fts(legacy_env):
+    """T-427：场景层退役，历史迁移只搬普通表，不再重建 scenes_fts。"""
     data_dir, mem, session, w = legacy_env
-    _migration().up(_conns(data_dir, mem, session, w))
+    result = _migration().up(_conns(data_dir, mem, session, w))
 
-    # FTS 重建后行数与 scenes 一致（按新 rowid 重绑）
-    fts_rows = mem.execute("SELECT COUNT(*) FROM scenes_fts").fetchone()[0]
-    assert fts_rows == _count(mem, "scenes") == 2
+    fts_exists = mem.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scenes_fts'"
+    ).fetchone()
+    assert fts_exists is None
+    assert result["moved"]["fts_rebuilt"] is False
+    assert _count(mem, "scenes") == 2
 
 
 def test_up_idempotent(legacy_env):
@@ -176,9 +186,9 @@ def test_up_aborts_on_backup_failure(legacy_env, monkeypatch):
     with pytest.raises(RuntimeError, match="磁盘故障"):
         _migration().up(_conns(data_dir, mem, session, w))
 
-    # 零搬运
+    # 零搬运（场景四表在 move 阶段才会建，此时应仍不存在）
     assert _count(session, "raw_files") == 0
-    assert _count(mem, "scenes") == 0
+    assert not _table_exists(mem, "scenes")
     # 源库原封不动
     assert _count(w, "raw_files") == 2
     assert _count(w, "scenes") == 2

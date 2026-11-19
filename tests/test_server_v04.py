@@ -14,7 +14,6 @@ mock LLM 用 httpx.MockTransport 拦截 /chat/completions 与 /embeddings。
 from __future__ import annotations
 
 import json
-import uuid
 from datetime import datetime, timezone
 
 import httpx
@@ -25,14 +24,13 @@ from fastapi.testclient import TestClient
 from sgme import __version__  # health 契约 version 动态断言（防版本 bump 漂移）
 from sgme import config as sgme_config
 from sgme.engine import health as health_mod
-from sgme.engine import scene_aggregate as l2_mod
 from sgme.engine import refine as refine_mod
 from sgme.raw import store as raw_store
 from sgme.data.search import vector as vector_mod
 from sgme.server.app import create_app
 from sgme.signal import engine as signal_engine
 from sgme.data import db as db_mod
-from sgme.data import memory_dao, scene_dao, session_dao
+from sgme.data import memory_dao, session_dao
 
 
 # ---------- 公共 fixtures ----------
@@ -46,8 +44,6 @@ def cfg():
     vec = cfg.setdefault("search", {}).setdefault("vector", {})
     vec["base_url"] = "http://mock-embed.test/v1"
     vec["enabled"] = True
-    # A1（2026-11-05）：场景层默认冻结（enabled=false）；本文件测 L2 行为，显式开启
-    cfg.setdefault("scene_aggregate", {})["enabled"] = True
     return cfg
 
 
@@ -593,7 +589,7 @@ def test_refine_trigger_async_returns_immediately(client, monkeypatch, path):
         assert "deprecation" not in resp.headers
     # 等后台提炼收尾（2026-11-03 修）：daemon 线程没有句柄可 join，
     # 原注释写「不等待」——但后台线程会继续消耗共享的 mock client 并写同一个库，
-    # 后续两个 refine 用例（publishes_memory_updated / creates_l2_scenes）因此随机失败。
+    # 后续 refine 用例因此随机失败（T-427 后场景层已退役）。
     # 提炼链路一旦变慢（本次新增了分位/审计等查询）就会稳定复现。
     # 这里改为轮询文件状态收尾，只等待、不改变断言（立即返回语义仍由上面三行保证）。
     import time as _time
@@ -641,14 +637,13 @@ def test_refine_trigger_publishes_memory_updated(client, monkeypatch):
         agent_id="test", status="new", size=raw_store.file_size(fid),
     )
 
-    # mock L1 + L2（L2 用空动作列表避免场景聚合）
+    # mock L1（场景层已退役，无 L2）
     l1_body = json.dumps([
         {"content": "用户用 Python 写后端", "dimensions": ["技术栈"],
          "memory_type": "persona", "priority": 80, "time_velocity": "static",
          "source_message_ids": [1]},
     ])
-    l2_body = json.dumps([])
-    cli = _mock_llm_client_sequence([l1_body, l2_body])
+    cli = _mock_llm_client_sequence([l1_body])
     _patch_l15_with_client(monkeypatch, cli)
     # 注入 mock client 到 refine 模块（refine_file 通过 client 参数透传）
     original_refine_file = refine_mod.refine_file
@@ -659,16 +654,6 @@ def test_refine_trigger_publishes_memory_updated(client, monkeypatch):
         )
 
     monkeypatch.setattr(refine_mod, "refine_file", patched_refine_file)
-
-    # patch L2 聚合注入 mock client（L2 在 L1.5 落库后执行，client 默认 None）
-    original_aggregate = l2_mod.aggregate
-
-    def patched_aggregate(memories, mem_conn, cfg, client=None, **kwargs):
-        return original_aggregate(
-            memories, mem_conn, cfg, client=cli, **kwargs,
-        )
-
-    monkeypatch.setattr(l2_mod, "aggregate", patched_aggregate)
 
     # Act
     resp = client.post("/v1/admin/refine/trigger", json={
@@ -687,79 +672,6 @@ def test_refine_trigger_publishes_memory_updated(client, monkeypatch):
     assert len(rows) >= 1
     payload = json.loads(rows[0]["payload"])
     assert payload["file_id"] == fid
-
-
-def test_refine_trigger_creates_l2_scenes(client, monkeypatch):
-    """refine 后 memory.db scenes 表出现场景行（mock LLM 输出 CREATE 动作）。"""
-    _block_embed_egress(monkeypatch)
-    # Arrange
-    app = client.app
-    mem_conn = app.state.mem_conn
-    session_conn = app.state.session_conn
-
-    fid = "f-trigger-scene_aggregate"
-    msgs = [
-        {"timestamp": "2026-08-04T10:00:00Z", "role": "user",
-         "content": "我开始学习 Rust 写新项目"},
-    ]
-    raw_store.write_new_file(
-        file_id=fid, session_key="sess_l2_trigger", started_at="2026-08-04T10:00:00Z",
-        agent_id="test", first_messages=msgs,
-    )
-    session_dao.insert_raw_file(
-        session_conn, file_id=fid, path=raw_store.relative_path(fid),
-        session_key="sess_l2_trigger", started_at="2026-08-04T10:00:00Z",
-        agent_id="test", status="new", size=raw_store.file_size(fid),
-    )
-
-    # mock L1 + L2（L2 输出 CREATE 动作）
-    new_sid = str(uuid.uuid4())
-    l1_body = json.dumps([
-        {"content": "用户开始用 Rust 写新项目", "dimensions": ["技术栈"],
-         "memory_type": "persona", "priority": 80, "time_velocity": "static",
-         "source_message_ids": [1]},
-    ])
-    l2_body = json.dumps([
-        {"action": "create", "target_scene_id": new_sid,
-         "merged_content": "# Rust 项目\n用户开始用 Rust 写新项目",
-         "reason": "新主题"},
-    ])
-    cli = _mock_llm_client_sequence([l1_body, l2_body])
-    _patch_l15_with_client(monkeypatch, cli)
-    original_refine_file = refine_mod.refine_file
-
-    def patched_refine_file(file_id, mem, session, cfg, source_type="session", client=None):
-        return original_refine_file(
-            file_id, mem, session, cfg, source_type=source_type, client=cli,
-        )
-
-    monkeypatch.setattr(refine_mod, "refine_file", patched_refine_file)
-
-    # patch L2 聚合注入 mock client（L2 在 L1.5 落库后执行，client 默认 None）
-    original_aggregate = l2_mod.aggregate
-
-    def patched_aggregate(memories, mem_conn, cfg, client=None, **kwargs):
-        return original_aggregate(
-            memories, mem_conn, cfg, client=cli, **kwargs,
-        )
-
-    monkeypatch.setattr(l2_mod, "aggregate", patched_aggregate)
-
-    # Act
-    resp = client.post("/v1/admin/refine/trigger", json={
-        "file_id": fid,
-    }, headers=ADMIN_HEADERS)
-
-    # Assert
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "refined"
-    # memory.db scenes 表出现场景行（id 由系统生成，非 LLM 提供的 new_sid）
-    scenes = scene_dao.list_active_scenes(mem_conn, limit=10)
-    assert len(scenes) >= 1
-    scene = scenes[0]
-    assert scene["status"] == "active"
-    assert scene["heat"] == 1
-    assert "Rust" in scene["content"]
 
 
 def test_backup_create_endpoint(client):

@@ -1,4 +1,4 @@
-r"""ST-58/T-292：`_parse_adjudication_with_repair` / `_parse_l2_with_repair` 接入层语义。
+r"""ST-58/T-292：`_parse_adjudication_with_repair` 接入层语义。
 
 关键收益：解析失败的原行为是**整批重发 LLM**（token 翻倍，日志累计 55 次，
 最终仍失败则默认 store 丢冲突检测）。就地修复成功后**不重发**。
@@ -13,7 +13,6 @@ import json
 import pytest
 
 from sgme.engine.l3_adjudicate import AdjudicationError, _parse_adjudication_with_repair
-from sgme.engine.scene_aggregate import SceneAggregateError
 
 
 # ---------- L1.5 ----------
@@ -75,28 +74,3 @@ def test_repair_rejected_when_count_exceeds_expected():
 def test_empty_array_is_valid_but_empty():
     """空数组本身合法（不走修复）→ 返回空列表，由调用方据 len 判断语义。"""
     assert _parse_adjudication_with_repair("[]", expected=1) == []
-
-
-# ---------- L2：已具备同类能力，**不**新增实现（防漂移） ----------
-
-
-def test_l2_already_handles_invalid_escape():
-    r"""L2 早在 2026-08-06 就内置 `_parse_json_lenient`（无效 \X 转义 → 双反斜杠）。
-
-    本批因此**不给 L2 另写一份修复**（AGENTS.md：禁止另写一份防漂移）。
-    本用例锁定该既有能力，防止将来被误删。
-    """
-    from sgme.engine.scene_aggregate import _parse_scene_output
-
-    bad = r'[{"action": "update", "target_scene_id": "s1", "merged_content": "涉及 C:\work\demo 的部署"}]'
-    actions = _parse_scene_output(bad)
-    assert actions[0]["action"] == "update"
-    assert r"C:\work\demo" in actions[0]["merged_content"]
-
-
-def test_l2_still_raises_on_non_json():
-    """L2 对彻底非 JSON 的输出依旧抛错（宽松 ≠ 无条件接受）。"""
-    from sgme.engine.scene_aggregate import _parse_scene_output
-
-    with pytest.raises(SceneAggregateError):
-        _parse_scene_output("完全不是 JSON")

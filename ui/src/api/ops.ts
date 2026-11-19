@@ -94,7 +94,7 @@ export function getLlmCost(days: number) {
 
 // ---------- 运维健康总览（存储体检 + 9.6 就绪，只读） ----------
 // GET /v1/admin/ops/health-overview（Admin Key）：
-//   storage = 磁盘/文件体检（DB/WAL/wiki.db/raw/备份）；scenes = 9.6 场景层下线就绪度。
+//   storage = 磁盘/文件体检（DB/WAL/wiki.db/raw/备份）；scenes 段已随场景层退役摘除。
 // 后端未就绪时调用方捕获错误显示空态（不得白屏）。
 
 export interface OpsStorageHealth {
@@ -124,39 +124,11 @@ export interface OpsStorageHealth {
   backup_bytes: number
 }
 
-export interface OpsScenesReadiness {
-  /** scenes 表行数 */
-  scenes: number
-  /** scene_vectors 表行数 */
-  scene_vectors: number
-  /** scenes_fts 索引行数 */
-  scenes_fts: number
-  /** GONE 规则数（已下线端点清单，D-64 ③） */
-  gone_rules: number
-  /** 冲突规则数（语义变更端点清单，D-64 ②） */
-  conflict_rules: number
-  /** 兼容期阶段：pre_stable / active / expired / unknown（compat.compat_phase） */
-  compat_phase: string | null
-  /** 稳定期起算日（compat.stable_since；未设置时 null，可选字段） */
-  stable_since?: string | null
-  /** 兼容期剩余天数（负值=已过期；未设置时 null，可选字段） */
-  days_left?: number | null
-  /** 语义变更端点是否强制 409 */
-  enforce: boolean
-  /** 已下线端点是否强制 410 */
-  enforce_gone: boolean
-  /** 9.6 场景层下线就绪徽标 */
-  ready: boolean
-  /** 阻塞项（人可读；空数组 = 无阻塞） */
-  blockers: string[]
-}
-
 export interface OpsHealthOverview {
   /** 生成时刻（ISO 8601） */
   generated_at: string
   storage: OpsStorageHealth
-  scenes: OpsScenesReadiness
-  /** 人工动作清单（场景层下线操作步骤；旧后端可能不返回） */
+  /** 人工动作清单（场景层退役操作步骤；旧后端可能不返回） */
   manual_actions?: string[]
 }
 

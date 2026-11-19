@@ -101,7 +101,6 @@ function goSearch() {
           <RouterLink to="/near-dup"><span class="nav-ico">🔁</span><span class="lbl">近似重复</span></RouterLink>
           <RouterLink to="/cards"><span class="nav-ico">🪪</span><span class="lbl">关于你</span></RouterLink>
           <RouterLink to="/persona"><span class="nav-ico">🧭</span><span class="lbl">MBTI 与性格</span></RouterLink>
-          <RouterLink to="/scenes"><span class="nav-ico">🗂</span><span class="lbl">场景管理</span></RouterLink>
           <RouterLink to="/graph"><span class="nav-ico">🕸</span><span class="lbl">知识图谱</span></RouterLink>
           <RouterLink to="/sessions"><span class="nav-ico">📜</span><span class="lbl">会话原文</span></RouterLink>
         </div>

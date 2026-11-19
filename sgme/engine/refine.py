@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 from sgme import config
-from sgme.engine import l2_extraction, scene_aggregate, normalize
+from sgme.engine import l2_extraction, normalize
 from sgme.llm import provider as llm_provider
 from sgme.prompts import BucketCtx
 from sgme.raw import store
@@ -750,65 +750,18 @@ def finalize_refinement(
     cfg: dict,
     client=None,
 ) -> None:
-    """L1.5 落库后的收尾：L2 场景聚合 + embedding + 信号发布。
+    """L1.5 落库后的收尾：embedding + 信号发布。
 
     必须在 L1.5 落库（memory_id 已写回 result.memories）之后调用，
     否则 _ensure_persisted 会兜底重复落库（双写 bug，2026-08-04 修复）。
     失败不阻塞主路径，仅记日志。
 
-    v0.7 三库拆分：L2 场景系列已迁入 memory.db，本函数不再需要独立的场景库连接，
-    原第三个 conn 形参（wiki_conn）随之移除——纯连接来源调整，业务逻辑一行未改。
+    T-427（2026-11-20）：场景层正式退役，L2 场景聚合与场景信号发布已摘除；
+    本函数只保留 embedding 回填与 source='refine' 记忆更新信号。
     """
     file_id = result.file_id
     if not result.memories or result.status != "refined":
         return
-
-    # L2 场景聚合（记忆已带 memory_id，_ensure_persisted 直接复用）
-    # D-53 冻结开关（2026-11-03）：2.0 取消场景层，四表冻结只读；A1 收尾（2026-11-05）
-    # 起配置默认 enabled=false 停写，存量场景仅供图谱页/管理页只读展示。
-    # ⚠️ 2026-11-05 修正：旧实现误读 scene_aggregate.scene_aggregate.enabled（双嵌套，
-    # 恒为默认 True，导致开关形同虚设）；配置键口径统一为 scene_aggregate.enabled。
-    # ⚠️ 2026-11-05（E1 复核修复）：冻结场景层只能跳过**场景聚合本身**——旧实现用
-    # `return` 提前退出，把后面的 embedding 回填、source='refine' 信号发布、人格特质抽取
-    # 一并跳过（场景默认关=这三个副作用全死）。现改为只包场景块。
-    scene_enabled = bool((((cfg or {}).get("scene_aggregate") or {}).get("enabled", True)))
-    if not scene_enabled:
-        logger.debug("L2 场景聚合已冻结（scene_aggregate.enabled=false），跳过: %s", file_id)
-    else:
-        # #33：bucket_ctx 携带 file_id（A/B 分流）；l2_result.prompt_meta 透传
-        try:
-            l2_result = scene_aggregate.aggregate(
-                result.memories, mem_conn, cfg, client=client,
-                bucket_ctx=BucketCtx(bucket_key=file_id),
-            )
-            result.prompt_versions["l2_scene"] = l2_result.prompt_meta
-            if l2_result.error:
-                logger.warning("L2 聚合失败（不阻塞）: %s", l2_result.error)
-            # 场景阈值预警（软策略，仅告警）
-            level, count = scene_aggregate.check_scene_threshold(mem_conn, cfg)
-            if level is not None:
-                result.anomaly_warn = True
-                logger.warning("场景数预警 level=%s count=%s", level, count)
-            # 信号发布：L2 场景事件
-            try:
-                from sgme.signal import engine as signal_engine
-                signal_engine.publish(
-                    event_type="memory_updated",
-                    source="scene_aggregate",
-                    payload={
-                        "file_id": file_id,
-                        "created": l2_result.created,
-                        "updated": l2_result.updated,
-                        "merged": l2_result.merged,
-                        "archived": l2_result.archived,
-                        "error": l2_result.error,
-                    },
-                    mem_conn=mem_conn,
-                )
-            except Exception as e:
-                logger.warning("L2 信号发布失败（不阻塞）: %s", e)
-        except Exception as e:
-            logger.warning("L2 聚合异常（不阻塞）: %s", e)
 
     # 为新记忆生成 embedding（失败不阻塞，向量检索层降级纯 BM25）
     try:

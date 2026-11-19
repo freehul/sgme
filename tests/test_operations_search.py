@@ -8,7 +8,8 @@
 3. 空结果：query 无命中 / 空 query → ok=True，results 空数组（v0.6 行为等价）
 4. 参数错误：query 非字符串 / scopes 非字符串列表 → InvalidArgs（ERR_INVALID_ARGS）
 5. 底层异常：检索函数抛异常 → OperationResult.fail(ERR_INTERNAL)
-6. wiki scope 行为：scopes=["wiki"] / ["scenes"]（历史别名）命中 L2 场景层
+6. wiki scope 行为：`scopes=["wiki"]` / ["wiki_pages"] 均只命中 wiki_pages；
+   历史 `scenes` scope 随场景层退役静默忽略（T-427）
 7. HTTP/MCP 投影形态：http_payload 含 meta（routes/rrf_k，空命中回退 ["bm25"]）；
    mcp_payload 无 meta
 8. **契约等价性**（最关键）：POST /v1/search 与 MCP search 工具经 operations
@@ -32,11 +33,11 @@ from sgme.mcp_server import bind_app_state, build_mcp_server
 from sgme.operations.errors import ERR_INVALID_ARGS, ERR_INTERNAL, InvalidArgs, OperationResult
 from sgme.operations.search import META_RRF_K, http_payload, mcp_payload, search
 from sgme.raw import store as raw_store
-from sgme.data.search import init_fts, init_scenes_fts
+from sgme.data.search import init_fts
 from sgme.data.search import vector as vector_mod
 from sgme.server.app import create_app
 from sgme.data import db as db_mod
-from sgme.data import memory_dao, scene_dao, session_dao
+from sgme.data import memory_dao, session_dao
 from sgme.wiki import fts as wiki_fts_mod
 from sgme.wiki.fts import init_wiki_fts
 
@@ -50,10 +51,7 @@ MEMORY_RESULT_KEYS = [
     "priority", "updated_at", "trace", "routes",
     "occurred_at", "facts",  # T-149①：时间锚点 + facts 三元组透传（答案聚合/时序用）
     "causes",  # W06：2.0 l2_facts_json.causes（因果对；无数据 []）
-]
-SCENE_RESULT_KEYS = [
-    "rank", "source", "scene_id", "title", "content", "heat",
-    "updated_at", "routes",
+    "my_notes",  # T-423 / D-30：人工备注独立列（检索回填透出）
 ]
 WIKI_PAGES_RESULT_KEYS = [
     "rank", "source", "page_id", "title", "content", "category", "tags", "routes",
@@ -115,14 +113,13 @@ def mock_vector(monkeypatch):
 def conns(tmp_path, cfg):
     """三库连接（隔离 tmp_path）+ FTS 虚拟表初始化（搜索必需）。
 
-    照抄 health 的 conns 基础上追加 ``init_fts`` / ``init_scenes_fts``：
-    health 不查 FTS 所以不需要；搜索要走 BM25 主路必须建 memories_fts /
-    scenes_fts（create_app 内部同样调用这两个函数）。
+    照抄 health 的 conns 基础上追加 ``init_fts`` / ``init_wiki_fts``：
+    health 不查 FTS 所以不需要；搜索要走 BM25 主路必须建 memories_fts / wiki_fts。
+    场景层已退役（T-427），不再初始化 scenes_fts。
     """
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
     init_fts(mem_conn)
-    init_scenes_fts(mem_conn)
     init_wiki_fts(wiki_conn)
     yield mem_conn, session_conn, wiki_conn
     db_mod.close(mem_conn)
@@ -176,12 +173,6 @@ def _insert_memory(mem_conn: sqlite3.Connection, content: str, mid: str | None =
         sources=None,
         occurred_at=occurred_at,
     )
-
-
-def _insert_scene(mem_conn: sqlite3.Connection, scene_id: str,
-                  title: str, content: str) -> str:
-    """插入一条 L2 场景（heat=1, status='active'）。"""
-    return scene_dao.insert_scene(mem_conn, scene_id=scene_id, title=title, content=content)
 
 
 def _insert_wiki_page(wiki_conn: sqlite3.Connection, page_id: str,
@@ -370,56 +361,58 @@ def test_search_internal_error_maps_err_internal(conns, cfg, mock_vector, monkey
 
 # ---------- 5. wiki scope 行为 ----------
 
-def test_search_wiki_scope_returns_scenes(conns, cfg, mock_vector):
-    """scopes=["wiki"] → 命中 L2 场景层（source=wiki_scene）。"""
+def test_search_wiki_scope_returns_wiki_pages(conns, cfg, mock_vector):
+    """scopes=["wiki"] → 只命中 wiki 知识库页面（T-427：场景层已退役）。"""
     # Arrange
-    mem_conn, session_conn, _ = conns
-    _insert_scene(mem_conn, "scene-1", "量子计算底座", "Python FastAPI 架构设计 量子计算")
+    mem_conn, session_conn, wiki_conn = conns
+    _insert_wiki_page(wiki_conn, "page-1", "量子计算底座", "Python FastAPI 架构设计 量子计算")
 
     # Act
-    res = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["wiki"])
+    res = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["wiki"],
+                 wiki_conn=wiki_conn)
 
     # Assert
     assert res.ok is True
     assert len(res.data["results"]) >= 1
     first = res.data["results"][0]
-    assert first["source"] == "wiki_scene"
-    assert first["scene_id"] == "scene-1"
-    assert "wiki_bm25" in first["routes"] or "wiki_like" in first["routes"]
-    assert "wiki_bm25" in res.data["routes"] or "wiki_like" in res.data["routes"]
+    assert first["source"] == "wiki_pages"
+    assert first["page_id"] == "page-1"
+    assert "wiki_fts" in first["routes"]
+    assert all(r["source"] != "wiki_scene" for r in res.data["results"])
 
 
-def test_search_scenes_alias_scope_equivalent_to_wiki(conns, cfg, mock_vector):
-    """scopes=["scenes"] 是 "wiki" 的历史别名，行为等价。"""
-    # Arrange
-    mem_conn, session_conn, _ = conns
-    _insert_scene(mem_conn, "scene-alias", "量子计算底座", "量子计算 内容")
+def test_search_scenes_scope_retired_returns_empty(conns, cfg, mock_vector):
+    """scopes=["scenes"] 随场景层退役静默忽略（不报错、不返回结果）。"""
+    mem_conn, session_conn, wiki_conn = conns
+    _insert_wiki_page(wiki_conn, "page-alias", "量子计算底座", "量子计算 内容")
 
-    # Act
-    res = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["scenes"])
+    res = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["scenes"],
+                 wiki_conn=wiki_conn)
 
-    # Assert
     assert res.ok is True
-    assert any(r["scene_id"] == "scene-alias" for r in res.data["results"])
+    assert res.data["results"] == []
+    assert res.data["routes"] == []
 
 
 def test_search_multi_scope_merges_memory_and_wiki(conns, cfg, mock_vector):
-    """memory + wiki 双 scope → 结果先 memory 后 wiki，routes 取并集。"""
+    """memory + wiki 双 scope → 结果先 memory 后 wiki_pages，routes 取并集。"""
     # Arrange
-    mem_conn, session_conn, _ = conns
+    mem_conn, session_conn, wiki_conn = conns
     _insert_memory(mem_conn, "量子计算底座 Python 记忆")
-    _insert_scene(mem_conn, "scene-multi", "量子计算底座", "量子计算 场景文档")
+    _insert_wiki_page(wiki_conn, "page-multi", "量子计算底座", "量子计算 页面文档")
 
     # Act
-    res = search(mem_conn, session_conn, cfg, query="量子计算", scopes=["memory", "wiki"])
+    res = search(mem_conn, session_conn, cfg, query="量子计算",
+                 scopes=["memory", "wiki"], wiki_conn=wiki_conn)
 
     # Assert
     assert res.ok is True
     sources = [r["source"] for r in res.data["results"]]
     assert "memory" in sources
-    assert "wiki_scene" in sources
+    assert "wiki_pages" in sources
+    assert "wiki_scene" not in sources
     # 顺序：memory 层在前
-    assert sources.index("memory") < sources.index("wiki_scene")
+    assert sources.index("memory") < sources.index("wiki_pages")
     # routes 并集：bm25（memory）+ wiki 路
     assert "bm25" in res.data["routes"]
     assert any(rt.startswith("wiki") for rt in res.data["routes"])
@@ -489,12 +482,11 @@ def test_search_wiki_pages_failure_isolated(conns, cfg, mock_vector, monkeypatch
 
 
 def test_search_multi_scope_includes_wiki_pages(conns, cfg, mock_vector):
-    """memory + wiki + wiki_pages 三层组合 → 按 scope 顺序拼接，routes 并集。"""
+    """memory + wiki + wiki_pages 组合 → 页面层只检索一次，无 wiki_scene。"""
     # Arrange
     mem_conn, session_conn, wiki_conn = conns
     _insert_memory(mem_conn, "量子计算底座 Python 记忆")
-    _insert_scene(mem_conn, "scene-multi2", "量子计算底座", "量子计算 场景文档")
-    _insert_wiki_page(wiki_conn, "page-multi", "量子计算", "量子计算 知识库页面")
+    _insert_wiki_page(wiki_conn, "page-multi2", "量子计算", "量子计算 知识库页面")
 
     # Act
     res = search(mem_conn, session_conn, cfg,
@@ -505,22 +497,18 @@ def test_search_multi_scope_includes_wiki_pages(conns, cfg, mock_vector):
     assert res.ok is True
     sources = [r["source"] for r in res.data["results"]]
     assert "memory" in sources
-    assert "wiki_scene" in sources
     assert "wiki_pages" in sources
-    assert sources.index("memory") < sources.index("wiki_scene") < sources.index("wiki_pages")
+    assert "wiki_scene" not in sources
+    assert sources.index("memory") < sources.index("wiki_pages")
+    assert sources.count("wiki_pages") == 1
 
 
-# ---------- 5b-2. T4（2026-11-13）：wiki scope 展开页面层 ----------
+# ---------- 5b-2. wiki scope 只走页面层（T-427） ----------
 
-def test_search_wiki_scope_expands_to_wiki_pages(conns, cfg, mock_vector):
-    """scopes=["wiki"] → 场景层 + 页面层（wiki 即知识支柱全层，T4）。
-
-    回归背景：历史上 wiki 只查场景，只在 wiki_pages 的知识（如 D-26 决策页）
-    对 q=时间线 永久漏召回。
-    """
+def test_search_wiki_scope_returns_only_wiki_pages(conns, cfg, mock_vector):
+    """scopes=["wiki"] → 只命中页面层（场景层退役，不再产生 wiki_scene）。"""
     # Arrange
     mem_conn, session_conn, wiki_conn = conns
-    _insert_scene(mem_conn, "scene-expand", "时间线设计", "时间线 场景叙事")
     _insert_wiki_page(wiki_conn, "page-expand", "D-26 决策", "时间线 页面知识")
 
     # Act
@@ -530,8 +518,8 @@ def test_search_wiki_scope_expands_to_wiki_pages(conns, cfg, mock_vector):
     # Assert
     assert res.ok is True
     sources = [r["source"] for r in res.data["results"]]
-    assert "wiki_scene" in sources
     assert "wiki_pages" in sources
+    assert "wiki_scene" not in sources
 
 
 def test_search_wiki_scope_does_not_change_memory_layer(conns, cfg, mock_vector):
@@ -573,13 +561,11 @@ def test_search_wiki_and_wiki_pages_not_duplicated(conns, cfg, mock_vector):
 
 
 def test_search_layered_limit_caps_each_layer(conns, cfg, mock_vector):
-    """limit 按层封顶：各层 ≤ limit，总条数 ≤ 层数×limit（T4 验收）。"""
+    """limit 按层封顶：memory / wiki_pages 各 ≤ limit（T-427 后两层）。"""
     # Arrange
     mem_conn, session_conn, wiki_conn = conns
     for i in range(3):
         _insert_memory(mem_conn, f"量子计算 记忆 {i}")
-    for i in range(3):
-        _insert_scene(mem_conn, f"scene-lim-{i}", f"量子计算 场景 {i}", "量子计算 内容")
     for i in range(3):
         _insert_wiki_page(wiki_conn, f"page-lim-{i}", f"量子计算 页面 {i}", "量子计算 内容")
 
@@ -593,9 +579,9 @@ def test_search_layered_limit_caps_each_layer(conns, cfg, mock_vector):
     for r in res.data["results"]:
         by_source[r["source"]] = by_source.get(r["source"], 0) + 1
     assert by_source.get("memory", 0) == 1
-    assert by_source.get("wiki_scene", 0) <= 1
     assert by_source.get("wiki_pages", 0) <= 1
-    assert len(res.data["results"]) <= 3
+    assert "wiki_scene" not in by_source
+    assert len(res.data["results"]) <= 2
 
 
 def test_search_since_until_filters_occurred_at(conns, cfg, mock_vector):

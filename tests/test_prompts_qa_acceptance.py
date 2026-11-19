@@ -23,7 +23,6 @@ from fastapi.testclient import TestClient
 from sgme import config as sgme_config
 from sgme.engine import l2_extraction as l1_mod
 from sgme.engine import l3_adjudicate as l15_mod
-from sgme.engine import scene_aggregate as l2_mod
 from sgme.prompts import BucketCtx, PromptStore
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
@@ -464,12 +463,7 @@ def test_all_render_points_route_through_promptstore(monkeypatch, tmp_path):
           "priority": 50, "time_velocity": "static"}],
         [],
     )
-    # L2
-    l2_mod.render_scene(
-        [{"content": "记忆", "memory_id": "m1", "dimension_ids": ["identity"]}],
-        [], {"scene_aggregate": {"max_scenes": 10}},
-    )
-    assert calls == ["l1_extraction", "l1_conflict", "l2_scene"]
+    assert calls == ["l1_extraction", "l1_conflict"]
 
 
 # ---------- 维度联动（函数级） ----------
@@ -499,10 +493,7 @@ def test_refresh_dimensions_after_registry_write(mem_conn):
 
 def test_refine_trigger_prompt_version_end_to_end(api_env, monkeypatch):
     """T05 全链路：/v1/admin/refine/trigger 响应含 prompt_versions + memories.prompt_version 落 L1 钉版版本。"""
-    import uuid
-
     from sgme.engine import l3_adjudicate as l15_mod
-    from sgme.engine import scene_aggregate as l2_mod
     from sgme.engine import refine as refine_mod
     from sgme.data.search import vector as vector_mod
 
@@ -514,17 +505,13 @@ def test_refine_trigger_prompt_version_end_to_end(api_env, monkeypatch):
     store.publish("l1_extraction", note="基线")
     store.activate("l1_extraction", "v001")
 
-    # mock LLM：L1 输出 1 条记忆；L1.5 候选池为空（短路 store，不调 LLM）；L2 输出 create
+    # mock LLM：L1 输出 1 条记忆；L1.5 候选池为空（短路 store，不调 LLM）
     l1_body = json.dumps([
         {"content": "QA 验收记忆", "dimensions": ["身份"],
          "memory_type": "persona", "priority": 85, "time_velocity": "static",
          "source_message_ids": [1]},
     ], ensure_ascii=False)
-    l2_body = json.dumps([
-        {"action": "create", "target_scene_id": str(uuid.uuid4()),
-         "merged_content": "# QA 场景\nQA 验收记忆", "reason": "新主题"},
-    ], ensure_ascii=False)
-    cli = _mock_llm_sequence([l1_body, l2_body])
+    cli = _mock_llm_sequence([l1_body])
 
     # 注入 mock client（与 test_e2e_v04 同模式）
     _orig_refine = refine_mod.refine_file
@@ -535,10 +522,6 @@ def test_refine_trigger_prompt_version_end_to_end(api_env, monkeypatch):
     monkeypatch.setattr(l15_mod, "resolve_conflicts",
                         lambda nm, mem, cfg, client=None, **kw:
                         _orig_l15(nm, mem, cfg, client=cli, **kw))
-    _orig_l2 = l2_mod.aggregate
-    monkeypatch.setattr(l2_mod, "aggregate",
-                        lambda m, mem, cfg, client=None, **kw:
-                        _orig_l2(m, mem, cfg, client=cli, **kw))
     # embedding 依赖真实 LLM → no-op（finalize_refinement 内失败不阻塞，这里显式消除不确定性）
     monkeypatch.setattr(vector_mod, "upsert_memory_vector",
                         lambda *a, **k: None)

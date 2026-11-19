@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
-from sgme.data.search import init_fts, init_scenes_fts
+from sgme.data.search import init_fts
 from sgme.data.search import vector as vector_mod
 from sgme.engine import health as engine_health
 from sgme.operations.search import normalize_query_terms, search
@@ -68,7 +68,6 @@ def conns(tmp_path, cfg):
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
     init_fts(mem_conn)
-    init_scenes_fts(mem_conn)
     yield mem_conn, session_conn, wiki_conn
     db_mod.close(mem_conn)
     db_mod.close(session_conn)

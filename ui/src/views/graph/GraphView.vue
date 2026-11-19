@@ -1,16 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import * as d3 from 'd3'
 import { fetchGraph, type GraphData, type GraphLink, type GraphNode } from '../../api/graph'
 import { ApiError } from '../../api/client'
 
-const router = useRouter()
-
 const data = ref<GraphData | null>(null)
 const loading = ref(false)
 const error = ref('')
-const sceneLimit = ref(200)
 const wikiLimit = ref(200)
 
 // 选中节点详情（右侧面板）
@@ -19,10 +15,8 @@ const selectedLinks = ref<{ target: string; rel_type?: string }[]>([])
 
 const svgRef = ref<SVGSVGElement | null>(null)
 
-// 节点类型样式
+// 节点类型样式（T-427：场景层退役，图谱只剩 wiki 页面节点）
 const TYPE_META: Record<string, { label: string; color: string; ico: string }> = {
-  scene: { label: '场景', color: '#e07b39', ico: '🗂' },
-  memory: { label: '记忆', color: '#3a7bd5', ico: '📖' },
   wiki: { label: 'Wiki', color: '#2e9e6b', ico: '📚' },
 }
 
@@ -44,7 +38,7 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const g = await fetchGraph({ scene_limit: sceneLimit.value, wiki_limit: wikiLimit.value })
+    const g = await fetchGraph({ wiki_limit: wikiLimit.value })
     data.value = g
     selected.value = null
     selectedLinks.value = []
@@ -117,7 +111,6 @@ function renderGraph() {
   // 节点视觉：圆 + 文字
   nodeSel.append('circle')
     .attr('r', (n: GraphNode & d3.SimulationNodeDatum) => {
-      if (n.type === 'scene') return 12
       if (n.type === 'wiki') return 9
       return 7
     })
@@ -127,17 +120,13 @@ function renderGraph() {
 
   nodeSel.append('text')
     .text((n: GraphNode) => n.label.slice(0, 10))
-    .attr('dy', (n: GraphNode) => (n.type === 'scene' ? -16 : -11))
+    .attr('dy', -11)
     .attr('text-anchor', 'middle')
     .attr('font-size', 10)
     .attr('fill', 'var(--text)')
 
-  // 点击：记忆 → 详情，场景/wiki → 右侧详情面板
+  // 点击：wiki → 右侧详情面板（场景/记忆节点已随 T-427 退役）
   nodeSel.on('click', (_ev, n: GraphNode) => {
-    if (n.type === 'memory') {
-      router.push(`/memories/${n.id}`)
-      return
-    }
     selected.value = n
     selectedLinks.value = g.links
       .filter((l) => l.source === n.id || l.target === n.id)
@@ -151,7 +140,7 @@ function renderGraph() {
   sim = d3.forceSimulation<NodeDatum>(nodes)
     .force('link', d3.forceLink<NodeDatum, LinkDatum>(links)
       .id((d) => d.id)
-      .distance((l) => (l.type === 'scene_memory' ? 60 : 90))
+      .distance(90)
       .strength(0.5))
     .force('charge', d3.forceManyBody<NodeDatum>().strength(-180))
     .force('center', d3.forceCenter<NodeDatum>(width / 2, height / 2))
@@ -220,9 +209,6 @@ onBeforeUnmount(() => {
     <div class="head">
       <h2>知识图谱</h2>
       <div class="filters">
-        <label class="limit-label">场景上限
-          <input v-model.number="sceneLimit" type="number" min="10" max="1000" class="num-input" />
-        </label>
         <label class="limit-label">Wiki 上限
           <input v-model.number="wikiLimit" type="number" min="10" max="1000" class="num-input" />
         </label>
@@ -233,10 +219,7 @@ onBeforeUnmount(() => {
     <p v-if="error" class="error">{{ error }}</p>
 
     <div v-if="stats" class="stat-row">
-      <span class="stat-chip">🗂 场景 {{ stats.scenes }}</span>
-      <span class="stat-chip">📖 记忆 {{ stats.memories }}</span>
       <span class="stat-chip">📚 Wiki {{ stats.wiki }}</span>
-      <span class="stat-chip">🔗 场景-记忆 {{ stats.scene_links }}</span>
       <span class="stat-chip">🔗 Wiki 关联 {{ stats.wiki_links }}</span>
     </div>
 
@@ -244,42 +227,34 @@ onBeforeUnmount(() => {
       <!-- 左：图谱 -->
       <div class="graph-pane">
         <p v-if="loading" class="empty">加载中…</p>
-        <p v-else-if="!data?.nodes.length" class="empty">暂无图谱数据（场景/Wiki 关联）。</p>
+        <p v-else-if="!data?.nodes.length" class="empty">暂无图谱数据（Wiki 页面关联）。</p>
         <svg v-else ref="svgRef" class="graph-svg"></svg>
         <div class="legend">
           <span v-for="(meta, t) in TYPE_META" :key="t" class="legend-item">
             <span class="legend-dot" :style="{ background: meta.color }"></span>
             {{ meta.ico }} {{ meta.label }}
           </span>
-          <span class="legend-item legend-hint">点击记忆节点跳详情，场景/Wiki 节点看关联</span>
+          <span class="legend-item legend-hint">点击 Wiki 节点看关联</span>
         </div>
       </div>
 
       <!-- 右：详情 -->
       <div class="detail-pane">
-        <div v-if="!selected" class="empty">点击场景 / Wiki 节点查看关联</div>
+        <div v-if="!selected" class="empty">点击 Wiki 节点查看关联</div>
         <div v-else class="detail-card">
           <h3>{{ typeIco(selected.type) }} {{ selected.label }}</h3>
           <div class="meta">
             <span class="type-badge" :style="{ background: typeColor(selected.type) }">{{ typeLabel(selected.type) }}</span>
-            <template v-if="selected.type === 'scene'">
-              <span>🔥 热度 {{ selected.heat }}</span>
-              <span>{{ selected.memories_count }} 记忆</span>
-            </template>
-            <template v-else-if="selected.type === 'wiki'">
+            <template v-if="selected.type === 'wiki'">
               <span class="dim-tag">{{ selected.category || '未分类' }}</span>
             </template>
-          </div>
-          <p v-if="selected.content" class="content">{{ selected.content }}</p>
-          <div v-if="selected.dimensions?.length" class="dims">
-            <span v-for="d in selected.dimensions" :key="d" class="dim-tag">{{ d }}</span>
           </div>
           <section v-if="selectedLinks.length" class="links-block">
             <h4>关联（{{ selectedLinks.length }}）</h4>
             <ul class="rel-list">
               <li v-for="(l, i) in selectedLinks" :key="i" class="rel-item">
                 <span class="rel-type">{{ l.rel_type || 'contains' }}</span>
-                <RouterLink :to="l.target.startsWith('page-') ? '/wiki' : '/memories/' + l.target">
+                <RouterLink :to="{ path: '/wiki', query: { page_id: l.target } }">
                   {{ targetName(l.target) }}
                 </RouterLink>
               </li>

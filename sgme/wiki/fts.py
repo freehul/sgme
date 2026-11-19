@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""sgme/wiki/fts.py：wiki_pages FTS5 索引与同步触发器（v0.7 §8.4，对称 scenes_fts）。
+"""sgme/wiki/fts.py：wiki_pages FTS5 索引与同步触发器（v0.7 §8.4）。
 
 wiki 是扩展模块：wiki.enabled=true 时才初始化（server 启动挂载路由时调用）。
 """
@@ -58,7 +58,7 @@ def _triggers_have_description(conn: sqlite3.Connection) -> bool:
 
 
 def init_wiki_fts(conn: sqlite3.Connection) -> bool:
-    """初始化 wiki_fts 虚拟表与触发器（幂等，对称 init_scenes_fts）。
+    """初始化 wiki_fts 虚拟表与触发器（幂等）。
 
     结构升级（W1，2026-08-16）：老结构缺 description_seg → DROP 重建
     （FTS5 外部内容表加索引列无法 ALTER），重建后回填 content_seg/description_seg。
@@ -156,11 +156,17 @@ def search_wiki_fts(conn: sqlite3.Connection, query: str, limit: int = 10, exclu
 
 
 def _split_terms(query: str) -> list[str]:
-    """查询拆词：优先 jieba，失败退化为整句。"""
-    try:
-        import jieba
+    """查询拆词：复用 `sgme.segment`（与写入侧同口径，含 Python 3.12 jieba shim）。
 
-        terms = [t.strip() for t in jieba.cut(query) if t.strip()]
+    T-427 修复：此前直接 ``import jieba``，Python 3.12 下首次 import 会因
+    ``pkgutil.ImpImporter`` 缺失而失败 → 静默退化为整句 MATCH、检索恒 0。
+    以前靠场景层先调 ``sgme.segment`` 初始化才「碰巧」可用；场景层退役后
+    独立 wiki 检索必须自己走统一入口。
+    """
+    try:
+        from sgme.segment import segment_terms
+
+        terms = [t.strip() for t in segment_terms(query) if t.strip()]
         return terms or [query]
     except Exception:
         return [query]

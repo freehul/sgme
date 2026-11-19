@@ -402,51 +402,6 @@ def test_serialize_deserialize_vector():
     assert restored == pytest.approx(original, rel=1e-6)
 
 
-# ---------- 场景层检索（Task 5；v0.7 起 scenes 归 memory.db） ----------
-
-def test_search_scene_scopes(mem_conn, cfg):
-    """scopes=wiki 检索场景叙事文档（v0.7 起 scenes 位于 memory.db）。"""
-    from sgme.data.search import search_scenes
-
-    # 造场景数据
-    mem_conn.execute(
-        "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
-        "VALUES ('s1', '家庭安排', '每周三上午的家庭安排', 2, 'active', "
-        "'2026-08-04T00:00:00Z', '2026-08-04T00:00:00Z')"
-    )
-    mem_conn.execute(
-        "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
-        "VALUES ('s2', 'SGME 项目', '正在开发记忆引擎，计划月底发布 v1.0', 1, 'active', "
-        "'2026-08-04T00:00:00Z', '2026-08-04T00:00:00Z')"
-    )
-    mem_conn.execute(
-        "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
-        "VALUES ('s3', '归档场景', '已归档的旧内容', 3, 'archived', "
-        "'2026-08-04T00:00:00Z', '2026-08-04T00:00:00Z')"
-    )
-    mem_conn.commit()
-
-    # 搜"安排"→ 命中 s1（active 场景）
-    results = search_scenes(mem_conn, "安排", limit=10)
-    assert len(results) >= 1
-    assert results[0]["scene_id"] == "s1"
-    assert results[0]["source"] == "wiki_scene"
-    assert results[0]["heat"] == 2
-
-    # 搜"记忆引擎"→ 命中 s2
-    results2 = search_scenes(mem_conn, "记忆引擎", limit=10)
-    assert any(r["scene_id"] == "s2" for r in results2)
-
-    # archived 场景不返回（软删除语义）
-    results3 = search_scenes(mem_conn, "归档", limit=10)
-    assert all(r["scene_id"] != "s3" for r in results3)
-
-
-def test_search_scenes_empty_query(mem_conn):
-    """空查询 → 空结果。"""
-    from sgme.data.search import search_scenes
-    assert search_scenes(mem_conn, "  ", limit=10) == []
-
 # ---------- T-89 内容去重 + limit 截断（2026-08-20） ----------
 
 def test_search_memories_dedup_same_content(mem_conn, session_conn, cfg):

@@ -15,8 +15,7 @@ const loading = ref(false)
 const error = ref('')
 
 // 右侧详情（master-detail，列表已含完整 content，直接取选中项）
-// 2026-11-05：场景状态写入口（POST /v1/admin/scenes/{id}/status）随 9.6 下线，
-// 本页只读展示；状态在列表圆点与详情头部呈现（数据保留，只是不再可改）。
+// 2026-11-20（T-427）：场景层正式退役，本页只读展示冻结数据（不删页、不提供写入口）。
 const selected = ref<Scene | null>(null)
 
 const STATUS_LABEL: Record<string, string> = {
@@ -85,7 +84,7 @@ onMounted(async () => {
 <template>
   <div class="scenes">
     <div class="head">
-      <h2>场景列表</h2>
+      <h2>场景列表 <span class="retired-tag">已退役</span></h2>
       <div class="filters">
         <select v-model="statusFilter" @change="apply">
           <option value="">全部状态</option>
@@ -96,6 +95,11 @@ onMounted(async () => {
         </select>
       </div>
     </div>
+
+    <p class="retired-notice">
+      场景层已于 2026-11-20 正式退役（T-427）：本页只读展示冻结的历史数据，
+      不再参与检索/注入/提炼；四表 rename <code>_retired</code> 后仍可在此查看。
+    </p>
 
     <p v-if="error" class="error">{{ error }}</p>
 
@@ -190,6 +194,25 @@ onMounted(async () => {
   display: flex;
   gap: 16px;
   align-items: flex-start;
+}
+.retired-tag {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.retired-notice {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
 }
 .list-pane {
   flex: 1;

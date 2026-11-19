@@ -4,8 +4,8 @@
 1. **迁移前自动快照** —— 复用 `sgme/backup/manager.py` 的 `create_snapshot()`，
    落到 `data/backups/pre_v07/`；**备份失败立即中止**（B5：勿新写备份逻辑）。
 2. **raw_files → session.db**（旧 wiki.db 为源，D5 保留归档不 DROP）。
-3. **scenes / scene_vectors / scene_memories / scene_versions → memory.db**，
-   随后调 `init_scenes_fts(mem_conn)` 按新 rowid 重建 `scenes_fts`。
+3. **scenes / scene_vectors / scene_memories / scene_versions → memory.db**
+   （T-427 起场景层退役，不再重建 `scenes_fts`）。
 4. **删除 `data/sgme.db`**（A1：0 字节历史误建空文件，代码零引用），
    仅在备份成功 + 搬运完成 + 溯源校验不劣化后执行。
 

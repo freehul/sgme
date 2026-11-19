@@ -31,7 +31,7 @@ from sgme.operations.search import SEARCH_EMPTY_NOTE, http_payload as search_htt
 from sgme.operations.search import search as search_operation
 from sgme.data import db as db_mod
 from sgme.data import memory_dao
-from sgme.data.search import init_fts, init_scenes_fts
+from sgme.data.search import init_fts
 from sgme.data.search import vector as vector_mod
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
@@ -83,7 +83,6 @@ def conns(tmp_path, cfg):
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_path / "data")
     memory_dao.import_registry(mem_conn, cfg["dimensions"], cfg["aliases"])
     init_fts(mem_conn)
-    init_scenes_fts(mem_conn)
     init_wiki_fts(wiki_conn)
     yield mem_conn, session_conn, wiki_conn
     db_mod.close(mem_conn)

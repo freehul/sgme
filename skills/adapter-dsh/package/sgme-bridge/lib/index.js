@@ -3696,48 +3696,23 @@ function registerContextInjection(ctx, client, config) {
 		if (injected) return decision;
 		if (payload.step !== 1) return decision;
 		const projectHint = config.projectHint || process.env.SGME_PROJECT_HINT || (payload.agent?.session?.header?.cwd ? payload.agent.session.header.cwd.split(/[\\/]/).filter(Boolean).pop() : void 0);
-		let sceneInjected = false;
-		const firstUserText = extractFirstUserText(payload.messages ?? []);
-		if (firstUserText) try {
-			const sceneSearch = await client.search({
-				query: firstUserText,
-				scopes: ["memory", "wiki"],
+		if (fetching) try {
+			await fetching;
+		} catch {}
+		if (!profileCache) try {
+			const [profile, related] = await Promise.all([client.inject({ mode: config.injectMode }), projectHint ? client.search({
+				query: projectHint,
+				scopes: ["memory"],
 				limit: config.searchLimit
-			});
-			const scenes = (sceneSearch?.results ?? []).filter((r) => r.source === "wiki" || r.source === "scenes" || r.source === "wiki_scene");
-			const memories = (sceneSearch?.results ?? []).filter((r) => r.source === "memory");
-			if (scenes.length > 0) {
-				const text = buildSceneInjectionText(scenes, memories);
-				if (text) {
-					profileCache = {
-						text,
-						ts: Date.now()
-					};
-					sceneInjected = true;
-				}
-			}
+			}) : Promise.resolve(null)]);
+			const text = buildInjectionText(profile, related);
+			if (text) profileCache = {
+				text,
+				ts: Date.now()
+			};
 		} catch (e) {
-			ctx.logger.warn(`[SGME 场景检索失败] ${e instanceof Error ? e.message : String(e)}`);
-		}
-		if (!sceneInjected) {
-			if (fetching) try {
-				await fetching;
-			} catch {}
-			if (!profileCache) try {
-				const [profile, related] = await Promise.all([client.inject({ mode: config.injectMode }), projectHint ? client.search({
-					query: projectHint,
-					scopes: ["memory"],
-					limit: config.searchLimit
-				}) : Promise.resolve(null)]);
-				const text = buildInjectionText(profile, related);
-				if (text) profileCache = {
-					text,
-					ts: Date.now()
-				};
-			} catch (e) {
-				ctx.logger.warn(`[SGME 画像注入失败] ${e instanceof Error ? e.message : String(e)}`);
-				return decision;
-			}
+			ctx.logger.warn(`[SGME 画像注入失败] ${e instanceof Error ? e.message : String(e)}`);
+			return decision;
 		}
 		if (!profileCache) return decision;
 		if (roleEnabled && !roleCache) await fetchRole();
@@ -3814,23 +3789,6 @@ function buildInjectionText(profile, related) {
 	parts.push("（以上为 SGME 注入的画像与记忆，可直接引用，不必重复询问用户）");
 	return parts.join("\n");
 }
-/** 提取会话首条用户消息文本（T-88 对话内容驱动 query）。
-*
-* 兼容 dsh 消息结构：content 为字符串或 [{type:'text',text}] 数组；
-* 跳过插件注入消息（source.kind==='dsh-sgme'，避免把 SGME 画像当首句）；
-* role 存在时仅接受 user。
-*/
-function extractFirstUserText(messages) {
-	for (const m of messages) {
-		if (!m || typeof m !== "object") continue;
-		const msg = m;
-		if (msg.source?.kind === "dsh-sgme") continue;
-		const role = msg.role;
-		if (role !== void 0 && role !== "user") continue;
-		const text = extractMessageText(msg.content);
-		if (text) return text.slice(0, 500);
-	}
-}
 /** 从消息 content 提取文本（字符串或 [{type:'text',text}] 数组）。 */
 function extractMessageText(content) {
 	if (typeof content === "string") return content.trim() || void 0;
@@ -3842,26 +3800,6 @@ function extractMessageText(content) {
 		}
 		return parts.join(" ").trim() || void 0;
 	}
-}
-/** 拼接场景注入文本（T-88：首句命中 L2 场景时优先注入场景 + 相关记忆）。 */
-function buildSceneInjectionText(scenes, memories) {
-	const parts = [];
-	if (scenes.length > 0) {
-		parts.push("--- SGME 相关场景 ---");
-		for (const s of scenes.slice(0, 3)) {
-			const title = s.title ? `[${s.title}] ` : "";
-			const raw = s.content ?? "";
-			const truncated = raw.length > 300 ? raw.slice(0, 300) + "…" : raw;
-			parts.push(`- ${title}${truncated}`);
-		}
-	}
-	if (memories.length > 0) {
-		parts.push("--- 相关记忆 ---");
-		parts.push(formatRelatedMemories(memories));
-	}
-	if (parts.length === 0) return "";
-	parts.push("（以上为 SGME 注入的场景与记忆，可直接引用，不必重复询问用户）");
-	return parts.join("\n");
 }
 /** 格式化相关记忆列表。 */
 function formatRelatedMemories(results) {

@@ -46,8 +46,8 @@ export interface SearchResponse {
 
 export interface SearchResult {
   rank: number
-  // 实测（2026-08-29，SGME 1.1.0）：wiki 场景层实际返回 `wiki_scene`（非 `wiki`/`scenes`），
-  // 技能层返回 `skills`。旧声明的 'wiki'/'scenes' 保留仅为历史契约兼容。
+  // T-427（2026-11-20）：场景层退役，wiki scope 只返回 wiki_pages；
+  // 历史 'wiki'/'scenes'/'wiki_scene' 仅作类型兼容保留（服务端不再产生）。
   source: 'memory' | 'wiki' | 'scenes' | 'wiki_pages' | 'wiki_scene' | 'skills'
   // skills 层不返回 content（只给 name/description/category），故为可选；
   // 消费方必须先兜底再取 .length（tools.ts formatSearchResults 已兜底）。

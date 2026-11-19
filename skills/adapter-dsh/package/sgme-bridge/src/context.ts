@@ -17,7 +17,7 @@
  * 契约对齐：POST /v1/inject（Agent Key，mode + custom_filter 二选一；可选 history/already_repaired）
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { SgmeClient, InjectResponse, SearchResult, CareLevel, RoleAssembleResponse } from './sgme-client.js'
+import type { SgmeClient, InjectResponse, CareLevel, RoleAssembleResponse } from './sgme-client.js'
 import type { SgmeEvent, SgmeEventSubscriber } from './events.js'
 
 /**
@@ -483,68 +483,33 @@ export function registerContextInjection(
         ? payload.agent.session.header.cwd.split(/[\\/]/).filter(Boolean).pop()
         : undefined)
 
-    // ── T-88 对话内容驱动（2026-08-20 用户定，对齐 Hermes T-42）──
-    // 首句 → /v1/search(memory+wiki) 命中 L2 场景 → 注入「场景 + 相关记忆」；
-    // 无场景命中 / 无首句 → 回退模板画像注入（原逻辑）。
+    // T-427（2026-11-20）：场景层退役，首句 L2 场景检索与「场景优先注入」已摘除；
+    // 统一走下方模板画像注入（原兜底路径）。
     // 缓存红线：仍只首步注入一次、会话内固定——绝不做每轮动态注入
     // （DeepSeek 前缀缓存命中 ¥0.02/M vs 未命中 ¥1/M，每轮变化 = 输入成本 ×14）。
-    let sceneInjected = false
-    const firstUserText = extractFirstUserText(payload.messages ?? [])
-    if (firstUserText) {
-      try {
-        const sceneSearch = await client.search({
-          query: firstUserText,
-          scopes: ['memory', 'wiki'],
-          limit: config.searchLimit,
-        })
-        const scenes = (sceneSearch?.results ?? []).filter(
-          (r): r is SearchResult & { source: 'wiki' | 'scenes' | 'wiki_scene' } =>
-            // ⚠️ 实测（SGME 1.1.0，2026-08-29）：wiki 场景层 source 实际返回 `wiki_scene`，
-            // 旧判断只认 'wiki'/'scenes' → 过滤恒空、scenes.length 永远为 0 →
-            // T-88「首句命中 L2 场景注入」从未生效，一直静默回退模板注入。此处补上实际值。
-            r.source === 'wiki' || r.source === 'scenes' || r.source === 'wiki_scene',
-        )
-        const memories = (sceneSearch?.results ?? []).filter(
-          (r): r is SearchResult & { source: 'memory' } => r.source === 'memory',
-        )
-        if (scenes.length > 0) {
-          const text = buildSceneInjectionText(scenes, memories)
-          if (text) {
-            profileCache = { text, ts: Date.now() }
-            sceneInjected = true
-          }
-        }
-      } catch (e) {
-        ctx.logger.warn(`[SGME 场景检索失败] ${e instanceof Error ? e.message : String(e)}`)
-        // 回退模板注入（不置位，下轮可重试）
-      }
-    }
 
-    // 模板画像注入（原逻辑）：场景未命中时兜底
-    if (!sceneInjected) {
-      // 预拉取未完成则等它（首轮画像应尽快注入）
-      if (fetching) {
-        try { await fetching } catch { /* 已 log */ }
-      }
-      // 仍无缓存（预拉取失败且未重试）→ 现场拉一次
-      if (!profileCache) {
-        try {
-          const [profile, related] = await Promise.all([
-            client.inject({ mode: config.injectMode }),
-            projectHint
-              ? client.search({
-                  query: projectHint,
-                  scopes: ['memory'],
-                  limit: config.searchLimit,
-                })
-              : Promise.resolve(null),
-          ])
-          const text = buildInjectionText(profile, related)
-          if (text) profileCache = { text, ts: Date.now() }
-        } catch (e) {
-          ctx.logger.warn(`[SGME 画像注入失败] ${e instanceof Error ? e.message : String(e)}`)
-          return decision  // 不置位 injected，下轮重试
-        }
+    // 预拉取未完成则等它（首轮画像应尽快注入）
+    if (fetching) {
+      try { await fetching } catch { /* 已 log */ }
+    }
+    // 仍无缓存（预拉取失败且未重试）→ 现场拉一次
+    if (!profileCache) {
+      try {
+        const [profile, related] = await Promise.all([
+          client.inject({ mode: config.injectMode }),
+          projectHint
+            ? client.search({
+                query: projectHint,
+                scopes: ['memory'],
+                limit: config.searchLimit,
+              })
+            : Promise.resolve(null),
+        ])
+        const text = buildInjectionText(profile, related)
+        if (text) profileCache = { text, ts: Date.now() }
+      } catch (e) {
+        ctx.logger.warn(`[SGME 画像注入失败] ${e instanceof Error ? e.message : String(e)}`)
+        return decision  // 不置位 injected，下轮重试
       }
     }
 
@@ -683,26 +648,6 @@ export function buildInjectionText(
   return parts.join('\n')
 }
 
-/** 提取会话首条用户消息文本（T-88 对话内容驱动 query）。
- *
- * 兼容 dsh 消息结构：content 为字符串或 [{type:'text',text}] 数组；
- * 跳过插件注入消息（source.kind==='dsh-sgme'，避免把 SGME 画像当首句）；
- * role 存在时仅接受 user。
- */
-function extractFirstUserText(messages: unknown[]): string | undefined {
-  for (const m of messages) {
-    if (!m || typeof m !== 'object') continue
-    const msg = m as Record<string, unknown>
-    const source = msg.source as Record<string, unknown> | undefined
-    if (source?.kind === 'dsh-sgme') continue
-    const role = msg.role
-    if (role !== undefined && role !== 'user') continue
-    const text = extractMessageText(msg.content)
-    if (text) return text.slice(0, 500)
-  }
-  return undefined
-}
-
 /** 从消息 content 提取文本（字符串或 [{type:'text',text}] 数组）。 */
 function extractMessageText(content: unknown): string | undefined {
   if (typeof content === 'string') return content.trim() || undefined
@@ -718,31 +663,6 @@ function extractMessageText(content: unknown): string | undefined {
     return t || undefined
   }
   return undefined
-}
-
-/** 拼接场景注入文本（T-88：首句命中 L2 场景时优先注入场景 + 相关记忆）。 */
-function buildSceneInjectionText(
-  // content 可选：统一搜索各层投影不保证都带 content（skills 层就没有），取 .length 前必须兜底。
-  scenes: Array<{ rank: number; content?: string; title?: string }>,
-  memories: Array<{ rank: number; content?: string }>,
-): string {
-  const parts: string[] = []
-  if (scenes.length > 0) {
-    parts.push('--- SGME 相关场景 ---')
-    for (const s of scenes.slice(0, 3)) {
-      const title = s.title ? `[${s.title}] ` : ''
-      const raw = s.content ?? ''
-      const truncated = raw.length > 300 ? raw.slice(0, 300) + '…' : raw
-      parts.push(`- ${title}${truncated}`)
-    }
-  }
-  if (memories.length > 0) {
-    parts.push('--- 相关记忆 ---')
-    parts.push(formatRelatedMemories(memories))
-  }
-  if (parts.length === 0) return ''
-  parts.push('（以上为 SGME 注入的场景与记忆，可直接引用，不必重复询问用户）')
-  return parts.join('\n')
 }
 
 /** 格式化相关记忆列表。 */

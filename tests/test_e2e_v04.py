@@ -14,7 +14,6 @@ mock LLM 用 httpx.MockTransport 拦截 /chat/completions 与 /embeddings。
 from __future__ import annotations
 
 import json
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -24,7 +23,6 @@ from fastapi.testclient import TestClient
 from sgme import config as sgme_config
 from sgme.engine import health as health_mod
 from sgme.engine import l3_adjudicate as l15_mod
-from sgme.engine import scene_aggregate as l2_mod
 from sgme.engine import refine as refine_mod
 from sgme.raw import store as raw_store
 from sgme.data.search import vector as vector_mod
@@ -32,7 +30,7 @@ from sgme import __version__  # health version 契约动态断言（B123 单源�
 from sgme.server.app import create_app
 from sgme.signal import engine as signal_engine
 from sgme.data import db as db_mod
-from sgme.data import memory_dao, scene_dao, session_dao
+from sgme.data import memory_dao, session_dao
 
 
 # ---------- 公共 fixtures ----------
@@ -46,8 +44,6 @@ def cfg():
     vec = cfg.setdefault("search", {}).setdefault("vector", {})
     vec["base_url"] = "http://mock-embed.test/v1"
     vec["enabled"] = True
-    # A1（2026-11-05）：场景层默认冻结（enabled=false）；本文件测完整链路（含 L2），显式开启
-    cfg.setdefault("scene_aggregate", {})["enabled"] = True
     return cfg
 
 
@@ -238,30 +234,6 @@ def _patch_l15_with_client(monkeypatch, mock_client: httpx.Client) -> None:
     monkeypatch.setattr(l15_mod, "resolve_conflicts", patched_resolve)
 
 
-def _patch_l2_with_client(monkeypatch, mock_client: httpx.Client) -> None:
-    """patch l2_mod.aggregate 注入 mock LLM client。
-
-    L2 聚合在 finalize_refinement（L1.5 落库后）调用，client 参数默认 None；
-    此 patch 保证 L2 也用 mock client（确定性输出）。
-    """
-    original_aggregate = l2_mod.aggregate
-
-    def patched_aggregate(memories, mem_conn, cfg, client=None, **kwargs):
-        return original_aggregate(
-            memories, mem_conn, cfg, client=mock_client, **kwargs,
-        )
-
-    monkeypatch.setattr(l2_mod, "aggregate", patched_aggregate)
-
-
-def _count_active_scenes(mem_conn) -> int:
-    """统计 memory.db scenes 表 active 场景数（v0.7 三库拆分后归属）。"""
-    cur = mem_conn.execute(
-        "SELECT COUNT(*) AS c FROM scenes WHERE status='active'"
-    )
-    return cur.fetchone()["c"]
-
-
 def _count_signal_events(mem_conn, event_type: str | None = None) -> int:
     """统计 signal_events 表中指定类型事件数。"""
     if event_type:
@@ -277,12 +249,11 @@ def _count_signal_events(mem_conn, event_type: str | None = None) -> int:
 # ---------- 完整链路测试 ----------
 
 def test_e2e_full_pipeline(client, monkeypatch):
-    """完整链路：append → refine → L2 场景 → tier0 → inject → search → events → health → backup。"""
+    """完整链路：append → refine → inject → search → events → health → backup。"""
     app = client.app
     mem_conn = app.state.mem_conn
 
-    # ---------- Arrange：mock L1 + L2（L2 输出 CREATE 动作） ----------
-    new_sid = str(uuid.uuid4())
+    # ---------- Arrange：mock L1（场景层已退役，无 L2） ----------
     l1_body = json.dumps([
         {"content": "用户是独立开发者", "dimensions": ["身份"],
          "memory_type": "persona", "priority": 85, "time_velocity": "static",
@@ -291,15 +262,9 @@ def test_e2e_full_pipeline(client, monkeypatch):
          "memory_type": "persona", "priority": 80, "time_velocity": "dynamic",
          "source_message_ids": [2]},
     ])
-    l2_body = json.dumps([
-        {"action": "create", "target_scene_id": new_sid,
-         "merged_content": "# 用户工程画像\n独立开发者，正在做 SGME",
-         "reason": "新主题：开发者画像"},
-    ])
-    cli = _mock_llm_client_sequence([l1_body, l2_body])
+    cli = _mock_llm_client_sequence([l1_body])
     _patch_refine_with_client(monkeypatch, cli)
     _patch_l15_with_client(monkeypatch, cli)
-    _patch_l2_with_client(monkeypatch, cli)
 
     # ---------- 1. POST /v1/append ----------
     content = (
@@ -325,15 +290,11 @@ def test_e2e_full_pipeline(client, monkeypatch):
     assert refine_body["memories_count"] >= 1
     assert refine_body["l3_adjudicate"]["stored"] >= 1
 
-    # ---------- 3. 验证 L2 场景生成（memory.db scenes 表出现行，id 系统生成） ----------
-    scene_count = _count_active_scenes(mem_conn)
-    assert scene_count >= 1, "L2 应生成至少 1 个 active 场景"
-    scenes = scene_dao.list_active_scenes(mem_conn, limit=10)
-    assert len(scenes) >= 1
-    scene = scenes[0]
-    assert scene["status"] == "active"
-    assert scene["heat"] == 1
-    assert "独立开发者" in scene["content"]
+    # ---------- 3. 场景层已退役：不再产生 scenes 行（T-427） ----------
+    scenes_table = mem_conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scenes'"
+    ).fetchone()
+    assert scenes_table is None, "connect_memory 不应再自动创建 scenes 表"
 
     # ---------- 4. POST /v1/inject：无 tier0 字段（D-79 已砍除） ----------
     r = client.post("/v1/inject", json={"mode": "daily"}, headers=AGENT_HEADERS)
@@ -487,17 +448,15 @@ def test_e2e_signal_flow_memory_updated(client, monkeypatch):
         agent_id="test", status="new", size=raw_store.file_size(fid),
     )
 
-    # mock L1 + L2（L2 输出空动作列表，避免场景聚合干扰信号断言）
+    # mock L1（场景层已退役，无 L2）
     l1_body = json.dumps([
         {"content": "用户用 Python 写后端", "dimensions": ["技术栈"],
          "memory_type": "persona", "priority": 80, "time_velocity": "static",
          "source_message_ids": [1]},
     ])
-    l2_body = json.dumps([])
-    cli = _mock_llm_client_sequence([l1_body, l2_body])
+    cli = _mock_llm_client_sequence([l1_body])
     _patch_refine_with_client(monkeypatch, cli)
     _patch_l15_with_client(monkeypatch, cli)
-    _patch_l2_with_client(monkeypatch, cli)
 
     # Act：触发提炼
     r = client.post("/v1/admin/refine/trigger", json={

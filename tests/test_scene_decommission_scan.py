@@ -17,6 +17,7 @@ def test_scan_code_finds_scene_consumers():
 
 def test_scan_db_counts_tables(tmp_path):
     conn = db.connect_memory(tmp_path)
+    conn.executescript(db.SCENE_RETIRED_DDL)
     conn.execute(
         "INSERT INTO scenes (scene_id, title, content, created_at, updated_at) "
         "VALUES ('s1','场景一','内容','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')"

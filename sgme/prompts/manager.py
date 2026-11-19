@@ -33,7 +33,7 @@ class PromptManifestError(Exception):
     """manifest 配置非法 / 版本操作失败。"""
 
 
-# 全部受管 stage（渲染点：l2_extraction.py / l3_adjudicate.py / scene_aggregate.py）
+# 全部受管 stage（渲染点：l2_extraction.py / l3_adjudicate.py）
 # 2026-11-05：tier0_summary 已随 D-79 砍除（整模块退役，不是关闭）
 STAGES = ("l1_extraction", "l1_conflict", "l2_scene")
 

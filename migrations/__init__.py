@@ -4,7 +4,7 @@
 - 迁移脚本是一次性运维资产，放在 `sgme/` 之外的项目根，
   阶段 2 的 `git mv sgme/storage sgme/data` 对它零影响（只需改一行 import）。
 - 它通过 `sgme.storage.db` 拿连接，**不建表、不补列**（表结构归 db.py 的 `*_DDL`），
-  **不写 FTS 代码**（FTS 归 search 层 `init_scenes_fts`），只搬存量数据 + 备份 + 清理旧物。
+  **不写 FTS 代码**（场景 FTS 已随 T-427 退役），只搬存量数据 + 备份 + 清理旧物。
 
 用法：
 

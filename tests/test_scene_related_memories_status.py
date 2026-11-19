@@ -40,7 +40,8 @@ from fastapi.testclient import TestClient
 
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
-from sgme.data import memory_dao, scene_dao
+from sgme.data import memory_dao, scene_readonly_dao
+from sgme.data.db import SCENE_RETIRED_DDL
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
 
@@ -126,6 +127,7 @@ def seeded(app, conns):
     另建 1 个 rejected 场景（验场景自身状态过滤不受影响）。
     """
     mem_conn, _, _ = conns
+    mem_conn.executescript(SCENE_RETIRED_DDL)
     dims = [d["id"] for d in memory_dao.list_dimensions(mem_conn, active_only=True)]
     assert len(dims) >= 2, "注册表维度不足，用例前提不成立"
     dim_a = dims[0]
@@ -149,15 +151,24 @@ def seeded(app, conns):
     )
     _set_memory_status(mem_conn, expired_id, "expired")
 
-    scene_dao.insert_scene(
-        mem_conn, "scene_t171", "家庭事实纠错场景", "叙事文档全文（T-171 复现）",
-        created_at=_iso(5), updated_at=_iso(5),
+    mem_conn.execute(
+        "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("scene_t171", "家庭事实纠错场景", "叙事文档全文（T-171 复现）", 1, "active",
+         _iso(5), _iso(5)),
     )
     for mid in (active_id, rejected_id, expired_id):
-        scene_dao.add_memory_link(mem_conn, "scene_t171", mid)
+        mem_conn.execute(
+            "INSERT OR IGNORE INTO scene_memories (scene_id, memory_id) VALUES (?,?)",
+            ("scene_t171", mid),
+        )
 
-    scene_dao.insert_scene(mem_conn, "scene_t171_x", "被判错的场景", "场景自身 rejected")
-    scene_dao.update_scene_status(mem_conn, "scene_t171_x", "rejected")
+    mem_conn.execute(
+        "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("scene_t171_x", "被判错的场景", "场景自身 rejected", 1, "rejected", _iso(5), _iso(5)),
+    )
+    mem_conn.commit()
 
     return {
         "active_id": active_id,
@@ -182,7 +193,7 @@ def _related(client) -> dict:
 def test_dao_related_memories_excludes_rejected(conns, seeded):
     """list_scenes_page 的 related_memories 不含 rejected 记忆（缺陷根因位于此）。"""
     mem_conn, _, _ = conns
-    items, total = scene_dao.list_scenes_page(mem_conn, limit=50)
+    items, total = scene_readonly_dao.list_scenes_page(mem_conn, limit=50)
     assert total == 1
     rel = items[0]["related_memories"]
     ids = [m["memory_id"] for m in rel]

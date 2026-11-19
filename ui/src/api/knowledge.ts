@@ -1,7 +1,7 @@
 // 场景与会话原文 API 封装（② 记忆与知识剩余视图）
 import { api } from './client'
 
-// ---------- GET /v1/admin/scenes ----------
+// ---------- GET /v1/admin/scenes（已退役，只读冻结数据） ----------
 export interface Scene {
   scene_id: string
   title: string
@@ -47,9 +47,9 @@ export function listScenes(params: {
   return api.get<ScenesPage>(`/v1/admin/scenes${suffix}`)
 }
 
-// ---------- 场景状态写端点已下线（9.6 / D-53，2026-11-05） ----------
-// 原 POST /v1/admin/scenes/{id}/status 随场景层下线一起摘除；本模块只保留
-// GET /v1/admin/scenes 只读列表（场景数据四表冻结，不删行）。
+// ---------- 场景状态写端点已下线（9.6 / D-53 / T-427，2026-11-20） ----------
+// 原 POST /v1/admin/scenes/{id}/status 随场景层退役一起摘除；本模块只保留
+// GET /v1/admin/scenes 只读列表（四表 rename `_retired` 后仍可读，不删行）。
 
 // ---------- GET /v1/admin/sessions ----------
 export interface SessionItem {

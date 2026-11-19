@@ -20,7 +20,6 @@ export interface HealthVector {
   available: boolean
   engine: string
   memory_vectors: number
-  scene_vectors: number
   reason: string | null
 }
 export interface HealthStatus {
@@ -98,7 +97,6 @@ export interface DreamReport {
   path: string
   refined_count: number
   memory_count: number
-  scene_count: number
   error_count: number
   expired_count: number
   archived_count: number

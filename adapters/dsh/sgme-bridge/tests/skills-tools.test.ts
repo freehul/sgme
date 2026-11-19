@@ -3,7 +3,7 @@
  *
  * 覆盖：参数传递、结果格式化、降级路径；以及 2026-08-29 修复的两个回归点：
  * ①skills 层结果无 content 字段 → formatSearchResults 不得 TypeError 崩；
- * ②wiki 场景层 source 实际为 wiki_scene → context.ts 场景过滤必须认它。
+ * ②T-427 起场景层退役，context.ts 不再做 wiki_scene 过滤。
  *
  * 契约来源：SGME 1.1.0 实测（GET /v1/skills* + POST /v1/search scope=skills）。
  */

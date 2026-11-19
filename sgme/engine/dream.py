@@ -309,14 +309,6 @@ def _report_dir(cfg: dict[str, Any]) -> Path:
     return p
 
 
-def _count_scenes_since(mem_conn: sqlite3.Connection, since_ts: str) -> int:
-    """本次运行新增场景数（scenes.created_at >= 运行起点）。"""
-    row = mem_conn.execute(
-        "SELECT COUNT(*) AS c FROM scenes WHERE created_at >= ?", (since_ts,)
-    ).fetchone()
-    return int(row["c"]) if row else 0
-
-
 def _tokens_since(mem_conn: sqlite3.Connection, since_ts: str) -> int:
     """当日 refine_runs token 消耗合计（运行起点之后，含各阶段）。"""
     row = mem_conn.execute(
@@ -327,18 +319,15 @@ def _tokens_since(mem_conn: sqlite3.Connection, since_ts: str) -> int:
 
 
 def _pool_totals(mem_conn: sqlite3.Connection) -> dict:
-    """记忆池总量 / 场景总量（查询失败不阻塞日报，回退 0）。"""
+    """记忆池总量（查询失败不阻塞日报，回退 0）。"""
     try:
         total_memories = mem_conn.execute(
             "SELECT COUNT(*) AS c FROM memories"
         ).fetchone()["c"]
-        total_scenes = mem_conn.execute(
-            "SELECT COUNT(*) AS c FROM scenes"
-        ).fetchone()["c"]
-        return {"total_memories": int(total_memories), "total_scenes": int(total_scenes)}
+        return {"total_memories": int(total_memories)}
     except Exception as e:
         logger.warning("Dream 池总量统计失败（回退 0）: %s", e)
-        return {"total_memories": 0, "total_scenes": 0}
+        return {"total_memories": 0}
 
 
 def _quarantine_summary(mem_conn: sqlite3.Connection) -> dict[str, int]:
@@ -380,7 +369,6 @@ def _render_report_md(
     lines.append(f"- 处理文件：{stats['refined_count'] + stats['error_count']}"
                  f"（成功 {stats['refined_count']} / 失败 {stats['error_count']}）")
     lines.append(f"- 新增记忆：{stats['memory_count']}")
-    lines.append(f"- 新增场景：{stats['scene_count']}")
     lines.append("")
     lines.append("## 生命周期")
     lines.append(f"- TTL 过期标记：{stats['expired_count']}")
@@ -410,7 +398,6 @@ def _render_report_md(
     lines.append("")
     lines.append("## 汇总")
     lines.append(f"- 记忆池总量：{pool['total_memories']}")
-    lines.append(f"- 场景总量：{pool['total_scenes']}")
     lines.append(f"- Token 消耗：{stats['tokens']}")
     lines.append("")
     return "\n".join(lines)
@@ -502,14 +489,14 @@ def run_dream(
     """四步编排（阻塞执行）。执行锁被占用 → 直接返回 running（防重入）。
 
     Args:
-        mem_conn: memory.db 连接（L1.5/L2/日报/信号）。
+        mem_conn: memory.db 连接（L1.5/日报/信号）。
         session_conn: session.db 连接（raw_files 队列）。
         cfg: 运行时配置（dream 段 + 提炼链路）。
 
     Returns:
-        运行摘要 dict：date / status / refined_count / memory_count / scene_count /
+        运行摘要 dict：date / status / refined_count / memory_count /
         error_count / expired_count / archived_count / report_path / errors /
-        stage_errors / total_memories / total_scenes / tokens。
+        stage_errors / total_memories / tokens。
     """
     if not RUN_LOCK.acquire(blocking=False):
         return {"status": "running", "message": "Dream 正在执行中（防重入）"}
@@ -567,11 +554,9 @@ def _run_dream_locked(
     refined_count, error_count, memory_count, errors = _step_extract(
         mem_conn, session_conn, cfg, max_files,
     )
-    try:
-        scene_count = _count_scenes_since(mem_conn, start_ts)
-    except Exception as e:
-        logger.warning("Dream 场景计数失败（回退 0）: %s", e)
-        scene_count = 0
+    # T-427（2026-11-20）：场景层退役，日报不再统计新增场景；
+    # 保留 scene_count 键（dream_reports 表列为历史契约，写 0）。
+    scene_count = 0
 
     # ③ 生命周期（每阶段独立容错：该阶段失败中止，其余继续）
     expired_count = 0
@@ -658,26 +643,7 @@ def _run_dream_locked(
             logger.exception("Dream 关怀信号扫描失败（该阶段中止）: %s", e)
             stage_errors.append(f"关怀信号扫描失败: {e}")
 
-    # 场景主动治理（T-97 治本：相似场景自动合并 + 自动归档）
-    # 受 scene_gc.enabled 控制；仅当 active >= trigger_at 才执行，避免无谓 LLM 消耗。
-    scene_gc_merged = 0
-    scene_gc_archived = 0
-    try:
-        from sgme.engine import scene_gc as scene_gc_mod
-        gc_res = scene_gc_mod.run_scene_gc(mem_conn, cfg)
-        scene_gc_merged = gc_res.merged
-        scene_gc_archived = gc_res.archived
-        if gc_res.skipped_reason:
-            logger.info("Dream 场景治理跳过：%s", gc_res.skipped_reason)
-        else:
-            logger.info(
-                "Dream 场景治理：候选=%d 合并=%d 归档=%d 失败=%d（before=%d after=%d）",
-                gc_res.candidates, gc_res.merged, gc_res.archived,
-                gc_res.failed, gc_res.active_before, gc_res.active_after,
-            )
-    except Exception as e:
-        logger.exception("Dream 场景治理失败（该阶段中止）: %s", e)
-        stage_errors.append(f"场景治理失败: {e}")
+    # 场景主动治理已随场景层退役摘除（T-427，2026-11-20）。
 
     # ④ 日报：汇总 → MD 落盘 → dream_reports → signal_events
     tokens = _tokens_since(mem_conn, start_ts)
@@ -692,15 +658,13 @@ def _run_dream_locked(
         "signal_purged_count": signal_purged_count,
         "purged_pool_count": purged_pool_count,
         "care_signal_count": care_signal_count,
-        "scene_gc_merged": scene_gc_merged,
-        "scene_gc_archived": scene_gc_archived,
         "tokens": tokens,
     }
     summary = (
-        f"提炼 {refined_count} 文件 / 新增记忆 {memory_count} / 新增场景 {scene_count}"
+        f"提炼 {refined_count} 文件 / 新增记忆 {memory_count}"
         f" / TTL 过期 {expired_count} / 冷归档 {archived_count}"
         f" / 信号归档 {signal_purged_count} / 关怀信号 {care_signal_count}"
-        f" / 场景治理 合并 {scene_gc_merged} 归档 {scene_gc_archived} / 失败 {error_count}"
+        f" / 失败 {error_count}"
         + (f" / 出池归档 {purged_pool_count}" if purged_pool_count else "")
     )
     quarantine = _quarantine_summary(mem_conn)  # B313：灰区待复核提示
@@ -716,9 +680,9 @@ def _run_dream_locked(
         _publish_dream_error(mem_conn, date_label, errors, stage_errors)
 
     logger.info(
-        "Dream 运行完成 date=%s refined=%d failed=%d memories=%d scenes=%d "
+        "Dream 运行完成 date=%s refined=%d failed=%d memories=%d "
         "expired=%d archived=%d signal_purged=%d care_signal=%d report=%s",
-        date_label, refined_count, error_count, memory_count, scene_count,
+        date_label, refined_count, error_count, memory_count,
         expired_count, archived_count, signal_purged_count, care_signal_count, rel_path,
     )
     return {
@@ -726,19 +690,15 @@ def _run_dream_locked(
         "status": "done",
         "refined_count": refined_count,
         "memory_count": memory_count,
-        "scene_count": scene_count,
         "error_count": error_count,
         "expired_count": expired_count,
         "archived_count": archived_count,
         "signal_purged_count": signal_purged_count,
         "care_signal_count": care_signal_count,
-        "scene_gc_merged": scene_gc_merged,
-        "scene_gc_archived": scene_gc_archived,
         "report_path": rel_path,
         "errors": errors,
         "stage_errors": stage_errors,
         "total_memories": pool["total_memories"],
-        "total_scenes": pool["total_scenes"],
         "tokens": tokens,
     }
 

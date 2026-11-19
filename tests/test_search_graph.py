@@ -39,33 +39,16 @@ def _mem(conn, mid: str, priority: int = 50, status: str = "active") -> None:
     )
 
 
-def _scene(conn, sid: str, status: str = "active") -> None:
-    conn.execute(
-        "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (sid, f"scene-{sid}", "c", 1, status, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
-    )
-
-
-def _scene_mem(conn, sid: str, mid: str) -> None:
-    conn.execute(
-        "INSERT OR IGNORE INTO scene_memories (scene_id, memory_id) VALUES (?,?)",
-        (sid, mid),
-    )
-
-
 def _build_graph_db(tmp_path) -> sqlite3.Connection:
-    """m1/m2/m3 同场景共现（belongs_to 边），m4 独立、m5 已归档。"""
+    """m1/m2/m3 之间直接建 belongs_to 边（场景共现源已随 T-427 退役）。"""
     conn = _conn(tmp_path)
     for m in ("m1", "m2", "m3", "m4"):
         _mem(conn, m)
     _mem(conn, "m5", status="archived")
-    _scene(conn, "s1")
-    _scene_mem(conn, "s1", "m1")
-    _scene_mem(conn, "s1", "m2")
-    _scene_mem(conn, "s1", "m3")
     conn.commit()
-    edge_dao.backfill_system_edges(conn, top_n=8, min_weight=1)
+    for a, b in (("m1", "m2"), ("m1", "m3"), ("m2", "m3")):
+        edge_dao.create_edge(conn, a, b, "belongs_to", weight=1.0, source="system")
+    conn.commit()
     return conn
 
 

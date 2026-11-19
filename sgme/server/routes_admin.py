@@ -575,14 +575,14 @@ def refine_pause_status(request: Request, _: str = Depends(require_admin_key)):
     }
 
 
-# ---------- 场景状态写端点：已下线（9.6 / D-53，2026-11-05） ----------
+# ---------- 场景写/治理端点：已全部下线（9.6 / D-53 / T-427） ----------
 #
-# POST /v1/admin/scenes/{scene_id}/status 与 POST /v1/admin/scene-gc/trigger
-# 属 9.6 场景层下线批次：本批已摘除 scenes/{id}/status 路由（WebUI 入口同批摘除，
-# 见 ui/src/api/knowledge.ts）；场景状态只保留 GET /v1/admin/scenes 只读列表。
-# 旧客户端打到该路径：未开 compat.enforce_gone → 404（路由不存在），
+# POST /v1/admin/scenes/{scene_id}/status、GET /v1/admin/scene-gc/candidates 与
+# POST /v1/admin/scene-gc/trigger 均已摘除路由；场景层只保留 GET /v1/admin/scenes
+# 只读列表（四表 rename `_retired` 后由只读 DAO 自动回落）。
+# 旧客户端打到这些路径：未开 compat.enforce_gone → 404（路由不存在），
 # 开启后由 compat 守卫（GONE_RULES）回 410 + upgrade_hint。
-# 场景数据本身不删（四表冻结，数据保留可溯源）。
+# 场景数据本身不删（rename 观察期，数据保留可溯源）。
 
 
 # ==================== /v1/admin/demands —— 需求池（0.8 ST-15） ====================
@@ -1043,10 +1043,10 @@ def admin_graph(
     memory_limit: int = Query(3000, ge=1, le=20000),
     _: str = Depends(require_admin_key),
 ):
-    """知识图谱数据（ST-13）：nodes（场景/记忆/wiki 页面）+ links（关联关系）。
+    """知识图谱数据（ST-13）：nodes（wiki 页面）+ links（wiki 页面关联）。
 
-    数据源：scene_memories（场景↔记忆）+ wiki_links（wiki 页面↔页面）。
-    前端 D3 force 布局消费；scene_limit/wiki_limit 控制规模防超大库撑爆。
+    T-427（2026-11-20）：场景层退役，图谱不再返回 scene 节点 / scene_memory 边；
+    scene_limit / memory_limit 仅为 HTTP 契约兼容保留（无作用）。
     """
     mem_conn: sqlite3.Connection = request.app.state.mem_conn
     wiki_conn: sqlite3.Connection | None = getattr(
@@ -1740,86 +1740,6 @@ def raw_fts_rebuild(
         "triggered": "async",
         "incremental": incremental,
         "note": "后台线程幂等重建 raw 正文索引；统计见服务日志 raw_fts 重建完成",
-    })
-
-
-@router.get("/v1/admin/scene-gc/candidates")
-def scene_gc_candidates(
-    request: Request,
-    threshold: float | None = None,
-    limit: int = 100,
-    _: str = Depends(require_admin_key),
-):
-    """预览场景合并候选对（dry-run，不执行合并）。
-
-    读 active 场景向量 → 两两相似度 → 取 >= threshold 的对（默认 scene_gc.merge_threshold）
-    → 贪心去重叠。返回候选对列表 + 当前 active 数 + 是否达 trigger_at。
-    """
-    if not 1 <= limit <= 500:
-        raise api_error("ERR_INVALID_ARGS", "limit 必须在 1..500")
-    from sgme.engine import scene_gc as scene_gc_mod
-    from sgme.data import scene_dao
-
-    mem_conn: sqlite3.Connection = request.app.state.mem_conn
-    cfg = request.app.state.cfg
-    gc_cfg = cfg.get("scene_gc") or {}
-    if threshold is not None:
-        cfg = {**cfg, "scene_gc": {**gc_cfg, "merge_threshold": threshold}}
-    candidates = scene_gc_mod.list_merge_candidates(mem_conn, cfg)
-    active = scene_dao.count_scenes(mem_conn, "active")
-    l2_cfg = cfg.get("scene_aggregate") or {}
-    orange = int((l2_cfg.get("warn_thresholds") or {}).get("orange", 180))
-    trigger_at = int(gc_cfg.get("trigger_at") or orange)
-    return {
-        "active_scenes": active,
-        "trigger_at": trigger_at,
-        "will_run": active >= trigger_at,
-        "threshold": float((cfg.get("scene_gc") or {}).get("merge_threshold", 0.80)),
-        "total_candidates": len(candidates),
-        "showing": candidates[:limit],
-    }
-
-
-@router.post("/v1/admin/scene-gc/trigger")
-def scene_gc_trigger(
-    request: Request,
-    _: str = Depends(require_admin_key),
-):
-    """手动触发场景治理（202 异步；执行中重复触发 409 ERR_CONFLICT）。
-
-    后台线程自建连接执行 run_scene_gc（自动合并 + 归档相似场景），立即返回 202。
-    建议先经 GET /scene-gc/candidates 预览候选对，确认无误再触发。
-    """
-    from sgme.engine import scene_gc as scene_gc_mod
-
-    if scene_gc_mod.RUN_LOCK.locked():
-        raise api_error("ERR_CONFLICT", "场景治理正在执行中，请勿重复触发")
-    cfg = request.app.state.cfg
-    data_dir = getattr(request.app.state, "data_dir", None)
-
-    def _run():
-        from sgme import config as sgme_config
-        from sgme.data import db as db_mod
-        d = data_dir or sgme_config.DATA_DIR
-        mem_conn, _, _ = db_mod.init_databases(d)
-        try:
-            scene_gc_mod.run_scene_gc(mem_conn, cfg)
-        except Exception as e:  # noqa: BLE001
-            scene_gc_mod.logger.warning("场景治理手动触发异常（后台）: %s", e)
-        finally:
-            try:
-                db_mod.close(mem_conn)
-            except Exception:
-                pass
-
-    try:
-        threading.Thread(target=_run, daemon=True, name="sgme-scene-gc-run").start()
-    except Exception as e:
-        raise api_error("ERR_INTERNAL", f"场景治理触发失败: {e}") from e
-    return JSONResponse(status_code=202, content={
-        "triggered": "async",
-        "status": "queued",
-        "note": "后台线程执行场景合并+归档；稍后 GET /v1/admin/scene-gc/candidates 或 /v1/admin/scenes 查看 active 数变化",
     })
 
 

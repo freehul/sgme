@@ -27,7 +27,8 @@ from fastapi.testclient import TestClient
 
 from sgme import config as sgme_config
 from sgme.data import db as db_mod
-from sgme.data import memory_dao, scene_dao
+from sgme.data import memory_dao
+from sgme.data.db import SCENE_RETIRED_DDL
 from sgme.raw import store as raw_store
 from sgme.server.app import create_app
 
@@ -234,19 +235,27 @@ def seeded(app, conns, raw_dir):
     )
     active_ids.append(ttl_stale_id)
 
-    # --- scenes：3 active（heat 各异）+ 1 rejected ---
+    # --- scenes：3 active（heat 各异）+ 1 rejected（只读端点回归；T-427 用原始 SQL 种数据） ---
+    mem_conn.executescript(SCENE_RETIRED_DDL)
     for idx, (sid, heat) in enumerate([("scene_a", 30), ("scene_b", 10), ("scene_c", 20)]):
-        scene_dao.insert_scene(
-            mem_conn, sid, f"标题 {sid}", f"叙事文档全文 {sid}",
-            created_at=_iso(5 - idx), updated_at=_iso(5 - idx),
+        mem_conn.execute(
+            "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (sid, f"标题 {sid}", f"叙事文档全文 {sid}", heat, "active",
+             _iso(5 - idx), _iso(5 - idx)),
         )
-        mem_conn.execute("UPDATE scenes SET heat=? WHERE scene_id=?", (heat, sid))
-    mem_conn.commit()
-    scene_dao.insert_scene(mem_conn, "scene_x", "标题 x", "被判错的场景")
-    scene_dao.update_scene_status(mem_conn, "scene_x", "rejected")
+    mem_conn.execute(
+        "INSERT INTO scenes (scene_id, title, content, heat, status, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("scene_x", "标题 x", "被判错的场景", 1, "rejected", _iso(5), _iso(5)),
+    )
     # scene_a 关联 2 条记忆，scene_b 关联 0 条
-    scene_dao.add_memory_link(mem_conn, "scene_a", active_ids[0])
-    scene_dao.add_memory_link(mem_conn, "scene_a", active_ids[1])
+    for mid in (active_ids[0], active_ids[1]):
+        mem_conn.execute(
+            "INSERT OR IGNORE INTO scene_memories (scene_id, memory_id) VALUES (?,?)",
+            ("scene_a", mid),
+        )
+    mem_conn.commit()
 
     # --- refine_runs：跨周（2026-08-09 周日 / 2026-08-10 周一）+ 多 stage 多状态 ---
     # elapsed_ms：4 条有值（1000/3000/5000/2000）+ error 那条为 NULL（老行形态）

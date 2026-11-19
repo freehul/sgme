@@ -1,9 +1,11 @@
 """migrations/_move_data.py：v0.7 跨库存量数据搬运实现（D2：Python 双连接读写）。
 
-为什么不用 `ATTACH DATABASE`（D2 决策）：
-1. `scenes_fts` 是 `content='scenes'` 的外部内容 FTS5 虚拟表，ATTACH 跨库不会触发目标库同步触发器；
-2. `content_rowid='rowid'` 绑定源库 rowid，跨库搬运必然漂移，光拷数据必错。
-   → 采用「不保 rowid + 搬完统一 `init_scenes_fts(mem)` rebuild」方案（见步骤 6）。
+T-427（2026-11-20）：场景层退役，本脚本只搬普通表（scenes / scene_vectors /
+scene_memories / scene_versions），不再重建 scenes_fts（FTS 与触发器由退役
+rename 脚本清理；回滚脚本负责重建）。
+
+历史决策（保留说明）：不用 `ATTACH DATABASE`，因为外部内容 FTS5 跨库不会触发
+目标库同步触发器且 `content_rowid='rowid'` 会漂移——本批已无 FTS 重建需求。
 
 可重入性：所有写入均为 `INSERT OR IGNORE`，重复执行不产生重复行；
 返回值给出每张表的「源行数 / 目标行数 / 本次新增」三元数据，供调用方核对搬运完整性。
@@ -100,6 +102,14 @@ def move(conn_dict: dict) -> dict:
 
     tables: list[dict] = []
 
+    # 0) 目标库场景四表 + fts_meta：T-427 起不再由 connect_memory 启动建表，
+    #    历史迁移需要显式建表（结构与退役前一致）。
+    from sgme.data.db import SCENE_RETIRED_DDL
+    from sgme.data.search import FTS_META_DDL
+    mem.executescript(SCENE_RETIRED_DDL)
+    mem.executescript(FTS_META_DDL)
+    mem.commit()
+
     # 1) raw_files → session.db（普通表，rowid 无意义，直接 INSERT OR IGNORE）
     tables.append(_move_table(
         src, session, "raw_files",
@@ -132,22 +142,11 @@ def move(conn_dict: dict) -> dict:
         ["version_id", "scene_id", "content", "version_at", "reason"],
     ))
 
-    # 6) scenes_fts 一次搞定（必须在 scenes 数据搬完之后调用）
-    #    init_scenes_fts 内部一次性完成：建虚拟表 + 建 3 个触发器（scenes_ai/ad/au）
-    #    + 回填 content_seg + `INSERT INTO scenes_fts(scenes_fts) VALUES('rebuild')`
-    #    按**目标库当前 rowid** 重建索引。migrations 侧无需写任何一行 FTS 代码。
+    # 6) scenes_fts 不再重建（T-427：场景层退役，FTS/触发器随四表退役清理）。
     fts_rebuilt = False
-    try:
-        from sgme.data.search import init_scenes_fts
-        init_scenes_fts(mem)  # 注意实参是 mem，不是旧的 wiki_conn
-        fts_rebuilt = True
-    except Exception as e:
-        # FTS 构建失败不阻断数据搬运（search_scenes 有 LIKE 兜底），但必须可观测
-        logger.warning("scenes_fts 重建失败（数据已搬运，检索退化为 LIKE 兜底）：%s", e)
 
     # 7) fts_meta 合并（两库 key 不重叠：memory 侧 'segmenter'，wiki 侧 'segmenter_scenes'）
-    #    放在步骤 6 之后：init_scenes_fts 已确保 memory.db 的 fts_meta 表存在，
-    #    且已写入正确的 segmenter_scenes 值 → 这里用 INSERT OR IGNORE 只补缺、不覆盖。
+    #    仅当两库都存在 fts_meta 时补缺；场景 marker 属历史数据，保留不覆盖。
     fts_meta_merged = 0
     if _table_exists(src, "fts_meta") and _table_exists(mem, "fts_meta"):
         rows = src.execute("SELECT key, value FROM fts_meta").fetchall()

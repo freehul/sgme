@@ -7,7 +7,7 @@ import { ApiError } from '../../api/client'
 const route = useRoute()
 const router = useRouter()
 const query = ref('')
-const scopes = ref<string[]>(['memory', 'wiki', 'wiki_pages'])
+const scopes = ref<string[]>(['memory', 'wiki_pages'])
 const match = ref('any')
 const limit = ref(10)
 const results = ref<SearchResult[]>([])
@@ -16,7 +16,7 @@ const loading = ref(false)
 const error = ref('')
 const searched = ref(false)
 
-const SCOPE_LABEL: Record<string, string> = { memory: '记忆', wiki: '场景', wiki_pages: '知识库' }
+const SCOPE_LABEL: Record<string, string> = { memory: '记忆', wiki_pages: '知识库' }
 
 async function doSearch() {
   if (!query.value.trim()) return
@@ -46,7 +46,6 @@ function openMemory(r: SearchResult) {
     return
   }
   if (r.memory_id) router.push(`/memories/${r.memory_id}`)
-  if (r.scene_id) router.push(`/scenes/${r.scene_id}`)
 }
 
 // score 可能为 undefined，需判空后再格式化，避免渲染崩溃
@@ -98,7 +97,7 @@ watch(() => route.query, syncFromQuery, { immediate: true })
     <div v-if="routes.length" class="routes">路由: <span v-for="r in routes" :key="r" class="route">{{ r }}</span></div>
 
     <div v-if="results.length" class="list">
-      <div v-for="r in results" :key="`${r.source}-${r.memory_id || r.scene_id || r.page_id}`" class="card clickable" @click="openMemory(r)">
+      <div v-for="r in results" :key="`${r.source}-${r.memory_id || r.page_id}`" class="card clickable" @click="openMemory(r)">
         <div class="card-head">
           <span class="rank">#{{ r.rank }}</span>
           <span class="scope">{{ SCOPE_LABEL[r.source] || r.source }}</span>

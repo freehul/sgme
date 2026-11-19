@@ -146,9 +146,8 @@ export interface SearchTrace {
 export interface SearchResult {
   rank: number
   score: number
-  source: string // memory | wiki | wiki_pages
+  source: string // memory | wiki_pages
   memory_id?: string
-  scene_id?: string
   page_id?: string
   title?: string
   category?: string | null

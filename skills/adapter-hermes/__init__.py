@@ -889,12 +889,11 @@ class SGMEProvider(MemoryProvider):
             self.credential_get_enabled = _bool_arg(cfg["credential_get_enabled"], False)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """每轮 LLM 前召回相关记忆 + 匹配场景（/v1/search，双 scope）。
+        """每轮 LLM 前召回相关记忆 + wiki 页面（/v1/search，双 scope）。
 
-        T-42 修正（2026-08-13 用户定）：场景注入 = 对话内容驱动——用当前
-        对话语义检索 L2 场景（wiki scope），命中哪个场景就注入哪个，
-        不是会话打开固定注入。时间预算 <100ms 目标：本地 HTTP 达标；
-        失败返回空串不阻塞。
+        T-427（2026-11-20）：场景层退役，`wiki` scope 收敛为 wiki_pages；
+        不再渲染「相关场景（L2 匹配）」块。
+        时间预算 <100ms 目标：本地 HTTP 达标；失败返回空串不阻塞。
         """
         if not query or not self._probe():
             return ""
@@ -913,26 +912,18 @@ class SGMEProvider(MemoryProvider):
             results = data.get("results", [])
             if not results:
                 return ""
-            # 按来源分块：记忆事实 vs L2 场景（语义匹配）
+            # 场景层已退役（T-427）：所有命中统一进「相关记忆」块；
+            # 历史 source='wiki_scene' 结果不再产生，遇到也按普通条目处理。
             mem_lines: List[str] = []
-            scene_lines: List[str] = []
             for it in results:
-                src = it.get("source", "")
                 c = it.get("content", "")
                 if not c:
                     continue
-                if src == "wiki_scene":
-                    title = it.get("title", "")
-                    scene_lines.append(f"- [{title}] {c[:120]}")
-                else:
-                    mem_lines.append(f"- {c}")
+                mem_lines.append(f"- {c}")
             lines: List[str] = []
             if mem_lines:
                 lines.append("# 相关记忆（SGME）")
                 lines.extend(mem_lines[:5])
-            if scene_lines:
-                lines.append("# 相关场景（L2 匹配）")
-                lines.extend(scene_lines[:3])
             return "\n".join(lines)
         except Exception as e:
             logger.warning("sgme prefetch 失败: %s", e)

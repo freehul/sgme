@@ -264,7 +264,7 @@ onMounted(() => {
             </div>
             <div class="badge" :class="health.vector.available ? 'ok' : 'err'">
               <span class="dot" /> 向量
-              <span class="sub">{{ health.vector.engine }}（{{ health.vector.memory_vectors + health.vector.scene_vectors }} 条）</span>
+              <span class="sub">{{ health.vector.engine }}（{{ health.vector.memory_vectors }} 条）</span>
             </div>
             <div class="badge" :class="health.refinement.heartbeat_ok ? 'ok' : 'err'">
               <span class="dot" /> 提炼心跳
@@ -286,7 +286,7 @@ onMounted(() => {
           <div v-else class="dream-list">
             <div v-for="d in dreamReports.reports" :key="d.date" class="dream-card">
               <div class="dream-date">{{ d.date }}</div>
-              <div class="dream-meta">记忆 {{ d.memory_count }} / 场景 {{ d.scene_count }} / 提炼 {{ d.refined_count }} / 失败 {{ d.error_count }}</div>
+              <div class="dream-meta">记忆 {{ d.memory_count }} / 提炼 {{ d.refined_count }} / 失败 {{ d.error_count }}</div>
               <p v-if="d.summary" class="dream-summary">{{ d.summary }}</p>
             </div>
           </div>

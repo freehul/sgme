@@ -4,13 +4,13 @@
 e2e 测试会话（e2e-v1/v2/smoke）衍生的记忆与场景是测试数据污染，
 按「打标记不删除」原则标记 rejected：不参与查询/时间线，数据保留可溯源。
 
-v0.7 三库拆分：raw_files 读 session.db（sconn），
-memories / scenes 系列读 memory.db（mconn）。
+v0.7 三库拆分：raw_files 读 session.db（sconn），memories 读 memory.db（mconn）。
+T-427（2026-11-20）：场景层退役，原场景标记段已摘除。
 """
 import sys
 sys.path.insert(0, '.')
 from sgme.data.db import get_memory_conn, get_session_conn
-from sgme.data import memory_dao, scene_dao
+from sgme.data import memory_dao
 
 mconn = get_memory_conn()
 sconn = get_session_conn()
@@ -34,22 +34,10 @@ for fid, key in e2e:
             memory_dao.reject_memory(mconn, mid, "e2e 测试数据污染")
             marked_mem += 1
 
-# 3. 标记相关场景为 rejected（内容含 e2e 测试特征；scenes 现居 memory.db）
-scenes = mconn.execute(
-    "SELECT scene_id FROM scenes WHERE status='active' AND (content LIKE '%MCP 写入测试%' OR content LIKE '%e2e%')"
-).fetchall()
-marked_scene = 0
-for (sid,) in scenes:
-    scene_dao.update_scene_status(mconn, sid, "rejected")
-    marked_scene += 1
-
 print(f"标记记忆: {marked_mem} 条 → rejected")
-print(f"标记场景: {marked_scene} 个 → rejected")
 
 # 4. 验证
 print()
 print("=== 验证 ===")
 print("rejected 记忆总数:", mconn.execute("SELECT COUNT(*) FROM memories WHERE status='rejected'").fetchone()[0])
-print("rejected 场景总数:", mconn.execute("SELECT COUNT(*) FROM scenes WHERE status='rejected'").fetchone()[0])
 print("active 记忆:", mconn.execute("SELECT COUNT(*) FROM memories WHERE status='active'").fetchone()[0])
-print("active 场景:", mconn.execute("SELECT COUNT(*) FROM scenes WHERE status='active'").fetchone()[0])

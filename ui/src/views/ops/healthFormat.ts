@@ -1,5 +1,5 @@
 // 运维健康总览展示辅助（纯函数，便于独立校验）
-// 数据契约：GET /v1/admin/ops/health-overview（storage / scenes 两段）。
+// 数据契约：GET /v1/admin/ops/health-overview（storage 段为必需；scenes 段已退役）
 import type { OpsHealthOverview } from '../../api/ops'
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
@@ -25,29 +25,13 @@ export function formatCount(n: number | null | undefined): string {
   return n.toLocaleString('zh-CN')
 }
 
-// 兼容期阶段 → 中文标注（值来自 sgme/compat.py::compat_phase 的 phase 字段）
-const COMPAT_PHASE_LABELS: Record<string, string> = {
-  pre_stable: '未定稳定期（pre_stable）',
-  active: '兼容期内（active）',
-  expired: '兼容期已过期（expired）',
-  unknown: '未知（stable_since 非法）',
-}
-
-export function compatPhaseLabel(phase: string | null | undefined): string {
-  const key = String(phase || '').trim()
-  if (!key) return '—'
-  return COMPAT_PHASE_LABELS[key] || key
-}
-
-// 响应是否可用：storage / scenes 两段都必须存在，否则走空态（不显示一堆 0 误导）
+// 响应是否可用：storage 段必须存在，否则走空态（不显示一堆 0 误导）
 export function isOverviewUsable(
   data: OpsHealthOverview | null | undefined,
 ): data is OpsHealthOverview {
   return (
     !!data &&
     typeof data.storage === 'object' &&
-    data.storage !== null &&
-    typeof data.scenes === 'object' &&
-    data.scenes !== null
+    data.storage !== null
   )
 }

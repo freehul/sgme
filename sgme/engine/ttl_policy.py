@@ -1,7 +1,8 @@
 """TTL 回填策略（T-205 C2 / v0.4 案 A 变体）—— 全项目单一实现。
 
-历史包袱：此前 l3_adjudicate.py 与 scene_aggregate.py 各有一份 ``_backfill_ttl``（同签名同语义），
-改一处漏一处即口径漂移（T-203 F1 同款教训）。现收敛为本模块，两处均委托。
+历史包袱：此前 l3_adjudicate.py 与已退役的 scene_aggregate.py 各有一份
+``_backfill_ttl``（同签名同语义），改一处漏一处即口径漂移（T-203 F1 同款教训）。
+现收敛为本模块，由 l3_adjudicate 委托。
 
 C2 规则（2026-09-25 用户批，v0.4 决策①）：
 - **episodic = min(维度默认 TTL, 30d)**——不可一律 30d（会覆盖 status 7d

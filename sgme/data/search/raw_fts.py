@@ -9,7 +9,7 @@
 设计：
 - 虚表形态：**contentful FTS5**（正文在磁盘 ``raw/<subdir>/<file_id>.md``，
   不在 DB 表内，无法用 external content）。索引列 ``body_seg``（segment()
-  分词，与 memories_fts / scenes_fts 同口径）+ ``file_id`` UNINDEXED。
+  分词，与 memories_fts 同口径）+ ``file_id`` UNINDEXED。
 - 增量维护：``raw_fts_state(file_id, body_hash)`` 判重——正文只增不改
   （增量段追加），hash 变了才重建该行，重跑幂等。
 - 降级：FTS5 不可用 / 表为空 → 检索退回元数据 LIKE（调用方 session_dao

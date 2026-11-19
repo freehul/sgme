@@ -16,8 +16,9 @@
   v0.6 行为是返回空结果（tests/test_server.py::test_search_empty_query_returns_empty）
 - scopes: 检索层列表，HTTP 缺省 ["memory","skills"]；MCP 缺省 ["memory"]（scopes 参数已开放，T-207 ②核实；"sessions" 层 T-207 ① 起支持正文 FTS）
   - "memory" → 记忆池（FTS5 BM25 + 维度标签过滤 + 向量 + RRF + 溯源 trace）
-  - "wiki" / "scenes" → wiki 场景叙事文档（L2，FTS + LIKE 兜底 + 预留向量路）
-  - "wiki_pages" → wiki 知识库页面（wiki_pages 表，T-34 新增；FTS5 BM25 + LIKE 兜底，
+  - "wiki" → wiki 知识库页面（wiki_pages 表；FTS5 BM25 + LIKE 兜底。
+    T-427 起场景层退役，wiki 不再展开 L2 场景；历史别名 "scenes" 静默忽略）
+  - "wiki_pages" → 仅 wiki 知识库页面（与 "wiki" 等价，保留给只要页面的调用方；
     wiki_conn 为 None / 检索失败 → 该层空结果，不影响其他层）
   - "sessions" → L0 原始层会话（raw_files 索引，ST-33 新增；LIKE 子串匹配
     元数据列 + 读盘正文摘要 best-effort，session_conn 为 None / 检索失败 →
@@ -61,7 +62,7 @@ W06（2026-11-08，契约《SGME2.0-上下文归属与因果边》§5）记忆�
   → HTTP 500 / MCP error JSON。v0.6 时这类异常由全局异常处理器兜底为 500，
   本模块统一收敛为 ``ERR_INTERNAL`` 错误码（状态码不变，错误形态归一）
 
-依赖：调 ``sgme.data.search``（search_memories / search_scenes）+ ``sgme.wiki.fts``
+依赖：调 ``sgme.data.search``（search_memories）+ ``sgme.wiki.fts``
 （search_wiki_fts，扩展模块检索，同 operations/wiki.py 先例），engine 是禁区。
 副作用：检索为纯读路径（向量不可达时由业务层自动降级 BM25/LIKE）；唯一例外是
 T-252 记忆调用统计——memory 层命中记入 ``memory_usage_daily``（best-effort 全静默
@@ -440,7 +441,7 @@ def search(
     agent_id: str | None = None,
     caller: str | None = None,
 ) -> OperationResult:
-    """混合检索：记忆池（BM25+向量+RRF）+ wiki 场景（L2）+ wiki 知识库页面
+    """混合检索：记忆池（BM25+向量+RRF）+ wiki 知识库页面
     + L0 原始层会话（raw_files 索引，ST-33）+ 技能（git 源 SKILL.md，ST-36 M2，
     B114 起不再经 wiki 桥接）。
 
@@ -449,17 +450,16 @@ def search(
     由入口层取出后显式传入——照抄 health.py 样板。
 
     Args:
-        mem_conn: memory.db 连接（v0.7 三库拆分后 scenes 系列同在 memory.db，
-            故记忆池与 wiki 场景共用本连接）。
+        mem_conn: memory.db 连接（记忆池；场景四表已退役，仅回滚期保留）。
         session_conn: session.db 连接（溯源 trace 查 raw_files 用）。
         cfg: 运行时配置（向量检索开关 / RRF k 等，透传业务层）。
         query: 检索词。空串**不报错**（v0.6 行为：返回空结果）。
         scopes: 检索层列表；None → ["memory"]（pydantic 缺省语义）。
-            **层语义（T4，2026-11-13 定稿）**：
+            **层语义（T-427，2026-11-20 定稿）**：
             - ``memory`` 记忆池；``sessions`` L0 原始层；``skills`` 技能库；
-            - ``wiki`` / ``scenes`` = 知识支柱全层：**场景层 + 页面层**（wiki 展开
-              到 wiki_pages，显式再传 wiki_pages 不重复检索）；
-            - ``wiki_pages`` 仅页面层（保留给只要页面的调用方）。
+            - ``wiki`` = wiki 知识库页面层（场景层已退役，不再展开 L2 场景）；
+            - ``wiki_pages`` 仅页面层（与 ``wiki`` 等价，保留给只要页面的调用方）；
+            - 历史 ``scenes`` scope 静默忽略（场景层退役，不再返回 wiki_scene）。
             未知 scope 值被忽略（v0.6 行为），不报错。
         dimensions: 维度标签过滤（可选）。
         match: "any"=命中任一维度 / "all"=全部命中，缺省 any。
@@ -470,15 +470,14 @@ def search(
             设边界时 occurred_at 为 NULL 的记忆不返回。
         client: 可选 httpx 客户端（向量 embed 注入点；缺省 None = v0.6 行为）。
         wiki_conn: wiki.db 连接（wiki_pages 层用）。None 或该层检索失败 →
-            空结果，不影响 memory / scenes 层（T-34：wiki 扩展不可用不拖累整体）。
+            空结果，不影响 memory 层（T-34：wiki 扩展不可用不拖累整体）。
         agent_id: 请求方 agent 标识（T-140 多 Agent scope 过滤；缺省 None=不过滤）。
         caller: 记忆调用统计（T-252）用的调用方标识；缺省 None → 回落 agent_id
             （HTTP 按 key 反查链路复用），两者皆空 → 统计落 unknown。
 
     Returns:
         OperationResult(ok=True)，data 为协议无关信息超集：
-        - results: 合并结果列表（memory → wiki 场景 → wiki_pages → sessions，
-          按 scopes 顺序）
+        - results: 合并结果列表（memory → wiki_pages → sessions，按 scopes 顺序）
         - routes: 各结果 routes 的去重并集（保序；可能为空列表）
         - rrf_k: HTTP meta 用的 RRF k（历史硬编码 60，见模块 docstring）
         - note: 零命中时才追加的空结果可行动引导（T-143②，含可选模型 Key
@@ -531,21 +530,12 @@ def search(
                 "search",
                 caller or agent_id,
             )
-        # 层 2：wiki 场景叙事文档（L2；"scenes" 为历史别名 scope，两者等价）
-        # T4（2026-11-13）：`wiki` 语义定为「知识支柱全层」——场景层 + 页面层
-        # （历史上 wiki 只查场景、wiki_pages 要另传，导致 q=时间线 漏召回 D-26
-        # 这类只在页面层的知识）。显式传 wiki_pages 时与展开结果**不重复检索**。
-        include_scenes = "wiki" in scopes or "scenes" in scopes
-        include_pages = "wiki_pages" in scopes or include_scenes
-        if include_scenes:
-            results.extend(
-                search_mod.search_scenes(
-                    mem_conn, query, limit=limit, cfg=cfg, client=client,
-                )
-            )
-        # 层 3：wiki 知识库页面（wiki_pages 表，T-34 新增）
+        # 层 2：wiki 知识库页面（wiki_pages 表，T-34 新增）
+        # T-427（2026-11-20）：场景层正式退役——`wiki` 语义收敛为「只走 wiki_pages」，
+        # 历史 `scenes` scope 静默忽略，不再返回 wiki_scene 结果。
         # 容错隔离：wiki_conn 为 None 或检索失败 → 该层空结果 + WARNING，
-        # 不拖累 memory / scenes 层（wiki 扩展不可用≠整体搜索失败）。
+        # 不拖累 memory 层（wiki 扩展不可用≠整体搜索失败）。
+        include_pages = "wiki_pages" in scopes or "wiki" in scopes
         if include_pages:
             results.extend(_search_wiki_pages(wiki_conn, query, limit))
         # 层 4：L0 原始层会话（raw_files 索引，ST-33 新增）

@@ -1144,10 +1144,10 @@ def create_app(
         keep_days=int((cfg.get("server", {}) or {}).get("security_log_keep_days", 0) or 0),
     )
 
-    # 初始化 FTS5（search 模块）：记忆层 + 场景层（v5）+ raw 正文层（T-207 ①）
-    from sgme.data.search import init_fts, init_scenes_fts, raw_fts as raw_fts_mod
+    # 初始化 FTS5（search 模块）：记忆层 + raw 正文层（T-207 ①）
+    # 场景层已退役（T-427，2026-11-20）：不再初始化 scenes_fts。
+    from sgme.data.search import init_fts, raw_fts as raw_fts_mod
     init_fts(mem_conn)
-    init_scenes_fts(mem_conn)
     raw_fts_mod.init_raw_fts(session_conn)
     _start_raw_fts_background_rebuild(app)
 

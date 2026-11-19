@@ -17,8 +17,8 @@ DDL 累积式扩展（IF NOT EXISTS 幂等）；schema_versions 为迁移版本�
   （存量数据搬运由项目根 `migrations/0001_split_three_dbs.py` 一次性完成，本模块只管表结构就绪）
 
 分层铁律（勿越界）：本模块**只建普通表、只管「列的存在」**。
-FTS5 虚拟表（memories_fts / scenes_fts / wiki_fts）及其同步触发器、分词回填、rebuild
-一律归 search / wiki 模块（`sgme/search/init_fts`、`sgme/search/init_scenes_fts`），
+FTS5 虚拟表（memories_fts / wiki_fts）及其同步触发器、分词回填、rebuild
+一律归 search / wiki 模块（`sgme/search/init_fts`），
 db.py 保持零 FTS、零 search 依赖。
 """
 
@@ -179,47 +179,9 @@ CREATE TABLE IF NOT EXISTS refine_chunk_failures (
   UNIQUE(file_id, chunk_sha));
 CREATE INDEX IF NOT EXISTS idx_refine_chunk_failures_file ON refine_chunk_failures(file_id, last_at);
 
--- ============ v0.7 三库拆分（B2）：L2 场景系列由 wiki.db 迁入 memory.db ============
--- ⚠️ 此处**只追加普通表**。scenes_fts 虚拟表与 scenes_ai/ad/au 触发器【不在此处】——
---    归 search 层 `sgme/search/init_scenes_fts()`，与 memories_fts 对称。
---    若在此抢先建 scenes_fts，init_scenes_fts 会立刻 DROP 重建（重复建表 + 职责错位）。
-
--- L2 场景叙事文档（精炼层标准形态，T10 接入）
--- content_seg：jieba 分词列，storage 只管列存在，内容由 search 回填
-CREATE TABLE IF NOT EXISTS scenes (
-  scene_id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  heat INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL DEFAULT 'active',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  last_memory_added_at TEXT,
-  content_seg TEXT);
-CREATE INDEX IF NOT EXISTS idx_scenes_status ON scenes(status, updated_at DESC);
-
--- 场景向量（L2 语义检索，对称 memory_vectors；普通表，embedding 存 BLOB，非 vec0 虚拟表）
-CREATE TABLE IF NOT EXISTS scene_vectors (
-  scene_id TEXT PRIMARY KEY REFERENCES scenes(scene_id),
-  embedding BLOB NOT NULL,
-  model TEXT NOT NULL,
-  dims INTEGER NOT NULL,
-  embedded_at TEXT NOT NULL);
-
--- 场景-记忆双向溯源（D8 决策 4）
-CREATE TABLE IF NOT EXISTS scene_memories (
-  scene_id TEXT NOT NULL REFERENCES scenes(scene_id),
-  memory_id TEXT NOT NULL,
-  PRIMARY KEY (scene_id, memory_id));
-CREATE INDEX IF NOT EXISTS idx_scene_memories_memory ON scene_memories(memory_id);
-
--- 场景历史快照（L2 UPDATE/MERGE 前置归档，提供场景级 diff 审计）
-CREATE TABLE IF NOT EXISTS scene_versions (
-  version_id TEXT PRIMARY KEY,
-  scene_id TEXT NOT NULL REFERENCES scenes(scene_id),
-  content TEXT NOT NULL,
-  version_at TEXT NOT NULL,
-  reason TEXT);
+-- ⚠️ T-427（2026-11-20）：场景层正式退役，四表 DDL 已移出启动建表脚本，
+--    迁入 `SCENE_RETIRED_DDL`（仅供回滚脚本 / v0.7 历史迁移使用）。
+--    这样生产 rename `_retired` 后，`connect_memory` 不会重建空表覆盖只读视图。
 
 -- v0.7 新增：记忆使用统计 sidecar（A2 决策）
 -- 只在 inject 链路写 last_injected_at / recall_count（best-effort，不阻塞主流程）；
@@ -325,6 +287,42 @@ CREATE TABLE IF NOT EXISTS llm_usage_daily (
   PRIMARY KEY (day, provider, model, stage));
 """
 
+#: 已退役场景四表 DDL（T-427：**仅供回滚脚本 / v0.7 历史迁移**，不在启动时执行）。
+#: 30 天观察期内生产表已 rename 为 `*_retired`；回滚时据此恢复原名与结构。
+SCENE_RETIRED_DDL = """
+CREATE TABLE IF NOT EXISTS scenes (
+  scene_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  heat INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_memory_added_at TEXT,
+  content_seg TEXT);
+CREATE INDEX IF NOT EXISTS idx_scenes_status ON scenes(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS scene_vectors (
+  scene_id TEXT PRIMARY KEY REFERENCES scenes(scene_id),
+  embedding BLOB NOT NULL,
+  model TEXT NOT NULL,
+  dims INTEGER NOT NULL,
+  embedded_at TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS scene_memories (
+  scene_id TEXT NOT NULL REFERENCES scenes(scene_id),
+  memory_id TEXT NOT NULL,
+  PRIMARY KEY (scene_id, memory_id));
+CREATE INDEX IF NOT EXISTS idx_scene_memories_memory ON scene_memories(memory_id);
+
+CREATE TABLE IF NOT EXISTS scene_versions (
+  version_id TEXT PRIMARY KEY,
+  scene_id TEXT NOT NULL REFERENCES scenes(scene_id),
+  content TEXT NOT NULL,
+  version_at TEXT NOT NULL,
+  reason TEXT);
+"""
+
 # session.db 建表 DDL（v0.7 新建，B1）：引擎调度状态库
 # raw_files 由 wiki.db 迁入；refine_cursor 为 v0.7 新增（A3：阶段 1 只建表，不写 DAO、不接调度）
 SESSION_DDL = """
@@ -355,7 +353,7 @@ CREATE TABLE IF NOT EXISTS refine_cursor (
 
 # wiki.db 建表 DDL（v0.7 收缩，B3）：仅 wiki 扩展模块自有普通表
 # raw_files → session.db；scenes 系列 → memory.db（见 SESSION_DDL / MEMORY_DDL）。
-# ⚠️ wiki_fts 虚拟表【不进此处】：由阶段 3 wiki 模块自建（对称 init_scenes_fts）。
+# ⚠️ wiki_fts 虚拟表【不进此处】：由阶段 3 wiki 模块自建。
 WIKI_DDL = """
 CREATE TABLE IF NOT EXISTS wiki_pages (
   page_id TEXT PRIMARY KEY,

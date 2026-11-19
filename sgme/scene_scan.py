@@ -80,11 +80,17 @@ def scan_db(data_dir: Path | str) -> dict:
         out: dict = {"available": True, "path": str(db_path), "tables": {}}
         for table in ("scenes", "scene_vectors", "scenes_fts", "memory_edges",
                       "memory_pages"):
-            if not _has_table(conn, table):
+            # T-427：四表 rename `_retired` 后仍按原键汇报（冻结数据可观测）
+            actual = table
+            if not _has_table(conn, actual) and _has_table(conn, f"{table}_retired"):
+                actual = f"{table}_retired"
+            if not _has_table(conn, actual):
                 out["tables"][table] = {"exists": False}
                 continue
-            count = conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+            count = conn.execute(f"SELECT COUNT(*) c FROM {actual}").fetchone()["c"]
             out["tables"][table] = {"exists": True, "rows": count}
+            if actual != table:
+                out["tables"][table]["retired_name"] = actual
         if _has_table(conn, "memory_edges"):
             rows = conn.execute(
                 "SELECT source, COUNT(*) c FROM memory_edges GROUP BY source"
@@ -103,21 +109,21 @@ def scan_db(data_dir: Path | str) -> dict:
 CHECKLIST = [
     {
         "item": "端点 410",
-        "detail": "POST /v1/admin/scenes/{id}/status（2026-11-05 已摘除；enforce_gone 开启时 410）、"
-                  "POST /v1/admin/scene-gc/trigger（保留为手动治理入口，待 9.6 批次决定）",
-        "action": "scenes 写端点已移除；scene-gc 两键仍在 A5『可下架』清单，下批处理",
+        "detail": "POST /v1/admin/scenes/{id}/status、GET /v1/admin/scene-gc/candidates、"
+                  "POST /v1/admin/scene-gc/trigger 均已摘除（T-427，2026-11-20）",
+        "action": "写/治理端点全部移除；enforce_gone 开启时由 compat 守卫回 410 + upgrade_hint",
         "owner": "server",
     },
     {
         "item": "只读保留",
-        "detail": "GET /v1/admin/scenes（WebUI 仍看冻结数据）",
+        "detail": "GET /v1/admin/scenes（WebUI 仍看冻结数据；rename 后 DAO 自动回落 `_retired`）",
         "action": "保留，不删列表端点",
         "owner": "server",
     },
     {
-        "item": "四表冻结",
-        "detail": "scenes / scene_vectors / scenes_fts / 场景边",
-        "action": "生产置只读 + deprecated_2_0 标记（库里打标，不删行）",
+        "item": "四表退役",
+        "detail": "scenes / scene_vectors / scene_memories / scene_versions → rename `_retired`",
+        "action": "先清 scenes_fts/触发器，再 rename（只 rename 不 drop）；30 天观察期后可回滚",
         "owner": "prod",
     },
     {

@@ -50,7 +50,7 @@ _COLUMNS: str = (
 
 
 def _now_iso() -> str:
-    """UTC ISO 8601 时间戳（与 db.py / scene_dao 同格式，定宽可字典序比较）。"""
+    """UTC ISO 8601 时间戳（与 db.py 同格式，定宽可字典序比较）。"""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -60,7 +60,7 @@ def new_demand_id() -> str:
 
 
 def _row_to_dict(row: Any, cursor: sqlite3.Cursor | None = None) -> dict[str, Any]:
-    """sqlite3.Row / 裸 tuple → dict（对齐 scene_dao.get_scene 的容错写法）。"""
+    """sqlite3.Row / 裸 tuple → dict（对齐数据层既有容错写法）。"""
     if isinstance(row, sqlite3.Row):
         return dict(row)
     cols = [d[0] for d in cursor.description] if cursor is not None else []

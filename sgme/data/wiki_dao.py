@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """sgme/data/wiki_dao.py 补齐：wiki_pages / wiki_links CRUD（v0.7 §10 wiki 扩展模块）。
 
-v0.7 三库拆分后本模块被清空（raw_files → session_dao，scenes 系列 → scene_dao）。
+v0.7 三库拆分后本模块被清空（raw_files → session_dao，scenes 系列 → scene_readonly_dao）。
 阶段 3（2026-08-08）补齐 wiki 扩展专用函数，对应 WIKI_DDL 收缩后的两张表。
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ def _now_iso() -> str:
 
 
 def _seg(text: str | None) -> str | None:
-    """jieba 分词（对称 memory_dao/scene_dao；jieba 不可用时原样返回）。"""
+    """jieba 分词（对称 memory_dao；jieba 不可用时原样返回）。"""
     if not text:
         return None
     try:

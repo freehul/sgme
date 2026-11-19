@@ -1,11 +1,8 @@
-"""T9 测试：v0.4 storage 扩展（六表 DDL + 索引 + DAO CRUD）。
+"""T9 测试：v0.4 storage 扩展（向量/信号表 + 索引 + DAO CRUD）。
 
 覆盖：
-- 建表自检：scenes/scene_memories/scene_versions/memory_vectors/signal_events/signal_subscribers
-- 索引存在性：idx_scenes_status/idx_scene_memories_memory/idx_signal_events_ts/idx_signal_events_type
-- scenes CRUD：insert（heat=1）/ update_content（heat+1）/ update_status（archived）
-- scene_memories：add_memory_link 幂等
-- scene_versions：insert + list
+- 建表自检：memory_vectors/signal_events/signal_subscribers（场景四表已退役，不再自动创建）
+- 索引存在性：idx_signal_events_ts/idx_signal_events_type
 - memory_vectors：upsert + get + list_without_vector
 - signal_events：insert + list_since（按 ts / event_id / type 过滤）+ mark_consumed
 - signal_subscribers：upsert + get + list_unconsumed（游标推进）
@@ -22,7 +19,7 @@ import pytest
 
 from sgme import config
 from sgme.data import db as db_mod
-from sgme.data import memory_dao, scene_dao, signal_dao
+from sgme.data import memory_dao, signal_dao
 
 
 # ---------- fixtures ----------
@@ -53,13 +50,13 @@ def mem_with_registry(mem_conn, cfg):
     return mem_conn
 
 
-# ---------- 建表自检：六表存在 ----------
+# ---------- 建表自检：场景四表已退役；向量/信号表存在 ----------
 
-def test_memory_db_has_v04_scene_tables(mem_conn):
-    """v0.7 三库拆分：scenes / scene_memories / scene_versions 迁入 memory.db。"""
+def test_memory_db_does_not_create_retired_scene_tables(mem_conn):
+    """T-427：场景层退役，connect_memory 不再自动建 scenes 四表（避免 rename 后被空表覆盖）。"""
     tables = set(db_mod.list_tables(mem_conn))
-    for t in ("scenes", "scene_memories", "scene_versions"):
-        assert t in tables, f"缺表 {t}"
+    for t in ("scenes", "scene_memories", "scene_versions", "scene_vectors"):
+        assert t not in tables, f"{t} 不应由启动 DDL 自动创建"
 
 
 def test_memory_db_has_v04_signal_vector_tables(mem_conn):
@@ -70,16 +67,6 @@ def test_memory_db_has_v04_signal_vector_tables(mem_conn):
 
 
 # ---------- 索引存在性 ----------
-
-def test_scene_v04_indexes(mem_conn):
-    """scenes / scene_memories 关键索引就位（v0.7 起随表迁入 memory.db）。"""
-    cur = mem_conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
-    )
-    idx = {r["name"] for r in cur.fetchall()}
-    for must in ("idx_scenes_status", "idx_scene_memories_memory"):
-        assert must in idx, f"缺索引 {must}"
-
 
 def test_memory_v04_indexes(mem_conn):
     """signal_events 关键索引就位。"""
@@ -100,184 +87,6 @@ def test_schema_version_is_current(mem_conn):
 
 def test_schema_version_wiki_is_current(wiki_conn):
     assert db_mod.schema_version(wiki_conn) == db_mod.SCHEMA_VERSION
-
-
-# ---------- scenes CRUD ----------
-
-def test_insert_scene_defaults(mem_conn):
-    """新建场景 heat=1, status='active'。"""
-    sid = str(uuid.uuid4())
-    scene_dao.insert_scene(mem_conn, sid, "测试场景", "场景正文")
-    s = scene_dao.get_scene(mem_conn, sid)
-    assert s is not None
-    assert s["scene_id"] == sid
-    assert s["title"] == "测试场景"
-    assert s["content"] == "场景正文"
-    assert s["heat"] == 1
-    assert s["status"] == "active"
-    assert s["created_at"] is not None
-    assert s["updated_at"] is not None
-    assert s["last_memory_added_at"] is None
-
-
-def test_get_scene_unknown_returns_none(mem_conn):
-    assert scene_dao.get_scene(mem_conn, "nope") is None
-
-
-def test_update_scene_content_heat_increment(mem_conn):
-    """更新场景内容后 heat 自增 +1。"""
-    sid = str(uuid.uuid4())
-    scene_dao.insert_scene(mem_conn, sid, "t", "旧内容")
-    ok = scene_dao.update_scene_content(mem_conn, sid, "新内容")
-    assert ok
-    s = scene_dao.get_scene(mem_conn, sid)
-    assert s["content"] == "新内容"
-    assert s["heat"] == 2  # 1 + 1
-
-
-def test_update_scene_content_custom_heat_increment(mem_conn):
-    """合并场景时调用方可传 heat_increment（如 sum+1）。"""
-    sid = str(uuid.uuid4())
-    scene_dao.insert_scene(mem_conn, sid, "t", "c1")
-    # 模拟 MERGE：原 heat=1 + 另一场景 heat=2 + 1 = 4
-    ok = scene_dao.update_scene_content(mem_conn, sid, "合并后", heat_increment=3)
-    assert ok
-    s = scene_dao.get_scene(mem_conn, sid)
-    assert s["heat"] == 4
-
-
-def test_update_scene_content_with_last_memory_added_at(mem_conn):
-    """更新内容时同步更新 last_memory_added_at。"""
-    sid = str(uuid.uuid4())
-    scene_dao.insert_scene(mem_conn, sid, "t", "c")
-    scene_dao.update_scene_content(
-        mem_conn, sid, "c2", last_memory_added_at="2026-08-04T10:00:00Z"
-    )
-    s = scene_dao.get_scene(mem_conn, sid)
-    assert s["last_memory_added_at"] == "2026-08-04T10:00:00Z"
-
-
-def test_update_scene_status_archived(mem_conn):
-    """软删除：status=archived。"""
-    sid = str(uuid.uuid4())
-    scene_dao.insert_scene(mem_conn, sid, "t", "c")
-    ok = scene_dao.update_scene_status(mem_conn, sid, "archived")
-    assert ok
-    s = scene_dao.get_scene(mem_conn, sid)
-    assert s["status"] == "archived"
-
-
-def test_update_scene_status_restore(mem_conn):
-    """软删除可恢复：archived → active。"""
-    sid = str(uuid.uuid4())
-    scene_dao.insert_scene(mem_conn, sid, "t", "c")
-    scene_dao.update_scene_status(mem_conn, sid, "archived")
-    scene_dao.update_scene_status(mem_conn, sid, "active")
-    s = scene_dao.get_scene(mem_conn, sid)
-    assert s["status"] == "active"
-
-
-def test_list_active_scenes(mem_conn):
-    """list_active_scenes 只返回 active，按 updated_at DESC。"""
-    scene_dao.insert_scene(mem_conn, "s1", "t1", "c1",
-                          created_at="2026-08-01T00:00:00Z", updated_at="2026-08-01T00:00:00Z")
-    scene_dao.insert_scene(mem_conn, "s2", "t2", "c2",
-                          created_at="2026-08-02T00:00:00Z", updated_at="2026-08-02T00:00:00Z")
-    scene_dao.insert_scene(mem_conn, "s3", "t3", "c3",
-                          created_at="2026-08-03T00:00:00Z", updated_at="2026-08-03T00:00:00Z")
-    scene_dao.update_scene_status(mem_conn, "s2", "archived")
-    active = scene_dao.list_active_scenes(mem_conn)
-    ids = [s["scene_id"] for s in active]
-    assert ids == ["s3", "s1"]  # DESC by updated_at
-
-
-def test_list_active_scenes_with_limit(mem_conn):
-    for i in range(5):
-        scene_dao.insert_scene(mem_conn, f"s{i}", f"t{i}", f"c{i}",
-                              created_at=f"2026-08-0{i+1}T00:00:00Z",
-                              updated_at=f"2026-08-0{i+1}T00:00:00Z")
-    active = scene_dao.list_active_scenes(mem_conn, limit=2)
-    assert len(active) == 2
-
-
-def test_list_scenes_over_threshold(mem_conn):
-    """返回 active 场景总数（调用方与 threshold 比较判断红/橙/黄）。"""
-    for i in range(5):
-        scene_dao.insert_scene(mem_conn, f"s{i}", f"t{i}", f"c{i}")
-    # threshold=3，当前 5 > 3 → 触发预警
-    assert scene_dao.list_scenes_over_threshold(mem_conn, 3) == 5
-
-
-def test_count_scenes_by_status(mem_conn):
-    scene_dao.insert_scene(mem_conn, "s1", "t1", "c1")
-    scene_dao.insert_scene(mem_conn, "s2", "t2", "c2")
-    scene_dao.update_scene_status(mem_conn, "s2", "archived")
-    assert scene_dao.count_scenes(mem_conn, "active") == 1
-    assert scene_dao.count_scenes(mem_conn, "archived") == 1
-
-
-# ---------- scene_memories ----------
-
-def test_add_memory_link_idempotent(mem_conn):
-    """重复添加同一关联不报错（INSERT OR IGNORE）。"""
-    scene_dao.insert_scene(mem_conn, "s1", "t1", "c1")
-    scene_dao.add_memory_link(mem_conn, "s1", "m1")
-    scene_dao.add_memory_link(mem_conn, "s1", "m1")  # 重复
-    mids = scene_dao.list_memories_for_scene(mem_conn, "s1")
-    assert mids == ["m1"]
-
-
-def test_list_memories_for_scene(mem_conn):
-    """返回场景关联的记忆 id 列表（按 memory_id ASC）。"""
-    scene_dao.insert_scene(mem_conn, "s1", "t1", "c1")
-    scene_dao.add_memory_link(mem_conn, "s1", "m2")
-    scene_dao.add_memory_link(mem_conn, "s1", "m1")
-    scene_dao.add_memory_link(mem_conn, "s1", "m3")
-    mids = scene_dao.list_memories_for_scene(mem_conn, "s1")
-    assert mids == ["m1", "m2", "m3"]
-
-
-def test_list_memories_for_scene_empty(mem_conn):
-    scene_dao.insert_scene(mem_conn, "s1", "t1", "c1")
-    assert scene_dao.list_memories_for_scene(mem_conn, "s1") == []
-
-
-# ---------- scene_versions ----------
-
-def test_insert_scene_version_and_list(mem_conn):
-    """insert_scene_version 后 list_scene_versions 返回归档记录。"""
-    scene_dao.insert_scene(mem_conn, "s1", "t1", "v1内容")
-    vid = str(uuid.uuid4())
-    scene_dao.insert_scene_version(
-        mem_conn, vid, "s1", "v1内容快照", reason="更新前"
-    )
-    versions = scene_dao.list_scene_versions(mem_conn, "s1")
-    assert len(versions) == 1
-    assert versions[0]["version_id"] == vid
-    assert versions[0]["scene_id"] == "s1"
-    assert versions[0]["content"] == "v1内容快照"
-    assert versions[0]["reason"] == "更新前"
-    assert versions[0]["version_at"] is not None
-
-
-def test_list_scene_versions_multiple_ordered(mem_conn):
-    """多版本按 version_at ASC 返回。"""
-    scene_dao.insert_scene(mem_conn, "s1", "t1", "v3")
-    scene_dao.insert_scene_version(
-        mem_conn, "vid1", "s1", "v1快照",
-        version_at="2026-08-01T00:00:00Z", reason="first"
-    )
-    scene_dao.insert_scene_version(
-        mem_conn, "vid2", "s1", "v2快照",
-        version_at="2026-08-02T00:00:00Z", reason="second"
-    )
-    versions = scene_dao.list_scene_versions(mem_conn, "s1")
-    assert [v["version_id"] for v in versions] == ["vid1", "vid2"]
-
-
-def test_list_scene_versions_empty(mem_conn):
-    scene_dao.insert_scene(mem_conn, "s1", "t1", "c1")
-    assert scene_dao.list_scene_versions(mem_conn, "s1") == []
 
 
 # ---------- memory_vectors ----------
@@ -535,7 +344,7 @@ def test_list_unconsumed_with_limit(mem_conn):
 # ---------- 迁移幂等：v1 库升级到 v2 ----------
 
 def test_v2_migration_idempotent_on_existing_db(tmp_path):
-    """已有 v1 库重新连接 → 升级到 v2，新增六表存在且原数据不丢。"""
+    """已有 v1 库重新连接 → 升级到当前版本，新增向量/信号表存在且原数据不丢。"""
     # 模拟 v1 库：手动建 schema_versions 表 + 插入 v1 行（不建新表）
     raw = sqlite3.connect(str(tmp_path / "memory.db"))
     raw.execute("""
@@ -570,15 +379,4 @@ def test_v2_migration_idempotent_on_existing_db(tmp_path):
         conn2.close()
 
 
-def test_v2_migration_scene_tables_idempotent(tmp_path):
-    """memory.db 重复初始化幂等，scenes 表不丢（v0.7 起 scenes 归 memory.db）。"""
-    c1 = db_mod.connect_memory(tmp_path)
-    c1.close()
-    c2 = db_mod.connect_memory(tmp_path)
-    try:
-        tables = set(db_mod.list_tables(c2))
-        for t in ("scenes", "scene_memories", "scene_versions"):
-            assert t in tables
-        assert db_mod.schema_version(c2) == db_mod.SCHEMA_VERSION
-    finally:
-        c2.close()
+

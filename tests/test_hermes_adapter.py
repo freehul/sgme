@@ -217,33 +217,33 @@ def test_prefetch_scopes_include_wiki(monkeypatch):
     assert search_req[0]["json"]["scopes"] == ["memory", "wiki"]
 
 
-def test_prefetch_splits_memory_and_scene_blocks(monkeypatch):
-    """memory 结果进「相关记忆」块，wiki_scene 结果进「相关场景（L2 匹配）」块。"""
+def test_prefetch_renders_memory_and_wiki_pages(monkeypatch):
+    """memory / wiki_pages 结果统一进「相关记忆」块（场景层已退役，无场景块）。"""
     p = _prefetch_provider(monkeypatch, [
         {"source": "memory", "content": "用户是独立开发者"},
-        {"source": "wiki_scene", "title": "SGME 开发", "content": "SGME 记忆引擎架构设计，Python 自研，标签化记忆池"},
-        {"source": "wiki_scene", "title": "Trae 配置", "content": "Trae 规则体系"},
+        {"source": "wiki_pages", "page_id": "p1", "title": "SGME 开发",
+         "content": "SGME 记忆引擎架构设计，Python 自研，标签化记忆池"},
     ])
 
     out = p.prefetch("SGME 架构", session_id="s1")
 
     assert "# 相关记忆（SGME）" in out
     assert "独立开发者" in out
-    assert "# 相关场景（L2 匹配）" in out
-    assert "[SGME 开发]" in out
-    assert "[Trae 配置]" in out
+    assert "SGME 记忆引擎架构设计" in out
+    assert "相关场景" not in out
 
 
-def test_prefetch_scene_only_no_memory(monkeypatch):
-    """只有场景命中 → 只出场景块（记忆块省略）。"""
+def test_prefetch_wiki_page_only_no_scene_block(monkeypatch):
+    """只有 wiki 页面命中 → 只出记忆块，不出现「相关场景」块。"""
     p = _prefetch_provider(monkeypatch, [
-        {"source": "wiki_scene", "title": "SGME 开发", "content": "场景内容"},
+        {"source": "wiki_pages", "page_id": "p1", "title": "SGME 开发", "content": "页面内容"},
     ])
 
     out = p.prefetch("SGME", session_id="s1")
 
-    assert "相关记忆" not in out
-    assert "# 相关场景（L2 匹配）" in out
+    assert "# 相关记忆（SGME）" in out
+    assert "页面内容" in out
+    assert "相关场景" not in out
 
 
 # ---------- B152: client 生命周期（closed 后自动重建 + 关闭线程安全） ----------

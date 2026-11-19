@@ -1,12 +1,13 @@
 <script setup lang="ts">
-// 运维健康总览：存储体检（DB/WAL/raw/备份）+ 9.6 场景层下线就绪
+// 运维健康总览：存储体检（DB/WAL/raw/备份）
 // 数据源 GET /v1/admin/ops/health-overview（Admin Key；后端未就绪时显示空态，不白屏）
+// T-427（2026-11-20）：场景层退役，原「9.6 场景层下线就绪」段已摘除。
 import { computed, onMounted, ref } from 'vue'
 import { getHealthOverview, getRefineEfficiency, getRefineStatus, type OpsHealthOverview, type RefineEfficiency, type RefineStatus } from '../../api/ops'
 import { getRefineRuns, type RefineRun, type RefineRuns } from '../../api/dashboard'
 import { ApiError } from '../../api/client'
 import { fmtTs } from '../../utils/format'
-import { compatPhaseLabel, formatBytes, formatCount, isOverviewUsable } from './healthFormat'
+import { formatBytes, formatCount, isOverviewUsable } from './healthFormat'
 
 const data = ref<OpsHealthOverview | null>(null)
 const loading = ref(false)
@@ -47,19 +48,6 @@ const storageCards = computed(() => {
     { key: 'raw_bytes', label: 'raw 体积', value: formatBytes(s.raw_bytes) },
     { key: 'backup_snapshots', label: '备份快照数', value: `${formatCount(s.backup_snapshots)} 份` },
     { key: 'backup_bytes', label: '备份体积', value: formatBytes(s.backup_bytes) },
-  ]
-})
-
-// 9.6 就绪卡片：场景层三表行数 + 两类规则数
-const sceneCards = computed(() => {
-  const s = data.value?.scenes
-  if (!s) return []
-  return [
-    { key: 'scenes', label: 'scenes 行数', value: formatCount(s.scenes) },
-    { key: 'scene_vectors', label: 'scene_vectors 行数', value: formatCount(s.scene_vectors) },
-    { key: 'scenes_fts', label: 'scenes_fts 行数', value: formatCount(s.scenes_fts) },
-    { key: 'gone_rules', label: 'GONE 规则', value: formatCount(s.gone_rules) },
-    { key: 'conflict_rules', label: '冲突规则', value: formatCount(s.conflict_rules) },
   ]
 })
 
@@ -173,26 +161,12 @@ async function loadRefine() {
   refineLoading.value = false
 }
 
-const phaseLabel = computed(() => compatPhaseLabel(data.value?.scenes.compat_phase))
-const blockers = computed(() => data.value?.scenes.blockers || [])
-const manualActions = computed(() => data.value?.manual_actions || [])
-
-// 兼容期窗口：stable_since + days_left（后端可选字段；缺省不渲染）
-const windowLabel = computed(() => {
-  const s = data.value?.scenes
-  if (!s || !s.stable_since) return ''
-  const since = `起算 ${s.stable_since}`
-  const left = s.days_left
-  if (typeof left !== 'number' || !Number.isFinite(left)) return since
-  return `${since} · ${left >= 0 ? `剩余 ${left} 天` : `已过期 ${Math.abs(left)} 天`}`
-})
-
 async function load() {
   loading.value = true
   error.value = ''
   try {
     const r = await getHealthOverview()
-    // storage/scenes 两段缺失视为不可用（不展示一堆 0 误导），走空态
+    // storage 段缺失视为不可用（不展示一堆 0 误导），走空态
     data.value = isOverviewUsable(r) ? r : null
   } catch (e) {
     // 端点未上线 / 服务不可达 / 鉴权失败：清空并显示友好提示
@@ -212,7 +186,7 @@ onMounted(() => {
 <template>
   <div class="health-view">
     <div class="head">
-      <h2>健康总览 <span class="sub">存储体检 + 9.6 场景层下线就绪（只读）</span></h2>
+      <h2>健康总览 <span class="sub">存储体检（只读）</span></h2>
       <div class="filters">
         <span v-if="data" class="generated">生成于 {{ fmtTs(data.generated_at) }}</span>
         <button class="btn btn-sm" :disabled="loading" @click="load">
@@ -229,7 +203,7 @@ onMounted(() => {
     <!-- 首次加载显示加载态；已加载过则保留旧数据（刷新失败只加错误横幅，不清空页面） -->
     <p v-if="loading && !data" class="empty">加载中…</p>
     <p v-else-if="!data && !error" class="empty">
-      暂无健康数据——接口可能尚未上线，或返回体缺少 storage / scenes 段；后端就绪后点「刷新」即可。
+      暂无健康数据——接口可能尚未上线，或返回体缺少 storage 段；后端就绪后点「刷新」即可。
     </p>
 
     <!-- ⓪ 提炼状态（T-169 refine/status：队列水位 + 最近失败；最近批次取自 refine_runs） -->
@@ -341,38 +315,6 @@ onMounted(() => {
         <p class="desc">
           数据目录：<span class="mono">{{ data.storage.data_dir || '—' }}</span>
         </p>
-      </section>
-
-      <!-- ② 9.6 就绪 -->
-      <section class="panel">
-        <h3>9.6 就绪 <span class="sub">场景层下线（D-53 / D-64）</span></h3>
-        <div class="ready-line">
-          <span class="ready-badge" :class="data.scenes.ready ? 'ok' : 'err'">
-            <span class="dot" />{{ data.scenes.ready ? '就绪' : '未就绪' }}
-          </span>
-          <span class="kv">兼容期阶段：<b>{{ phaseLabel }}</b></span>
-          <span v-if="windowLabel" class="kv">兼容期窗口：<b>{{ windowLabel }}</b></span>
-          <span class="kv">enforce（语义变更 409）：<b>{{ data.scenes.enforce ? '开' : '关' }}</b></span>
-          <span class="kv">enforce_gone（下线端点 410）：<b>{{ data.scenes.enforce_gone ? '开' : '关' }}</b></span>
-        </div>
-        <div class="stat-grid">
-          <div v-for="c in sceneCards" :key="c.key" class="stat-card">
-            <span class="v">{{ c.value }}</span>
-            <span class="l">{{ c.label }}</span>
-          </div>
-        </div>
-        <h4 class="blockers-title">阻塞项（{{ blockers.length }}）</h4>
-        <ul v-if="blockers.length" class="blockers">
-          <li v-for="(b, i) in blockers" :key="i">{{ b }}</li>
-        </ul>
-        <p v-else class="desc">无阻塞项——场景层下线前置条件已满足。</p>
-
-        <template v-if="manualActions.length">
-          <h4 class="blockers-title">人工动作清单（{{ manualActions.length }}）</h4>
-          <ol class="blockers">
-            <li v-for="(a, i) in manualActions" :key="i">{{ a }}</li>
-          </ol>
-        </template>
       </section>
     </template>
   </div>

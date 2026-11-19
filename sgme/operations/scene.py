@@ -1,6 +1,7 @@
 """operations/scene.py：场景浏览操作（0.8 T-15，契约 §5.4）。
 
-⚠️ 冻结状态（D-53 / 收尾 A1·C1，2026-11-05）：场景层冻结只读，本模块仅剩只读浏览；
+⚠️ 冻结/退役状态（D-53 / 收尾 A1·C1，2026-11-05；T-427 正式退役，2026-11-20）：
+场景层已退役，本模块仅剩只读浏览；四表 rename `_retired` 后仍可读（表名自动回落）。
 写端点 `POST /v1/admin/scenes/{id}/status` 已于同批摘除（WebUI 入口同步移除；enforce_gone 开启时旧路径 410）。
 
 承接的入口
@@ -13,16 +14,15 @@ HTTP ``GET /v1/admin/scenes``              ``list_scenes``（契约 §5.4）
 
 与 ``operations/browse.py`` 的关系：本模块复用其参数解析工具与分页信封，
 形如 ``operations/stats.py`` 平级复用 ``operations/health.watermark_age_sec``——
-同层 import，无环。场景独立成模块是契约 §5.4.3 的明确要求
-（后续 L2 场景的写操作也归本模块，届时不必再搬家）。
+同层 import，无环。场景独立成模块是契约 §5.4.3 的明确要求。
 
-分层铁律：本模块不认识协议，SQL 全部落 ``sgme.data.scene_dao``。
+分层铁律：本模块不认识协议，SQL 全部落 ``sgme.data.scene_readonly_dao``。
 """
 from __future__ import annotations
 
 import sqlite3
 
-from sgme.data import scene_dao
+from sgme.data import scene_readonly_dao as scene_dao
 from sgme.operations.browse import (
     DEFAULT_ORDER,
     ORDER_VALUES,
@@ -58,7 +58,7 @@ def list_scenes(
     - ``status`` 缺省仅 ``active``（与 memories 同口径：rejected / expired 需显式索取）；
     - ``sort`` 缺省 ``heat``，``since`` / ``until`` 作用于 ``sort`` 指定的字段——
       当 sort=heat 时时间过滤对 heat 列做字典序比较无意义，故此时**时间范围作用于
-      ``updated_at``**（见 ``scene_dao.list_scenes_page`` 的 time_column 约定），
+      ``updated_at``**（见 ``scene_readonly_dao.list_scenes_page`` 的 time_column 约定），
       避免用户传 since 却拿到空列表；
     - ``memories_count`` 来自 ``scene_memories`` 关联计数（子查询聚合，非 JOIN，
       避免与分页 LIMIT 相互干扰）。
