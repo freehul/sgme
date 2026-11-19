@@ -418,9 +418,12 @@ def test_finalize_scene_disabled_still_publishes_refine_signal(mem_conn, cfg, mo
     result.memories = [{"memory_id": mid, "content": "用户偏好简洁回复"}]
     refine_mod.finalize_refinement(result, mem_conn, cfg, client=None)
 
-    # 1) 场景四表零写入
-    cnt = mem_conn.execute("SELECT COUNT(*) AS c FROM scenes").fetchone()["c"]
-    assert cnt == 0
+    # 1) 场景四表零写入（T-427：启动 DDL 已不建场景表，表不存在即零写入）
+    scene_tables = mem_conn.execute(
+        "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' "
+        "AND name IN ('scenes','scene_memories','scene_vectors','scene_versions')"
+    ).fetchone()["c"]
+    assert scene_tables == 0
     # 2) 提炼成功信号仍发布（source=refine）
     rows = [dict(r) for r in mem_conn.execute(
         "SELECT * FROM signal_events WHERE source='refine' AND type='memory_updated'"

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,22 @@ class TestMultiHopPairs:
             # supersession 相关集 = live 后继，可检索
             assert super_pairs[0].related_ids
             assert super_pairs[0].anchor_content   # 旧记忆内容（query 文本来源）
+        finally:
+            conn.close()
+
+    def test_scene_pairs_survive_retired_rename(self, tmp_path):
+        """T-427：生产四表改名 `*_retired` 后，multi-hop GT 仍能读到场景簇。"""
+        db = make_mini_replica(tmp_path, n=12, seed=0)
+        conn = sqlite3.connect(db)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("ALTER TABLE scene_memories RENAME TO scene_memories_retired")
+            conn.execute("ALTER TABLE scenes RENAME TO scenes_retired")
+            conn.commit()
+            pairs = multi_hop_pairs(conn)
+            scene = [p for p in pairs if p.kind == "scene"]
+            assert scene, "改名 _retired 后场景簇不应静默丢失"
+            assert len(scene[0].related_ids) >= 2
         finally:
             conn.close()
 

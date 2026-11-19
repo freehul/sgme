@@ -191,6 +191,19 @@ def _content_of(conn: sqlite3.Connection, memory_id: str) -> str:
     return row["content"] if row else ""
 
 
+def _scene_memories_table(conn: sqlite3.Connection) -> str | None:
+    """解析场景关联表名：生产退役后为 `scene_memories_retired`（T-427/T-428）。"""
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name IN ('scene_memories','scene_memories_retired')"
+    ).fetchall()
+    names = {r["name"] for r in rows}
+    for name in ("scene_memories", "scene_memories_retired"):
+        if name in names:
+            return name
+    return None
+
+
 def multi_hop_pairs(
     conn: sqlite3.Connection,
     limit: int | None = None,
@@ -208,26 +221,29 @@ def multi_hop_pairs(
     pairs: list[MultiHopPair] = []
 
     # 1) scene 簇（成员均为 live，可检索）
-    try:
-        rows = conn.execute(
-            "SELECT sm.scene_id, GROUP_CONCAT(sm.memory_id) AS mids "
-            "FROM scene_memories sm JOIN memories m ON m.memory_id = sm.memory_id "
-            "WHERE m.status != 'rejected' GROUP BY sm.scene_id"
-        ).fetchall()
-        for r in rows:
-            mids = [x for x in (r["mids"] or "").split(",") if x]
-            if len(mids) < 2:
-                continue
-            content_by_id = {x: _content_of(conn, x) for x in mids}
-            anchor = mids[0]
-            pairs.append(MultiHopPair(
-                kind="scene",
-                anchor_id=anchor,
-                anchor_content=content_by_id.get(anchor, ""),
-                related_ids=list(mids),
-            ))
-    except sqlite3.Error as e:
-        logger.warning("scene 边读取失败（跳过）: %s", e)
+    # T-427：生产四表退役后改名 `*_retired`，此处按实际表名读取，避免 GT 静默丢场景簇。
+    scene_table = _scene_memories_table(conn)
+    if scene_table:
+        try:
+            rows = conn.execute(
+                f"SELECT sm.scene_id, GROUP_CONCAT(sm.memory_id) AS mids "
+                f"FROM {scene_table} sm JOIN memories m ON m.memory_id = sm.memory_id "
+                "WHERE m.status != 'rejected' GROUP BY sm.scene_id"
+            ).fetchall()
+            for r in rows:
+                mids = [x for x in (r["mids"] or "").split(",") if x]
+                if len(mids) < 2:
+                    continue
+                content_by_id = {x: _content_of(conn, x) for x in mids}
+                anchor = mids[0]
+                pairs.append(MultiHopPair(
+                    kind="scene",
+                    anchor_id=anchor,
+                    anchor_content=content_by_id.get(anchor, ""),
+                    related_ids=list(mids),
+                ))
+        except sqlite3.Error as e:
+            logger.warning("scene 边读取失败（跳过）: %s", e)
 
     # 2) supersession 解析（相关集 = live 后继，可检索）
     try:
@@ -380,6 +396,9 @@ def make_mini_replica(tmp_dir: Path, n: int = 12, seed: int = 0) -> Path:
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     mem_conn, session_conn, wiki_conn = db_mod.init_databases(tmp_dir)
+    # T-427：场景四表已从启动 DDL 摘除；评测夹具仍需历史 scene 边构造 multi-hop GT，
+    # 故按退役 DDL 单独建表（生产库由 retire_scene_tables.py rename，不走这里）。
+    mem_conn.executescript(db_mod.SCENE_RETIRED_DDL)
     dims = sgme_config.load_dimensions()
     aliases = sgme_config.load_aliases()
     memory_dao.import_registry(mem_conn, dims, aliases)
