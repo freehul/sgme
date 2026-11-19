@@ -216,9 +216,25 @@ fi
 grep 'image:' "$COMPOSE_DIR/docker-compose.yml" >> "$LOG" 2>&1
 
 # 4. compose up -d
-log "docker compose up -d"
+# 2026-11-19（B327）：群晖 Docker 存在**容器替换竞态** —— `container_name: sgme` 固定时，
+#   compose 的删除是异步的，新容器在旧容器真正移除前尝试占用同名即报
+#   "The container name \"/sgme\" is already in use by container <id>"，
+#   整轮更新失败并回滚（2.0.27 首次自动部署即踩中：日志可见 `Container sgme Removed`
+#   紧接 name conflict，重试又变成 "No such container <id>_sgme"）。
+#   对策：显式删同名容器（容器≠数据，卷是 bind mount 不受影响）+ 短暂等待，再 up。
+CONTAINER_NAME="$(sed -n 's/^[[:space:]]*container_name:[[:space:]]*\(.*\)$/\1/p' "$COMPOSE_DIR/docker-compose.yml" | head -1 | tr -d '\r')"
+CONTAINER_NAME="${CONTAINER_NAME:-sgme}"
+log "docker compose up -d（先显式移除同名容器 $CONTAINER_NAME，绕开替换竞态）"
+docker rm -f "$CONTAINER_NAME" >> "$LOG" 2>&1 || true
+sleep 3
 if ! (cd "$COMPOSE_DIR" && docker compose up -d >> "$LOG" 2>&1); then
-  mark_failed "compose up 失败"
+  # 竞态可能仍命中（删除尚未落盘）——重试一次，仍失败才判失败
+  log "compose up 首次失败，清理同名容器后重试一次"
+  docker rm -f "$CONTAINER_NAME" >> "$LOG" 2>&1 || true
+  sleep 5
+  if ! (cd "$COMPOSE_DIR" && docker compose up -d >> "$LOG" 2>&1); then
+    mark_failed "compose up 失败"
+  fi
 fi
 
 # 5. 健康验证（最多等 60s，每 5s 一次）
