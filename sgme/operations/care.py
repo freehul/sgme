@@ -290,6 +290,102 @@ def _profile_block_text(
     return text, len(lines)
 
 
+# 2026-11-09（P0 消费端 / 实测 delta=0 修复）：演化层注入。
+# 设计 4.2 分层顺序：基线层（六槽位）→ 演化层（经历/变化）→ 生活块（role_life）。
+EVOLUTION_TIMELINE_ITEMS = 8    # 最近 N 条经历
+EVOLUTION_MAX_CHANGES = 2       # 性格/三观各取最新 N 条
+EVOLUTION_MAX_CHARS = 700       # 整块字符预算（防 token 爆预算）
+
+
+def _evo_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _evolution_block_text(
+    role_id: str, cfg: dict[str, Any]
+) -> tuple[str | None, dict[str, int]]:
+    """构造「近期经历 + 近来的变化」文本块；空或关闭 → (None, 空计数)。
+
+    演化层是运行数据（data/role_evolution/<role_id>.json），此前只有 admin
+    读接口调用，**装配不读**——写进去等于没写（2026-11-09 实测：写 12 条后
+    role_assemble 产物 delta=0）。本函数补上消费端。
+
+    三条纪律：
+    - 只喂近处：经历取最近 N 条（时间顺序保留），变化取最新 N 条；
+    - 不带人称、不报绝对时间：块内不出现「她/他」与年月日，换角色不用改文案；
+    - 任何异常静默降级：演化层是加分项，绝不能因为它挂掉整次装配。
+    """
+    ecfg = ((cfg.get("care") or {}).get("evolution_inject") or {})
+    empty = {"timeline": 0, "changes": 0}
+    if not ecfg.get("enabled", True):
+        return None, empty
+    try:
+        evo = roles_mod.load_evolution(role_id, _evolution_dir())
+    except Exception as e:  # noqa: BLE001——损坏/权限异常一律降级
+        logger.warning("演化层注入跳过（%s）: %s", role_id, e)
+        return None, empty
+
+    n_items = _evo_int(ecfg.get("timeline_items", EVOLUTION_TIMELINE_ITEMS), EVOLUTION_TIMELINE_ITEMS)
+    n_changes = _evo_int(ecfg.get("max_changes", EVOLUTION_MAX_CHANGES), EVOLUTION_MAX_CHANGES)
+    include_reason = bool(ecfg.get("include_reason", True))
+    reason_max = _evo_int(ecfg.get("reason_max_chars", 60), 60)
+
+    sections: list[str] = []
+    timeline = [e for e in (evo.get("timeline") or []) if isinstance(e, dict) and str(e.get("event") or "").strip()]
+    if n_items > 0 and timeline:
+        got = timeline[-n_items:]
+        sections.append("【近期经历】\n" + "\n".join(f"- {str(e['event']).strip()}" for e in got))
+        timeline_used = len(got)
+    else:
+        timeline_used = 0
+
+    def _reason(entry: dict[str, Any]) -> str:
+        if not include_reason:
+            return ""
+        r = str(entry.get("reason") or "").strip()
+        if not r:
+            return ""
+        if reason_max > 0 and len(r) > reason_max:
+            r = r[:reason_max].rstrip() + "…"
+        return f"（依据：{r}）"
+
+    change_lines: list[str] = []
+    for kind, label in (("personality_changes", "性格"), ("values_changes", "三观")):
+        rows = [e for e in (evo.get(kind) or []) if isinstance(e, dict)]
+        if n_changes <= 0:
+            continue
+        for e in rows[-n_changes:]:
+            if kind == "personality_changes":
+                slot = str(e.get("slot") or "").strip()
+                to = str(e.get("to") or "").strip()
+                if not to:
+                    continue
+                frm = str(e.get("from") or "").strip()
+                head = f"{label}·{slot}：" if slot else f"{label}："
+                body = f"{frm} → {to}" if frm else to
+            else:
+                chg = str(e.get("change") or "").strip()
+                if not chg:
+                    continue
+                head = f"{label}："
+                body = chg
+            change_lines.append(f"- {head}{body}{_reason(e)}")
+    if change_lines:
+        sections.append("【近来的变化】\n" + "\n".join(change_lines))
+
+    if not sections:
+        return None, empty
+
+    text = "\n\n".join(sections)
+    max_chars = _evo_int(ecfg.get("max_chars", EVOLUTION_MAX_CHARS), EVOLUTION_MAX_CHARS)
+    if max_chars > 0 and len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "…"
+    return text, {"timeline": timeline_used, "changes": len(change_lines)}
+
+
 def _book_entries_text(card: dict[str, Any]) -> str:
     """把 character_book 条目拼成提示词素材（无条目给占位说明）。"""
     book = (card.get("data") or {}).get("character_book") or {}
@@ -834,6 +930,15 @@ def assemble(
                     profile_block, str(data.get("name") or role_id), user_name
                 )
             sys_prompt = f"{sys_prompt.rstrip()}\n\n{profile_block}"
+        # 2026-11-09（P0 消费端）：演化层（近期经历 + 近来的变化）。
+        # 位置在基线层之后、生活块之前——设计 4.2 的分层顺序，位置即权重。
+        evolution_block, evolution_items = _evolution_block_text(role_id, cfg)
+        if evolution_block:
+            if render:
+                evolution_block = _render_macros(
+                    evolution_block, str(data.get("name") or role_id), user_name
+                )
+            sys_prompt = f"{sys_prompt.rstrip()}\n\n{evolution_block}"
         # 2026-11-02 任务 B：角色离线生活（可选块）。
         # 拼在 system_prompt **末尾**——位置即权重，且这样八个适配器零改动就能拿到
         # （写进独立字段的话，没人消费等于没做）。失败静默降级，绝不阻塞装配。
@@ -858,6 +963,9 @@ def assemble(
         # 2026-11-04（B283）：六槽位基线块（未启用/未写 → None；slots 计数供观测）
         "profile_block": profile_block,
         "profile_slots_used": profile_slots_used,
+        # 2026-11-09（P0）：演化层注入块（未启用/空 → None；计数供观测）
+        "evolution_block": evolution_block,
+        "evolution_items": evolution_items,
         # D-61（2026-11-04）：档位扁平暴露（缺省 silent），消费方按档位决定
         # 说话时机：silent=只记录 / session=聊天中带出 / push=关键信号才推。
         "care_level": roles_mod.get_care_level(card),
