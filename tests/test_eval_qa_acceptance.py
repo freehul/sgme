@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -680,6 +681,12 @@ class TestQAMockLLMMeasurable:
 class TestQARedlineChecks:
     """红线核对：零生产污染、最小侵入、A/B 不自动裁决、无新增依赖、RRF 占位正确。"""
 
+    # 「import eval 包」判据须是导入语句锚点，不能用子串——子串会把
+    # `from sgme.operations.cost_alert import evaluate_and_alert` 误判为违规（T-430）。
+    IMPORT_EVAL_RE = re.compile(
+        r"^\s*(?:from|import)\s+eval(?:\.[\w.]+)?\s*(?:import|as|$)", re.M,
+    )
+
     def test_zero_production_pollution(self):
         """红线①：eval/tmp 与 data/ 隔离。
 
@@ -703,11 +710,23 @@ class TestQARedlineChecks:
 
         for py_file in sgme_engine.glob("*.py"):
             content = py_file.read_text(encoding="utf-8")
-            # sgme/engine/ 不应 import eval
-            assert "from eval" not in content, \
+            # sgme/engine/ 不应 import eval 包（判据走导入语句锚点，非子串）
+            assert not self.IMPORT_EVAL_RE.search(content), \
                 f"{py_file.name} 不应 import eval 包（最小侵入违规）"
-            assert "import eval" not in content, \
-                f"{py_file.name} 不应 import eval 包（最小侵入违规）"
+
+    def test_minimal_intrusion_import_eval_judged_by_statement(self):
+        """反例锁：模块名含 eval 子串（evaluate_and_alert）不得判违规。
+
+        历史教训（T-430）：旧判据用子串 ``import eval``，把
+        ``from sgme.operations.cost_alert import evaluate_and_alert`` 误判为
+        最小侵入违规。此处同时锁正例（真 import eval 必须被抓住），防止
+        判据被改宽后静默失效。
+        """
+        assert not self.IMPORT_EVAL_RE.search(
+            "from sgme.operations.cost_alert import evaluate_and_alert\n"
+        )
+        assert self.IMPORT_EVAL_RE.search("from eval import runner\n")
+        assert self.IMPORT_EVAL_RE.search("import eval.runner\n")
 
     def test_no_new_dependencies(self):
         """红线③：无新增依赖。

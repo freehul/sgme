@@ -36,8 +36,9 @@ from sgme.server.app import create_app
 # GET /v1/admin/prompts：顶层仅 stages；每条 stage 四字段（构造顺序）
 LIST_TOP_KEYS = ["stages"]
 LIST_STAGE_KEYS = ["stage", "active", "ab", "versions"]
-# 版本元数据（VersionInfo dataclass 字段序）
-VERSION_INFO_KEYS = ["version", "file", "sha256", "created_at", "note"]
+# 版本元数据（VersionInfo dataclass 字段序；status 为 T-411 候选态治理字段，
+# asdict 恒输出——缺省 approved，candidate 永不激活）
+VERSION_INFO_KEYS = ["version", "file", "sha256", "created_at", "note", "status"]
 # POST /publish：{"status": "ok", "version": VersionInfo}
 PUBLISH_TOP_KEYS = ["status", "version"]
 # POST /activate

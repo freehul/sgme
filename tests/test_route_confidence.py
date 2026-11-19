@@ -5,7 +5,7 @@
 2. 非法值 / 越界值归一
 3. 低置信（<0.6）不进候选池，改写入 routing_inbox
 4. 高置信照常进候选池
-5. v024 提示词文件存在且 manifest 已登记、**active 仍是 v023**（未过 A/B 不许切）
+5. v024 提示词文件存在且含 route_confidence 锚点；candidate 版本不参与 active 判定（T-411）
 """
 
 from __future__ import annotations
@@ -115,16 +115,61 @@ def test_missing_confidence_treated_as_high(conns, cfg):
 # ---------------- 提示词资产 ----------------
 
 def test_v024_prompt_registered_but_not_active(tmp_path):
+    """v024 契约锚点仍在；candidate 版本不参与 active 判定（T-411 机制断言）。
+
+    T-430：原断言钉死「真实 manifest 的 active == v023」，v026 切换后语义过期。
+    改为在 tmp_path 造 manifest（不读真实 manifest）：放入 approved + candidate
+    各一版，active 指向 approved，断言 candidate 不改变 active 判定。
+    """
+    import hashlib
+
     import yaml
     from pathlib import Path
+
+    from sgme.prompts.manager import PromptStore
 
     root = Path(__file__).resolve().parents[1] / "sgme" / "resources" / "prompts"
     v024 = root / "versions" / "l1_extraction" / "v024.txt"
     assert v024.exists(), "v024 提示词文件缺失"
     text = v024.read_text(encoding="utf-8")
     assert "route_confidence" in text and "route_reason" in text
-    manifest = yaml.safe_load((root / "manifest.yaml").read_text(encoding="utf-8"))
-    versions = [v["version"] for v in manifest["versions"]["l1_extraction"]]
-    assert "v024" in versions
-    # 未过 A/B 不许切 active
-    assert manifest["stages"]["l1_extraction"]["active"] == "v023"
+
+    # 临时提示词库：approved(v001) + candidate(v002)，active 只认 approved
+    stage = "l1_extraction"
+    work = "你是提取器。\n{{dimensions}}\n{{conversation}}"
+    fake = tmp_path / "prompts"
+    (fake / "versions" / stage).mkdir(parents=True)
+    (fake / f"{stage}.txt").write_text(work, encoding="utf-8")
+    (fake / "versions" / stage / "v001.txt").write_text(work, encoding="utf-8")
+    (fake / "versions" / stage / "v002.txt").write_text(work + "\n候选版", encoding="utf-8")
+
+    def _entry(ver: str, status: str) -> dict:
+        path = fake / "versions" / stage / f"{ver}.txt"
+        return {
+            "version": ver,
+            "file": f"versions/{stage}/{ver}.txt",
+            "sha256": hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
+            "created_at": "2026-11-20T00:00:00+08:00",
+            "note": status,
+            "status": status,
+        }
+
+    manifest = {
+        "stages": {
+            stage: {"active": "v001", "ab": {"enabled": False}},
+            "l1_conflict": {"active": "@working", "ab": {"enabled": False}},
+            "l2_scene": {"active": "@working", "ab": {"enabled": False}},
+        },
+        "versions": {stage: [_entry("v001", "approved"), _entry("v002", "candidate")]},
+    }
+    (fake / "manifest.yaml").write_text(
+        yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False), encoding="utf-8",
+    )
+
+    store = PromptStore(prompts_root=fake)
+    infos = {i.version: i for i in store.list_versions(stage)}
+    assert infos["v002"].status == "candidate"
+    assert infos["v001"].status == "approved"
+    # candidate 不参与 active 判定：active 仍是 approved 的 v001，get() 也只取 v001
+    assert store.stage_config(stage)["active"] == "v001"
+    assert store.get(stage).version == "v001"

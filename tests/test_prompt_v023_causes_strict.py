@@ -8,7 +8,8 @@
 v023 在 v022 基础上明确禁止这两类，并补「按钮+助手动作」完整正反例与输出前五问。
 
 本测试锁：
-1. manifest active 指向 v023（最新登记版本）、sha256 与文件一致、工作副本逐字一致；
+1. manifest active 指向已批准版本（非 candidate）、sha256 与文件一致（T-430 改为机制断言，
+   不再钉死 v023——「工作副本 == active」由 test_prompt_l1_contract.py 覆盖）；
 2. v023 含助手动作句禁令、截短/前缀禁令、五问自检、按钮完整正反例；
 3. v023 保留 v022 causes 逐字硬约束、v021 UI 口径、v020 结构硬约束；
 4. v023 不新增占位符（提示词改动不引入新渲染变量/新 LLM 调用）；
@@ -55,10 +56,21 @@ def _versions_at_least(minimum: int) -> list[dict]:
     return out
 
 
-def test_manifest_active_is_v023():
-    """manifest active 必须钉在 v023（本次交付的显式发布决策）。"""
-    active = _manifest()["stages"]["l1_extraction"]["active"]
-    assert active == "v023", f"active={active}，期望 v023"
+def test_manifest_active_is_approved_version():
+    """manifest active 必须是已登记版本，且其 status 不得为 candidate（T-411 治理口径）。
+
+    不再钉死具体版本号：v023→v026 已多次切版，钉死版本号会让每次合法切版都误红；
+    真正要守的是「active 只指向已批准版本」，与 test_prompt_l1_contract.py 的
+    test_working_copy_matches_active 互补。
+    """
+    manifest = _manifest()
+    active = manifest["stages"]["l1_extraction"]["active"]
+    assert active != "@working", "正式 manifest 的 active 不应回落到 @working"
+    entries = {v["version"]: v for v in manifest["versions"]["l1_extraction"]}
+    assert active in entries, f"active={active} 未在 manifest 登记"
+    assert entries[active].get("status", "approved") != "candidate", (
+        f"active={active} 被标为 candidate：未批准的版本不得服役（T-411）"
+    )
 
 
 def test_v023_registered_and_sha_matches():
@@ -71,13 +83,6 @@ def test_v023_registered_and_sha_matches():
     assert digest == entries["v023"]["sha256"], (
         f"v023 sha256 不一致：manifest={entries['v023']['sha256'][:12]} 实际={digest[:12]}"
     )
-
-
-def test_working_copy_equals_v023():
-    """工作副本必须与 v023 逐字一致（否则 @working 会回退成旧口径）。"""
-    v023 = (VERSIONS_DIR / "v023.txt").read_text(encoding="utf-8")
-    working = (PROMPTS_ROOT / "l1_extraction.txt").read_text(encoding="utf-8")
-    assert working == v023, "工作副本与 v023 不一致"
 
 
 @pytest.mark.parametrize("anchor", STRICT_ANCHORS)
